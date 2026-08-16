@@ -14,6 +14,7 @@ finish-args:
   - --share=ipc
   - --filesystem=host
   - --filesystem=xdg-config/gemma:create
+  - --filesystem=xdg-cache/gemma:create
   - --talk-name=org.freedesktop.Flatpak
   - --talk-name=org.freedesktop.Notifications
 
