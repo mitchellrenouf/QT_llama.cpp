@@ -44,9 +44,13 @@ fn main() {
         || env::var("LLAMA_SYCL").map(|v| v == "1" || v == "ON").unwrap_or(false);
 
     let mut cfg = cmake::Config::new(&llama_root);
-    cfg.define("LLAMA_BUILD_TESTS", "OFF")
+    cfg.define("LLAMA_STANDALONE", "OFF")
+        .define("LLAMA_BUILD_TESTS", "OFF")
+        .define("LLAMA_BUILD_TOOLS", "OFF")
         .define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
+        .define("LLAMA_BUILD_APP", "OFF")
+        .define("LLAMA_BUILD_COMMON", "OFF")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("CMAKE_BUILD_TYPE", "Release");
 
