@@ -10,6 +10,14 @@ default-run = "qt_llama"
 name = "qt_llama"
 path = "src/main.rs"
 
+[features]
+default = ["auto"]
+auto = ["llama-cpp-binding/auto"]
+cuda = ["llama-cpp-binding/cuda"]
+vulkan = ["llama-cpp-binding/vulkan"]
+hipblas = ["llama-cpp-binding/hipblas"]
+sycl = ["llama-cpp-binding/sycl"]
+
 [workspace]
 members = [
     ".",
