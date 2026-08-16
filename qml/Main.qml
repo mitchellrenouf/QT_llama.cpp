@@ -716,9 +716,9 @@ ApplicationWindow {
 
                         // Main Text Content with Rich Markdown Rendering
                         TextEdit {
-                            visible: model.content !== undefined && model.content !== null && model.content.length > 0
+                            visible: typeof model !== 'undefined' && model && model.content && model.content.length > 0
                             Layout.fillWidth: true
-                            text: model.content || ""
+                            text: (typeof model !== 'undefined' && model && model.content) ? model.content : ""
                             textFormat: TextEdit.MarkdownText
                             color: "#f1f5f9"
                             font.pixelSize: 14
@@ -733,7 +733,7 @@ ApplicationWindow {
 
                         // Embedded Images
                         Repeater {
-                            model: extractImages(model.content)
+                            model: (typeof model !== 'undefined' && model && model.content) ? extractImages(model.content) : []
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.maximumWidth: 520
@@ -779,7 +779,7 @@ ApplicationWindow {
 
                         // Embedded Video Player
                         Repeater {
-                            model: extractVideos(model.content)
+                            model: (typeof model !== 'undefined' && model && model.content) ? extractVideos(model.content) : []
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.maximumWidth: 560
@@ -857,7 +857,7 @@ ApplicationWindow {
 
                         // Embedded Audio Player
                         Repeater {
-                            model: extractAudios(model.content)
+                            model: (typeof model !== 'undefined' && model && model.content) ? extractAudios(model.content) : []
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.maximumWidth: 500

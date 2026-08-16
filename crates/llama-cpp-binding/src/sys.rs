@@ -146,6 +146,7 @@ extern "C" {
     pub fn llama_free(ctx: *mut llama_context);
 
     pub fn llama_model_get_vocab(model: *const llama_model) -> *const llama_vocab;
+    pub fn llama_model_n_layer(model: *const llama_model) -> i32;
 
     pub fn llama_vocab_n_tokens(vocab: *const llama_vocab) -> i32;
 
