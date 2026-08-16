@@ -1,0 +1,14 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Gemma Agent runtime dumps & sessions
+.gemma/
+.flatpak-*
+org.gemma.GemmaAgent.flatpak
+
+# IDE & OS files
+.DS_Store
+*.swp
+*.orig

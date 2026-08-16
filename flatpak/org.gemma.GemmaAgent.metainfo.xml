@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.gemma.GemmaAgent</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Gemma 4 AI Assistant</name>
+  <summary>Multimodal Vision, Desktop Control, Browser Automation &amp; General AI Agent for Gemma 4</summary>
+
+  <description>
+    <p>
+      Gemma 4 AI Assistant is an autonomous, general-purpose agent and vibe-coding assistant powered by Gemma 4 models.
+      It features rich multimodal understanding, headless browser automation with Chrome DevTools Protocol, desktop screenshot analysis,
+      media processing, and automated workspace tools.
+    </p>
+    <ul>
+      <li>Autonomous tool orchestration and multi-step turn planning</li>
+      <li>Full headless Chromium browser automation (Brave/Chromium/Chrome)</li>
+      <li>Desktop visual perception and GUI control</li>
+      <li>Speech synthesis (TTS) and microphone audio recording</li>
+      <li>Smart context management and auto-compaction for long tasks</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">org.gemma.GemmaAgent.desktop</launchable>
+
+  <provides>
+    <binary>gemma-agent</binary>
+  </provides>
+
+  <developer_name>Gemma Team</developer_name>
+
+  <url type="homepage">https://github.com/mitchell/gemma</url>
+  <url type="bugtracker">https://github.com/mitchell/gemma/issues</url>
+
+  <releases>
+    <release version="0.4.0" date="2026-08-16">
+      <description>
+        <p>Pure Linux release with Qt6 support, headless Chromium CDP automation, Flatpak packaging on Freedesktop SDK 26.08 beta, and automated updates.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>

@@ -1,0 +1,33 @@
+[package]
+name = "gemma-agent"
+version = "0.4.0"
+edition = "2021"
+authors = ["Mitchell <mitchell@localhost>"]
+description = "Multimodal Vision, Desktop Control, Browser Automation & General AI Agent for Gemma 4 26B"
+
+[workspace]
+members = [
+    ".",
+    "crates/llama-cpp-binding",
+]
+
+[dependencies]
+llama-cpp-binding = { path = "crates/llama-cpp-binding" }
+tokio = { version = "1.43", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+futures-util = "0.3"
+colored = "3.1"
+walkdir = "2.5"
+regex = "1.11"
+anyhow = "1.0"
+async-trait = "0.1"
+urlencoding = "2.1"
+chrono = "0.4"
+similar = "3.1"
+scraper = "0.27"
+termimad = "0.35"
+base64 = "0.23"
+dirs = "6.0"
+chromiumoxide = { version = "0.9.1", features = ["fetcher", "rustls", "zip8"] }

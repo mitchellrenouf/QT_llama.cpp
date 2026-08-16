@@ -1,0 +1,38 @@
+app-id: org.gemma.GemmaAgent
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: gemma-agent
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --share=network
+  - --share=ipc
+  - --filesystem=host
+  - --filesystem=xdg-config/gemma:create
+  - --talk-name=org.freedesktop.Flatpak
+  - --talk-name=org.freedesktop.Notifications
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/gemma-agent/cargo
+
+modules:
+  - name: gemma-agent
+    buildsystem: simple
+    build-commands:
+      - cargo build --release
+      - install -Dm755 target/release/gemma-agent /app/bin/gemma-agent
+      - install -Dm644 flatpak/org.gemma.GemmaAgent.desktop /app/share/applications/org.gemma.GemmaAgent.desktop
+      - install -Dm644 flatpak/org.gemma.GemmaAgent.metainfo.xml /app/share/metainfo/org.gemma.GemmaAgent.metainfo.xml
+      - install -Dm644 flatpak/icons/org.gemma.GemmaAgent.svg /app/share/icons/hicolor/scalable/apps/org.gemma.GemmaAgent.svg
+      - mkdir -p /app/share/gemma/qml
+      - cp -r qml/* /app/share/gemma/qml/
+    sources:
+      - type: dir
+        path: ..

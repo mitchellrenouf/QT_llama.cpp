@@ -1,0 +1,9 @@
+{
+  "name": "gemma-agent",
+  "data-checker": {
+    "type": "git",
+    "url": "https://github.com/mitchell/gemma.git",
+    "tag-pattern": "^v([0-9.]+)$",
+    "version-scheme": "semantic"
+  }
+}

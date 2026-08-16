@@ -1,0 +1,312 @@
+use crate::sys::*;
+use anyhow::{anyhow, Result};
+use std::ffi::CString;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
+
+pub struct LlamaModelHandle {
+    ptr: *mut llama_model,
+}
+
+unsafe impl Send for LlamaModelHandle {}
+unsafe impl Sync for LlamaModelHandle {}
+
+impl Drop for LlamaModelHandle {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { llama_model_free(self.ptr) };
+        }
+    }
+}
+
+pub struct LlamaContextHandle {
+    ptr: *mut llama_context,
+}
+
+unsafe impl Send for LlamaContextHandle {}
+unsafe impl Sync for LlamaContextHandle {}
+
+impl Drop for LlamaContextHandle {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { llama_free(self.ptr) };
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LlamaEngine {
+    #[allow(dead_code)]
+    model: Arc<LlamaModelHandle>,
+    context: Arc<Mutex<LlamaContextHandle>>,
+    vocab: *const llama_vocab,
+}
+
+unsafe impl Send for LlamaEngine {}
+unsafe impl Sync for LlamaEngine {}
+
+static BACKEND_INIT: std::sync::Once = std::sync::Once::new();
+
+impl LlamaEngine {
+    pub fn new(model_path: &Path, n_gpu_layers: i32, n_ctx: u32) -> Result<Self> {
+        BACKEND_INIT.call_once(|| unsafe {
+            llama_backend_init();
+        });
+
+        let path_str = model_path
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid model path UTF-8"))?;
+        let c_path = CString::new(path_str)?;
+
+        let mut m_params = unsafe { llama_model_default_params() };
+        m_params.n_gpu_layers = n_gpu_layers;
+
+        let model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
+        if model_ptr.is_null() {
+            return Err(anyhow!("Failed to load GGUF model from {}", model_path.display()));
+        }
+
+        let vocab_ptr = unsafe { llama_model_get_vocab(model_ptr) };
+
+        let mut c_params = unsafe { llama_context_default_params() };
+        c_params.n_ctx = if n_ctx > 0 { n_ctx } else { 8192 };
+        c_params.n_batch = 512;
+        c_params.n_ubatch = 512;
+
+        let ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+        if ctx_ptr.is_null() {
+            unsafe { llama_model_free(model_ptr) };
+            return Err(anyhow!("Failed to initialize llama_context from model"));
+        }
+
+        Ok(Self {
+            model: Arc::new(LlamaModelHandle { ptr: model_ptr }),
+            context: Arc::new(Mutex::new(LlamaContextHandle { ptr: ctx_ptr })),
+            vocab: vocab_ptr,
+        })
+    }
+
+    pub fn tokenize(&self, text: &str, add_special: bool, parse_special: bool) -> Result<Vec<llama_token>> {
+        let c_text = CString::new(text)?;
+        let mut tokens: Vec<llama_token> = vec![0; text.len() + 32];
+
+        let n = unsafe {
+            llama_tokenize(
+                self.vocab,
+                c_text.as_ptr(),
+                text.len() as i32,
+                tokens.as_mut_ptr(),
+                tokens.len() as i32,
+                add_special,
+                parse_special,
+            )
+        };
+
+        if n < 0 {
+            tokens.resize((-n) as usize, 0);
+            let n_retry = unsafe {
+                llama_tokenize(
+                    self.vocab,
+                    c_text.as_ptr(),
+                    text.len() as i32,
+                    tokens.as_mut_ptr(),
+                    tokens.len() as i32,
+                    add_special,
+                    parse_special,
+                )
+            };
+            if n_retry < 0 {
+                return Err(anyhow!("Tokenization failed with error code {}", n_retry));
+            }
+            tokens.truncate(n_retry as usize);
+        } else {
+            tokens.truncate(n as usize);
+        }
+
+        Ok(tokens)
+    }
+
+    pub fn token_to_piece(&self, token: llama_token) -> Result<String> {
+        let mut buf = vec![0u8; 128];
+        let n = unsafe {
+            llama_token_to_piece(
+                self.vocab,
+                token,
+                buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                buf.len() as i32,
+                0,
+                true,
+            )
+        };
+
+        if n < 0 {
+            buf.resize((-n) as usize, 0);
+            let n2 = unsafe {
+                llama_token_to_piece(
+                    self.vocab,
+                    token,
+                    buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                    buf.len() as i32,
+                    0,
+                    true,
+                )
+            };
+            if n2 < 0 {
+                return Ok(String::new());
+            }
+            buf.truncate(n2 as usize);
+        } else {
+            buf.truncate(n as usize);
+        }
+
+        Ok(String::from_utf8_lossy(&buf).to_string())
+    }
+
+    pub fn is_eog(&self, token: llama_token) -> bool {
+        unsafe { llama_vocab_is_eog(self.vocab, token) }
+    }
+
+    pub fn generate_stream(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        temperature: f32,
+    ) -> (mpsc::Receiver<Result<String>>, Arc<AtomicBool>) {
+        let (tx, rx) = mpsc::channel(64);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_flag = cancelled.clone();
+
+        let engine = self.clone();
+        let prompt_string = prompt.to_string();
+
+        std::thread::spawn(move || {
+            let prompt_tokens = match engine.tokenize(&prompt_string, true, true) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(anyhow!("Failed to tokenize prompt: {}", e)));
+                    return;
+                }
+            };
+
+            let ctx_guard = match engine.context.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    let _ = tx.blocking_send(Err(anyhow!("Poisoned llama context mutex")));
+                    return;
+                }
+            };
+            let ctx = ctx_guard.ptr;
+
+            // Initialize Sampler
+            let smpl = unsafe {
+                let chain_params = llama_sampler_chain_default_params();
+                let chain = llama_sampler_chain_init(chain_params);
+                if temperature <= 0.0 {
+                    llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+                } else {
+                    llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.95, 1));
+                    llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
+                    llama_sampler_chain_add(chain, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+                }
+                chain
+            };
+
+            // Evaluate prompt tokens in batches
+            let n_batch = 512;
+            let mut batch = unsafe { llama_batch_init(n_batch, 0, 1) };
+
+            let mut i = 0;
+            while i < prompt_tokens.len() {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    unsafe {
+                        llama_batch_free(batch);
+                        llama_sampler_free(smpl);
+                    }
+                    return;
+                }
+
+                let cur_batch_size = (prompt_tokens.len() - i).min(n_batch as usize);
+                batch.n_tokens = 0;
+
+                for j in 0..cur_batch_size {
+                    let token = prompt_tokens[i + j];
+                    let is_last = (i + j) == (prompt_tokens.len() - 1);
+                    unsafe {
+                        *batch.token.add(j) = token;
+                        *batch.pos.add(j) = (i + j) as llama_pos;
+                        *batch.n_seq_id.add(j) = 1;
+                        **batch.seq_id.add(j) = 0;
+                        *batch.logits.add(j) = if is_last { 1 } else { 0 };
+                    }
+                    batch.n_tokens += 1;
+                }
+
+                let ret = unsafe { llama_decode(ctx, batch) };
+                if ret != 0 {
+                    let _ = tx.blocking_send(Err(anyhow!("llama_decode failed on prompt evaluation")));
+                    unsafe {
+                        llama_batch_free(batch);
+                        llama_sampler_free(smpl);
+                    }
+                    return;
+                }
+
+                i += cur_batch_size;
+            }
+
+            // Generation loop
+            let mut n_cur = prompt_tokens.len();
+            let mut generated = 0;
+
+            while generated < max_tokens {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let token = unsafe { llama_sampler_sample(smpl, ctx, -1) };
+                if token == LLAMA_TOKEN_NULL || engine.is_eog(token) {
+                    break;
+                }
+
+                let piece = match engine.token_to_piece(token) {
+                    Ok(p) => p,
+                    Err(_) => String::new(),
+                };
+
+                if tx.blocking_send(Ok(piece)).is_err() {
+                    break;
+                }
+
+                generated += 1;
+
+                // Prepare next token decode
+                batch.n_tokens = 0;
+                unsafe {
+                    *batch.token = token;
+                    *batch.pos = n_cur as llama_pos;
+                    *batch.n_seq_id = 1;
+                    **batch.seq_id = 0;
+                    *batch.logits = 1;
+                }
+                batch.n_tokens = 1;
+
+                let ret = unsafe { llama_decode(ctx, batch) };
+                if ret != 0 {
+                    let _ = tx.blocking_send(Err(anyhow!("llama_decode failed on generation token")));
+                    break;
+                }
+
+                n_cur += 1;
+            }
+
+            unsafe {
+                llama_batch_free(batch);
+                llama_sampler_free(smpl);
+            }
+        });
+
+        (rx, cancelled)
+    }
+}
