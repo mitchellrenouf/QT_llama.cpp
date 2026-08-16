@@ -178,17 +178,10 @@ impl LlamaClient {
 
         let (mut rx, _cancel) = engine.generate_stream(&prompt, max_tokens, temp);
 
-        #[derive(PartialEq, Eq, Debug)]
-        enum StreamChannel {
-            General,
-            Thought,
-            Call,
-        }
-
         let mut raw_acc = String::new();
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
-        let mut current_channel = StreamChannel::General;
+        let mut in_thought = false;
         let mut tool_calls = Vec::new();
 
         while let Some(piece_res) = rx.recv().await {
@@ -200,161 +193,140 @@ impl LlamaClient {
             raw_acc.push_str(&piece);
 
             loop {
-                // 1. Handle Gemma 4 channel opening tag: "<|channel>...<channel|>"
-                if let Some(chan_start) = raw_acc.find("<|channel>") {
-                    if let Some(tag_end_rel) = raw_acc[chan_start..].find("<channel|>") {
-                        let tag_end = chan_start + tag_end_rel;
-                        let before = &raw_acc[..chan_start];
+                if !in_thought {
+                    // Check for thought opening tag: "<|channel>" or "<thought>"
+                    if let Some(pos) = raw_acc.find("<|channel>") {
+                        let before = &raw_acc[..pos];
                         if !before.is_empty() {
-                            match current_channel {
-                                StreamChannel::Thought => {
-                                    let clean = before.trim();
-                                    if !clean.is_empty() && clean != "thought" {
-                                        callback(StreamEvent::Reasoning(before.to_string()));
-                                        full_reasoning.push_str(before);
-                                    }
-                                }
-                                StreamChannel::General => {
-                                    callback(StreamEvent::Content(before.to_string()));
-                                    full_content.push_str(before);
-                                }
-                                StreamChannel::Call => {}
-                            }
-                        }
-
-                        let chan_name = raw_acc[chan_start + "<|channel>".len()..tag_end].trim().to_lowercase();
-                        if chan_name.contains("thought") {
-                            current_channel = StreamChannel::Thought;
-                        } else if chan_name.contains("call") {
-                            current_channel = StreamChannel::Call;
-                        } else {
-                            current_channel = StreamChannel::General;
-                        }
-
-                        raw_acc = raw_acc[tag_end + "<channel|>".len()..].to_string();
-                        if raw_acc.starts_with('\n') {
-                            raw_acc.remove(0);
-                        }
-                        continue;
-                    } else {
-                        // Incomplete channel tag, wait for "<channel|>"
-                        let before = &raw_acc[..chan_start];
-                        if !before.is_empty() {
-                            match current_channel {
-                                StreamChannel::Thought => {
-                                    let clean = before.trim();
-                                    if !clean.is_empty() && clean != "thought" {
-                                        callback(StreamEvent::Reasoning(before.to_string()));
-                                        full_reasoning.push_str(before);
-                                    }
-                                }
-                                StreamChannel::General => {
-                                    callback(StreamEvent::Content(before.to_string()));
-                                    full_content.push_str(before);
-                                }
-                                StreamChannel::Call => {}
-                            }
-                            raw_acc = raw_acc[chan_start..].to_string();
-                        }
-                        break;
-                    }
-                }
-
-                // 2. Handle legacy <thought> and </thought>
-                if let Some(pos) = raw_acc.find("<thought>") {
-                    let before = &raw_acc[..pos];
-                    if !before.is_empty() {
-                        callback(StreamEvent::Content(before.to_string()));
-                        full_content.push_str(before);
-                    }
-                    current_channel = StreamChannel::Thought;
-                    raw_acc = raw_acc[pos + "<thought>".len()..].to_string();
-                    if raw_acc.starts_with('\n') {
-                        raw_acc.remove(0);
-                    }
-                    continue;
-                }
-                if let Some(pos) = raw_acc.find("</thought>") {
-                    let before = &raw_acc[..pos];
-                    if !before.is_empty() {
-                        let clean = before.trim();
-                        if !clean.is_empty() && clean != "thought" {
-                            callback(StreamEvent::Reasoning(before.to_string()));
-                            full_reasoning.push_str(before);
-                        }
-                    }
-                    current_channel = StreamChannel::General;
-                    raw_acc = raw_acc[pos + "</thought>".len()..].to_string();
-                    if raw_acc.starts_with('\n') {
-                        raw_acc.remove(0);
-                    }
-                    continue;
-                }
-
-                // 3. Handle end of turn tokens
-                if let Some(pos) = raw_acc.find("<end_of_turn>") {
-                    let before = &raw_acc[..pos];
-                    if !before.is_empty() {
-                        if current_channel == StreamChannel::Thought {
-                            let clean = before.trim();
-                            if !clean.is_empty() && clean != "thought" {
-                                callback(StreamEvent::Reasoning(before.to_string()));
-                                full_reasoning.push_str(before);
-                            }
-                        } else if current_channel == StreamChannel::General {
                             callback(StreamEvent::Content(before.to_string()));
                             full_content.push_str(before);
                         }
-                    }
-                    raw_acc = raw_acc[pos + "<end_of_turn>".len()..].to_string();
-                    continue;
-                }
-
-                // 4. Prefix check for partial tags
-                let prefixes = ["<", "<|", "<|c", "<|ch", "<|channel", "<|channel>", "<t", "<th", "<thought", "<e", "<end", "<end_of_turn"];
-                if let Some(&prefix) = prefixes.iter().find(|&&p| raw_acc.ends_with(p)) {
-                    let keep_len = prefix.len();
-                    let emit_len = raw_acc.len() - keep_len;
-                    if emit_len > 0 {
-                        let to_emit = raw_acc[..emit_len].to_string();
-                        match current_channel {
-                            StreamChannel::Thought => {
-                                let clean = to_emit.trim();
-                                if !clean.is_empty() && clean != "thought" {
-                                    callback(StreamEvent::Reasoning(to_emit.clone()));
-                                    full_reasoning.push_str(&to_emit);
-                                }
-                            }
-                            StreamChannel::General => {
-                                callback(StreamEvent::Content(to_emit.clone()));
-                                full_content.push_str(&to_emit);
-                            }
-                            StreamChannel::Call => {}
+                        raw_acc = raw_acc[pos + "<|channel>".len()..].to_string();
+                        let trimmed = raw_acc.trim_start();
+                        if trimmed.starts_with("thought") {
+                            raw_acc = trimmed["thought".len()..]
+                                .trim_start_matches(|c| c == '\n' || c == '\r' || c == ' ')
+                                .to_string();
                         }
-                        raw_acc = raw_acc[emit_len..].to_string();
+                        in_thought = true;
+                        continue;
+                    }
+                    if let Some(pos) = raw_acc.find("<thought>") {
+                        let before = &raw_acc[..pos];
+                        if !before.is_empty() {
+                            callback(StreamEvent::Content(before.to_string()));
+                            full_content.push_str(before);
+                        }
+                        raw_acc = raw_acc[pos + "<thought>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = true;
+                        continue;
+                    }
+
+                    // Check end of turn
+                    if let Some(pos) = raw_acc.find("<end_of_turn>") {
+                        let before = &raw_acc[..pos];
+                        if !before.is_empty() {
+                            callback(StreamEvent::Content(before.to_string()));
+                            full_content.push_str(before);
+                        }
+                        raw_acc = raw_acc[pos + "<end_of_turn>".len()..].to_string();
+                        continue;
+                    }
+
+                    // Prefix check for potential opening tags
+                    let prefixes = ["<", "<|", "<|c", "<|ch", "<|channel", "<t", "<th", "<thought", "<e", "<end", "<end_of_turn"];
+                    if let Some(&prefix) = prefixes.iter().find(|&&p| raw_acc.ends_with(p)) {
+                        let keep_len = prefix.len();
+                        let emit_len = raw_acc.len() - keep_len;
+                        if emit_len > 0 {
+                            let to_emit = raw_acc[..emit_len].to_string();
+                            callback(StreamEvent::Content(to_emit.clone()));
+                            full_content.push_str(&to_emit);
+                            raw_acc = raw_acc[emit_len..].to_string();
+                        }
+                        break;
+                    }
+
+                    if !raw_acc.is_empty() {
+                        let chunk = std::mem::take(&mut raw_acc);
+                        callback(StreamEvent::Content(chunk.clone()));
+                        full_content.push_str(&chunk);
+                    }
+                    break;
+                } else {
+                    // Inside thought channel: look for closing tag "<channel|>" or "</thought>"
+                    if let Some(pos) = raw_acc.find("<channel|>") {
+                        let thought_part = &raw_acc[..pos];
+                        let clean = thought_part.trim().trim_start_matches("thought").trim();
+                        if !clean.is_empty() && clean != "thought" {
+                            callback(StreamEvent::Reasoning(clean.to_string()));
+                            full_reasoning.push_str(clean);
+                        }
+                        raw_acc = raw_acc[pos + "<channel|>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = false;
+                        continue;
+                    }
+                    if let Some(pos) = raw_acc.find("</thought>") {
+                        let thought_part = &raw_acc[..pos];
+                        let clean = thought_part.trim().trim_start_matches("thought").trim();
+                        if !clean.is_empty() && clean != "thought" {
+                            callback(StreamEvent::Reasoning(clean.to_string()));
+                            full_reasoning.push_str(clean);
+                        }
+                        raw_acc = raw_acc[pos + "</thought>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = false;
+                        continue;
+                    }
+
+                    // Check end of turn inside thought
+                    if let Some(pos) = raw_acc.find("<end_of_turn>") {
+                        let thought_part = &raw_acc[..pos];
+                        let clean = thought_part.trim().trim_start_matches("thought").trim();
+                        if !clean.is_empty() && clean != "thought" {
+                            callback(StreamEvent::Reasoning(clean.to_string()));
+                            full_reasoning.push_str(clean);
+                        }
+                        raw_acc = raw_acc[pos + "<end_of_turn>".len()..].to_string();
+                        in_thought = false;
+                        continue;
+                    }
+
+                    // Prefix check for closing tags
+                    let prefixes = ["<", "<c", "<ch", "<channel", "<channel|", "</", "</t", "</th", "</thought", "<e", "<end", "<end_of_turn"];
+                    if let Some(&prefix) = prefixes.iter().find(|&&p| raw_acc.ends_with(p)) {
+                        let keep_len = prefix.len();
+                        let emit_len = raw_acc.len() - keep_len;
+                        if emit_len > 0 {
+                            let to_emit = raw_acc[..emit_len].to_string();
+                            let clean = to_emit.trim();
+                            if !clean.is_empty() && clean != "thought" {
+                                callback(StreamEvent::Reasoning(to_emit.clone()));
+                                full_reasoning.push_str(&to_emit);
+                            }
+                            raw_acc = raw_acc[emit_len..].to_string();
+                        }
+                        break;
+                    }
+
+                    if !raw_acc.is_empty() {
+                        let chunk = std::mem::take(&mut raw_acc);
+                        let clean = chunk.trim();
+                        if !clean.is_empty() && clean != "thought" {
+                            callback(StreamEvent::Reasoning(chunk.clone()));
+                            full_reasoning.push_str(&chunk);
+                        }
                     }
                     break;
                 }
-
-                // 5. Emit full buffer according to current channel
-                if !raw_acc.is_empty() {
-                    let chunk = std::mem::take(&mut raw_acc);
-                    match current_channel {
-                        StreamChannel::Thought => {
-                            let clean = chunk.trim();
-                            if !clean.is_empty() && clean != "thought" {
-                                callback(StreamEvent::Reasoning(chunk.clone()));
-                                full_reasoning.push_str(&chunk);
-                            }
-                        }
-                        StreamChannel::General => {
-                            callback(StreamEvent::Content(chunk.clone()));
-                            full_content.push_str(&chunk);
-                        }
-                        StreamChannel::Call => {}
-                    }
-                }
-                break;
             }
 
             // Tool Call detection in markdown codeblocks
@@ -396,13 +368,13 @@ impl LlamaClient {
                 .replace("<end_of_turn>", "")
                 .replace("<start_of_turn>", "")
                 .replace("<|im_end|>", "");
-            if current_channel == StreamChannel::Thought {
+            if in_thought {
                 let clean = clean_tail.trim();
                 if !clean.is_empty() && clean != "thought" {
                     callback(StreamEvent::Reasoning(clean_tail.clone()));
                     full_reasoning.push_str(&clean_tail);
                 }
-            } else if current_channel == StreamChannel::General {
+            } else {
                 callback(StreamEvent::Content(clean_tail.clone()));
                 full_content.push_str(&clean_tail);
             }
