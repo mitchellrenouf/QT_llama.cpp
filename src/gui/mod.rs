@@ -71,6 +71,7 @@ pub async fn launch_qt_gui(config: &Config) -> Result<()> {
     // Bind local WebSocket server on ephemeral port
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
+    let _ = std::fs::write("/tmp/gemma_agent_port", port.to_string());
 
     let agent = Arc::new(Mutex::new(GemmaAgent::new(config.clone())));
 

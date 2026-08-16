@@ -27,20 +27,32 @@ ApplicationWindow {
     property int totalFilesCount: 1
     property string downloadStatusMessage: ""
 
+    function findTargetPort() {
+        if (Qt.application.arguments) {
+            for (var i = Qt.application.arguments.length - 1; i >= 0; i--) {
+                var arg = Qt.application.arguments[i]
+                if (/^\d+$/.test(arg)) {
+                    return arg
+                }
+            }
+        }
+        return "9876"
+    }
+
     // --- WebSocket IPC Connection to in-process Rust Agent ---
     WebSocket {
         id: wsClient
-        property string targetPort: (Qt.application.arguments && Qt.application.arguments.length > 1) ? Qt.application.arguments[1] : "9876"
+        property string targetPort: findTargetPort()
         url: "ws://127.0.0.1:" + targetPort
         active: true
 
-        onStatusChanged: {
-            if (status === WebSocket.Open) {
+        onStatusChanged: function() {
+            if (wsClient.status === WebSocket.Open) {
                 console.log("WebSocket connected to Gemma Agent backend on port " + targetPort)
-            } else if (status === WebSocket.Error) {
-                console.log("WebSocket error: " + errorString)
-                window.statusText = "Backend connection error: " + errorString
-            } else if (status === WebSocket.Closed) {
+            } else if (wsClient.status === WebSocket.Error) {
+                console.log("WebSocket error: " + wsClient.errorString)
+                window.statusText = "Backend connection error: " + wsClient.errorString
+            } else if (wsClient.status === WebSocket.Closed) {
                 console.log("WebSocket closed")
             }
         }
