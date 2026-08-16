@@ -39,8 +39,14 @@ impl ChromiumController {
             }
         }
 
-        // 1. First check if a system browser binary is already present
+        // 1. First check if a headless shell or system browser binary is already present
         let system_candidates = [
+            "/usr/bin/chromium-headless-shell",
+            "/usr/bin/chrome-headless-shell",
+            "/usr/lib/chromium/chromium-headless-shell",
+            "/usr/lib/chromium/chrome-headless-shell",
+            "/app/bin/chromium-headless-shell",
+            "/app/bin/chrome-headless-shell",
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser",
             "/usr/bin/google-chrome",
@@ -69,7 +75,17 @@ impl ChromiumController {
         }
 
         if exec_path.is_none() {
-            for bin_name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave", "brave-browser", "microsoft-edge"] {
+            for bin_name in [
+                "chromium-headless-shell",
+                "chrome-headless-shell",
+                "chromium",
+                "chromium-browser",
+                "google-chrome",
+                "google-chrome-stable",
+                "brave",
+                "brave-browser",
+                "microsoft-edge",
+            ] {
                 if let Ok(output) = std::process::Command::new("which").arg(bin_name).output() {
                     if output.status.success() {
                         let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -83,16 +99,42 @@ impl ChromiumController {
             }
         }
 
+        // Check persistent cache directory for previously downloaded Google Chrome Headless Shell
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("qt_llama")
+            .join("chromium");
+
+        if exec_path.is_none() && cache_dir.is_dir() {
+            for entry in walkdir::WalkDir::new(&cache_dir).into_iter().filter_map(|e| e.ok()) {
+                let p = entry.path();
+                let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if (file_name == "chrome-headless-shell"
+                    || file_name == "chromium-headless-shell"
+                    || file_name == "chrome"
+                    || file_name == "chromium")
+                    && p.is_file()
+                {
+                    exec_path = Some(p.to_path_buf());
+                    break;
+                }
+            }
+        }
+
         let final_exec_path = match exec_path {
             Some(p) => p,
             None => {
-                let options = BrowserFetcherOptions::default()
-                    .map_err(|e| anyhow!("Failed to create default browser fetcher options: {}", e))?;
+                let _ = std::fs::create_dir_all(&cache_dir);
+                let options = BrowserFetcherOptions::builder()
+                    .with_path(&cache_dir)
+                    .build()
+                    .map_err(|e| anyhow!("Failed to create browser fetcher options: {}", e))?;
                 let fetcher = BrowserFetcher::new(options);
+                eprintln!("[browser] Downloading latest Google Chrome / Headless Shell to {}...", cache_dir.display());
                 let info = fetcher
                     .fetch()
                     .await
-                    .map_err(|e| anyhow!("No local Chromium/Brave/Chrome binary found on system and auto-download failed: {}", e))?;
+                    .map_err(|e| anyhow!("Failed to download latest Chrome/Chromium Headless Shell from Google: {}", e))?;
                 info.executable_path
             }
         };
