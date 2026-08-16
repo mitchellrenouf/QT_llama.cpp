@@ -65,15 +65,21 @@ impl LlamaEngine {
             .or_else(|| std::env::var("QT_LLAMA_GPU_LAYERS").ok())
             .and_then(|s| s.parse::<i32>().ok());
 
-        let mut m_params = unsafe { llama_model_default_params() };
-        if let Some(layers) = env_override {
-            m_params.n_gpu_layers = layers;
-        } else if n_gpu_layers >= 0 {
-            m_params.n_gpu_layers = n_gpu_layers;
-        }
+        let file_size_gb = std::fs::metadata(model_path)
+            .map(|m| m.len() as f64 / (1024.0 * 1024.0 * 1024.0))
+            .unwrap_or(0.0);
 
+        let default_layers = if file_size_gb >= 12.0 {
+            23 // Intelligent allocation: ~10.1GB model + 1.34GB KV + 0.54GB compute fits in 16GB VRAM
+        } else if file_size_gb >= 8.0 {
+            26
+        } else {
+            -1 // All layers on GPU for smaller models
+        };
+
+        let mut actual_gpu_layers = env_override.unwrap_or(if n_gpu_layers >= 0 { n_gpu_layers } else { default_layers });
         let mut model_ptr = std::ptr::null_mut();
-        let mut actual_gpu_layers = m_params.n_gpu_layers;
+        let mut m_params = unsafe { llama_model_default_params() };
 
         // Try loading model with graceful step-down if VRAM is exceeded
         for _attempt in 0..4 {
@@ -89,10 +95,10 @@ impl LlamaEngine {
                 break;
             }
 
-            if actual_gpu_layers == -1 || actual_gpu_layers >= 30 {
-                actual_gpu_layers = 27; // Spreads ~12GB to GPU, remainder to CPU
+            if actual_gpu_layers == -1 || actual_gpu_layers >= 28 {
+                actual_gpu_layers = 23;
             } else if actual_gpu_layers > 4 {
-                actual_gpu_layers -= 4;
+                actual_gpu_layers -= 3;
             } else {
                 break;
             }
@@ -118,7 +124,13 @@ impl LlamaEngine {
         c_params.n_threads_batch = c_params.n_threads;
         c_params.no_perf = true;
 
-        let ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+        let mut ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+        if ctx_ptr.is_null() {
+            eprintln!("[llama.cpp] GPU compute/KV buffer allocation was tight, retrying with CPU KV cache...");
+            c_params.offload_kqv = false;
+            ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+        }
+
         if ctx_ptr.is_null() {
             unsafe { llama_model_free(model_ptr) };
             return Err(anyhow!("Failed to initialize llama_context from model"));
