@@ -62,6 +62,109 @@ pub enum StreamEvent {
     Finish(String),
 }
 
+pub fn normalize_relaxed_json(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return v.to_string();
+    }
+    // Replace unquoted key names: {query: "foo"} -> {"query": "foo"}
+    let re = regex::Regex::new(r#"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:"#).unwrap();
+    let quoted = re.replace_all(trimmed, r#"$1"$2":"#).to_string();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&quoted) {
+        return v.to_string();
+    }
+    trimmed.to_string()
+}
+
+pub fn parse_kwargs_to_json(args: &str) -> String {
+    let mut map = serde_json::Map::new();
+    let re = regex::Regex::new(r#"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^,)]+))"#).unwrap();
+    for cap in re.captures_iter(args) {
+        let key = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let val_str = cap.get(2).or_else(|| cap.get(3)).map(|m| m.as_str());
+        if let Some(s) = val_str {
+            map.insert(key.to_string(), serde_json::Value::String(s.to_string()));
+        } else if let Some(raw_val) = cap.get(4).map(|m| m.as_str().trim()) {
+            if let Ok(n) = raw_val.parse::<i64>() {
+                map.insert(key.to_string(), serde_json::json!(n));
+            } else if let Ok(b) = raw_val.parse::<bool>() {
+                map.insert(key.to_string(), serde_json::json!(b));
+            } else {
+                map.insert(key.to_string(), serde_json::Value::String(raw_val.to_string()));
+            }
+        }
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
+    let text = raw
+        .trim()
+        .trim_start_matches("<|tool_call>")
+        .trim_end_matches("<tool_call|>")
+        .trim_end_matches("</tool_call>")
+        .trim();
+
+    if text.is_empty() {
+        return None;
+    }
+
+    // Format 1: JSON with "name" and "arguments"
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+            let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let args_str = if args.is_string() {
+                args.as_str().unwrap().to_string()
+            } else {
+                args.to_string()
+            };
+            return Some(ToolCall {
+                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: name.to_string(),
+                    arguments: args_str,
+                },
+            });
+        }
+    }
+
+    // Format 2: call:function_name{...} or call:function_name(...) or function_name{...}
+    let stripped_call = text.trim_start_matches("call:").trim();
+    if let Some(brace_pos) = stripped_call.find('{') {
+        let name = stripped_call[..brace_pos].trim();
+        let args_part = &stripped_call[brace_pos..];
+        if !name.is_empty() {
+            let normalized_args = normalize_relaxed_json(args_part);
+            return Some(ToolCall {
+                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: name.to_string(),
+                    arguments: normalized_args,
+                },
+            });
+        }
+    } else if let Some(paren_pos) = stripped_call.find('(') {
+        let name = stripped_call[..paren_pos].trim();
+        let end_paren = stripped_call.rfind(')').unwrap_or(stripped_call.len());
+        let args_part = &stripped_call[paren_pos + 1..end_paren];
+        if !name.is_empty() {
+            let normalized_args = parse_kwargs_to_json(args_part);
+            return Some(ToolCall {
+                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: name.to_string(),
+                    arguments: normalized_args,
+                },
+            });
+        }
+    }
+
+    None
+}
+
 #[derive(Clone)]
 pub struct LlamaClient {
     engine: Option<Arc<LlamaEngine>>,
@@ -88,6 +191,14 @@ impl LlamaClient {
             engine,
             system_prompt: None,
         }
+    }
+
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.system_prompt = Some(prompt);
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.engine.is_some()
     }
 
     pub fn with_engine(engine: Arc<LlamaEngine>, system_prompt: Option<String>) -> Self {
@@ -135,8 +246,24 @@ impl LlamaClient {
         }
     }
 
-    pub async fn send_completion(&self, request: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
-        let msg = self.stream_completion(request, |_| {}).await?;
+    pub async fn chat_completion(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse> {
+        let mut text_acc = String::new();
+        let mut thought_acc = String::new();
+        let mut assembled_tool_calls = Vec::new();
+
+        let msg = self
+            .stream_completion(request, |event| match event {
+                StreamEvent::Content(c) => text_acc.push_str(&c),
+                StreamEvent::Reasoning(r) => thought_acc.push_str(&r),
+                StreamEvent::ToolCallAssembled(tc) => assembled_tool_calls.push(tc),
+                StreamEvent::ToolExecuted { .. } => {}
+                StreamEvent::Finish(_) => {}
+            })
+            .await?;
+
         Ok(ChatCompletionResponse {
             id: format!("chatcmpl-{}", chrono::Utc::now().timestamp_millis()),
             choices: vec![ChatCompletionChoice {
@@ -145,6 +272,10 @@ impl LlamaClient {
                 finish_reason: Some("stop".to_string()),
             }],
         })
+    }
+
+    pub async fn send_completion(&self, request: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
+        self.chat_completion(request).await
     }
 
     pub async fn stream_completion<F>(
@@ -158,18 +289,20 @@ impl LlamaClient {
         let engine = self
             .engine
             .as_ref()
-            .ok_or_else(|| anyhow!("In-process llama.cpp engine is not loaded. Please specify a valid GGUF model path."))?;
+            .ok_or_else(|| anyhow::anyhow!("llama.cpp engine not loaded"))?;
 
         let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
         if let Some(tools) = &request.tools {
-            sys_prompt.push_str("\n\n# AVAILABLE TOOLS:\n");
-            for t in tools {
+            sys_prompt.push_str("\nYou have access to the following tools:\n");
+            for tool in tools {
                 sys_prompt.push_str(&format!(
-                    "- `{}`: {}\n  Parameters: {}\n",
-                    t.function.name, t.function.description, t.function.parameters
+                    "- {}: {} (schema: {})\n",
+                    tool.function.name,
+                    tool.function.description,
+                    serde_json::to_string(&tool.function.parameters).unwrap_or_default()
                 ));
             }
-            sys_prompt.push_str("\nTo call a tool, output a fenced codeblock with ```tool_call containing {\"name\": \"...\", \"arguments\": {...}}.\n");
+            sys_prompt.push_str("\nTo call a tool, output a fenced codeblock with ```tool_call containing {\"name\": \"...\", \"arguments\": {...}} or use <|tool_call>call:tool_name{...}<tool_call|>.\n");
         }
 
         let prompt = format_gemma_chat(&request.messages, Some(&sys_prompt));
@@ -193,6 +326,65 @@ impl LlamaClient {
             raw_acc.push_str(&piece);
 
             loop {
+                // 1. Check for tool calls: "<|tool_call>"
+                if let Some(tool_start) = raw_acc.find("<|tool_call>") {
+                    let end_opt = raw_acc[tool_start..]
+                        .find("<tool_call|>")
+                        .or_else(|| raw_acc[tool_start..].find("</tool_call>"));
+
+                    if let Some(rel_end) = end_opt {
+                        let tag_len = if raw_acc[tool_start + rel_end..].starts_with("<tool_call|>") {
+                            "<tool_call|>".len()
+                        } else {
+                            "</tool_call>".len()
+                        };
+                        let end_pos = tool_start + rel_end + tag_len;
+                        let before = &raw_acc[..tool_start];
+                        if !before.is_empty() {
+                            if in_thought {
+                                let clean = before.trim().trim_start_matches("thought").trim();
+                                if !clean.is_empty() && clean != "thought" {
+                                    callback(StreamEvent::Reasoning(clean.to_string()));
+                                    full_reasoning.push_str(clean);
+                                }
+                            } else {
+                                callback(StreamEvent::Content(before.to_string()));
+                                full_content.push_str(before);
+                            }
+                        }
+
+                        let tool_raw = &raw_acc[tool_start..end_pos];
+                        if let Some(tc) = parse_gemma_tool_call(tool_raw) {
+                            callback(StreamEvent::ToolCallAssembled(tc.clone()));
+                            tool_calls.push(tc);
+                        }
+
+                        raw_acc = raw_acc[end_pos..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = false;
+                        continue;
+                    } else {
+                        // Incomplete tool call, wait for closing tag
+                        let before = &raw_acc[..tool_start];
+                        if !before.is_empty() {
+                            if in_thought {
+                                let clean = before.trim().trim_start_matches("thought").trim();
+                                if !clean.is_empty() && clean != "thought" {
+                                    callback(StreamEvent::Reasoning(clean.to_string()));
+                                    full_reasoning.push_str(clean);
+                                }
+                            } else {
+                                callback(StreamEvent::Content(before.to_string()));
+                                full_content.push_str(before);
+                            }
+                            raw_acc = raw_acc[tool_start..].to_string();
+                        }
+                        break;
+                    }
+                }
+
                 if !in_thought {
                     // Check for thought opening tag: "<|channel>" or "<thought>"
                     if let Some(pos) = raw_acc.find("<|channel>") {
@@ -236,8 +428,11 @@ impl LlamaClient {
                         continue;
                     }
 
-                    // Prefix check for potential opening tags
-                    let prefixes = ["<", "<|", "<|c", "<|ch", "<|channel", "<t", "<th", "<thought", "<e", "<end", "<end_of_turn"];
+                    // Prefix check for potential tags
+                    let prefixes = [
+                        "<", "<|", "<|c", "<|ch", "<|channel", "<|t", "<|tool", "<|tool_call",
+                        "<t", "<th", "<thought", "<e", "<end", "<end_of_turn",
+                    ];
                     if let Some(&prefix) = prefixes.iter().find(|&&p| raw_acc.ends_with(p)) {
                         let keep_len = prefix.len();
                         let emit_len = raw_acc.len() - keep_len;
@@ -257,51 +452,35 @@ impl LlamaClient {
                     }
                     break;
                 } else {
-                    // Inside thought channel: look for closing tag "<channel|>" or "</thought>"
-                    if let Some(pos) = raw_acc.find("<channel|>") {
-                        let thought_part = &raw_acc[..pos];
-                        let clean = thought_part.trim().trim_start_matches("thought").trim();
-                        if !clean.is_empty() && clean != "thought" {
-                            callback(StreamEvent::Reasoning(clean.to_string()));
-                            full_reasoning.push_str(clean);
-                        }
-                        raw_acc = raw_acc[pos + "<channel|>".len()..].to_string();
-                        if raw_acc.starts_with('\n') {
-                            raw_acc.remove(0);
-                        }
-                        in_thought = false;
-                        continue;
-                    }
-                    if let Some(pos) = raw_acc.find("</thought>") {
-                        let thought_part = &raw_acc[..pos];
-                        let clean = thought_part.trim().trim_start_matches("thought").trim();
-                        if !clean.is_empty() && clean != "thought" {
-                            callback(StreamEvent::Reasoning(clean.to_string()));
-                            full_reasoning.push_str(clean);
-                        }
-                        raw_acc = raw_acc[pos + "</thought>".len()..].to_string();
-                        if raw_acc.starts_with('\n') {
-                            raw_acc.remove(0);
-                        }
-                        in_thought = false;
-                        continue;
-                    }
+                    // Inside thought: look for closing tags: "</channel>", "<channel|>", "</thought>", "<end_of_turn>"
+                    let close_opt = raw_acc
+                        .find("</channel>")
+                        .map(|p| (p, "</channel>".len()))
+                        .or_else(|| raw_acc.find("<channel|>").map(|p| (p, "<channel|>".len())))
+                        .or_else(|| raw_acc.find("</thought>").map(|p| (p, "</thought>".len())))
+                        .or_else(|| raw_acc.find("<end_of_turn>").map(|p| (p, "<end_of_turn>".len())));
 
-                    // Check end of turn inside thought
-                    if let Some(pos) = raw_acc.find("<end_of_turn>") {
+                    if let Some((pos, tag_len)) = close_opt {
                         let thought_part = &raw_acc[..pos];
                         let clean = thought_part.trim().trim_start_matches("thought").trim();
                         if !clean.is_empty() && clean != "thought" {
                             callback(StreamEvent::Reasoning(clean.to_string()));
                             full_reasoning.push_str(clean);
                         }
-                        raw_acc = raw_acc[pos + "<end_of_turn>".len()..].to_string();
+                        raw_acc = raw_acc[pos + tag_len..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
                         in_thought = false;
                         continue;
                     }
 
                     // Prefix check for closing tags
-                    let prefixes = ["<", "<c", "<ch", "<channel", "<channel|", "</", "</t", "</th", "</thought", "<e", "<end", "<end_of_turn"];
+                    let prefixes = [
+                        "<", "</", "</c", "</ch", "</channel", "<c", "<ch", "<channel",
+                        "<channel|", "</t", "</th", "</thought", "<e", "<end", "<end_of_turn",
+                        "<|t", "<|tool",
+                    ];
                     if let Some(&prefix) = prefixes.iter().find(|&&p| raw_acc.ends_with(p)) {
                         let keep_len = prefix.len();
                         let emit_len = raw_acc.len() - keep_len;
@@ -360,30 +539,46 @@ impl LlamaClient {
 
         // Flush remaining buffer at EOF
         if !raw_acc.is_empty() {
-            let clean_tail = raw_acc
-                .replace("<|channel>", "")
-                .replace("<channel|>", "")
-                .replace("<thought>", "")
-                .replace("</thought>", "")
-                .replace("<end_of_turn>", "")
-                .replace("<start_of_turn>", "")
-                .replace("<|im_end|>", "");
-            if in_thought {
-                let clean = clean_tail.trim();
-                if !clean.is_empty() && clean != "thought" {
-                    callback(StreamEvent::Reasoning(clean_tail.clone()));
-                    full_reasoning.push_str(&clean_tail);
+            if raw_acc.contains("<|tool_call>") {
+                if let Some(tc) = parse_gemma_tool_call(&raw_acc) {
+                    callback(StreamEvent::ToolCallAssembled(tc.clone()));
+                    tool_calls.push(tc);
                 }
             } else {
-                callback(StreamEvent::Content(clean_tail.clone()));
-                full_content.push_str(&clean_tail);
+                let clean_tail = raw_acc
+                    .replace("<|channel>", "")
+                    .replace("</channel>", "")
+                    .replace("<channel|>", "")
+                    .replace("<thought>", "")
+                    .replace("</thought>", "")
+                    .replace("<end_of_turn>", "")
+                    .replace("<start_of_turn>", "")
+                    .replace("<|im_end|>", "");
+                if in_thought {
+                    let clean = clean_tail.trim().trim_start_matches("thought").trim();
+                    if !clean.is_empty() && clean != "thought" {
+                        callback(StreamEvent::Reasoning(clean.to_string()));
+                        full_reasoning.push_str(clean);
+                    }
+                } else {
+                    callback(StreamEvent::Content(clean_tail.clone()));
+                    full_content.push_str(&clean_tail);
+                }
             }
         }
 
         callback(StreamEvent::Finish("stop".to_string()));
 
-        let clean_full_reasoning = full_reasoning.trim().trim_start_matches("thought").trim().to_string();
-        let reasoning_opt = if clean_full_reasoning.is_empty() || clean_full_reasoning == "thought" {
+        let clean_full_reasoning = full_reasoning
+            .trim()
+            .trim_start_matches("thought")
+            .trim()
+            .to_string();
+        let reasoning_opt = if clean_full_reasoning.is_empty()
+            || clean_full_reasoning == "thought"
+            || clean_full_reasoning == "</channel>"
+            || clean_full_reasoning == "<channel|>"
+        {
             None
         } else {
             Some(clean_full_reasoning)
@@ -505,4 +700,33 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_gemma_tool_call_screenshot() {
+        let raw = r#"<|tool_call>call:web_search{query: "image of a bat"}<tool_call|>"#;
+        let tc = parse_gemma_tool_call(raw).expect("should parse tool call");
+        assert_eq!(tc.function.name, "web_search");
+        assert!(tc.function.arguments.contains("image of a bat"));
+    }
+
+    #[test]
+    fn test_parse_gemma_tool_call_json() {
+        let raw = r#"<|tool_call>{"name": "fetch_url", "arguments": {"url": "https://example.com"}}<tool_call|>"#;
+        let tc = parse_gemma_tool_call(raw).expect("should parse tool call");
+        assert_eq!(tc.function.name, "fetch_url");
+        assert!(tc.function.arguments.contains("https://example.com"));
+    }
+
+    #[test]
+    fn test_parse_gemma_tool_call_kwargs() {
+        let raw = r#"<|tool_call>call:bash_execute(command="ls -la")</tool_call>"#;
+        let tc = parse_gemma_tool_call(raw).expect("should parse tool call");
+        assert_eq!(tc.function.name, "bash_execute");
+        assert!(tc.function.arguments.contains("ls -la"));
+    }
 }

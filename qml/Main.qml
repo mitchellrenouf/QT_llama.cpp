@@ -307,7 +307,9 @@ ApplicationWindow {
         var trimmed = thought.trim()
         if (trimmed.length === 0) return false
         var lower = trimmed.toLowerCase()
-        if (lower === "thought" || lower === "thought process" || lower === "reasoning" || lower === "<|channel>thought<channel|>") return false
+        if (lower === "thought" || lower === "thought process" || lower === "reasoning" ||
+            lower === "</channel>" || lower === "<channel|>" || lower === "<|channel>" ||
+            lower === "<|channel>thought<channel|>" || lower === "<|channel>thought</channel>") return false
         return true
     }
 

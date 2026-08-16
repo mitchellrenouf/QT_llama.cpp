@@ -92,11 +92,22 @@ impl Tool for WebSearchTool {
             }
         }
 
-        // Fallback: If DDG gave no results, try Wikipedia directly via Chromium
-        if results.is_empty() {
+        // Fallback: If DDG gave no results or query requests images, query Wikipedia directly via Chromium
+        let is_image_query = query.to_lowercase().contains("image")
+            || query.to_lowercase().contains("picture")
+            || query.to_lowercase().contains("photo");
+
+        if results.is_empty() || is_image_query {
+            let clean_query = query
+                .replace("find an image of a ", "")
+                .replace("find an image of ", "")
+                .replace("image of a ", "")
+                .replace("image of ", "")
+                .replace("picture of ", "")
+                .replace("photo of ", "");
             let wiki_url = format!(
                 "https://en.wikipedia.org/wiki/Special:Search?search={}&go=Go",
-                urlencoding::encode(query)
+                urlencoding::encode(&clean_query)
             );
             if page.goto(&wiki_url).await.is_ok() {
                 let _ = page.wait_for_navigation().await;
@@ -105,12 +116,25 @@ impl Tool for WebSearchTool {
                     let document = scraper::Html::parse_document(&html);
                     let title_sel = scraper::Selector::parse("#firstHeading, h1").unwrap();
                     let p_sel = scraper::Selector::parse("p").unwrap();
+                    let img_sel = scraper::Selector::parse(".infobox img, .mw-file-element, figure img, .thumbimage, .image img").unwrap();
 
                     let heading = document
                         .select(&title_sel)
                         .next()
                         .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
                         .unwrap_or_else(|| query.to_string());
+
+                    let img_url = document
+                        .select(&img_sel)
+                        .next()
+                        .and_then(|e| e.value().attr("src"))
+                        .map(|src| {
+                            if src.starts_with("//") {
+                                format!("https:{}", src)
+                            } else {
+                                src.to_string()
+                            }
+                        });
 
                     let p_text = document
                         .select(&p_sel)
@@ -120,13 +144,18 @@ impl Tool for WebSearchTool {
                         .collect::<Vec<_>>()
                         .join("\n\n");
 
-                    if !p_text.is_empty() {
-                        results.push(format!(
-                            "- **{}** (Wikipedia)\n  URL: {}\n  Summary: {}",
-                            heading,
-                            wiki_url,
-                            crate::markdown::truncate_utf8(&p_text, 1000)
-                        ));
+                    if !p_text.is_empty() || img_url.is_some() {
+                        let mut entry = format!(
+                            "- **{}** (Wikipedia)\n  URL: {}\n",
+                            heading, wiki_url
+                        );
+                        if let Some(ref img) = img_url {
+                            entry.push_str(&format!("  Image URL: {}\n  Markdown Embedded: ![{}]({})\n", img, heading, img));
+                        }
+                        if !p_text.is_empty() {
+                            entry.push_str(&format!("  Summary: {}\n", crate::markdown::truncate_utf8(&p_text, 1000)));
+                        }
+                        results.insert(0, entry);
                     }
                 }
             }
