@@ -319,13 +319,15 @@ impl GemmaAgent {
                 .client
                 .stream_completion(&req, |event| match event {
                     StreamEvent::Reasoning(text) => {
-                        if !reasoning_header_printed {
+                        if !reasoning_header_printed && !text.trim().is_empty() {
                             println!("\n{}", "🧠 ──────────────── Thought Process ────────────────".bright_yellow().bold());
                             reasoning_header_printed = true;
                         }
-                        print!("{}", text.yellow().dimmed());
-                        let _ = std::io::stdout().flush();
-                        last_was_reasoning = true;
+                        if reasoning_header_printed {
+                            print!("{}", text.yellow().dimmed());
+                            let _ = std::io::stdout().flush();
+                            last_was_reasoning = true;
+                        }
                     }
                     StreamEvent::Content(text) => {
                         if last_was_reasoning {
@@ -348,6 +350,10 @@ impl GemmaAgent {
                     StreamEvent::Finish(_) => {}
                 })
                 .await;
+
+            if reasoning_header_printed && last_was_reasoning {
+                println!("\n{}", "────────────────────────────────────────────────────".bright_yellow().dimmed());
+            }
 
             let assistant_msg = match assistant_msg_res {
                 Ok(msg) => msg,

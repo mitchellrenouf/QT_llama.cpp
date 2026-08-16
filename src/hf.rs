@@ -143,6 +143,24 @@ pub async fn resolve_or_fetch_hf_model<F>(
 where
     F: FnMut(&str, f32, usize, usize) + Send + 'static,
 {
+    // 1. First check if model already exists in HF hub cache (~/.cache/huggingface/hub/) or local cache
+    if let Some(existing_primary) = crate::client::find_model_file(&format!("{}:{}", spec.repo_id, spec.quant))
+        .or_else(|| crate::client::find_model_file(&spec.model))
+    {
+        progress_cb(
+            &format!("✓ Found local cached weights at {}", existing_primary.file_name().unwrap_or_default().to_string_lossy()),
+            1.0,
+            1,
+            1,
+        );
+        return Ok(HfModelFiles {
+            primary_entry_file: existing_primary.clone(),
+            shard_files: vec![existing_primary],
+            mmproj_file: None,
+            speedup_draft_file: None,
+        });
+    }
+
     let model_dir = spec.get_model_dir();
     std::fs::create_dir_all(&model_dir)?;
 

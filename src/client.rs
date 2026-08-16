@@ -177,6 +177,7 @@ impl LlamaClient {
 
         let (mut rx, _cancel) = engine.generate_stream(&prompt, max_tokens, temp);
 
+        let mut raw_acc = String::new();
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
         let mut in_thought = false;
@@ -188,68 +189,152 @@ impl LlamaClient {
                 Err(e) => return Err(e),
             };
 
-            let combined = if in_thought {
-                format!("{}{}", full_reasoning, piece)
-            } else {
-                format!("{}{}", full_content, piece)
-            };
+            raw_acc.push_str(&piece);
 
-            let mut piece_clean = piece
-                .replace("<|channel>thought", "")
-                .replace("<|channel>", "")
-                .replace("<channel|>", "")
-                .replace("<tool_call|>", "")
-                .replace("<thought>", "")
-                .replace("</thought>", "");
+            loop {
+                if !in_thought {
+                    // Check for thought opening tags
+                    if let Some(pos) = raw_acc.find("<|channel>thought") {
+                        let before = &raw_acc[..pos];
+                        if !before.is_empty() {
+                            callback(StreamEvent::Content(before.to_string()));
+                            full_content.push_str(before);
+                        }
+                        raw_acc = raw_acc[pos + "<|channel>thought".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = true;
+                        continue;
+                    } else if let Some(pos) = raw_acc.find("<thought>") {
+                        let before = &raw_acc[..pos];
+                        if !before.is_empty() {
+                            callback(StreamEvent::Content(before.to_string()));
+                            full_content.push_str(before);
+                        }
+                        raw_acc = raw_acc[pos + "<thought>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = true;
+                        continue;
+                    } else if full_content.is_empty() && (raw_acc.starts_with("thought\n") || raw_acc.starts_with("thought \n")) {
+                        let skip_len = if raw_acc.starts_with("thought \n") { 9 } else { 8 };
+                        raw_acc = raw_acc[skip_len..].to_string();
+                        in_thought = true;
+                        continue;
+                    }
 
-            if full_content.is_empty() && (piece_clean.trim() == "thought" || piece_clean.trim() == "thought\n") {
-                piece_clean = String::new();
-            }
+                    // Check if buffer ends with a potential tag prefix
+                    let possible_prefixes = ["<", "<|", "<|c", "<|ch", "<|channel", "<|channel>", "<|channel>t", "<|channel>th", "<|channel>thought", "<t", "<th", "<thought"];
+                    let has_prefix = possible_prefixes.iter().any(|prefix| raw_acc.ends_with(prefix));
+                    if has_prefix {
+                        break;
+                    }
 
-            if (combined.contains("<thought>") || combined.contains("<|channel>thought")) && !in_thought {
-                in_thought = true;
-            }
+                    if !raw_acc.is_empty() {
+                        let chunk = std::mem::take(&mut raw_acc);
+                        callback(StreamEvent::Content(chunk.clone()));
+                        full_content.push_str(&chunk);
+                    }
+                    break;
+                } else {
+                    // In thought mode: check for thought closing tags
+                    if let Some(pos) = raw_acc.find("<channel|>") {
+                        let thought_part = &raw_acc[..pos];
+                        if !thought_part.is_empty() {
+                            callback(StreamEvent::Reasoning(thought_part.to_string()));
+                            full_reasoning.push_str(thought_part);
+                        }
+                        raw_acc = raw_acc[pos + "<channel|>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = false;
+                        continue;
+                    } else if let Some(pos) = raw_acc.find("</thought>") {
+                        let thought_part = &raw_acc[..pos];
+                        if !thought_part.is_empty() {
+                            callback(StreamEvent::Reasoning(thought_part.to_string()));
+                            full_reasoning.push_str(thought_part);
+                        }
+                        raw_acc = raw_acc[pos + "</thought>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = false;
+                        continue;
+                    } else if let Some(pos) = raw_acc.find("<start_of_turn>model") {
+                        let thought_part = &raw_acc[..pos];
+                        if !thought_part.is_empty() {
+                            callback(StreamEvent::Reasoning(thought_part.to_string()));
+                            full_reasoning.push_str(thought_part);
+                        }
+                        raw_acc = raw_acc[pos + "<start_of_turn>model".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = false;
+                        continue;
+                    }
 
-            if (combined.contains("</thought>") || combined.contains("<channel|>")) && in_thought {
-                in_thought = false;
-            }
+                    let possible_closing_prefixes = ["<", "<c", "<ch", "<channel", "<channel|", "</", "</t", "</th", "</thought", "<s", "<start_of_turn"];
+                    let has_prefix = possible_closing_prefixes.iter().any(|prefix| raw_acc.ends_with(prefix));
+                    if has_prefix {
+                        break;
+                    }
 
-            if in_thought {
-                if !piece_clean.is_empty() {
-                    callback(StreamEvent::Reasoning(piece_clean.clone()));
-                    full_reasoning.push_str(&piece_clean);
+                    if !raw_acc.is_empty() {
+                        let chunk = std::mem::take(&mut raw_acc);
+                        callback(StreamEvent::Reasoning(chunk.clone()));
+                        full_reasoning.push_str(&chunk);
+                    }
+                    break;
                 }
-            } else if !piece_clean.is_empty() {
-                callback(StreamEvent::Content(piece_clean.clone()));
-                full_content.push_str(&piece_clean);
+            }
 
-                // Tool Call detection in markdown codeblocks
-                if full_content.contains("```tool_call") && full_content.ends_with("```") {
-                    let re = regex::Regex::new(r"```tool_call\s*(\{[\s\S]*?\})\s*```").unwrap();
-                    for cap in re.captures_iter(&full_content) {
-                        if let Some(json_match) = cap.get(1) {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_match.as_str()) {
-                                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
-                                let args_str = if args.is_string() {
-                                    args.as_str().unwrap().to_string()
-                                } else {
-                                    args.to_string()
-                                };
-                                let tc = ToolCall {
-                                    id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
-                                    tool_type: "function".to_string(),
-                                    function: FunctionCall {
-                                        name: name.to_string(),
-                                        arguments: args_str,
-                                    },
-                                };
-                                callback(StreamEvent::ToolCallAssembled(tc.clone()));
-                                tool_calls.push(tc);
-                            }
+            // Tool Call detection in markdown codeblocks
+            if full_content.contains("```tool_call") && full_content.ends_with("```") {
+                let re = regex::Regex::new(r"```tool_call\s*(\{[\s\S]*?\})\s*```").unwrap();
+                for cap in re.captures_iter(&full_content) {
+                    if let Some(json_match) = cap.get(1) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_match.as_str()) {
+                            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                            let args_str = if args.is_string() {
+                                args.as_str().unwrap().to_string()
+                            } else {
+                                args.to_string()
+                            };
+                            let tc = ToolCall {
+                                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                                tool_type: "function".to_string(),
+                                function: FunctionCall {
+                                    name: name.to_string(),
+                                    arguments: args_str,
+                                },
+                            };
+                            callback(StreamEvent::ToolCallAssembled(tc.clone()));
+                            tool_calls.push(tc);
                         }
                     }
                 }
+            }
+        }
+
+        // Flush remaining buffer at EOF
+        if !raw_acc.is_empty() {
+            let clean_tail = raw_acc
+                .replace("<|channel>thought", "")
+                .replace("<channel|>", "")
+                .replace("<thought>", "")
+                .replace("</thought>", "");
+            if in_thought {
+                callback(StreamEvent::Reasoning(clean_tail.clone()));
+                full_reasoning.push_str(&clean_tail);
+            } else {
+                callback(StreamEvent::Content(clean_tail.clone()));
+                full_content.push_str(&clean_tail);
             }
         }
 

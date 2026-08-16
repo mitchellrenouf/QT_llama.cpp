@@ -74,6 +74,8 @@ ApplicationWindow {
                 window.statusText = window.isModelLoaded ? "Ready" : "Model not loaded"
                 if (!window.isModelLoaded) {
                     modelSetupDialog.open()
+                } else {
+                    modelSetupDialog.close()
                 }
                 break
 
@@ -614,7 +616,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: 640
         height: 520
-        visible: !window.isModelLoaded
+        visible: false
 
         background: Rectangle {
             color: "#1a1c23"
