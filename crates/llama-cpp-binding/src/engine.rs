@@ -65,89 +65,53 @@ impl LlamaEngine {
             .or_else(|| std::env::var("QT_LLAMA_GPU_LAYERS").ok())
             .and_then(|s| s.parse::<i32>().ok());
 
-        let mut requested_layers = env_override.unwrap_or_else(|| {
-            if n_gpu_layers < 0 { 99 } else { n_gpu_layers }
-        });
-        let mut tried_no_offload_kqv = false;
-
-        loop {
-            let mut m_params = unsafe { llama_model_default_params() };
-            m_params.n_gpu_layers = requested_layers;
-
-            eprintln!(
-                "[llama.cpp] Loading model '{}' with n_gpu_layers = {} (Flash Attention enabled)...",
-                model_path.display(),
-                requested_layers
-            );
-
-            let model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
-            if model_ptr.is_null() {
-                if requested_layers > 0 {
-                    requested_layers = (requested_layers - 2).max(0);
-                    eprintln!(
-                        "[llama.cpp] Model loading failed (VRAM tight), retrying with n_gpu_layers = {}...",
-                        requested_layers
-                    );
-                    continue;
-                }
-                return Err(anyhow!("Failed to load GGUF model from {}", model_path.display()));
-            }
-
-            let total_layers = unsafe { llama_model_n_layer(model_ptr) };
-            if requested_layers > total_layers {
-                requested_layers = total_layers;
-            }
-            let cpu_layers = total_layers.saturating_sub(requested_layers);
-
-            let vocab_ptr = unsafe { llama_model_get_vocab(model_ptr) };
-
-            let mut c_params = unsafe { llama_context_default_params() };
-            c_params.n_ctx = if n_ctx > 0 && n_ctx <= 16384 { n_ctx } else { 8192 };
-            c_params.n_batch = 2048;
-            c_params.n_ubatch = 512;
-            c_params.flash_attn_type = 1; // LLAMA_FLASH_ATTN_TYPE_ENABLED
-            c_params.offload_kqv = !tried_no_offload_kqv;
-            c_params.op_offload = true;
-            c_params.n_threads = std::thread::available_parallelism().map(|p| p.get() as i32).unwrap_or(8);
-            c_params.n_threads_batch = c_params.n_threads;
-            c_params.no_perf = true;
-
-            let ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
-            if ctx_ptr.is_null() {
-                unsafe { llama_model_free(model_ptr) };
-                if !tried_no_offload_kqv && requested_layers > 0 {
-                    eprintln!(
-                        "[llama.cpp] KV cache allocation on GPU exceeded VRAM, retrying with CPU KV cache...",
-                    );
-                    tried_no_offload_kqv = true;
-                    continue;
-                } else if requested_layers > 0 {
-                    requested_layers = (requested_layers - 2).max(0);
-                    tried_no_offload_kqv = false;
-                    eprintln!(
-                        "[llama.cpp] VRAM limit reached, scaling to {}/{} GPU layers (remaining {} on CPU)...",
-                        requested_layers, total_layers, total_layers.saturating_sub(requested_layers)
-                    );
-                    continue;
-                } else {
-                    return Err(anyhow!("Failed to initialize llama_context from model"));
-                }
-            }
-
-            eprintln!(
-                "[llama.cpp] Successfully initialized model & context (GPU layers: {}/{}, CPU layers: {}, offload_kqv: {})",
-                requested_layers,
-                total_layers,
-                cpu_layers,
-                !tried_no_offload_kqv
-            );
-
-            return Ok(Self {
-                model: Arc::new(LlamaModelHandle { ptr: model_ptr }),
-                context: Arc::new(Mutex::new(LlamaContextHandle { ptr: ctx_ptr })),
-                vocab: vocab_ptr,
-            });
+        let mut m_params = unsafe { llama_model_default_params() };
+        if let Some(layers) = env_override {
+            m_params.n_gpu_layers = layers;
+        } else if n_gpu_layers >= 0 {
+            m_params.n_gpu_layers = n_gpu_layers;
         }
+
+        eprintln!(
+            "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
+            model_path.display(),
+            m_params.n_gpu_layers
+        );
+
+        let model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
+        if model_ptr.is_null() {
+            return Err(anyhow!("Failed to load GGUF model from {}", model_path.display()));
+        }
+
+        let total_layers = unsafe { llama_model_n_layer(model_ptr) };
+        let vocab_ptr = unsafe { llama_model_get_vocab(model_ptr) };
+
+        let mut c_params = unsafe { llama_context_default_params() };
+        if n_ctx > 0 && n_ctx <= 16384 {
+            c_params.n_ctx = n_ctx;
+        }
+        c_params.n_batch = 2048;
+        c_params.n_ubatch = 512;
+        c_params.n_threads = std::thread::available_parallelism().map(|p| p.get() as i32).unwrap_or(8);
+        c_params.n_threads_batch = c_params.n_threads;
+        c_params.no_perf = true;
+
+        let ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+        if ctx_ptr.is_null() {
+            unsafe { llama_model_free(model_ptr) };
+            return Err(anyhow!("Failed to initialize llama_context from model"));
+        }
+
+        eprintln!(
+            "[llama.cpp] Successfully initialized model & context (total layers: {})",
+            total_layers
+        );
+
+        Ok(Self {
+            model: Arc::new(LlamaModelHandle { ptr: model_ptr }),
+            context: Arc::new(Mutex::new(LlamaContextHandle { ptr: ctx_ptr })),
+            vocab: vocab_ptr,
+        })
     }
 
     pub fn tokenize(&self, text: &str, add_special: bool, parse_special: bool) -> Result<Vec<llama_token>> {
