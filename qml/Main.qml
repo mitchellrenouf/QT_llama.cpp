@@ -513,6 +513,8 @@ ApplicationWindow {
 
                 // Message Bubble
                 Rectangle {
+                    id: msgBubble
+                    property string currentMessageContent: (typeof model !== 'undefined' && model && model.content) ? model.content : ""
                     Layout.fillWidth: true
                     implicitHeight: bubbleContentColumn.implicitHeight + 28
                     radius: 8
@@ -762,7 +764,7 @@ ApplicationWindow {
 
                         // Embedded Images
                         Repeater {
-                            model: (typeof model !== 'undefined' && model && model.content) ? extractImages(model.content) : []
+                            model: extractImages(msgBubble.currentMessageContent)
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.maximumWidth: 520
@@ -808,7 +810,7 @@ ApplicationWindow {
 
                         // Embedded Video Player
                         Repeater {
-                            model: (typeof model !== 'undefined' && model && model.content) ? extractVideos(model.content) : []
+                            model: extractVideos(msgBubble.currentMessageContent)
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.maximumWidth: 560
@@ -886,7 +888,7 @@ ApplicationWindow {
 
                         // Embedded Audio Player
                         Repeater {
-                            model: (typeof model !== 'undefined' && model && model.content) ? extractAudios(model.content) : []
+                            model: extractAudios(msgBubble.currentMessageContent)
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.maximumWidth: 500

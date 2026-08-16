@@ -72,13 +72,37 @@ impl LlamaEngine {
             m_params.n_gpu_layers = n_gpu_layers;
         }
 
-        eprintln!(
-            "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
-            model_path.display(),
-            m_params.n_gpu_layers
-        );
+        let mut model_ptr = std::ptr::null_mut();
+        let mut actual_gpu_layers = m_params.n_gpu_layers;
 
-        let model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
+        // Try loading model with graceful step-down if VRAM is exceeded
+        for _attempt in 0..4 {
+            m_params.n_gpu_layers = actual_gpu_layers;
+            eprintln!(
+                "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
+                model_path.display(),
+                actual_gpu_layers
+            );
+
+            model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
+            if !model_ptr.is_null() {
+                break;
+            }
+
+            if actual_gpu_layers == -1 || actual_gpu_layers >= 30 {
+                actual_gpu_layers = 27; // Spreads ~12GB to GPU, remainder to CPU
+            } else if actual_gpu_layers > 4 {
+                actual_gpu_layers -= 4;
+            } else {
+                break;
+            }
+
+            eprintln!(
+                "[llama.cpp] GPU buffer allocation exceeded VRAM, spreading layers across GPU & CPU (n_gpu_layers = {})...",
+                actual_gpu_layers
+            );
+        }
+
         if model_ptr.is_null() {
             return Err(anyhow!("Failed to load GGUF model from {}", model_path.display()));
         }
