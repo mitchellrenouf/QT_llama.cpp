@@ -90,6 +90,13 @@ impl GemmaAgent {
         self.client.health_check().await
     }
 
+    pub fn reload_model(&mut self, model_path: &std::path::Path) -> Result<()> {
+        let engine = llama_cpp_binding::LlamaEngine::new(model_path, 99, self.config.max_context_tokens as u32)?;
+        self.client = crate::client::LlamaClient::with_engine(std::sync::Arc::new(engine), self.config.system_prompt.clone());
+        self.config.model = model_path.display().to_string();
+        Ok(())
+    }
+
     pub fn estimated_tokens(&self) -> usize {
         let mut total_chars = 0;
         for msg in &self.history {

@@ -87,6 +87,13 @@ impl LlamaClient {
         }
     }
 
+    pub fn with_engine(engine: Arc<LlamaEngine>, system_prompt: Option<String>) -> Self {
+        Self {
+            engine: Some(engine),
+            system_prompt,
+        }
+    }
+
     pub fn with_config(config: &Config) -> Self {
         let model_path = find_model_file(&config.model);
         let engine = if let Some(path) = model_path {

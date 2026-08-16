@@ -32,9 +32,13 @@ pub struct Config {
     #[arg(long, env = "LLAMA_API_KEY", default_value = "mitchell")]
     pub api_key: String,
 
-    /// Model name to pass to llama-server
+    /// Model name or local file path
     #[arg(long, env = "LLAMA_MODEL", default_value = "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0")]
     pub model: String,
+
+    /// HuggingFace model repository specifier in user/model:quant format (e.g. ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0)
+    #[arg(long = "hf", env = "HF_MODEL", default_value = "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0")]
+    pub hf: Option<String>,
 
     /// Agent operating mode: 'general', 'coder', or 'automatic' (inner monologue mode)
     #[arg(long, value_enum, default_value_t = AgentMode::General)]

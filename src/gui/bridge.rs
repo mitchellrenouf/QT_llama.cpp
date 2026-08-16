@@ -22,6 +22,7 @@ pub enum UiCommand {
     SwitchMode(AgentMode),
     ToggleSpeech,
     ClearHistory,
+    LoadHfModel(String),
     Stop,
 }
 
@@ -81,6 +82,31 @@ impl AgentBridge {
                 UiCommand::ClearHistory => {
                     let mut agent_lock = self.agent.lock().await;
                     agent_lock.reset_context();
+                }
+                UiCommand::LoadHfModel(repo_spec) => {
+                    let tx = self.event_tx.clone();
+                    let agent_clone = self.agent.clone();
+                    tokio::spawn(async move {
+                        match crate::hf::HfModelSpec::parse(&repo_spec) {
+                            Ok(spec) => {
+                                let res = crate::hf::resolve_or_fetch_hf_model(&spec, |_msg, _p| {}).await;
+                                match res {
+                                    Ok(path) => {
+                                        let mut agent_lock = agent_clone.lock().await;
+                                        if let Err(e) = agent_lock.reload_model(&path) {
+                                            let _ = tx.send(AgentEvent::Error(format!("Failed to load GGUF model: {}", e)));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(AgentEvent::Error(format!("Hugging Face model resolution error: {}", e)));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AgentEvent::Error(format!("Invalid Hugging Face spec: {}", e)));
+                            }
+                        }
+                    });
                 }
                 UiCommand::Stop => {
                     break;

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 ApplicationWindow {
     id: window
@@ -17,11 +18,17 @@ ApplicationWindow {
     property bool isThinking: false
     property bool speechEnabled: false
     property string statusText: "Ready"
+    property string currentModelName: "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0"
+    property bool isModelLoaded: false
+    property bool isDownloading: false
+    property real downloadProgress: 0.0
+    property string downloadStatusMessage: ""
 
     signal sendMessageRequested(string message)
     signal switchModeRequested(string mode)
     signal toggleSpeechRequested()
     signal clearHistoryRequested()
+    signal loadHfModelRequested(string repoSpec)
 
     function appendMessage(role, content, isThinkingBlock, toolName, toolArgs, toolResult) {
         chatModel.append({
@@ -76,11 +83,27 @@ ApplicationWindow {
                     color: "#f8f9fa"
                 }
 
-                Label {
-                    text: "Freedesktop Linux / Qt6"
-                    font.pixelSize: 12
-                    color: "#8a909e"
-                    Layout.alignment: Qt.AlignVCenter
+                // Model Specifier Button / Badge
+                Button {
+                    id: modelBadgeBtn
+                    text: "📦 " + window.currentModelName
+                    background: Rectangle {
+                        color: "#252834"
+                        radius: 6
+                        border.color: "#3b82f6"
+                    }
+                    contentItem: Text {
+                        text: modelBadgeBtn.text
+                        color: "#93c5fd"
+                        font.pixelSize: 12
+                        font.bold: true
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: 8
+                        rightPadding: 8
+                    }
+                    onClicked: {
+                        modelSetupDialog.open()
+                    }
                 }
 
                 Item { Layout.fillWidth: true }
@@ -346,6 +369,180 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                     }
                     onClicked: sendAction()
+                }
+            }
+        }
+    }
+
+    // --- First-Launch / HuggingFace Model Setup Modal Dialog ---
+    Dialog {
+        id: modelSetupDialog
+        title: "🤗 Hugging Face Model Setup"
+        modal: true
+        anchors.centerIn: parent
+        width: 600
+        height: 480
+        visible: !window.isModelLoaded
+
+        background: Rectangle {
+            color: "#1a1c23"
+            radius: 12
+            border.color: "#383d4f"
+            border.width: 1
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 16
+
+            Label {
+                text: "✨ In-Process Gemma 4 Model Setup"
+                font.bold: true
+                font.pixelSize: 18
+                color: "#f8f9fa"
+            }
+
+            Label {
+                text: "Specify any Hugging Face model repository and quantization level in the standard <b>user/model:quant</b> format to load directly in memory."
+                font.pixelSize: 13
+                color: "#94a3b8"
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+
+            // Quick Preset Selection
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Label {
+                    text: "Popular Presets:"
+                    color: "#cbd5e1"
+                    font.pixelSize: 12
+                }
+
+                Button {
+                    text: "Gemma 4 26B (Q4_0)"
+                    background: Rectangle { color: "#252834"; radius: 6 }
+                    contentItem: Text { text: parent.text; color: "#38bdf8"; font.pixelSize: 11; font.bold: true }
+                    onClicked: {
+                        hfRepoInput.text = "ggml-org/gemma-4-26B-A4B-it-GGUF"
+                        hfQuantInput.text = "Q4_0"
+                    }
+                }
+
+                Button {
+                    text: "Gemma 4 26B (Q8_0)"
+                    background: Rectangle { color: "#252834"; radius: 6 }
+                    contentItem: Text { text: parent.text; color: "#a78bfa"; font.pixelSize: 11; font.bold: true }
+                    onClicked: {
+                        hfRepoInput.text = "ggml-org/gemma-4-26B-A4B-it-GGUF"
+                        hfQuantInput.text = "Q8_0"
+                    }
+                }
+            }
+
+            // HuggingFace Repo Field (Prefilled with ggml-org/gemma-4-26B-A4B-it-GGUF)
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 6
+
+                Label {
+                    text: "Hugging Face Repository:"
+                    font.bold: true
+                    color: "#cbd5e1"
+                    font.pixelSize: 13
+                }
+
+                TextField {
+                    id: hfRepoInput
+                    text: "ggml-org/gemma-4-26B-A4B-it-GGUF"
+                    Layout.fillWidth: true
+                    color: "#f8f9fa"
+                    font.pixelSize: 13
+                    background: Rectangle {
+                        color: "#121316"
+                        radius: 6
+                        border.color: "#383d4f"
+                    }
+                }
+            }
+
+            // Quantization Field (Prefilled with Q4_0)
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 6
+
+                Label {
+                    text: "Quantization (e.g. Q4_0, Q4_K_M, Q8_0):"
+                    font.bold: true
+                    color: "#cbd5e1"
+                    font.pixelSize: 13
+                }
+
+                TextField {
+                    id: hfQuantInput
+                    text: "Q4_0"
+                    Layout.fillWidth: true
+                    color: "#f8f9fa"
+                    font.pixelSize: 13
+                    background: Rectangle {
+                        color: "#121316"
+                        radius: 6
+                        border.color: "#383d4f"
+                    }
+                }
+            }
+
+            // Progress Bar & Status Message
+            ColumnLayout {
+                visible: window.isDownloading
+                Layout.fillWidth: true
+                spacing: 6
+
+                ProgressBar {
+                    Layout.fillWidth: true
+                    value: window.downloadProgress
+                }
+
+                Label {
+                    text: window.downloadStatusMessage
+                    color: "#38bdf8"
+                    font.pixelSize: 12
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+
+            // Action Buttons
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+
+                Button {
+                    text: "Cancel"
+                    Layout.preferredWidth: 100
+                    background: Rectangle { color: "#252834"; radius: 6 }
+                    contentItem: Text { text: parent.text; color: "#94a3b8"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
+                    onClicked: modelSetupDialog.close()
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    id: loadModelBtn
+                    text: "🚀 Load & Start Agent"
+                    Layout.preferredWidth: 180
+                    background: Rectangle { color: "#2563eb"; radius: 6 }
+                    contentItem: Text { text: loadModelBtn.text; color: "#ffffff"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
+                    onClicked: {
+                        var fullSpec = hfRepoInput.text.trim() + ":" + hfQuantInput.text.trim()
+                        window.currentModelName = fullSpec
+                        window.loadHfModelRequested(fullSpec)
+                        window.isModelLoaded = true
+                        modelSetupDialog.close()
+                    }
                 }
             }
         }

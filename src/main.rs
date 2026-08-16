@@ -3,6 +3,7 @@ mod client;
 mod config;
 mod diff;
 mod gui;
+pub mod hf;
 mod markdown;
 mod rules;
 mod tools;
@@ -34,6 +35,9 @@ async fn main() -> anyhow::Result<()> {
     println!("{}", "==================================================".magenta());
     println!(" Mode        : {}", config.mode.to_string().bright_yellow().bold());
     println!(" Inference   : {}", "In-Process llama.cpp GGUF Engine".bright_green().bold());
+    if let Some(hf_spec) = &config.hf {
+        println!(" HuggingFace : {}", hf_spec.bright_cyan().bold());
+    }
     println!(" Model Path  : {}", config.model.cyan());
     println!(" Workspace   : {}", config.workspace_root.display().to_string().green());
     println!(" Max Context : {} tokens (auto-compact enabled)", config.max_context_tokens.to_string().yellow());
