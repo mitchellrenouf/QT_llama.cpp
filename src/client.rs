@@ -1,11 +1,10 @@
-use crate::config::Config;
 use anyhow::{anyhow, Result};
-pub use llama_cpp_binding::{
-    format_gemma_chat, ChatMessage, FunctionCall, LlamaEngine, ToolCall,
-};
+pub use llama_cpp_binding::{format_gemma_chat, ChatMessage, FunctionCall, LlamaEngine, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use crate::config::Config;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionDefinition {
@@ -13,6 +12,9 @@ pub struct FunctionDefinition {
     pub description: String,
     pub parameters: serde_json::Value,
 }
+
+#[allow(dead_code)]
+pub type ToolFunction = FunctionDefinition;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolDefinition {
@@ -95,8 +97,14 @@ impl LlamaClient {
     }
 
     pub fn with_config(config: &Config) -> Self {
-        let model_path = find_model_file(&config.model);
+        let model_path = if let Some(hf_spec_str) = &config.hf {
+            find_model_file(hf_spec_str).or_else(|| find_model_file(&config.model))
+        } else {
+            find_model_file(&config.model)
+        };
+
         let engine = if let Some(path) = model_path {
+            println!("Loading in-process GGUF model: {}", path.display());
             match LlamaEngine::new(&path, 99, config.max_context_tokens as u32) {
                 Ok(eng) => Some(Arc::new(eng)),
                 Err(e) => {
@@ -168,77 +176,73 @@ impl LlamaClient {
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
         let mut in_thought = false;
-        let mut buffer = String::new();
+        let mut tool_calls = Vec::new();
 
         while let Some(piece_res) = rx.recv().await {
-            let piece = piece_res?;
-            buffer.push_str(&piece);
+            let piece = match piece_res {
+                Ok(p) => p,
+                Err(e) => return Err(e),
+            };
 
-            if !in_thought {
-                if let Some(pos) = buffer.find("<thought>") {
-                    let before = &buffer[..pos];
-                    if !before.is_empty() {
-                        full_content.push_str(before);
-                        callback(StreamEvent::Content(before.to_string()));
-                    }
-                    in_thought = true;
-                    buffer = buffer[pos + 9..].to_string();
-                } else if !buffer.starts_with('<') || buffer.len() > 10 {
-                    full_content.push_str(&buffer);
-                    callback(StreamEvent::Content(std::mem::take(&mut buffer)));
-                }
-            }
-
-            if in_thought {
-                if let Some(pos) = buffer.find("</thought>") {
-                    let thought_text = &buffer[..pos];
-                    if !thought_text.is_empty() {
-                        full_reasoning.push_str(thought_text);
-                        callback(StreamEvent::Reasoning(thought_text.to_string()));
-                    }
-                    in_thought = false;
-                    buffer = buffer[pos + 10..].to_string();
-                } else if !buffer.ends_with('<') || buffer.len() > 12 {
-                    full_reasoning.push_str(&buffer);
-                    callback(StreamEvent::Reasoning(std::mem::take(&mut buffer)));
-                }
-            }
-        }
-
-        if !buffer.is_empty() {
-            if in_thought {
-                full_reasoning.push_str(&buffer);
-                callback(StreamEvent::Reasoning(buffer));
+            let combined = if in_thought {
+                format!("{}{}", full_reasoning, piece)
             } else {
-                full_content.push_str(&buffer);
-                callback(StreamEvent::Content(buffer));
-            }
-        }
+                format!("{}{}", full_content, piece)
+            };
 
-        // Parse tool calls from content if any
-        let mut tool_calls = Vec::new();
-        if full_content.contains("```tool_call") {
-            let re = regex::Regex::new(r"```tool_call\s*\n([\s\S]*?)\n```").unwrap();
-            for cap in re.captures_iter(&full_content) {
-                if let Some(m) = cap.get(1) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(m.as_str().trim()) {
-                        if let Some(name) = json.get("name").and_then(|n| n.as_str()) {
-                            let args = json.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
-                            let args_str = if args.is_string() {
-                                args.as_str().unwrap().to_string()
-                            } else {
-                                args.to_string()
-                            };
-                            let tc = ToolCall {
-                                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
-                                tool_type: "function".to_string(),
-                                function: FunctionCall {
-                                    name: name.to_string(),
-                                    arguments: args_str,
-                                },
-                            };
-                            callback(StreamEvent::ToolCallAssembled(tc.clone()));
-                            tool_calls.push(tc);
+            let mut piece_clean = piece
+                .replace("<|channel>thought", "")
+                .replace("<|channel>", "")
+                .replace("<channel|>", "")
+                .replace("<tool_call|>", "")
+                .replace("<thought>", "")
+                .replace("</thought>", "");
+
+            if full_content.is_empty() && (piece_clean.trim() == "thought" || piece_clean.trim() == "thought\n") {
+                piece_clean = String::new();
+            }
+
+            if (combined.contains("<thought>") || combined.contains("<|channel>thought")) && !in_thought {
+                in_thought = true;
+            }
+
+            if (combined.contains("</thought>") || combined.contains("<channel|>")) && in_thought {
+                in_thought = false;
+            }
+
+            if in_thought {
+                if !piece_clean.is_empty() {
+                    callback(StreamEvent::Reasoning(piece_clean.clone()));
+                    full_reasoning.push_str(&piece_clean);
+                }
+            } else if !piece_clean.is_empty() {
+                callback(StreamEvent::Content(piece_clean.clone()));
+                full_content.push_str(&piece_clean);
+
+                // Tool Call detection in markdown codeblocks
+                if full_content.contains("```tool_call") && full_content.ends_with("```") {
+                    let re = regex::Regex::new(r"```tool_call\s*(\{[\s\S]*?\})\s*```").unwrap();
+                    for cap in re.captures_iter(&full_content) {
+                        if let Some(json_match) = cap.get(1) {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_match.as_str()) {
+                                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                                let args_str = if args.is_string() {
+                                    args.as_str().unwrap().to_string()
+                                } else {
+                                    args.to_string()
+                                };
+                                let tc = ToolCall {
+                                    id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                                    tool_type: "function".to_string(),
+                                    function: FunctionCall {
+                                        name: name.to_string(),
+                                        arguments: args_str,
+                                    },
+                                };
+                                callback(StreamEvent::ToolCallAssembled(tc.clone()));
+                                tool_calls.push(tc);
+                            }
                         }
                     }
                 }
@@ -278,6 +282,32 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     }
 
     if let Ok(spec) = crate::hf::HfModelSpec::parse(model_arg) {
+        // 1. Check HF Hub cache (~/.cache/huggingface/hub/models--{user}--{model}/)
+        let hf_hub_dir = dirs::home_dir().unwrap_or_default()
+            .join(".cache/huggingface/hub")
+            .join(format!("models--{}--{}", spec.user, spec.model));
+        if hf_hub_dir.is_dir() {
+            let target_quant = spec.quant.to_lowercase();
+            for entry in walkdir::WalkDir::new(&hf_hub_dir).into_iter().flatten() {
+                let path = entry.into_path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                if name.ends_with(".gguf") && !name.contains("mmproj") && !name.contains("mtp") {
+                    if name.contains(&target_quant) {
+                        return Some(path);
+                    }
+                }
+            }
+            // fallback to any .gguf in this hub repo
+            for entry in walkdir::WalkDir::new(&hf_hub_dir).into_iter().flatten() {
+                let path = entry.into_path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                if name.ends_with(".gguf") && !name.contains("mmproj") && !name.contains("mtp") {
+                    return Some(path);
+                }
+            }
+        }
+
+        // 2. Check local gemma cache dir
         let model_dir = spec.get_model_dir();
         if model_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&model_dir) {
@@ -300,6 +330,21 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
         }
     }
 
+    // 3. Scan whole HF hub cache for matching quant or gemma-4
+    let hf_hub_base = dirs::home_dir().unwrap_or_default().join(".cache/huggingface/hub");
+    if hf_hub_base.is_dir() {
+        for entry in walkdir::WalkDir::new(&hf_hub_base).into_iter().flatten() {
+            let path = entry.into_path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            if name.ends_with(".gguf") && !name.contains("mmproj") && !name.contains("mtp") {
+                if name.contains("gemma-4") || name.contains("gemma") {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    // 4. Scan ~/.cache/gemma/models
     let cache_dir = dirs::home_dir().unwrap_or_default().join(".cache/gemma/models");
     if cache_dir.is_dir() {
         for entry in walkdir::WalkDir::new(&cache_dir).into_iter().flatten() {

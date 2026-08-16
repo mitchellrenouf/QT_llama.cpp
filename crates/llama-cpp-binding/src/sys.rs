@@ -32,18 +32,22 @@ pub struct llama_sampler {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct llama_model_params {
-    pub devices: *const *mut c_void,
+    pub devices: *mut *mut c_void,
+    pub tensor_buft_overrides: *const c_void,
     pub n_gpu_layers: i32,
     pub split_mode: i32,
+    pub load_mode: i32,
     pub main_gpu: i32,
     pub tensor_split: *const c_float,
     pub progress_callback: Option<unsafe extern "C" fn(progress: c_float, user_data: *mut c_void) -> bool>,
     pub progress_callback_user_data: *mut c_void,
     pub kv_overrides: *const c_void,
     pub vocab_only: bool,
-    pub use_mmap: bool,
-    pub use_mlock: bool,
     pub check_tensors: bool,
+    pub use_extra_bufts: bool,
+    pub no_host: bool,
+    pub no_alloc: bool,
+    pub load_mtp: bool,
 }
 
 #[repr(C)]
@@ -53,12 +57,18 @@ pub struct llama_context_params {
     pub n_batch: u32,
     pub n_ubatch: u32,
     pub n_seq_max: u32,
+    pub n_rs_seq: u32,
+    pub n_outputs_max: u32,
+    pub n_outputs_max_per_seq: u32,
     pub n_threads: i32,
     pub n_threads_batch: i32,
+
+    pub ctx_type: i32,
     pub rope_scaling_type: i32,
     pub pooling_type: i32,
     pub attention_type: i32,
     pub flash_attn_type: i32,
+
     pub rope_freq_base: c_float,
     pub rope_freq_scale: c_float,
     pub yarn_ext_factor: c_float,
@@ -67,15 +77,23 @@ pub struct llama_context_params {
     pub yarn_beta_slow: c_float,
     pub yarn_orig_ctx: u32,
     pub defrag_thold: c_float,
+
     pub cb_eval: Option<unsafe extern "C" fn(t: *mut c_void, ask: bool, user_data: *mut c_void) -> bool>,
     pub cb_eval_user_data: *mut c_void,
+
     pub type_k: i32,
     pub type_v: i32,
-    pub logits_all: bool,
+
+    pub abort_callback: Option<unsafe extern "C" fn(user_data: *mut c_void) -> bool>,
+    pub abort_callback_data: *mut c_void,
+
     pub embeddings: bool,
     pub offload_kqv: bool,
     pub no_perf: bool,
     pub op_offload: bool,
+    pub swa_full: bool,
+    pub kv_unified: bool,
+
     pub samplers: *mut c_void,
     pub n_samplers: usize,
     pub ctx_other: *mut llama_context,
@@ -124,10 +142,6 @@ extern "C" {
     pub fn llama_model_get_vocab(model: *const llama_model) -> *const llama_vocab;
 
     pub fn llama_vocab_n_tokens(vocab: *const llama_vocab) -> i32;
-    pub fn llama_vocab_bos(vocab: *const llama_vocab) -> llama_token;
-    pub fn llama_vocab_eos(vocab: *const llama_vocab) -> llama_token;
-    pub fn llama_vocab_eot(vocab: *const llama_vocab) -> llama_token;
-    pub fn llama_vocab_is_eog(vocab: *const llama_vocab, token: llama_token) -> bool;
 
     pub fn llama_tokenize(
         vocab: *const llama_vocab,
@@ -148,6 +162,10 @@ extern "C" {
         special: bool,
     ) -> i32;
 
+    pub fn llama_vocab_bos(vocab: *const llama_vocab) -> llama_token;
+    pub fn llama_vocab_eos(vocab: *const llama_vocab) -> llama_token;
+    pub fn llama_vocab_is_eog(vocab: *const llama_vocab, token: llama_token) -> bool;
+
     pub fn llama_batch_init(n_tokens: i32, embd: i32, n_seq_max: i32) -> llama_batch;
     pub fn llama_batch_free(batch: llama_batch);
 
@@ -156,9 +174,13 @@ extern "C" {
     pub fn llama_sampler_chain_init(params: llama_sampler_chain_params) -> *mut llama_sampler;
     pub fn llama_sampler_chain_add(chain: *mut llama_sampler, smpl: *mut llama_sampler);
     pub fn llama_sampler_init_greedy() -> *mut llama_sampler;
-    pub fn llama_sampler_init_temp(t: c_float) -> *mut llama_sampler;
     pub fn llama_sampler_init_top_p(p: c_float, min_keep: usize) -> *mut llama_sampler;
+    pub fn llama_sampler_init_temp(t: c_float) -> *mut llama_sampler;
     pub fn llama_sampler_init_dist(seed: u32) -> *mut llama_sampler;
-    pub fn llama_sampler_sample(smpl: *mut llama_sampler, ctx: *mut llama_context, idx: i32) -> llama_token;
+    pub fn llama_sampler_sample(
+        smpl: *mut llama_sampler,
+        ctx: *mut llama_context,
+        idx: i32,
+    ) -> llama_token;
     pub fn llama_sampler_free(smpl: *mut llama_sampler);
 }
