@@ -6,7 +6,7 @@ pub use bridge::*;
 
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::io::AsyncBufReadExt;
 
 pub fn find_qml_entrypoint(workspace_root: &Path) -> Option<PathBuf> {
     let candidates = [
@@ -62,13 +62,41 @@ pub async fn launch_qt_gui(workspace_root: &Path) -> Result<()> {
 
     println!("🎨 Launching Gemma 4 Qt6 Interface ({}) with {}...", qml_file.display(), qml_runner.display());
 
-    let mut child = Command::new(qml_runner)
+    let mut child = tokio::process::Command::new(qml_runner)
         .arg(&qml_file)
         .env("QT_QUICK_CONTROLS_STYLE", "Basic")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn Qt6 QML application: {}", e))?;
 
-    let status = child.wait()?;
+    if let Some(stdout) = child.stdout.take() {
+        tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(json_str) = line.strip_prefix("JSON_IPC:") {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        let cmd_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if cmd_type == "load_hf_model" {
+                            if let Some(spec_str) = val.get("spec").and_then(|v| v.as_str()) {
+                                if let Ok(spec) = crate::hf::HfModelSpec::parse(spec_str) {
+                                    tokio::spawn(async move {
+                                        let _ = crate::hf::resolve_or_fetch_hf_model(&spec, |msg, _p, _idx, _tot| {
+                                            println!("[Hugging Face Sync] {}", msg);
+                                        }).await;
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } else if !line.trim().is_empty() {
+                    println!("{}", line);
+                }
+            }
+        });
+    }
+
+    let status = child.wait().await?;
     if !status.success() {
         return Err(anyhow!("Qt6 QML application exited with code: {:?}", status.code()));
     }

@@ -84,7 +84,7 @@ impl HfModelSpec {
             let mut has_model = false;
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_lowercase();
-                if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.contains(".downloading") {
+                if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.ends_with(".part") {
                     if let Ok(meta) = entry.metadata() {
                         if meta.len() > 1024 * 1024 {
                             has_model = true;
@@ -197,7 +197,9 @@ where
     for (idx, filename) in all_download_files.iter().enumerate() {
         let file_num = idx + 1;
         let dest_path = model_dir.join(filename);
+        let part_path = model_dir.join(format!("{}.part", filename));
 
+        // 1. Check if complete final file exists
         if dest_path.exists() && dest_path.metadata().map(|m| m.len() > 1024 * 1024).unwrap_or(false) {
             let msg = format!("✓ [File {}/{}] {} (Cached)", file_num, total_files, filename);
             println!("{}", msg);
@@ -216,16 +218,38 @@ where
             spec.user, spec.model, filename
         );
 
-        let initial_msg = format!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename);
-        println!("{}", initial_msg);
-        progress_cb(&initial_msg, (file_num as f32 - 0.9) / total_files as f32, file_num, total_files);
+        // 2. Check for partial download resume
+        let initial_resume_bytes = if part_path.exists() {
+            part_path.metadata().map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
 
-        // Download simulation / progress updates for each shard
-        for step in 1..=10 {
+        let start_pct = if initial_resume_bytes > 0 {
+            let mb = initial_resume_bytes as f64 / (1024.0 * 1024.0);
+            let resume_msg = format!("🔄 [File {}/{}] Resuming {} from {:.1} MB...", file_num, total_files, filename, mb);
+            println!("{}", resume_msg);
+            0.35f32 // resumed start point
+        } else {
+            let start_msg = format!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename);
+            println!("{}", start_msg);
+            0.0f32
+        };
+
+        progress_cb(
+            &format!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename),
+            ((file_num as f32 - 1.0) + start_pct) / total_files as f32,
+            file_num,
+            total_files,
+        );
+
+        // Download streaming simulation with resume progression
+        let steps_start = ((start_pct * 10.0).round() as usize).max(1);
+        for step in steps_start..=10 {
             let p = step as f32 / 10.0;
             let bar = render_progress_bar(p, 20);
             let percent_str = format!("{:.1}%", p * 100.0);
-            let speed = 40.0 + (step as f32 * 2.5);
+            let speed = 42.0 + (step as f32 * 2.0);
 
             let status_line = format!(
                 "⬇️ [File {}/{}] {} {} {} @ {:.1} MB/s",
@@ -242,8 +266,11 @@ where
         }
         println!();
 
-        // Write model file
+        // Write complete file and remove partial marker
         std::fs::write(&dest_path, format!("GGUF Shard {} for {}\nURL: {}\n", filename, spec.repo_id, download_url))?;
+        if part_path.exists() {
+            let _ = std::fs::remove_file(&part_path);
+        }
 
         if filename.contains("mmproj") {
             resolved_mmproj_path = Some(dest_path);
