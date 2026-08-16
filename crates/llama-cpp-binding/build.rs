@@ -17,12 +17,13 @@ fn main() {
     let is_sycl_feat = env::var("CARGO_FEATURE_SYCL").is_ok();
     let is_auto_feat = env::var("CARGO_FEATURE_AUTO").is_ok();
 
-    // Check CUDA presence
+    // Check CUDA presence (including /opt/cuda, /usr/local/cuda, /app/cuda)
     let has_cuda = is_cuda_feat
         || env::var("LLAMA_CUDA").map(|v| v == "1" || v == "ON").unwrap_or(false)
         || (is_auto_feat && (
             Path::new("/opt/cuda/bin/nvcc").exists()
             || Path::new("/usr/local/cuda/bin/nvcc").exists()
+            || Path::new("/app/cuda/bin/nvcc").exists()
             || std::process::Command::new("which").arg("nvcc").output().map(|o| o.status.success()).unwrap_or(false)
         ));
 
@@ -59,9 +60,22 @@ fn main() {
         println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration (NVIDIA cuBLAS)...");
         cfg.define("GGML_CUDA", "ON");
         cfg.define("GGML_CUDA_NCCL", "OFF");
-        if Path::new("/opt/cuda").exists() {
+        if let Ok(cuda_dir) = env::var("CUDA_TOOLKIT_ROOT_DIR").or_else(|_| env::var("CUDA_PATH")) {
+            let p = PathBuf::from(cuda_dir);
+            cfg.define("CUDA_TOOLKIT_ROOT_DIR", &p);
+            let nvcc = p.join("bin/nvcc");
+            if nvcc.exists() {
+                cfg.define("CMAKE_CUDA_COMPILER", nvcc);
+            }
+        } else if Path::new("/app/cuda").exists() {
+            cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/app/cuda");
+            cfg.define("CMAKE_CUDA_COMPILER", "/app/cuda/bin/nvcc");
+        } else if Path::new("/opt/cuda").exists() {
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/opt/cuda");
             cfg.define("CMAKE_CUDA_COMPILER", "/opt/cuda/bin/nvcc");
+        } else if Path::new("/usr/local/cuda").exists() {
+            cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/usr/local/cuda");
+            cfg.define("CMAKE_CUDA_COMPILER", "/usr/local/cuda/bin/nvcc");
         }
     }
 

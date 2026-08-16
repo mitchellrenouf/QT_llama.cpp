@@ -25,10 +25,12 @@ if [ -n "$VULKAN_ICD_DIRS" ]; then
     export VK_ICD_FILENAMES="$VULKAN_ICD_DIRS"
 fi
 
-# 2. Configure Dynamic Linker search paths for GPU driver extensions
+# 2. Configure Dynamic Linker search paths for GPU driver extensions & CUDA libraries
 EXTRA_LIB_PATHS=""
 for libdir in \
     /app/lib \
+    /app/cuda/lib64 \
+    /app/cuda/lib \
     /usr/lib/x86_64-linux-gnu/GL/default/lib \
     /usr/lib/x86_64-linux-gnu/GL/nvidia-*/lib \
     /usr/lib/GL/default/lib \
@@ -52,15 +54,21 @@ if [ -n "$EXTRA_LIB_PATHS" ]; then
     fi
 fi
 
-# 3. Configure Qt6 QML import paths
+# 3. Add CUDA bin to PATH if installed
+if [ -d "/app/cuda/bin" ]; then
+    export PATH="/app/cuda/bin:$PATH"
+fi
+
+# 4. Configure Qt6 QML import paths
 export QML_IMPORT_PATH="/app/share/qt_llama/qml:/app/share/gemma/qml:/usr/lib/qt6/qml:/usr/lib/x86_64-linux-gnu/qt6/qml:${QML_IMPORT_PATH}"
 export QML2_IMPORT_PATH="/app/share/qt_llama/qml:/app/share/gemma/qml:/usr/lib/qt6/qml:/usr/lib/x86_64-linux-gnu/qt6/qml:${QML2_IMPORT_PATH}"
 
-# 4. Optional Debug diagnostics when QT_LLAMA_DEBUG=1
+# 5. Optional Debug diagnostics when QT_LLAMA_DEBUG=1
 if [ "${QT_LLAMA_DEBUG:-0}" = "1" ]; then
     echo "=== QT_llama.cpp GPU Environment ==="
     echo "VK_DRIVER_FILES:  ${VK_DRIVER_FILES:-<default>}"
     echo "LD_LIBRARY_PATH:  $LD_LIBRARY_PATH"
+    echo "PATH:             $PATH"
     echo "QML_IMPORT_PATH:  $QML_IMPORT_PATH"
     echo "Available DRI devices:"
     ls -l /dev/dri 2>/dev/null || echo "  No /dev/dri devices found"
@@ -69,5 +77,5 @@ if [ "${QT_LLAMA_DEBUG:-0}" = "1" ]; then
     echo "====================================="
 fi
 
-# 5. Exec main application
+# 6. Exec main application
 exec /app/bin/qt_llama "$@"
