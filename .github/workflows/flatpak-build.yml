@@ -19,12 +19,12 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
           df -h
 
-      - name: Install Flatpak & Build Tools
+      - name: Install Flatpak & Build Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder xvfb appstream-util
           sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+          sudo flatpak install -y --noninteractive flathub org.kde.Platform//6.11 org.kde.Sdk//6.11 org.freedesktop.Sdk.Extension.rust-stable//25.08
 
       - name: Checkout Code
         uses: actions/checkout@v4
