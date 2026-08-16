@@ -53,19 +53,35 @@ modules:
         url: https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_610.43.02_linux.run
         sha256: 9f98ec1f6c950401041d3f1308e221f0d5db8771a8e10569001b64caaee31a92
 
-  # 2. AMD ROCm 7.14 Toolkit (Local Runfile Installer for HIP / hipBLAS)
+  # 2. AMD ROCm 7.14 Toolkit (HIP / hipBLAS extracted directly to bypass OS check)
   - name: rocm-toolkit
     buildsystem: simple
     build-commands:
-      - bash rocm-installer-7.14.0-7.run untar "/app/rocm"
+      - mkdir -p /var/tmp/rocm_tmp /app/rocm
+      - TMPDIR=/var/tmp/rocm_tmp sh rocm-installer-7.14.0-7.run --noexec --target /var/tmp/rocm_tmp/extracted
+      - |
+        cd /var/tmp/rocm_tmp/extracted
+        if [ -d "opt/rocm" ]; then
+          cp -r opt/rocm*/* /app/rocm/ 2>/dev/null || true
+        fi
+        for deb in $(find . -name "*.deb" 2>/dev/null); do
+          ar p "$deb" data.tar.xz 2>/dev/null | tar -xJ -C /app/rocm/ 2>/dev/null || \
+          ar p "$deb" data.tar.zst 2>/dev/null | tar --zstd -x -C /app/rocm/ 2>/dev/null || \
+          ar p "$deb" data.tar.gz 2>/dev/null | tar -xz -C /app/rocm/ 2>/dev/null || true
+        done
+        if [ -d "/app/rocm/opt" ]; then
+          cp -r /app/rocm/opt/rocm*/* /app/rocm/ 2>/dev/null || true
+          rm -rf /app/rocm/opt 2>/dev/null || true
+        fi
+      - rm -rf /var/tmp/rocm_tmp
       # Strip documentation, samples, and manual pages to optimize image footprint
       - rm -rf /app/rocm/doc /app/rocm/samples /app/rocm/share/doc /app/rocm/share/man
       - mkdir -p /app/lib
-      - cp -P /app/rocm/lib/libamdhip64.so* /app/lib/ || true
-      - cp -P /app/rocm/lib/libhipblas.so* /app/lib/ || true
-      - cp -P /app/rocm/lib/libhipblaslt.so* /app/lib/ || true
-      - cp -P /app/rocm/lib/libhsa-runtime64.so* /app/lib/ || true
-      - cp -P /app/rocm/lib/librocm-core.so* /app/lib/ || true
+      - cp -P /app/rocm/lib/libamdhip64.so* /app/lib/ 2>/dev/null || true
+      - cp -P /app/rocm/lib/libhipblas.so* /app/lib/ 2>/dev/null || true
+      - cp -P /app/rocm/lib/libhipblaslt.so* /app/lib/ 2>/dev/null || true
+      - cp -P /app/rocm/lib/libhsa-runtime64.so* /app/lib/ 2>/dev/null || true
+      - cp -P /app/rocm/lib/librocm-core.so* /app/lib/ 2>/dev/null || true
     sources:
       - type: file
         url: https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-7.14/rocm-installer-7.14.0-7.run
