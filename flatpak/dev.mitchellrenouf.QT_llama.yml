@@ -1,4 +1,4 @@
-app-id: org.llamacpp.QT_llama
+app-id: dev.mitchellrenouf.QT_llama
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
@@ -32,9 +32,9 @@ modules:
       - cargo build --release
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama
       - ln -sf /app/bin/qt_llama /app/bin/qt-llama
-      - install -Dm644 flatpak/org.llamacpp.QT_llama.desktop /app/share/applications/org.llamacpp.QT_llama.desktop
-      - install -Dm644 flatpak/org.llamacpp.QT_llama.metainfo.xml /app/share/metainfo/org.llamacpp.QT_llama.metainfo.xml
-      - install -Dm644 flatpak/icons/org.llamacpp.QT_llama.svg /app/share/icons/hicolor/scalable/apps/org.llamacpp.QT_llama.svg
+      - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.desktop /app/share/applications/dev.mitchellrenouf.QT_llama.desktop
+      - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml /app/share/metainfo/dev.mitchellrenouf.QT_llama.metainfo.xml
+      - install -Dm644 flatpak/icons/dev.mitchellrenouf.QT_llama.svg /app/share/icons/hicolor/scalable/apps/dev.mitchellrenouf.QT_llama.svg
       - mkdir -p /app/share/gemma/qml
       - cp -r qml/* /app/share/gemma/qml/
     sources:

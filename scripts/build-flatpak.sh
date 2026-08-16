@@ -13,12 +13,12 @@ REPO_DIR=".flatpak-repo"
 mkdir -p "$BUILD_DIR" "$REPO_DIR"
 
 echo "Building package with flatpak-builder..."
-flatpak-builder --force-clean --user --install-deps-from=flathub --repo="$REPO_DIR" "$BUILD_DIR" flatpak/org.llamacpp.QT_llama.yml
+flatpak-builder --force-clean --user --install-deps-from=flathub --repo="$REPO_DIR" "$BUILD_DIR" flatpak/dev.mitchellrenouf.QT_llama.yml
 
 # 3. Create standalone .flatpak single-file bundle
-echo "Creating standalone bundle org.llamacpp.QT_llama.flatpak..."
-flatpak build-bundle "$REPO_DIR" org.llamacpp.QT_llama.flatpak org.llamacpp.QT_llama 24.08
+echo "Creating standalone bundle dev.mitchellrenouf.QT_llama.flatpak..."
+flatpak build-bundle "$REPO_DIR" dev.mitchellrenouf.QT_llama.flatpak dev.mitchellrenouf.QT_llama 24.08
 
 echo "=== Flatpak Build Complete! ==="
-echo "To install locally: flatpak install --user -y org.llamacpp.QT_llama.flatpak"
-echo "To run: flatpak run org.llamacpp.QT_llama"
+echo "To install locally: flatpak install --user -y dev.mitchellrenouf.QT_llama.flatpak"
+echo "To run: flatpak run dev.mitchellrenouf.QT_llama"

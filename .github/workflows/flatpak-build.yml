@@ -24,9 +24,9 @@ jobs:
       - name: Validate AppStream Metadata
         run: |
           if command -v appstreamcli >/dev/null 2>&1; then
-            appstreamcli validate --no-net flatpak/org.llamacpp.QT_llama.metainfo.xml || true
+            appstreamcli validate --no-net flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml || true
           elif command -v appstream-util >/dev/null 2>&1; then
-            appstream-util validate-relax flatpak/org.llamacpp.QT_llama.metainfo.xml || true
+            appstream-util validate-relax flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml || true
           else
             echo "AppStream validation tool not found in container, skipping."
           fi
@@ -34,21 +34,21 @@ jobs:
       - name: Build Flatpak Package
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: org.llamacpp.QT_llama.flatpak
-          manifest-path: flatpak/org.llamacpp.QT_llama.yml
+          bundle: dev.mitchellrenouf.QT_llama.flatpak
+          manifest-path: flatpak/dev.mitchellrenouf.QT_llama.yml
           run-tests: false
           stop-at: qt-llama
 
       - name: Upload Flatpak Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: org.llamacpp.QT_llama.flatpak
-          path: org.llamacpp.QT_llama.flatpak
+          name: dev.mitchellrenouf.QT_llama.flatpak
+          path: dev.mitchellrenouf.QT_llama.flatpak
 
       - name: Publish Release Bundle
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: org.llamacpp.QT_llama.flatpak
+          files: dev.mitchellrenouf.QT_llama.flatpak
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

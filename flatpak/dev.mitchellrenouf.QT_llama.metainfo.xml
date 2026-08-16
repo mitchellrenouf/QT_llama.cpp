@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>org.llamacpp.QT_llama</id>
+  <id>dev.mitchellrenouf.QT_llama</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>QT_llama.cpp</name>
@@ -21,14 +21,14 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">org.llamacpp.QT_llama.desktop</launchable>
+  <launchable type="desktop-id">dev.mitchellrenouf.QT_llama.desktop</launchable>
 
   <provides>
     <binary>qt_llama</binary>
     <binary>qt-llama</binary>
   </provides>
 
-  <developer_name>llama.cpp Community</developer_name>
+  <developer_name>Mitchell Renouf</developer_name>
 
   <url type="homepage">https://github.com/mitchellrenouf/QT_llama.cpp</url>
   <url type="bugtracker">https://github.com/mitchellrenouf/QT_llama.cpp/issues</url>

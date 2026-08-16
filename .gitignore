@@ -6,7 +6,7 @@ Cargo.lock
 # Gemma Agent runtime dumps & sessions
 .gemma/
 .flatpak-*
-org.gemma.GemmaAgent.flatpak
+*.flatpak
 
 # IDE & OS files
 .DS_Store
