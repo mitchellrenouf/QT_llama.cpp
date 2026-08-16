@@ -204,6 +204,14 @@ extern "C" {
         cparams: *mut llama_context_params,
         min_ctx: u32,
     ) -> c_int;
+
+    pub fn qt_llama_fit_params_backend(
+        model_path: *const c_char,
+        mparams: *mut llama_model_params,
+        cparams: *mut llama_context_params,
+        min_ctx: u32,
+        backend_choice: *const c_char,
+    ) -> c_int;
 }
 
 pub type ggml_log_callback = Option<unsafe extern "C" fn(level: c_int, text: *const c_char, user_data: *mut c_void)>;

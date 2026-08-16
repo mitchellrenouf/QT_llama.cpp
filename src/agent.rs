@@ -102,9 +102,28 @@ impl GemmaAgent {
 
     pub fn reload_model(&mut self, model_path: &std::path::Path) -> Result<()> {
         let n_layers = self.config.n_gpu_layers.unwrap_or(-1);
-        let engine = llama_cpp_binding::LlamaEngine::new(model_path, n_layers, self.config.max_context_tokens as u32)?;
+        let backend_str = self.config.backend.to_string();
+        let engine = llama_cpp_binding::LlamaEngine::new(
+            model_path,
+            n_layers,
+            self.config.max_context_tokens as u32,
+            Some(&backend_str),
+        )?;
         self.client = crate::client::LlamaClient::with_engine(std::sync::Arc::new(engine), self.config.system_prompt.clone());
         self.config.model = model_path.display().to_string();
+        Ok(())
+    }
+
+    pub fn switch_backend(&mut self, backend: crate::config::BackendChoice) -> Result<()> {
+        self.config.backend = backend;
+        let model_path = if let Some(hf_spec_str) = &self.config.hf {
+            crate::client::find_model_file(hf_spec_str).or_else(|| crate::client::find_model_file(&self.config.model))
+        } else {
+            crate::client::find_model_file(&self.config.model)
+        };
+        if let Some(path) = model_path {
+            self.reload_model(&path)?;
+        }
         Ok(())
     }
 

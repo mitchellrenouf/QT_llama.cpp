@@ -21,6 +21,26 @@ impl fmt::Display for AgentMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendChoice {
+    Auto,
+    Cuda,
+    Vulkan,
+    Cpu,
+}
+
+impl fmt::Display for BackendChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BackendChoice::Auto => write!(f, "auto"),
+            BackendChoice::Cuda => write!(f, "cuda"),
+            BackendChoice::Vulkan => write!(f, "vulkan"),
+            BackendChoice::Cpu => write!(f, "cpu"),
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about = "Multimodal Vision, Audio/Video & Autonomous Inner Monologue Agent for Gemma 4 26B over llama-server OpenAI API", long_about = None)]
 pub struct Config {
@@ -75,6 +95,10 @@ pub struct Config {
     /// Number of model layers to offload to GPU (-1 or 99 for auto-scaling, 0 for CPU only)
     #[arg(long = "gpu-layers", env = "LLAMA_GPU_LAYERS")]
     pub n_gpu_layers: Option<i32>,
+
+    /// Hardware acceleration backend override: 'auto', 'cuda', 'vulkan', or 'cpu'
+    #[arg(long = "backend", env = "QT_LLAMA_BACKEND", default_value_t = BackendChoice::Auto)]
+    pub backend: BackendChoice,
 
     /// Custom path to browser executable (e.g. /var/lib/flatpak/exports/bin/com.brave.Browser, com.brave.Browser, or /usr/bin/brave-origin)
     #[arg(long, env = "BROWSER_EXE")]

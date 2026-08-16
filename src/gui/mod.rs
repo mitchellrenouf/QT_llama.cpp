@@ -142,6 +142,7 @@ where
             "model_loaded": agent_guard.has_model_loaded(),
             "model_name": agent_guard.get_config().model,
             "mode": agent_guard.get_mode().to_string(),
+            "backend": agent_guard.get_config().backend.to_string(),
             "speech_enabled": agent_guard.is_speech_enabled(),
             "tokens": agent_guard.estimate_tokens(),
         });
@@ -300,6 +301,32 @@ where
                         "type": "mode_changed",
                         "mode": agent_lock.get_mode().to_string(),
                     }));
+                }
+            }
+            "switch_backend" => {
+                if let Some(backend_str) = cmd.get("backend").and_then(|v| v.as_str()) {
+                    let agent_clone = agent.clone();
+                    let out_tx_clone = out_tx.clone();
+                    let backend_choice = match backend_str.to_lowercase().as_str() {
+                        "cuda" => crate::config::BackendChoice::Cuda,
+                        "vulkan" => crate::config::BackendChoice::Vulkan,
+                        "cpu" => crate::config::BackendChoice::Cpu,
+                        _ => crate::config::BackendChoice::Auto,
+                    };
+                    tokio::spawn(async move {
+                        let mut agent_lock = agent_clone.lock().await;
+                        if let Err(e) = agent_lock.switch_backend(backend_choice) {
+                            let _ = out_tx_clone.send(serde_json::json!({
+                                "type": "error",
+                                "message": format!("Failed to switch backend: {}", e),
+                            }));
+                        } else {
+                            let _ = out_tx_clone.send(serde_json::json!({
+                                "type": "backend_changed",
+                                "backend": agent_lock.get_config().backend.to_string(),
+                            }));
+                        }
+                    });
                 }
             }
             "clear_history" => {

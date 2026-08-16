@@ -60,7 +60,7 @@ unsafe extern "C" fn quiet_llama_log(level: c_int, text: *const c_char, _user_da
 }
 
 impl LlamaEngine {
-    pub fn new(model_path: &Path, n_gpu_layers: i32, n_ctx: u32) -> Result<Self> {
+    pub fn new(model_path: &Path, n_gpu_layers: i32, n_ctx: u32, backend: Option<&str>) -> Result<Self> {
         BACKEND_INIT.call_once(|| unsafe {
             llama_backend_init();
             llama_log_set(Some(quiet_llama_log), std::ptr::null_mut());
@@ -71,6 +71,13 @@ impl LlamaEngine {
             .to_str()
             .ok_or_else(|| anyhow!("Invalid model path UTF-8"))?;
         let c_path = CString::new(path_str)?;
+
+        let backend_choice = backend
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("QT_LLAMA_BACKEND").ok())
+            .or_else(|| std::env::var("LLAMA_BACKEND").ok())
+            .unwrap_or_else(|| "auto".to_string());
+        let c_backend = CString::new(backend_choice.as_str())?;
 
         let env_override = std::env::var("LLAMA_GPU_LAYERS")
             .ok()
@@ -92,14 +99,15 @@ impl LlamaEngine {
         } else if n_gpu_layers >= 0 {
             m_params.n_gpu_layers = n_gpu_layers;
         } else {
-            // Auto mode: exactly like llama-server, run common_fit_params!
-            eprintln!("[llama.cpp] Probing device memory and fitting parameters using llama.cpp common_fit_params...");
+            // Auto mode: run common_fit_params with selected backend!
+            eprintln!("[llama.cpp] Probing device memory and fitting parameters (backend: {})...", backend_choice);
             let fit_status = unsafe {
-                qt_llama_fit_params(
+                qt_llama_fit_params_backend(
                     c_path.as_ptr(),
                     &mut m_params,
                     &mut c_params,
                     4096,
+                    c_backend.as_ptr(),
                 )
             };
             eprintln!(

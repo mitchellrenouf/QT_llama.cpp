@@ -27,6 +27,7 @@ ApplicationWindow {
     property int currentFileIndex: 1
     property int totalFilesCount: 1
     property real currentTps: 0.0
+    property string currentBackend: "auto"
     property string downloadStatusMessage: ""
 
     function findTargetPort() {
@@ -83,6 +84,7 @@ ApplicationWindow {
                 window.isModelLoaded = evt.model_loaded || false
                 window.currentModelName = evt.model_name || window.currentModelName
                 window.currentMode = evt.mode || "general"
+                window.currentBackend = evt.backend || "auto"
                 window.speechEnabled = evt.speech_enabled || false
                 window.estimatedTokens = evt.tokens || 0
                 window.statusText = window.isModelLoaded ? "Ready" : "Model not loaded"
@@ -91,6 +93,11 @@ ApplicationWindow {
                 } else {
                     modelSetupDialog.close()
                 }
+                break
+
+            case "backend_changed":
+                window.currentBackend = evt.backend || "auto"
+                window.statusText = "Acceleration set to: " + window.currentBackend.toUpperCase()
                 break
 
             case "stream_thought":
@@ -405,12 +412,44 @@ ApplicationWindow {
                     }
                 }
 
+                // Backend Selector (Auto / CUDA / Vulkan / CPU)
+                ComboBox {
+                    id: backendCombo
+                    model: ["Auto", "CUDA", "Vulkan", "CPU"]
+                    currentIndex: {
+                        var b = window.currentBackend.toLowerCase()
+                        if (b === "cuda") return 1
+                        if (b === "vulkan") return 2
+                        if (b === "cpu") return 3
+                        return 0
+                    }
+                    Layout.preferredWidth: 125
+                    background: Rectangle {
+                        color: "#252834"
+                        radius: 6
+                        border.color: "#383d4f"
+                    }
+                    contentItem: Text {
+                        text: "⚙ " + backendCombo.displayText
+                        color: "#93c5fd"
+                        font.pixelSize: 12
+                        font.bold: true
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: 10
+                    }
+                    onActivated: {
+                        var b = backendCombo.currentText.toLowerCase()
+                        window.currentBackend = b
+                        sendWsCommand({ "type": "switch_backend", "backend": b })
+                    }
+                }
+
                 // Mode Selector
                 ComboBox {
                     id: modeCombo
                     model: ["General", "Code", "Desktop"]
                     currentIndex: window.currentMode === "code" ? 1 : (window.currentMode === "desktop" ? 2 : 0)
-                    Layout.preferredWidth: 140
+                    Layout.preferredWidth: 130
                     background: Rectangle {
                         color: "#252834"
                         radius: 6
@@ -419,7 +458,7 @@ ApplicationWindow {
                     contentItem: Text {
                         text: modeCombo.displayText
                         color: "#e2e8f0"
-                        font.pixelSize: 13
+                        font.pixelSize: 12
                         font.bold: true
                         verticalAlignment: Text.AlignVCenter
                         leftPadding: 10
