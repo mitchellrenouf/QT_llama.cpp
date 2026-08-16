@@ -11,14 +11,12 @@ jobs:
   main-app:
     name: "Flatpak Builder"
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
-      options: --privileged
 
     steps:
-      - name: Free Runner Disk Space
+      - name: Free Runner Host Disk Space
         run: |
-          rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          echo "Freeing disk space on runner host..."
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
           df -h
 
       - name: Checkout Code

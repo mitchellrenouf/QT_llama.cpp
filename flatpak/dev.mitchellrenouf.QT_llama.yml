@@ -35,13 +35,13 @@ build-options:
     LLAMA_VULKAN: "1"
 
 modules:
-  # 1. NVIDIA CUDA 13.3 Toolkit (Extract via --noexec to bypass /tmp tmpfs limits)
+  # 1. NVIDIA CUDA 13.3 Toolkit (Install via /var/tmp to prevent tmpfs exhaustion)
   - name: cuda-toolkit
     buildsystem: simple
     build-commands:
-      - sh cuda_13.3.1_610.43.02_linux.run --noexec --target extracted
-      - cd extracted && ./cuda-installer --silent --toolkit --toolkitpath=/app/cuda --override --no-man-page
-      - rm -rf extracted
+      - mkdir -p /var/tmp/cuda_tmp
+      - TMPDIR=/var/tmp/cuda_tmp sh cuda_13.3.1_610.43.02_linux.run --silent --toolkit --toolkitpath=/app/cuda --tmpdir=/var/tmp/cuda_tmp --override --no-man-page
+      - rm -rf /var/tmp/cuda_tmp
       # Strip unneeded samples, documentation, and graphical tools to optimize image footprint
       - rm -rf /app/cuda/doc /app/cuda/samples /app/cuda/extras /app/cuda/nsight* /app/cuda/nvvp*
       - mkdir -p /app/lib
@@ -75,7 +75,9 @@ modules:
   - name: intel-oneapi-toolkit
     buildsystem: simple
     build-commands:
-      - sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi
+      - mkdir -p /var/tmp/oneapi_tmp
+      - TMPDIR=/var/tmp/oneapi_tmp sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi --tmp-dir /var/tmp/oneapi_tmp
+      - rm -rf /var/tmp/oneapi_tmp
       # Strip unneeded documentation and samples to optimize image footprint
       - rm -rf /app/oneapi/doc /app/oneapi/samples /app/oneapi/share/doc
       - mkdir -p /app/lib
