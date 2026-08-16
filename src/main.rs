@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("{}", "==================================================".magenta());
-    println!("{}", "   🚀 GEMMA 4 GENERAL-PURPOSE & VIBE-CODING CLI   ".bright_cyan().bold());
+    println!("{}", "   🚀 QT_llama.cpp GENERAL-PURPOSE & VIBE-CODING CLI   ".bright_cyan().bold());
     println!("{}", "==================================================".magenta());
     println!(" Mode        : {}", config.mode.to_string().bright_yellow().bold());
     println!(" Inference   : {}", "In-Process llama.cpp GGUF Engine".bright_green().bold());
@@ -152,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
             }
             "/help" => {
                 println!("\n{}", "==================================================".cyan());
-                println!("{}", "   💡 GEMMA 4 AGENT COMMAND REFERENCE (/help)     ".bright_yellow().bold());
+                println!("{}", "   💡 QT_llama.cpp COMMAND REFERENCE (/help)     ".bright_yellow().bold());
                 println!("{}", "==================================================".cyan());
                 println!("  /speech                        - Toggle Text-to-Speech audio output (Disabled by default)");
                 println!("  /mode [general|coder|automatic] - Switch between General, Coding & Automatic Inner Monologue Modes");

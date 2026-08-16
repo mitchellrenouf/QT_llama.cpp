@@ -3,12 +3,12 @@
   <id>org.gemma.GemmaAgent</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
-  <name>Gemma 4 AI Assistant</name>
-  <summary>Multimodal Vision, Desktop Control, Browser Automation &amp; General AI Agent for Gemma 4</summary>
+  <name>QT_llama.cpp</name>
+  <summary>Multimodal Vision, Desktop Control, Browser Automation &amp; General AI Agent for llama.cpp</summary>
 
   <description>
     <p>
-      Gemma 4 AI Assistant is an autonomous, general-purpose agent and vibe-coding assistant powered by Gemma 4 models.
+      QT_llama.cpp is an autonomous, general-purpose agent and vibe-coding assistant powered by in-process llama.cpp and Gemma 4 models.
       It features rich multimodal understanding, headless browser automation with Chrome DevTools Protocol, desktop screenshot analysis,
       media processing, and automated workspace tools.
     </p>

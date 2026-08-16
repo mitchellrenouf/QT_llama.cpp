@@ -1,4 +1,4 @@
-# Enterprise Gemma 4 26B AI Assistant & Vibe-Coder (In-Process llama.cpp, Qt6 GUI, Chromiumoxide & Flatpak SDK 26.08 Beta)
+# QT_llama.cpp: Enterprise AI Assistant & Vibe-Coder (In-Process llama.cpp, Qt6 GUI, Chromiumoxide & Flatpak)
 
 A high-performance, autonomous AI assistant written in Rust with **in-process `llama.cpp` GGUF inference bindings**. It runs completely local on **Linux** (Arch Linux, Fedora, Ubuntu, or Freedesktop Flatpak Sandbox) with zero external server dependencies, instant token streaming, and direct DevTools browser automation.
 

@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 800
     minimumHeight: 600
     visible: true
-    title: "Gemma 4 AI Assistant (Qt6 / Flatpak)"
+    title: "QT_llama.cpp (Qt6 / Flatpak)"
     color: "#121316"
 
     property string currentMode: "general"
@@ -345,7 +345,7 @@ ApplicationWindow {
                 spacing: 16
 
                 Label {
-                    text: "🚀 Gemma 4"
+                    text: "🚀 QT_llama.cpp"
                     font.bold: true
                     font.pixelSize: 20
                     color: "#f8f9fa"
@@ -475,7 +475,7 @@ ApplicationWindow {
                         color: model.role === "user" ? "#38bdf8" : (model.toolName !== "" ? "#fbbf24" : "#a855f7")
                     }
                     Label {
-                        text: model.role === "user" ? "You" : (model.toolName !== "" ? ("Tool: " + model.toolName) : "Gemma 4")
+                        text: model.role === "user" ? "You" : (model.toolName !== "" ? ("Tool: " + model.toolName) : "QT_llama.cpp")
                         font.bold: true
                         font.pixelSize: 13
                         color: model.role === "user" ? "#38bdf8" : (model.toolName !== "" ? "#fbbf24" : "#c084fc")
@@ -1086,7 +1086,7 @@ ApplicationWindow {
             spacing: 14
 
             Label {
-                text: "✨ In-Process Gemma 4 Model & Projector Setup"
+                text: "✨ In-Process QT_llama.cpp Model & Projector Setup"
                 font.bold: true
                 font.pixelSize: 18
                 color: "#f8f9fa"

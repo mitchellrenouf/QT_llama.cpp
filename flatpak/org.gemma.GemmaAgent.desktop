@@ -1,11 +1,11 @@
 [Desktop Entry]
-Name=Gemma 4 AI Assistant
+Name=QT_llama.cpp
 GenericName=AI Agent & Vibe-Coder
-Comment=Multimodal Vision, Desktop Control, Browser Automation & General AI Agent for Gemma 4
+Comment=Multimodal Vision, Desktop Control, Browser Automation & General AI Agent for llama.cpp
 Exec=gemma-agent
 Icon=org.gemma.GemmaAgent
 Terminal=false
 Type=Application
 Categories=Utility;Development;AudioVideo;
-Keywords=AI;Agent;Gemma;Coding;Automation;Vision;
+Keywords=AI;Agent;llama;Gemma;Coding;Automation;Vision;
 StartupNotify=true

@@ -88,7 +88,7 @@ pub async fn launch_qt_gui(config: &Config) -> Result<()> {
         }
     });
 
-    println!("🎨 Launching Gemma 4 Qt6 Interface ({}) via {} [WS IPC port: {}]...", qml_file.display(), qml_runner.display(), port);
+    println!("🎨 Launching QT_llama.cpp Interface ({}) via {} [WS IPC port: {}]...", qml_file.display(), qml_runner.display(), port);
 
     let mut child = tokio::process::Command::new(qml_runner)
         .arg(&qml_file)
