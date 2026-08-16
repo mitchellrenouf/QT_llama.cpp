@@ -111,9 +111,7 @@ impl LlamaEngine {
         let vocab_ptr = unsafe { llama_model_get_vocab(model_ptr) };
 
         let mut c_params = unsafe { llama_context_default_params() };
-        if n_ctx > 0 && n_ctx <= 16384 {
-            c_params.n_ctx = n_ctx;
-        }
+        c_params.n_ctx = if n_ctx > 0 && n_ctx <= 32768 { n_ctx } else { 8192 };
         c_params.n_batch = 2048;
         c_params.n_ubatch = 512;
         c_params.n_threads = std::thread::available_parallelism().map(|p| p.get() as i32).unwrap_or(8);
