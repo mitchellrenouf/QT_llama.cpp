@@ -39,7 +39,9 @@ modules:
   - name: cuda-toolkit
     buildsystem: simple
     build-commands:
-      - sh cuda_13.3.1_610.43.02_linux.run --silent --toolkit --toolkitpath=/app/cuda --override --no-man-page
+      - mkdir -p /run/build/cuda-toolkit/tmp
+      - TMPDIR=/run/build/cuda-toolkit/tmp sh cuda_13.3.1_610.43.02_linux.run --silent --toolkit --toolkitpath=/app/cuda --tmpdir /run/build/cuda-toolkit/tmp --override --no-man-page
+      - rm -rf /run/build/cuda-toolkit/tmp
       # Strip unneeded samples, documentation, and graphical tools to optimize image footprint
       - rm -rf /app/cuda/doc /app/cuda/samples /app/cuda/extras /app/cuda/nsight* /app/cuda/nvvp*
       - mkdir -p /app/lib
@@ -73,7 +75,9 @@ modules:
   - name: intel-oneapi-toolkit
     buildsystem: simple
     build-commands:
-      - sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi
+      - mkdir -p /run/build/intel-oneapi-toolkit/tmp
+      - TMPDIR=/run/build/intel-oneapi-toolkit/tmp sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi --tmp-dir /run/build/intel-oneapi-toolkit/tmp
+      - rm -rf /run/build/intel-oneapi-toolkit/tmp
       # Strip unneeded documentation and samples to optimize image footprint
       - rm -rf /app/oneapi/doc /app/oneapi/samples /app/oneapi/share/doc
       - mkdir -p /app/lib
