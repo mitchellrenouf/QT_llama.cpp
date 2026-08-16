@@ -12,7 +12,7 @@ jobs:
     name: "Flatpak Builder"
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
       options: --privileged
 
     steps:
@@ -23,7 +23,6 @@ jobs:
 
       - name: Install Rust & Vendor Dependencies
         run: |
-          # Install rust toolchain for vendoring
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           source "$HOME/.cargo/env"
           cargo vendor
@@ -44,7 +43,6 @@ jobs:
           bundle: dev.mitchellrenouf.QT_llama.flatpak
           manifest-path: flatpak/dev.mitchellrenouf.QT_llama.yml
           run-tests: false
-          stop-at: qt-llama
 
       - name: Upload Flatpak Artifact
         uses: actions/upload-artifact@v4

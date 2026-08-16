@@ -12,7 +12,7 @@ Functioning like **Gemini directly on your Linux desktop and terminal**, the app
 - **Git Submodule Integration**: `llama.cpp` is linked directly as a Git submodule (`llama.cpp/`) and built statically via CMake during compilation.
 - **Pure Chromiumoxide Web Engine**: 100% headless Chromium DevTools Protocol (CDP) for all browser automation, searches (`web_search`), and live web extractions (`web_fetch`). Completely eliminates `reqwest` and HTTP client dependencies.
 - **Modern Qt6 QML Desktop Interface (Default)**: Sleek dark-mode GUI (`qml/Main.qml`) with real-time token streaming, formatted markdown bubbles, thinking animation blocks, tool call inspection cards, and speech synthesis toggles.
-- **Flatpak Packaging (Freedesktop SDK 24.08)**: Bundled under application ID `dev.mitchellrenouf.QT_llama` targeting `org.freedesktop.Platform//24.08` and `org.freedesktop.Sdk//24.08` with Rust stable extension and AppStream metadata.
+- **Flatpak Packaging (Freedesktop SDK 25.08)**: Bundled under application ID `dev.mitchellrenouf.QT_llama` targeting `org.freedesktop.Platform//25.08` and `org.freedesktop.Sdk//25.08` with Rust stable extension, Vulkan 1.4.357 SDK, and AppStream metadata.
 - **Automated Flatpak Update Infrastructure**: Configured with `flatpak-external-data-checker` (`update-checker.json`), GitHub Actions automated release pipeline (`.github/workflows/flatpak-build.yml`), and local update scripts (`./scripts/update-flatpak.sh`).
 - **Autonomous Inner Monologue Mode (`/automatic` | `--mode automatic`)**: Gemma 4 26B maintains a continuous, human-like internal monologue (`🧠 Inner Monologue...`), reflecting step-by-step on goals, context, tool choices, error recovery, and self-correction before taking action.
 - **Desktop Screenshot & Multimodal Perception**: Native Linux screenshot capture (`spectacle`, `grim`, `scrot`, `ffmpeg`) fed directly into multimodal vision inspection.
@@ -93,7 +93,7 @@ LLAMA_VULKAN=1 cargo build --release  # Enable Vulkan
 ## 📦 Flatpak Build & Installation
 
 ```bash
-# Build Flatpak bundle with Freedesktop SDK 24.08
+# Build Flatpak bundle with Freedesktop SDK 25.08
 ./scripts/build-flatpak.sh
 
 # Run Flatpak application
