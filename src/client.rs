@@ -58,6 +58,7 @@ pub enum StreamEvent {
     Reasoning(String),
     Content(String),
     ToolCallAssembled(ToolCall),
+    ToolExecuted { name: String, result: String },
     Finish(String),
 }
 

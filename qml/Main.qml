@@ -105,8 +105,13 @@ ApplicationWindow {
                 break
 
             case "tool_started":
-                appendMessage("assistant", "", "", false, evt.name, evt.args, "")
+                appendMessage("assistant", "", "", false, evt.name, evt.args, "", false)
                 window.statusText = "Executing tool: " + evt.name
+                break
+
+            case "tool_finished":
+                updateLastToolResult(evt.name, evt.result)
+                window.statusText = "Tool finished: " + evt.name
                 break
 
             case "turn_done":
@@ -135,7 +140,7 @@ ApplicationWindow {
             case "error":
                 window.isThinking = false
                 window.statusText = "Error: " + evt.message
-                appendMessage("assistant", "⚠️ " + evt.message, "", false, "", "", "")
+                appendMessage("assistant", "⚠️ " + evt.message, "", false, "", "", "", false)
                 break
 
             case "mode_changed":
@@ -154,7 +159,7 @@ ApplicationWindow {
         }
     }
 
-    function appendMessage(role, content, thought, thoughtExpanded, toolName, toolArgs, toolResult) {
+    function appendMessage(role, content, thought, thoughtExpanded, toolName, toolArgs, toolResult, toolExpanded) {
         chatModel.append({
             "role": role,
             "content": content || "",
@@ -162,8 +167,22 @@ ApplicationWindow {
             "thoughtExpanded": thoughtExpanded || false,
             "toolName": toolName || "",
             "toolArgs": toolArgs || "",
-            "toolResult": toolResult || ""
+            "toolResult": toolResult || "",
+            "toolExpanded": toolExpanded || false
         })
+        chatListView.positionViewAtEnd()
+    }
+
+    function updateLastToolResult(toolName, result) {
+        if (chatModel.count > 0) {
+            for (var i = chatModel.count - 1; i >= 0; i--) {
+                var item = chatModel.get(i)
+                if (item.toolName === toolName) {
+                    chatModel.setProperty(i, "toolResult", result)
+                    break
+                }
+            }
+        }
         chatListView.positionViewAtEnd()
     }
 
@@ -178,7 +197,7 @@ ApplicationWindow {
                 return
             }
         }
-        appendMessage("assistant", "", token, false, "", "", "")
+        appendMessage("assistant", "", token, false, "", "", "", false)
     }
 
     function appendContentToken(token) {
@@ -192,7 +211,7 @@ ApplicationWindow {
                 return
             }
         }
-        appendMessage("assistant", token, "", false, "", "", "")
+        appendMessage("assistant", token, "", false, "", "", "", false)
     }
 
     function finalizeCurrentAssistantMessage(content, thought) {
@@ -431,6 +450,7 @@ ApplicationWindow {
             rightMargin: 20
 
             delegate: ColumnLayout {
+                id: delegateRoot
                 width: chatListView.width - 40
                 spacing: 6
 
@@ -444,7 +464,7 @@ ApplicationWindow {
                         color: model.role === "user" ? "#38bdf8" : (model.toolName !== "" ? "#fbbf24" : "#a855f7")
                     }
                     Label {
-                        text: model.role === "user" ? "You" : (model.toolName !== "" ? "Tool: " + model.toolName : "Gemma 4")
+                        text: model.role === "user" ? "You" : (model.toolName !== "" ? ("Tool: " + model.toolName) : "Gemma 4")
                         font.bold: true
                         font.pixelSize: 13
                         color: model.role === "user" ? "#38bdf8" : (model.toolName !== "" ? "#fbbf24" : "#c084fc")
@@ -454,26 +474,175 @@ ApplicationWindow {
                 // Message Bubble
                 Rectangle {
                     Layout.fillWidth: true
+                    implicitHeight: bubbleContentColumn.implicitHeight + 28
                     radius: 8
-                    color: model.role === "user" ? "#1e293b" : (model.toolName !== "" ? "#1e1e24" : "#181a20")
-                    border.color: model.role === "user" ? "#334155" : (model.toolName !== "" ? "#3f3f46" : "#27272a")
+                    color: model.role === "user" ? "#1e293b" : (model.toolName !== "" ? "#181a22" : "#181a20")
+                    border.color: model.role === "user" ? "#334155" : (model.toolName !== "" ? "#374151" : "#27272a")
                     border.width: 1
 
                     ColumnLayout {
+                        id: bubbleContentColumn
                         anchors.fill: parent
                         anchors.margins: 14
                         spacing: 10
+
+                        // Collapsible Tool Call Card (Collapsed by default!)
+                        Rectangle {
+                            visible: model.toolName !== undefined && model.toolName !== null && model.toolName !== ""
+                            Layout.fillWidth: true
+                            implicitHeight: toolColumn.implicitHeight + 16
+                            color: "#12141c"
+                            border.color: "#374151"
+                            border.width: 1
+                            radius: 6
+
+                            ColumnLayout {
+                                id: toolColumn
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                spacing: 8
+
+                                // Clickable toggle header
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 28
+                                    color: toolMouseArea.containsMouse ? "#202534" : "transparent"
+                                    radius: 4
+
+                                    MouseArea {
+                                        id: toolMouseArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            chatModel.setProperty(index, "toolExpanded", !model.toolExpanded)
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 6
+                                        anchors.rightMargin: 6
+                                        spacing: 8
+
+                                        Text {
+                                            text: model.toolExpanded ? ("▼ 🔧 Tool Call: " + model.toolName) : ("▶ 🔧 Tool Call: " + model.toolName + " (click to expand)")
+                                            color: "#fbbf24"
+                                            font.bold: true
+                                            font.pixelSize: 12
+                                        }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        Rectangle {
+                                            Layout.preferredHeight: 20
+                                            Layout.preferredWidth: toolStatusText.implicitWidth + 12
+                                            radius: 10
+                                            color: (model.toolResult && model.toolResult.length > 0) ? "#14532d" : "#713f12"
+                                            Text {
+                                                id: toolStatusText
+                                                anchors.centerIn: parent
+                                                text: (model.toolResult && model.toolResult.length > 0) ? "✓ Done" : "⏳ Executing"
+                                                color: (model.toolResult && model.toolResult.length > 0) ? "#86efac" : "#fde047"
+                                                font.pixelSize: 10
+                                                font.bold: true
+                                            }
+                                        }
+
+                                        Text {
+                                            text: model.toolExpanded ? "Hide" : "Show"
+                                            color: "#94a3b8"
+                                            font.pixelSize: 11
+                                        }
+                                    }
+                                }
+
+                                // Collapsible Tool Details (Arguments and Result)
+                                ColumnLayout {
+                                    visible: model.toolExpanded === true
+                                    Layout.fillWidth: true
+                                    spacing: 6
+
+                                    Label {
+                                        text: "📥 Arguments:"
+                                        color: "#9ca3af"
+                                        font.bold: true
+                                        font.pixelSize: 11
+                                    }
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        implicitHeight: toolArgsBox.implicitHeight + 12
+                                        color: "#0a0c10"
+                                        border.color: "#282c3c"
+                                        border.width: 1
+                                        radius: 4
+
+                                        TextEdit {
+                                            id: toolArgsBox
+                                            anchors.fill: parent
+                                            anchors.margins: 6
+                                            text: model.toolArgs || "{}"
+                                            color: "#cbd5e1"
+                                            font.pixelSize: 11
+                                            font.family: "Monospace"
+                                            wrapMode: TextEdit.Wrap
+                                            readOnly: true
+                                            selectByMouse: true
+                                        }
+                                    }
+
+                                    Label {
+                                        text: "📤 Result:"
+                                        color: "#86efac"
+                                        font.bold: true
+                                        font.pixelSize: 11
+                                        visible: model.toolResult !== undefined && model.toolResult !== null && model.toolResult.length > 0
+                                    }
+
+                                    Rectangle {
+                                        visible: model.toolResult !== undefined && model.toolResult !== null && model.toolResult.length > 0
+                                        Layout.fillWidth: true
+                                        implicitHeight: Math.min(250, toolResBox.implicitHeight + 12)
+                                        color: "#0a0c10"
+                                        border.color: "#282c3c"
+                                        border.width: 1
+                                        radius: 4
+
+                                        ScrollView {
+                                            anchors.fill: parent
+                                            anchors.margins: 6
+                                            clip: true
+
+                                            TextEdit {
+                                                id: toolResBox
+                                                width: parent.width
+                                                text: model.toolResult || ""
+                                                color: "#86efac"
+                                                font.pixelSize: 11
+                                                font.family: "Monospace"
+                                                wrapMode: TextEdit.Wrap
+                                                readOnly: true
+                                                selectByMouse: true
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         // Collapsible Thought Process Box (Collapsed by default!)
                         Rectangle {
                             visible: model.thought !== undefined && model.thought !== null && model.thought.trim().length > 0
                             Layout.fillWidth: true
+                            implicitHeight: thoughtColumn.implicitHeight + 16
                             color: "#13151b"
                             border.color: "#33384a"
                             border.width: 1
                             radius: 6
 
                             ColumnLayout {
+                                id: thoughtColumn
                                 anchors.fill: parent
                                 anchors.margins: 8
                                 spacing: 6
@@ -759,28 +928,6 @@ ApplicationWindow {
                             }
                         }
 
-                        // Tool Arguments & Output if applicable
-                        ColumnLayout {
-                            visible: model.toolName !== ""
-                            Layout.fillWidth: true
-                            spacing: 4
-
-                            Label {
-                                text: "Arguments: " + model.toolArgs
-                                color: "#9ca3af"
-                                font.pixelSize: 11
-                                font.family: "Monospace"
-                                wrapMode: Text.Wrap
-                            }
-
-                            Label {
-                                text: "Result: " + model.toolResult
-                                color: "#86efac"
-                                font.pixelSize: 11
-                                font.family: "Monospace"
-                                wrapMode: Text.Wrap
-                            }
-                        }
                     }
                 }
             }
@@ -1119,7 +1266,7 @@ ApplicationWindow {
         var txt = messageInput.text.trim()
         if (txt.length === 0) return
 
-        appendMessage("user", txt, "", false, "", "", "")
+        appendMessage("user", txt, "", false, "", "", "", false)
         messageInput.text = ""
         window.statusText = "Gemma is thinking..."
         window.isThinking = true

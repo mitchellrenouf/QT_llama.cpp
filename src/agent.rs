@@ -255,13 +255,9 @@ impl GemmaAgent {
         self.run_turn(user_input).await
     }
 
-    pub async fn process_user_request_stream<F>(
-        &mut self,
-        user_input: &str,
-        mut event_sink: F,
-    ) -> Result<(String, String)>
+    pub async fn process_user_request_stream<F>(&mut self, user_input: &str, mut event_sink: F) -> Result<(String, String)>
     where
-        F: FnMut(StreamEvent),
+        F: FnMut(StreamEvent) + Send + 'static,
     {
         if self.estimated_tokens() >= self.config.max_context_tokens {
             self.compact_context(self.config.max_context_tokens / 2).await?;
@@ -270,22 +266,94 @@ impl GemmaAgent {
         self.history.push(ChatMessage::user(user_input));
         let tool_defs = self.registry.definitions();
 
-        let req = crate::client::ChatCompletionRequest {
-            model: self.config.model.clone(),
-            messages: self.history.clone(),
-            tools: Some(tool_defs.clone()),
-            tool_choice: None,
-            temperature: Some(self.config.temperature),
-            max_tokens: Some(self.config.max_tokens),
-            stream: Some(true),
-        };
+        let mut final_content = String::new();
+        let mut final_thought = String::new();
+        let mut loop_count = 0;
 
-        let assistant_msg = self.client.stream_completion(&req, |e| event_sink(e)).await?;
-        let content = assistant_msg.get_text_content().unwrap_or_default().trim().to_string();
-        let thought = assistant_msg.reasoning_content.clone().unwrap_or_default().trim().to_string();
+        loop {
+            loop_count += 1;
+            if loop_count > 10 {
+                break;
+            }
 
-        self.history.push(assistant_msg);
-        Ok((content, thought))
+            let req = crate::client::ChatCompletionRequest {
+                model: self.config.model.clone(),
+                messages: self.history.clone(),
+                tools: Some(tool_defs.clone()),
+                tool_choice: None,
+                temperature: Some(self.config.temperature),
+                max_tokens: Some(self.config.max_tokens),
+                stream: Some(true),
+            };
+
+            let mut assembled_tool_calls = Vec::new();
+            let assistant_msg = self
+                .client
+                .stream_completion(&req, |e| {
+                    if let StreamEvent::ToolCallAssembled(ref tc) = e {
+                        assembled_tool_calls.push(tc.clone());
+                    }
+                    event_sink(e);
+                })
+                .await?;
+
+            let content = assistant_msg.get_text_content().unwrap_or_default().trim().to_string();
+            let thought = assistant_msg.reasoning_content.clone().unwrap_or_default().trim().to_string();
+
+            if !content.is_empty() {
+                final_content = content.clone();
+            }
+            if !thought.is_empty() {
+                final_thought = thought.clone();
+            }
+
+            self.history.push(assistant_msg.clone());
+
+            let tool_calls = assistant_msg.tool_calls.clone().unwrap_or(assembled_tool_calls);
+            if tool_calls.is_empty() {
+                break;
+            }
+
+            for tool_call in tool_calls {
+                let name = &tool_call.function.name;
+                let raw_args = &tool_call.function.arguments;
+
+                let parsed_args: serde_json::Value = match serde_json::from_str(raw_args) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        let err_msg = format!("Failed to parse arguments JSON: {}", e);
+                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
+                        continue;
+                    }
+                };
+
+                let tool_opt = self.registry.get(name);
+                let tool_result = match tool_opt {
+                    Some(tool) => tool.execute(&self.config.workspace_root, parsed_args).await,
+                    None => Err(anyhow::anyhow!("Unknown tool requested: {}", name)),
+                };
+
+                match tool_result {
+                    Ok(output) => {
+                        event_sink(StreamEvent::ToolExecuted {
+                            name: name.clone(),
+                            result: output.clone(),
+                        });
+                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, output.clone()));
+                    }
+                    Err(e) => {
+                        let err_msg = format!("Tool execution failed: {}", e);
+                        event_sink(StreamEvent::ToolExecuted {
+                            name: name.clone(),
+                            result: err_msg.clone(),
+                        });
+                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
+                    }
+                }
+            }
+        }
+
+        Ok((final_content, final_thought))
     }
 
     pub async fn run_turn(&mut self, user_input: &str) -> Result<()> {
@@ -347,6 +415,7 @@ impl GemmaAgent {
                     StreamEvent::ToolCallAssembled(tc) => {
                         assembled_tool_calls.push(tc);
                     }
+                    StreamEvent::ToolExecuted { .. } => {}
                     StreamEvent::Finish(_) => {}
                 })
                 .await;

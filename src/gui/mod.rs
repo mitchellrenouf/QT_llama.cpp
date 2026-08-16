@@ -186,6 +186,13 @@ where
                                             "args": tc.function.arguments,
                                         }));
                                     }
+                                    StreamEvent::ToolExecuted { name, result } => {
+                                        let _ = out_tx_stream.send(serde_json::json!({
+                                            "type": "tool_finished",
+                                            "name": name,
+                                            "result": result,
+                                        }));
+                                    }
                                     StreamEvent::Finish(_) => {}
                                 }
                             })
