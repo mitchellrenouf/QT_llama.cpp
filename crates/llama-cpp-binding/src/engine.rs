@@ -65,25 +65,8 @@ impl LlamaEngine {
             .or_else(|| std::env::var("QT_LLAMA_GPU_LAYERS").ok())
             .and_then(|s| s.parse::<i32>().ok());
 
-        let is_auto_layers = n_gpu_layers < 0 || n_gpu_layers == 99;
         let mut requested_layers = env_override.unwrap_or_else(|| {
-            if is_auto_layers {
-                let file_size_gb = std::fs::metadata(model_path)
-                    .map(|m| m.len() as f64 / (1024.0 * 1024.0 * 1024.0))
-                    .unwrap_or(0.0);
-
-                // For large models (e.g. 26B models >= 12GB), leave ~4-5 GB VRAM headroom
-                // for Vulkan/CUDA compute activation buffers, KV cache, and desktop compositor
-                if file_size_gb >= 12.0 {
-                    24 // 24/30 layers on GPU, remainder on CPU
-                } else if file_size_gb >= 8.0 {
-                    26 // 26/30 layers on GPU, remainder on CPU
-                } else {
-                    99 // All layers on GPU
-                }
-            } else {
-                n_gpu_layers
-            }
+            if n_gpu_layers < 0 { 99 } else { n_gpu_layers }
         });
         let mut tried_no_offload_kqv = false;
 
@@ -92,7 +75,7 @@ impl LlamaEngine {
             m_params.n_gpu_layers = requested_layers;
 
             eprintln!(
-                "[llama.cpp] Loading model '{}' with n_gpu_layers = {}...",
+                "[llama.cpp] Loading model '{}' with n_gpu_layers = {} (Flash Attention enabled)...",
                 model_path.display(),
                 requested_layers
             );
@@ -100,7 +83,7 @@ impl LlamaEngine {
             let model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
             if model_ptr.is_null() {
                 if requested_layers > 0 {
-                    requested_layers = (requested_layers - 4).max(0);
+                    requested_layers = (requested_layers - 2).max(0);
                     eprintln!(
                         "[llama.cpp] Model loading failed (VRAM tight), retrying with n_gpu_layers = {}...",
                         requested_layers
@@ -120,28 +103,26 @@ impl LlamaEngine {
 
             let mut c_params = unsafe { llama_context_default_params() };
             c_params.n_ctx = if n_ctx > 0 && n_ctx <= 16384 { n_ctx } else { 8192 };
-            c_params.n_batch = 512;
+            c_params.n_batch = 2048;
             c_params.n_ubatch = 512;
+            c_params.flash_attn_type = 1; // LLAMA_FLASH_ATTN_TYPE_ENABLED
+            c_params.offload_kqv = !tried_no_offload_kqv;
+            c_params.op_offload = true;
             c_params.n_threads = std::thread::available_parallelism().map(|p| p.get() as i32).unwrap_or(8);
             c_params.n_threads_batch = c_params.n_threads;
             c_params.no_perf = true;
-
-            if tried_no_offload_kqv {
-                c_params.offload_kqv = false;
-            }
 
             let ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
             if ctx_ptr.is_null() {
                 unsafe { llama_model_free(model_ptr) };
                 if !tried_no_offload_kqv && requested_layers > 0 {
                     eprintln!(
-                        "[llama.cpp] KV cache allocation on GPU exceeded VRAM, keeping {}/{} layers on GPU with CPU KV cache...",
-                        requested_layers, total_layers
+                        "[llama.cpp] KV cache allocation on GPU exceeded VRAM, retrying with CPU KV cache...",
                     );
                     tried_no_offload_kqv = true;
                     continue;
                 } else if requested_layers > 0 {
-                    requested_layers = (requested_layers - 3).max(0);
+                    requested_layers = (requested_layers - 2).max(0);
                     tried_no_offload_kqv = false;
                     eprintln!(
                         "[llama.cpp] VRAM limit reached, scaling to {}/{} GPU layers (remaining {} on CPU)...",
