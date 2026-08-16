@@ -318,10 +318,20 @@ ApplicationWindow {
 
                 Item { Layout.fillWidth: true }
 
-                ProgressBar {
+                // Custom Self-Contained Progress Bar
+                Rectangle {
                     visible: window.isDownloading
                     Layout.preferredWidth: 200
-                    value: window.downloadProgress
+                    Layout.preferredHeight: 10
+                    color: "#252834"
+                    radius: 5
+
+                    Rectangle {
+                        height: parent.height
+                        width: Math.max(4, parent.width * Math.min(1.0, Math.max(0.0, window.downloadProgress)))
+                        color: "#3b82f6"
+                        radius: 5
+                    }
                 }
 
                 Label {
@@ -345,28 +355,34 @@ ApplicationWindow {
                 anchors.margins: 14
                 spacing: 12
 
-                ScrollView {
+                Rectangle {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    color: "#121316"
+                    radius: 8
+                    border.color: messageInput.activeFocus ? "#3b82f6" : "#2d3139"
+                    border.width: 1
 
-                    TextArea {
-                        id: messageInput
-                        placeholderText: "Type your task or question here (Enter to send, Shift+Enter for newline)..."
-                        placeholderTextColor: "#64748b"
-                        color: "#f8f9fa"
-                        font.pixelSize: 14
-                        wrapMode: TextArea.Wrap
-                        background: Rectangle {
-                            color: "#121316"
-                            radius: 8
-                            border.color: messageInput.activeFocus ? "#3b82f6" : "#2d3139"
-                            border.width: 1
-                        }
+                    ScrollView {
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        clip: true
 
-                        Keys.onReturnPressed: function(event) {
-                            if (!(event.modifiers & Qt.ShiftModifier)) {
-                                event.accepted = true
-                                sendAction()
+                        TextArea {
+                            id: messageInput
+                            placeholderText: "Type your task or question here (Enter to send, Shift+Enter for newline)..."
+                            placeholderTextColor: "#64748b"
+                            color: "#f8f9fa"
+                            font.pixelSize: 14
+                            wrapMode: TextEdit.Wrap
+                            selectByMouse: true
+                            background: null
+
+                            Keys.onReturnPressed: function(event) {
+                                if (!(event.modifiers & Qt.ShiftModifier)) {
+                                    event.accepted = true
+                                    sendAction()
+                                }
                             }
                         }
                     }
@@ -555,9 +571,19 @@ ApplicationWindow {
                     }
                 }
 
-                ProgressBar {
+                // Custom Self-Contained Progress Bar
+                Rectangle {
                     Layout.fillWidth: true
-                    value: window.downloadProgress
+                    Layout.preferredHeight: 12
+                    color: "#252834"
+                    radius: 6
+
+                    Rectangle {
+                        height: parent.height
+                        width: Math.max(4, parent.width * Math.min(1.0, Math.max(0.0, window.downloadProgress)))
+                        color: "#3b82f6"
+                        radius: 6
+                    }
                 }
             }
 

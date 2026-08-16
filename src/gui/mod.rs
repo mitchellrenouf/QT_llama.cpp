@@ -64,6 +64,7 @@ pub async fn launch_qt_gui(workspace_root: &Path) -> Result<()> {
 
     let mut child = Command::new(qml_runner)
         .arg(&qml_file)
+        .env("QT_QUICK_CONTROLS_STYLE", "Basic")
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn Qt6 QML application: {}", e))?;
 
