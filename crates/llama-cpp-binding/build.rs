@@ -63,6 +63,10 @@ fn main() {
     if has_vulkan {
         println!("cargo:warning=[llama-cpp-binding] Enabling Vulkan GPU Acceleration...");
         cfg.define("GGML_VULKAN", "ON");
+        if Path::new("/app").exists() {
+            cfg.define("CMAKE_PREFIX_PATH", "/app;/usr");
+            cfg.define("SPIRV-Headers_DIR", "/app/share/cmake/SPIRV-Headers");
+        }
     }
 
     if has_hipblas {

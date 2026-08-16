@@ -25,10 +25,22 @@ build-options:
     CARGO_HOME: /run/build/qt-llama/cargo
 
 modules:
+  # 1. SPIRV-Headers required for ggml-vulkan shader compilation
+  - name: spirv-headers
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DSPIRV_HEADERS_ENABLE_TESTS=OFF
+      - -DSPIRV_HEADERS_ENABLE_INSTALL=ON
+    sources:
+      - type: archive
+        url: https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.321.0.tar.gz
+        sha256: 5bbea925663d4cd2bab23efad53874f2718248a73dcaf9dd21dff8cb48e602fc
+
+  # 2. Main QT_llama application
   - name: qt-llama
     buildsystem: simple
     build-commands:
-      # 1. Setup offline vendored cargo configuration
+      # Setup offline vendored cargo configuration
       - mkdir -p ${CARGO_HOME}
       - mkdir -p .cargo
       - |
@@ -40,20 +52,20 @@ modules:
         directory = "vendor"
         EOF
 
-      # 2. Build release binary with Vulkan GPU acceleration (built-in vulkan-stack in Freedesktop SDK 25.08)
+      # Build release binary with Vulkan GPU acceleration
       - cargo build --release --features vulkan --no-default-features
 
-      # 3. Install binaries & wrapper script
+      # Install binaries & wrapper script
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama
       - ln -sf /app/bin/qt_llama /app/bin/qt-llama
       - install -Dm755 flatpak/qt-llama-wrapper.sh /app/bin/qt-llama-wrapper
 
-      # 4. Install AppStream metadata, desktop entry & application icon
+      # Install AppStream metadata, desktop entry & application icon
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.desktop /app/share/applications/dev.mitchellrenouf.QT_llama.desktop
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml /app/share/metainfo/dev.mitchellrenouf.QT_llama.metainfo.xml
       - install -Dm644 flatpak/icons/dev.mitchellrenouf.QT_llama.svg /app/share/icons/hicolor/scalable/apps/dev.mitchellrenouf.QT_llama.svg
 
-      # 5. Install QML resources
+      # Install QML resources
       - mkdir -p /app/share/qt_llama/qml /app/share/gemma/qml
       - cp -r qml/* /app/share/qt_llama/qml/
       - cp -r qml/* /app/share/gemma/qml/
