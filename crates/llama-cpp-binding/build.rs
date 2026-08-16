@@ -91,6 +91,20 @@ fn main() {
     if has_hipblas {
         println!("cargo:warning=[llama-cpp-binding] Enabling AMD ROCm / HIP Acceleration...");
         cfg.define("GGML_HIPBLAS", "ON");
+        if let Ok(rocm_dir) = env::var("ROCM_PATH").or_else(|_| env::var("HIP_PATH")) {
+            let p = PathBuf::from(rocm_dir);
+            cfg.define("ROCM_PATH", &p);
+            let hipcc = p.join("bin/hipcc");
+            if hipcc.exists() {
+                cfg.define("CMAKE_CXX_COMPILER", hipcc);
+            }
+        } else if Path::new("/app/rocm").exists() {
+            cfg.define("ROCM_PATH", "/app/rocm");
+            cfg.define("CMAKE_CXX_COMPILER", "/app/rocm/bin/hipcc");
+        } else if Path::new("/opt/rocm").exists() {
+            cfg.define("ROCM_PATH", "/opt/rocm");
+            cfg.define("CMAKE_CXX_COMPILER", "/opt/rocm/bin/hipcc");
+        }
     }
 
     if has_sycl {

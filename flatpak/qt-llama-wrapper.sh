@@ -25,12 +25,14 @@ if [ -n "$VULKAN_ICD_DIRS" ]; then
     export VK_ICD_FILENAMES="$VULKAN_ICD_DIRS"
 fi
 
-# 2. Configure Dynamic Linker search paths for GPU driver extensions & CUDA libraries
+# 2. Configure Dynamic Linker search paths for GPU driver extensions, CUDA & ROCm libraries
 EXTRA_LIB_PATHS=""
 for libdir in \
     /app/lib \
     /app/cuda/lib64 \
     /app/cuda/lib \
+    /app/rocm/lib \
+    /app/rocm/lib64 \
     /usr/lib/x86_64-linux-gnu/GL/default/lib \
     /usr/lib/x86_64-linux-gnu/GL/nvidia-*/lib \
     /usr/lib/GL/default/lib \
@@ -54,9 +56,12 @@ if [ -n "$EXTRA_LIB_PATHS" ]; then
     fi
 fi
 
-# 3. Add CUDA bin to PATH if installed
+# 3. Add CUDA & ROCm bin to PATH if installed
 if [ -d "/app/cuda/bin" ]; then
     export PATH="/app/cuda/bin:$PATH"
+fi
+if [ -d "/app/rocm/bin" ]; then
+    export PATH="/app/rocm/bin:$PATH"
 fi
 
 # 4. Configure Qt6 QML import paths

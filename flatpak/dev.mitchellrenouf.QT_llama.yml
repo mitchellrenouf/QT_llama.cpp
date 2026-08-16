@@ -20,13 +20,16 @@ finish-args:
   - --talk-name=org.freedesktop.Notifications
 
 build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin:/app/cuda/bin
-  append-ld-library-path: /app/cuda/lib64:/app/lib
+  append-path: /usr/lib/sdk/rust-stable/bin:/app/cuda/bin:/app/rocm/bin
+  append-ld-library-path: /app/cuda/lib64:/app/rocm/lib:/app/rocm/lib64:/app/lib
   env:
     CARGO_HOME: /run/build/qt-llama/cargo
     CUDA_PATH: /app/cuda
     CUDA_TOOLKIT_ROOT_DIR: /app/cuda
+    ROCM_PATH: /app/rocm
+    HIP_PATH: /app/rocm
     LLAMA_CUDA: "1"
+    LLAMA_HIPBLAS: "1"
     LLAMA_VULKAN: "1"
 
 modules:
@@ -46,7 +49,25 @@ modules:
         url: https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_610.43.02_linux.run
         sha256: 9f98ec1f6c950401041d3f1308e221f0d5db8771a8e10569001b64caaee31a92
 
-  # 2. SPIRV-Headers required for ggml-vulkan shader compilation
+  # 2. AMD ROCm 7.14 Toolkit (Local Runfile Installer for HIP / hipBLAS)
+  - name: rocm-toolkit
+    buildsystem: simple
+    build-commands:
+      - bash rocm-installer-7.14.0-7.run untar "/app/rocm"
+      # Strip documentation, samples, and manual pages to optimize image footprint
+      - rm -rf /app/rocm/doc /app/rocm/samples /app/rocm/share/doc /app/rocm/share/man
+      - mkdir -p /app/lib
+      - cp -P /app/rocm/lib/libamdhip64.so* /app/lib/ || true
+      - cp -P /app/rocm/lib/libhipblas.so* /app/lib/ || true
+      - cp -P /app/rocm/lib/libhipblaslt.so* /app/lib/ || true
+      - cp -P /app/rocm/lib/libhsa-runtime64.so* /app/lib/ || true
+      - cp -P /app/rocm/lib/librocm-core.so* /app/lib/ || true
+    sources:
+      - type: file
+        url: https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-7.14/rocm-installer-7.14.0-7.run
+        sha256: 763887c73b744c66b74c4a95b7c4e4ae578153cce07e09234d97e0fd0e660fe8
+
+  # 3. SPIRV-Headers required for ggml-vulkan shader compilation
   - name: spirv-headers
     buildsystem: cmake-ninja
     config-opts:
@@ -57,7 +78,7 @@ modules:
         url: https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.321.0.tar.gz
         sha256: 5bbea925663d4cd2bab23efad53874f2718248a73dcaf9dd21dff8cb48e602fc
 
-  # 3. Main QT_llama application (Built with both CUDA and Vulkan enabled)
+  # 4. Main QT_llama application (Built with CUDA, ROCm hipBLAS, and Vulkan enabled)
   - name: qt-llama
     buildsystem: simple
     build-commands:
@@ -73,8 +94,8 @@ modules:
         directory = "vendor"
         EOF
 
-      # Build release binary with both CUDA & Vulkan GPU acceleration
-      - cargo build --release --features cuda,vulkan --no-default-features
+      # Build release binary with CUDA, ROCm/hipBLAS & Vulkan GPU acceleration
+      - cargo build --release --features cuda,vulkan,hipblas --no-default-features
 
       # Install binaries & wrapper script
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama
