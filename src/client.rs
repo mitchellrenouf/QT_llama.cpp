@@ -59,6 +59,7 @@ pub enum StreamEvent {
     Content(String),
     ToolCallAssembled(ToolCall),
     ToolExecuted { name: String, result: String },
+    Metrics { token_count: usize, elapsed_secs: f64, tokens_per_sec: f64 },
     Finish(String),
 }
 
@@ -261,6 +262,7 @@ impl LlamaClient {
                 StreamEvent::Reasoning(r) => thought_acc.push_str(&r),
                 StreamEvent::ToolCallAssembled(tc) => assembled_tool_calls.push(tc),
                 StreamEvent::ToolExecuted { .. } => {}
+                StreamEvent::Metrics { .. } => {}
                 StreamEvent::Finish(_) => {}
             })
             .await?;
@@ -294,16 +296,16 @@ impl LlamaClient {
 
         let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
         if let Some(tools) = &request.tools {
-            sys_prompt.push_str("\nYou have access to the following tools:\n");
             for tool in tools {
                 sys_prompt.push_str(&format!(
-                    "- {}: {} (schema: {})\n",
-                    tool.function.name,
-                    tool.function.description,
-                    serde_json::to_string(&tool.function.parameters).unwrap_or_default()
+                    "<|tool|>{}<tool|>\n",
+                    llama_cpp_binding::format_tool_declaration_canonical(
+                        &tool.function.name,
+                        &tool.function.description,
+                        &tool.function.parameters
+                    )
                 ));
             }
-            sys_prompt.push_str("\nTo call a tool, output a fenced codeblock with ```tool_call containing {\"name\": \"...\", \"arguments\": {...}} or use <|tool_call>call:tool_name{...}<tool_call|>.\n");
         }
 
         let prompt = format_gemma_chat(&request.messages, Some(&sys_prompt));
@@ -311,6 +313,9 @@ impl LlamaClient {
         let temp = request.temperature.unwrap_or(0.7);
 
         let (mut rx, _cancel) = engine.generate_stream(&prompt, max_tokens, temp);
+
+        let start_time = std::time::Instant::now();
+        let mut token_count = 0usize;
 
         let mut raw_acc = String::new();
         let mut full_content = String::new();
@@ -323,6 +328,17 @@ impl LlamaClient {
                 Ok(p) => p,
                 Err(e) => return Err(e),
             };
+
+            token_count += 1;
+            if token_count % 4 == 0 {
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let tps = if elapsed > 0.001 { token_count as f64 / elapsed } else { 0.0 };
+                callback(StreamEvent::Metrics {
+                    token_count,
+                    elapsed_secs: elapsed,
+                    tokens_per_sec: tps,
+                });
+            }
 
             raw_acc.push_str(&piece);
 
@@ -567,6 +583,14 @@ impl LlamaClient {
                 }
             }
         }
+
+        let total_elapsed = start_time.elapsed().as_secs_f64();
+        let final_tps = if total_elapsed > 0.001 { token_count as f64 / total_elapsed } else { 0.0 };
+        callback(StreamEvent::Metrics {
+            token_count,
+            elapsed_secs: total_elapsed,
+            tokens_per_sec: final_tps,
+        });
 
         callback(StreamEvent::Finish("stop".to_string()));
 

@@ -202,6 +202,14 @@ where
                                             "result": result,
                                         }));
                                     }
+                                    StreamEvent::Metrics { token_count, elapsed_secs, tokens_per_sec } => {
+                                        let _ = out_tx_stream.send(serde_json::json!({
+                                            "type": "metrics",
+                                            "token_count": token_count,
+                                            "elapsed_secs": elapsed_secs,
+                                            "tokens_per_sec": tokens_per_sec,
+                                        }));
+                                    }
                                     StreamEvent::Finish(_) => {}
                                 }
                             })

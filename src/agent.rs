@@ -383,6 +383,7 @@ impl GemmaAgent {
             let mut last_was_reasoning = false;
             let mut content_header_printed = false;
             let mut assembled_tool_calls = Vec::new();
+            let mut last_metrics: Option<(usize, f64, f64)> = None;
 
             let assistant_msg_res = self
                 .client
@@ -417,12 +418,24 @@ impl GemmaAgent {
                         assembled_tool_calls.push(tc);
                     }
                     StreamEvent::ToolExecuted { .. } => {}
+                    StreamEvent::Metrics { token_count, elapsed_secs, tokens_per_sec } => {
+                        last_metrics = Some((token_count, elapsed_secs, tokens_per_sec));
+                    }
                     StreamEvent::Finish(_) => {}
                 })
                 .await;
 
             if reasoning_header_printed && last_was_reasoning {
                 println!("\n{}", "────────────────────────────────────────────────────".bright_yellow().dimmed());
+            }
+
+            if let Some((tokens, elapsed, tps)) = last_metrics {
+                println!(
+                    "{}",
+                    format!("⚡ [{} tokens in {:.2}s | {:.1} tk/s]", tokens, elapsed, tps)
+                        .bright_black()
+                        .italic()
+                );
             }
 
             let assistant_msg = match assistant_msg_res {

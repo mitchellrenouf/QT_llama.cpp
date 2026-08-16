@@ -26,6 +26,7 @@ ApplicationWindow {
     property real downloadProgress: 0.0
     property int currentFileIndex: 1
     property int totalFilesCount: 1
+    property real currentTps: 0.0
     property string downloadStatusMessage: ""
 
     function findTargetPort() {
@@ -114,9 +115,17 @@ ApplicationWindow {
                 window.statusText = "Tool finished: " + evt.name
                 break
 
+            case "metrics":
+                window.currentTps = evt.tokens_per_sec || 0.0
+                if (window.currentTps > 0) {
+                    window.statusText = "Generating (" + window.currentTps.toFixed(1) + " tk/s)"
+                }
+                break
+
             case "turn_done":
                 window.isThinking = false
                 window.statusText = "Ready"
+                window.currentTps = 0.0
                 window.estimatedTokens = evt.tokens || 0
                 finalizeCurrentAssistantMessage(evt.content, evt.thought)
                 break
@@ -375,6 +384,26 @@ ApplicationWindow {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                // Live Speed Indicator Badge
+                Rectangle {
+                    visible: window.currentTps > 0
+                    color: "#064e3b"
+                    radius: 6
+                    border.color: "#10b981"
+                    border.width: 1
+                    Layout.preferredHeight: 32
+                    Layout.preferredWidth: tpsText.implicitWidth + 16
+
+                    Text {
+                        id: tpsText
+                        anchors.centerIn: parent
+                        text: "⚡ " + window.currentTps.toFixed(1) + " tk/s"
+                        color: "#6ee7b7"
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
+                }
 
                 // Mode Selector
                 ComboBox {
