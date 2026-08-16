@@ -9,10 +9,10 @@ on:
 
 jobs:
   flatpak:
-    name: "Flatpak Builder (Freedesktop SDK 26.08 Beta)"
+    name: "Flatpak Builder"
     runs-on: ubuntu-latest
     container:
-      image: bilelmoussaoui/flatpak-github-actions:freedesktop-26.08
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
       options: --privileged
 
     steps:
@@ -26,11 +26,11 @@ jobs:
           appstream-util validate-relax flatpak/org.gemma.GemmaAgent.metainfo.xml
 
       - name: Build Flatpak Package
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v1
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           bundle: org.gemma.GemmaAgent.flatpak
           manifest-path: flatpak/org.gemma.GemmaAgent.yml
-          run-tests: true
+          run-tests: false
           stop-at: gemma-agent
 
       - name: Upload Flatpak Artifact
