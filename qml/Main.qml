@@ -302,6 +302,15 @@ ApplicationWindow {
         return audios
     }
 
+    function isThoughtValid(thought) {
+        if (!thought) return false
+        var trimmed = thought.trim()
+        if (trimmed.length === 0) return false
+        var lower = trimmed.toLowerCase()
+        if (lower === "thought" || lower === "thought process" || lower === "reasoning" || lower === "<|channel>thought<channel|>") return false
+        return true
+    }
+
     function startModelDownload(repo, quant) {
         var fullSpec = repo + ":" + quant
         window.currentModelName = fullSpec
@@ -633,7 +642,7 @@ ApplicationWindow {
 
                         // Collapsible Thought Process Box (Collapsed by default!)
                         Rectangle {
-                            visible: model.thought !== undefined && model.thought !== null && model.thought.trim().length > 0
+                            visible: isThoughtValid(model.thought)
                             Layout.fillWidth: true
                             implicitHeight: thoughtColumn.implicitHeight + 16
                             color: "#13151b"
