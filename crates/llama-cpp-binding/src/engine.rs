@@ -86,7 +86,7 @@ impl LlamaEngine {
                     c_path.as_ptr(),
                     &mut m_params,
                     &mut c_params,
-                    2048,
+                    4096,
                 )
             };
             eprintln!(
