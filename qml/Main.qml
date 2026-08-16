@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import QtWebSockets
+import QtMultimedia
 
 ApplicationWindow {
     id: window
@@ -208,6 +209,78 @@ ApplicationWindow {
             }
         }
         chatListView.positionViewAtEnd()
+    }
+
+    function formatDuration(ms) {
+        if (!ms || ms < 0 || isNaN(ms)) return "0:00"
+        var totalSec = Math.floor(ms / 1000)
+        var mins = Math.floor(totalSec / 60)
+        var secs = totalSec % 60
+        return mins + ":" + (secs < 10 ? "0" : "") + secs
+    }
+
+    function extractImages(text) {
+        if (!text) return []
+        var images = []
+        var mdImgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g
+        var match
+        while ((match = mdImgRegex.exec(text)) !== null) {
+            var url = match[2].trim()
+            if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("file://") && !url.startsWith("qrc:/") && !url.startsWith("data:")) {
+                if (url.startsWith("/")) {
+                    url = "file://" + url
+                }
+            }
+            images.push({ "alt": match[1] || "Image", "src": url })
+        }
+        var urlRegex = /(?:^|\s)(https?:\/\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|svg)|file:\/\/\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|svg))(?:\s|$)/gi
+        while ((match = urlRegex.exec(text)) !== null) {
+            var directUrl = match[1].trim()
+            var exists = false
+            for (var i = 0; i < images.length; i++) {
+                if (images[i].src === directUrl) { exists = true; break; }
+            }
+            if (!exists) {
+                images.push({ "alt": "Image", "src": directUrl })
+            }
+        }
+        return images
+    }
+
+    function extractVideos(text) {
+        if (!text) return []
+        var videos = []
+        var vidRegex = /(?:\[([^\]]*)\]\(([^)]+\.(?:mp4|webm|mkv|mov|avi))\)|(?:^|\s)(https?:\/\/[^\s]+\.(?:mp4|webm|mkv|mov|avi)|file:\/\/\/[^\s]+\.(?:mp4|webm|mkv|mov|avi))(?:\s|$))/gi
+        var match
+        while ((match = vidRegex.exec(text)) !== null) {
+            var src = match[2] ? match[2].trim() : (match[3] ? match[3].trim() : "")
+            var title = match[1] || "Video Playback"
+            if (!src.startsWith("http://") && !src.startsWith("https://") && !src.startsWith("file://") && !src.startsWith("qrc:/")) {
+                if (src.startsWith("/")) src = "file://" + src
+            }
+            if (src.length > 0) {
+                videos.push({ "title": title, "src": src })
+            }
+        }
+        return videos
+    }
+
+    function extractAudios(text) {
+        if (!text) return []
+        var audios = []
+        var audRegex = /(?:\[([^\]]*)\]\(([^)]+\.(?:mp3|wav|ogg|flac|m4a|aac))\)|(?:^|\s)(https?:\/\/[^\s]+\.(?:mp3|wav|ogg|flac|m4a|aac)|file:\/\/\/[^\s]+\.(?:mp3|wav|ogg|flac|m4a|aac))(?:\s|$))/gi
+        var match
+        while ((match = audRegex.exec(text)) !== null) {
+            var src = match[2] ? match[2].trim() : (match[3] ? match[3].trim() : "")
+            var title = match[1] || "Audio Track"
+            if (!src.startsWith("http://") && !src.startsWith("https://") && !src.startsWith("file://") && !src.startsWith("qrc:/")) {
+                if (src.startsWith("/")) src = "file://" + src
+            }
+            if (src.length > 0) {
+                audios.push({ "title": title, "src": src })
+            }
+        }
+        return audios
     }
 
     function startModelDownload(repo, quant) {
@@ -461,17 +534,229 @@ ApplicationWindow {
                             }
                         }
 
-                        // Main Text Content
+                        // Main Text Content with Rich Markdown Rendering
                         TextEdit {
                             visible: model.content !== undefined && model.content !== null && model.content.length > 0
                             Layout.fillWidth: true
                             text: model.content || ""
+                            textFormat: TextEdit.MarkdownText
                             color: "#f1f5f9"
                             font.pixelSize: 14
                             font.family: "Sans Serif"
                             wrapMode: TextEdit.Wrap
                             readOnly: true
                             selectByMouse: true
+                            onLinkActivated: function(link) {
+                                Qt.openUrlExternally(link)
+                            }
+                        }
+
+                        // Embedded Images
+                        Repeater {
+                            model: extractImages(model.content)
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: 520
+                                Layout.preferredHeight: 300
+                                color: "#111318"
+                                radius: 8
+                                clip: true
+                                border.color: "#2a2e3d"
+                                border.width: 1
+
+                                Image {
+                                    anchors.fill: parent
+                                    anchors.margins: 4
+                                    source: modelData.src
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                    asynchronous: true
+                                }
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    height: 26
+                                    color: "#cc181a24"
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: "🔍 Click to open full image: " + modelData.alt
+                                        color: "#38bdf8"
+                                        font.pixelSize: 11
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        Qt.openUrlExternally(modelData.src)
+                                    }
+                                }
+                            }
+                        }
+
+                        // Embedded Video Player
+                        Repeater {
+                            model: extractVideos(model.content)
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: 560
+                                Layout.preferredHeight: 340
+                                color: "#0d0f14"
+                                radius: 8
+                                border.color: "#2a2e3d"
+                                border.width: 1
+                                clip: true
+
+                                MediaPlayer {
+                                    id: vidPlayer
+                                    source: modelData.src
+                                    audioOutput: AudioOutput { volume: 1.0 }
+                                    videoOutput: vidOut
+                                }
+
+                                VideoOutput {
+                                    id: vidOut
+                                    anchors.top: parent.top
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: vidControlBar.top
+                                    fillMode: VideoOutput.PreserveAspectFit
+                                }
+
+                                Rectangle {
+                                    id: vidControlBar
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: 42
+                                    color: "#181a24"
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 6
+                                        spacing: 8
+
+                                        Button {
+                                            text: vidPlayer.playbackState === MediaPlayer.PlayingState ? "⏸" : "▶"
+                                            Layout.preferredWidth: 38
+                                            Layout.preferredHeight: 30
+                                            background: Rectangle { color: "#2563eb"; radius: 4 }
+                                            contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                            onClicked: {
+                                                if (vidPlayer.playbackState === MediaPlayer.PlayingState) {
+                                                    vidPlayer.pause()
+                                                } else {
+                                                    vidPlayer.play()
+                                                }
+                                            }
+                                        }
+
+                                        Slider {
+                                            Layout.fillWidth: true
+                                            from: 0
+                                            to: vidPlayer.duration > 0 ? vidPlayer.duration : 100
+                                            value: vidPlayer.position
+                                            onMoved: {
+                                                vidPlayer.position = value
+                                            }
+                                        }
+
+                                        Label {
+                                            text: formatDuration(vidPlayer.position) + " / " + formatDuration(vidPlayer.duration)
+                                            color: "#94a3b8"
+                                            font.pixelSize: 11
+                                            font.family: "Monospace"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Embedded Audio Player
+                        Repeater {
+                            model: extractAudios(model.content)
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: 500
+                                Layout.preferredHeight: 64
+                                color: "#161822"
+                                radius: 8
+                                border.color: "#383d4f"
+                                border.width: 1
+
+                                MediaPlayer {
+                                    id: sndPlayer
+                                    source: modelData.src
+                                    audioOutput: AudioOutput { volume: 1.0 }
+                                }
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    spacing: 12
+
+                                    Button {
+                                        text: sndPlayer.playbackState === MediaPlayer.PlayingState ? "⏸" : "▶ 🔊"
+                                        Layout.preferredWidth: 46
+                                        Layout.preferredHeight: 36
+                                        background: Rectangle {
+                                            color: "#8b5cf6"
+                                            radius: 6
+                                        }
+                                        contentItem: Text {
+                                            text: parent.text
+                                            color: "#ffffff"
+                                            font.bold: true
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                        onClicked: {
+                                            if (sndPlayer.playbackState === MediaPlayer.PlayingState) {
+                                                sndPlayer.pause()
+                                            } else {
+                                                sndPlayer.play()
+                                            }
+                                        }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+
+                                        Label {
+                                            text: "🎵 " + modelData.title
+                                            color: "#f8f9fa"
+                                            font.bold: true
+                                            font.pixelSize: 12
+                                        }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+
+                                            Slider {
+                                                Layout.fillWidth: true
+                                                from: 0
+                                                to: sndPlayer.duration > 0 ? sndPlayer.duration : 100
+                                                value: sndPlayer.position
+                                                onMoved: {
+                                                    sndPlayer.position = value
+                                                }
+                                            }
+
+                                            Label {
+                                                text: formatDuration(sndPlayer.position) + " / " + formatDuration(sndPlayer.duration)
+                                                color: "#94a3b8"
+                                                font.pixelSize: 10
+                                                font.family: "Monospace"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // Tool Arguments & Output if applicable

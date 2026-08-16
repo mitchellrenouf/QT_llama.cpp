@@ -193,8 +193,24 @@ impl LlamaClient {
 
             loop {
                 if !in_thought {
-                    // Check for thought opening tags
-                    if let Some(pos) = raw_acc.find("<|channel>thought") {
+                    // Check for thought opening tags: "<|channel>" or "<thought>"
+                    if let Some(pos) = raw_acc.find("<|channel>") {
+                        let before = &raw_acc[..pos];
+                        if !before.is_empty() {
+                            callback(StreamEvent::Content(before.to_string()));
+                            full_content.push_str(before);
+                        }
+                        raw_acc = raw_acc[pos + "<|channel>".len()..].to_string();
+                        let trimmed_start = raw_acc.trim_start();
+                        if trimmed_start.starts_with("thought") {
+                            let after_thought = &trimmed_start["thought".len()..];
+                            raw_acc = after_thought.trim_start_matches(|c| c == '\n' || c == '\r' || c == ' ').to_string();
+                        } else if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        in_thought = true;
+                        continue;
+                    } else if let Some(pos) = raw_acc.find("<|channel>thought") {
                         let before = &raw_acc[..pos];
                         if !before.is_empty() {
                             callback(StreamEvent::Content(before.to_string()));
@@ -226,7 +242,7 @@ impl LlamaClient {
                     }
 
                     // Check if buffer ends with a potential tag prefix
-                    let possible_prefixes = ["<", "<|", "<|c", "<|ch", "<|channel", "<|channel>", "<|channel>t", "<|channel>th", "<|channel>thought", "<t", "<th", "<thought"];
+                    let possible_prefixes = ["<", "<|", "<|c", "<|ch", "<|channel", "<|channel>", "<t", "<th", "<thought"];
                     let has_prefix = possible_prefixes.iter().any(|prefix| raw_acc.ends_with(prefix));
                     if has_prefix {
                         break;
@@ -242,9 +258,10 @@ impl LlamaClient {
                     // In thought mode: check for thought closing tags
                     if let Some(pos) = raw_acc.find("<channel|>") {
                         let thought_part = &raw_acc[..pos];
-                        if !thought_part.is_empty() {
-                            callback(StreamEvent::Reasoning(thought_part.to_string()));
-                            full_reasoning.push_str(thought_part);
+                        let clean_thought = thought_part.trim().trim_start_matches("thought").trim();
+                        if !clean_thought.is_empty() {
+                            callback(StreamEvent::Reasoning(clean_thought.to_string()));
+                            full_reasoning.push_str(clean_thought);
                         }
                         raw_acc = raw_acc[pos + "<channel|>".len()..].to_string();
                         if raw_acc.starts_with('\n') {
@@ -254,9 +271,10 @@ impl LlamaClient {
                         continue;
                     } else if let Some(pos) = raw_acc.find("</thought>") {
                         let thought_part = &raw_acc[..pos];
-                        if !thought_part.is_empty() {
-                            callback(StreamEvent::Reasoning(thought_part.to_string()));
-                            full_reasoning.push_str(thought_part);
+                        let clean_thought = thought_part.trim().trim_start_matches("thought").trim();
+                        if !clean_thought.is_empty() {
+                            callback(StreamEvent::Reasoning(clean_thought.to_string()));
+                            full_reasoning.push_str(clean_thought);
                         }
                         raw_acc = raw_acc[pos + "</thought>".len()..].to_string();
                         if raw_acc.starts_with('\n') {
@@ -266,9 +284,10 @@ impl LlamaClient {
                         continue;
                     } else if let Some(pos) = raw_acc.find("<start_of_turn>model") {
                         let thought_part = &raw_acc[..pos];
-                        if !thought_part.is_empty() {
-                            callback(StreamEvent::Reasoning(thought_part.to_string()));
-                            full_reasoning.push_str(thought_part);
+                        let clean_thought = thought_part.trim().trim_start_matches("thought").trim();
+                        if !clean_thought.is_empty() {
+                            callback(StreamEvent::Reasoning(clean_thought.to_string()));
+                            full_reasoning.push_str(clean_thought);
                         }
                         raw_acc = raw_acc[pos + "<start_of_turn>model".len()..].to_string();
                         if raw_acc.starts_with('\n') {
