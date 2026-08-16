@@ -217,7 +217,8 @@ impl LlamaClient {
 
         let engine = if let Some(path) = model_path {
             println!("Loading in-process GGUF model: {}", path.display());
-            match LlamaEngine::new(&path, 99, config.max_context_tokens as u32) {
+            let n_layers = config.n_gpu_layers.unwrap_or(-1);
+            match LlamaEngine::new(&path, n_layers, config.max_context_tokens as u32) {
                 Ok(eng) => Some(Arc::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: llama.cpp engine init deferred: {}", e);

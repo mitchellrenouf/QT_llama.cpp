@@ -60,7 +60,31 @@ impl LlamaEngine {
             .ok_or_else(|| anyhow!("Invalid model path UTF-8"))?;
         let c_path = CString::new(path_str)?;
 
-        let mut requested_layers = if n_gpu_layers < 0 { 99 } else { n_gpu_layers };
+        let env_override = std::env::var("LLAMA_GPU_LAYERS")
+            .ok()
+            .or_else(|| std::env::var("QT_LLAMA_GPU_LAYERS").ok())
+            .and_then(|s| s.parse::<i32>().ok());
+
+        let is_auto_layers = n_gpu_layers < 0 || n_gpu_layers == 99;
+        let mut requested_layers = env_override.unwrap_or_else(|| {
+            if is_auto_layers {
+                let file_size_gb = std::fs::metadata(model_path)
+                    .map(|m| m.len() as f64 / (1024.0 * 1024.0 * 1024.0))
+                    .unwrap_or(0.0);
+
+                // For large models (e.g. 26B models >= 12GB), leave ~4-5 GB VRAM headroom
+                // for Vulkan/CUDA compute activation buffers, KV cache, and desktop compositor
+                if file_size_gb >= 12.0 {
+                    24 // 24/30 layers on GPU, remainder on CPU
+                } else if file_size_gb >= 8.0 {
+                    26 // 26/30 layers on GPU, remainder on CPU
+                } else {
+                    99 // All layers on GPU
+                }
+            } else {
+                n_gpu_layers
+            }
+        });
         let mut tried_no_offload_kqv = false;
 
         loop {

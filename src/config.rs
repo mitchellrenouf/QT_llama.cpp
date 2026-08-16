@@ -72,6 +72,10 @@ pub struct Config {
     #[arg(long)]
     pub cli: bool,
 
+    /// Number of model layers to offload to GPU (-1 or 99 for auto-scaling, 0 for CPU only)
+    #[arg(long = "gpu-layers", env = "LLAMA_GPU_LAYERS")]
+    pub n_gpu_layers: Option<i32>,
+
     /// Custom path to browser executable (e.g. /var/lib/flatpak/exports/bin/com.brave.Browser, com.brave.Browser, or /usr/bin/brave-origin)
     #[arg(long, env = "BROWSER_EXE")]
     pub browser_exe: Option<String>,
