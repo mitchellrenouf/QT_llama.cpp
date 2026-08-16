@@ -20,7 +20,10 @@ pub fn find_qml_entrypoint(workspace_root: &Path) -> Option<PathBuf> {
     let candidates = [
         workspace_root.join("qml").join("Main.qml"),
         PathBuf::from("qml/Main.qml"),
+        PathBuf::from("/app/share/qt_llama/qml/Main.qml"),
         PathBuf::from("/app/share/gemma/qml/Main.qml"),
+        PathBuf::from("/app/share/qt_llama/Main.qml"),
+        PathBuf::from("/usr/share/qt_llama/qml/Main.qml"),
         PathBuf::from("/usr/share/gemma/qml/Main.qml"),
     ];
 
@@ -36,8 +39,14 @@ pub fn find_qml_runner() -> Option<PathBuf> {
     let candidate_names = [
         "qml6",
         "qml",
+        "/usr/bin/qml6",
+        "/usr/bin/qml",
         "/usr/lib/qt6/bin/qml",
+        "/usr/lib/qt6/bin/qml6",
+        "/app/bin/qml6",
+        "/app/bin/qml",
         "qmlscene",
+        "/usr/bin/qmlscene",
         "/usr/lib/qt6/bin/qmlscene",
     ];
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== Building QT_llama.cpp Flatpak (Freedesktop SDK 25.08) ==="
+echo "=== Building QT_llama.cpp Flatpak (KDE 6.9 / Qt6) ==="
 
 # 1. Ensure runtime & sdk are installed
-echo "Checking Freedesktop SDK 25.08 and Rust extension..."
-flatpak install -y --noninteractive flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 org.freedesktop.Sdk.Extension.rust-stable//25.08 2>/dev/null || true
+echo "Checking KDE 6.9 Platform/Sdk and Rust extension..."
+flatpak install -y --noninteractive flathub org.kde.Platform//6.9 org.kde.Sdk//6.9 org.freedesktop.Sdk.Extension.rust-stable//25.08 2>/dev/null || true
 
 # 2. Vendor cargo dependencies for offline Flatpak build
 echo "Vendoring cargo dependencies..."
@@ -21,7 +21,7 @@ flatpak-builder --force-clean --user --install-deps-from=flathub --repo="$REPO_D
 
 # 4. Create standalone .flatpak single-file bundle
 echo "Creating standalone bundle dev.mitchellrenouf.QT_llama.flatpak..."
-flatpak build-bundle "$REPO_DIR" dev.mitchellrenouf.QT_llama.flatpak dev.mitchellrenouf.QT_llama 25.08
+flatpak build-bundle "$REPO_DIR" dev.mitchellrenouf.QT_llama.flatpak dev.mitchellrenouf.QT_llama 6.9
 
 echo "=== Flatpak Build Complete! ==="
 echo "To install locally: flatpak install --user -y dev.mitchellrenouf.QT_llama.flatpak"

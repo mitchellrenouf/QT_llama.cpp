@@ -1,7 +1,7 @@
 app-id: dev.mitchellrenouf.QT_llama
-runtime: org.freedesktop.Platform
-runtime-version: '25.08'
-sdk: org.freedesktop.Sdk
+runtime: org.kde.Platform
+runtime-version: '6.9'
+sdk: org.kde.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: qt-llama-wrapper
