@@ -2,6 +2,7 @@ use anyhow::Result;
 use colored::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 use crate::client::{ChatMessage, LlamaClient, StreamEvent};
@@ -10,6 +11,7 @@ use crate::markdown::print_rich_markdown;
 use crate::rules::WorkspaceRules;
 use crate::tools::ToolRegistry;
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionState {
     pub mode: AgentMode,
@@ -88,6 +90,14 @@ impl GemmaAgent {
 
     pub async fn health_check(&self) -> Result<String> {
         self.client.health_check().await
+    }
+
+    pub fn has_model_loaded(&self) -> bool {
+        self.client.has_engine()
+    }
+
+    pub fn get_config(&self) -> &Config {
+        &self.config
     }
 
     pub fn reload_model(&mut self, model_path: &std::path::Path) -> Result<()> {
@@ -198,42 +208,27 @@ impl GemmaAgent {
     pub fn save_session(&self, name: &str) -> Result<PathBuf> {
         let sessions_dir = self.config.workspace_root.join(".gemma").join("sessions");
         fs::create_dir_all(&sessions_dir)?;
-
-        let filename = if name.ends_with(".json") {
-            name.to_string()
-        } else {
-            format!("{}.json", name)
-        };
-
-        let file_path = sessions_dir.join(filename);
-        let state = SessionState {
-            mode: self.config.mode,
-            messages: self.history.clone(),
-        };
-
-        let json_data = serde_json::to_string_pretty(&state)?;
-        fs::write(&file_path, json_data)?;
+        let file_path = sessions_dir.join(format!("{}.json", name));
+        let serialized = serde_json::to_string_pretty(&self.history)?;
+        fs::write(&file_path, serialized)?;
+        println!("Session saved to: {}", file_path.display().to_string().cyan());
         Ok(file_path)
     }
 
     pub fn load_session(&mut self, name: &str) -> Result<PathBuf> {
-        let sessions_dir = self.config.workspace_root.join(".gemma").join("sessions");
-        let filename = if name.ends_with(".json") {
-            name.to_string()
-        } else {
-            format!("{}.json", name)
-        };
-
-        let file_path = sessions_dir.join(filename);
+        let file_path = self
+            .config
+            .workspace_root
+            .join(".gemma")
+            .join("sessions")
+            .join(format!("{}.json", name));
         if !file_path.exists() {
             return Err(anyhow::anyhow!("Session file not found: {}", file_path.display()));
         }
-
         let content = fs::read_to_string(&file_path)?;
-        let state: SessionState = serde_json::from_str(&content)?;
-
-        self.config.mode = state.mode;
-        self.history = state.messages;
+        let history: Vec<ChatMessage> = serde_json::from_str(&content)?;
+        self.history = history;
+        println!("Loaded session: {}", name.cyan());
         Ok(file_path)
     }
 
@@ -260,6 +255,39 @@ impl GemmaAgent {
         self.run_turn(user_input).await
     }
 
+    pub async fn process_user_request_stream<F>(
+        &mut self,
+        user_input: &str,
+        mut event_sink: F,
+    ) -> Result<(String, String)>
+    where
+        F: FnMut(StreamEvent),
+    {
+        if self.estimated_tokens() >= self.config.max_context_tokens {
+            self.compact_context(self.config.max_context_tokens / 2).await?;
+        }
+
+        self.history.push(ChatMessage::user(user_input));
+        let tool_defs = self.registry.definitions();
+
+        let req = crate::client::ChatCompletionRequest {
+            model: self.config.model.clone(),
+            messages: self.history.clone(),
+            tools: Some(tool_defs.clone()),
+            tool_choice: None,
+            temperature: Some(self.config.temperature),
+            max_tokens: Some(self.config.max_tokens),
+            stream: Some(true),
+        };
+
+        let assistant_msg = self.client.stream_completion(&req, |e| event_sink(e)).await?;
+        let content = assistant_msg.get_text_content().unwrap_or_default().trim().to_string();
+        let thought = assistant_msg.reasoning_content.clone().unwrap_or_default().trim().to_string();
+
+        self.history.push(assistant_msg);
+        Ok((content, thought))
+    }
+
     pub async fn run_turn(&mut self, user_input: &str) -> Result<()> {
         if self.estimated_tokens() >= self.config.max_context_tokens {
             self.compact_context(self.config.max_context_tokens / 2).await?;
@@ -282,12 +310,9 @@ impl GemmaAgent {
                 stream: Some(true),
             };
 
-            print!("\n{}: ", "🤖 Gemma".bold().green());
-            use std::io::Write;
-            std::io::stdout().flush()?;
-
             let mut reasoning_header_printed = false;
             let mut last_was_reasoning = false;
+            let mut content_header_printed = false;
             let mut assembled_tool_calls = Vec::new();
 
             let assistant_msg_res = self
@@ -295,17 +320,24 @@ impl GemmaAgent {
                 .stream_completion(&req, |event| match event {
                     StreamEvent::Reasoning(text) => {
                         if !reasoning_header_printed {
-                            println!("\n{}", "🧠 Thinking...".dimmed());
+                            println!("\n{}", "🧠 ──────────────── Thought Process ────────────────".bright_yellow().bold());
                             reasoning_header_printed = true;
                         }
-                        print!("{}", text.dimmed());
+                        print!("{}", text.yellow().dimmed());
                         let _ = std::io::stdout().flush();
                         last_was_reasoning = true;
                     }
                     StreamEvent::Content(text) => {
                         if last_was_reasoning {
-                            println!();
+                            println!("\n{}", "────────────────────────────────────────────────────".bright_yellow().dimmed());
+                            print!("\n{}: ", "🤖 Gemma".bold().green());
+                            let _ = std::io::stdout().flush();
                             last_was_reasoning = false;
+                            content_header_printed = true;
+                        } else if !content_header_printed {
+                            print!("\n{}: ", "🤖 Gemma".bold().green());
+                            let _ = std::io::stdout().flush();
+                            content_header_printed = true;
                         }
                         print!("{}", text);
                         let _ = std::io::stdout().flush();

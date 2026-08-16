@@ -122,6 +122,10 @@ impl LlamaClient {
         }
     }
 
+    pub fn has_engine(&self) -> bool {
+        self.engine.is_some()
+    }
+
     pub async fn health_check(&self) -> Result<String> {
         if self.engine.is_some() {
             Ok("In-Process llama.cpp Engine Active".to_string())

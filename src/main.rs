@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
     if !config.cli {
-        match gui::launch_qt_gui(&config.workspace_root).await {
+        match gui::launch_qt_gui(&config).await {
             Ok(_) => return Ok(()),
             Err(e) => {
                 println!(

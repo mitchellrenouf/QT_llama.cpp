@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtWebSockets
 
 ApplicationWindow {
     id: window
@@ -17,7 +18,7 @@ ApplicationWindow {
     property int estimatedTokens: 0
     property bool isThinking: false
     property bool speechEnabled: false
-    property string statusText: "Ready"
+    property string statusText: "Connecting to agent..."
     property string currentModelName: "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0"
     property bool isModelLoaded: false
     property bool isDownloading: false
@@ -26,17 +27,124 @@ ApplicationWindow {
     property int totalFilesCount: 1
     property string downloadStatusMessage: ""
 
-    signal sendMessageRequested(string message)
-    signal switchModeRequested(string mode)
-    signal toggleSpeechRequested()
-    signal clearHistoryRequested()
-    signal loadHfModelRequested(string repoSpec)
+    // --- WebSocket IPC Connection to in-process Rust Agent ---
+    WebSocket {
+        id: wsClient
+        property string targetPort: (Qt.application.arguments && Qt.application.arguments.length > 1) ? Qt.application.arguments[1] : "9876"
+        url: "ws://127.0.0.1:" + targetPort
+        active: true
 
-    function appendMessage(role, content, isThinkingBlock, toolName, toolArgs, toolResult) {
+        onStatusChanged: {
+            if (status === WebSocket.Open) {
+                console.log("WebSocket connected to Gemma Agent backend on port " + targetPort)
+            } else if (status === WebSocket.Error) {
+                console.log("WebSocket error: " + errorString)
+                window.statusText = "Backend connection error: " + errorString
+            } else if (status === WebSocket.Closed) {
+                console.log("WebSocket closed")
+            }
+        }
+
+        onTextMessageReceived: function(message) {
+            try {
+                var data = JSON.parse(message)
+                handleWsEvent(data)
+            } catch (err) {
+                console.log("Failed to parse backend message: " + err)
+            }
+        }
+    }
+
+    function sendWsCommand(cmd) {
+        if (wsClient.status === WebSocket.Open) {
+            wsClient.sendTextMessage(JSON.stringify(cmd))
+        } else {
+            console.log("Cannot send command, WebSocket is not open")
+        }
+    }
+
+    function handleWsEvent(evt) {
+        switch (evt.type) {
+            case "init_state":
+                window.isModelLoaded = evt.model_loaded || false
+                window.currentModelName = evt.model_name || window.currentModelName
+                window.currentMode = evt.mode || "general"
+                window.speechEnabled = evt.speech_enabled || false
+                window.estimatedTokens = evt.tokens || 0
+                window.statusText = window.isModelLoaded ? "Ready" : "Model not loaded"
+                if (!window.isModelLoaded) {
+                    modelSetupDialog.open()
+                }
+                break
+
+            case "stream_thought":
+                window.isThinking = true
+                window.statusText = "Gemma is reasoning..."
+                appendThoughtToken(evt.thought)
+                break
+
+            case "stream_token":
+                window.isThinking = false
+                window.statusText = "Gemma is responding..."
+                appendContentToken(evt.token)
+                break
+
+            case "tool_started":
+                appendMessage("assistant", "", "", false, evt.name, evt.args, "")
+                window.statusText = "Executing tool: " + evt.name
+                break
+
+            case "turn_done":
+                window.isThinking = false
+                window.statusText = "Ready"
+                window.estimatedTokens = evt.tokens || 0
+                finalizeCurrentAssistantMessage(evt.content, evt.thought)
+                break
+
+            case "download_progress":
+                window.isDownloading = true
+                window.downloadStatusMessage = evt.message
+                window.downloadProgress = evt.progress
+                window.currentFileIndex = evt.file_idx
+                window.totalFilesCount = evt.total_files
+                break
+
+            case "model_loaded":
+                window.isDownloading = false
+                window.isModelLoaded = true
+                window.currentModelName = evt.model_name
+                window.statusText = "Ready (In-Process llama.cpp)"
+                modelSetupDialog.close()
+                break
+
+            case "error":
+                window.isThinking = false
+                window.statusText = "Error: " + evt.message
+                appendMessage("assistant", "⚠️ " + evt.message, "", false, "", "", "")
+                break
+
+            case "mode_changed":
+                window.currentMode = evt.mode
+                break
+
+            case "speech_toggled":
+                window.speechEnabled = evt.enabled
+                break
+
+            case "history_cleared":
+                chatModel.clear()
+                window.estimatedTokens = evt.tokens || 0
+                window.statusText = "Ready"
+                break
+        }
+    }
+
+    function appendMessage(role, content, thought, thoughtExpanded, toolName, toolArgs, toolResult) {
         chatModel.append({
             "role": role,
-            "content": content,
-            "isThinking": isThinkingBlock || false,
+            "content": content || "",
+            "thought": thought || "",
+            "thoughtExpanded": thoughtExpanded || false,
             "toolName": toolName || "",
             "toolArgs": toolArgs || "",
             "toolResult": toolResult || ""
@@ -44,71 +152,48 @@ ApplicationWindow {
         chatListView.positionViewAtEnd()
     }
 
-    function appendStreamToken(token) {
+    function appendThoughtToken(token) {
         if (chatModel.count > 0) {
-            var lastItem = chatModel.get(chatModel.count - 1)
-            if (lastItem.role === "assistant" && !lastItem.isThinking) {
-                lastItem.content += token
+            var lastIdx = chatModel.count - 1
+            var lastItem = chatModel.get(lastIdx)
+            if (lastItem.role === "assistant" && lastItem.toolName === "") {
+                var updatedThought = lastItem.thought + token
+                chatModel.setProperty(lastIdx, "thought", updatedThought)
                 chatListView.positionViewAtEnd()
                 return
             }
         }
-        appendMessage("assistant", token, false, "", "", "")
+        appendMessage("assistant", "", token, false, "", "", "")
     }
 
-    function updateDownloadProgress(msg, progress, fileIdx, totalFiles) {
-        window.isDownloading = true
-        window.downloadStatusMessage = msg
-        window.downloadProgress = progress
-        window.currentFileIndex = fileIdx
-        window.totalFilesCount = totalFiles
-        if (progress >= 1.0) {
-            window.isDownloading = false
-            window.isModelLoaded = true
-            window.statusText = "Model loaded & ready"
+    function appendContentToken(token) {
+        if (chatModel.count > 0) {
+            var lastIdx = chatModel.count - 1
+            var lastItem = chatModel.get(lastIdx)
+            if (lastItem.role === "assistant" && lastItem.toolName === "") {
+                var updatedContent = lastItem.content + token
+                chatModel.setProperty(lastIdx, "content", updatedContent)
+                chatListView.positionViewAtEnd()
+                return
+            }
         }
+        appendMessage("assistant", token, "", false, "", "", "")
     }
 
-    // Active QML Download & Progress Resuming Engine
-    Timer {
-        id: downloadSimTimer
-        interval: 100
-        repeat: true
-        running: window.isDownloading
-
-        property int stepCount: 0
-        property int maxSteps: 60
-        property int targetFiles: 1
-        property string repoSpec: ""
-
-        onTriggered: {
-            stepCount++
-            var fraction = Math.min(1.0, stepCount / maxSteps)
-            window.downloadProgress = fraction
-
-            var curFile = Math.min(targetFiles, Math.floor(fraction * targetFiles) + 1)
-            window.currentFileIndex = curFile
-            window.totalFilesCount = targetFiles
-
-            var speed = (42.5 + (Math.sin(stepCount * 0.3) * 3.5)).toFixed(1)
-            var pct = Math.round(fraction * 100)
-
-            if (targetFiles > 1) {
-                window.downloadStatusMessage = "⬇️ [File " + curFile + "/" + targetFiles + "] Downloading shard " + curFile + " of " + targetFiles + " (" + pct + "%) @ " + speed + " MB/s"
-            } else {
-                window.downloadStatusMessage = "⬇️ Downloading GGUF model & mmproj (" + pct + "%) @ " + speed + " MB/s"
-            }
-
-            if (stepCount >= maxSteps) {
-                downloadSimTimer.stop()
-                window.isDownloading = false
-                window.isModelLoaded = true
-                window.downloadProgress = 1.0
-                window.downloadStatusMessage = "✨ All model shards & vision projector loaded successfully"
-                window.statusText = "Ready (In-Process llama.cpp)"
-                modelSetupDialog.close()
+    function finalizeCurrentAssistantMessage(content, thought) {
+        if (chatModel.count > 0) {
+            var lastIdx = chatModel.count - 1
+            var lastItem = chatModel.get(lastIdx)
+            if (lastItem.role === "assistant" && lastItem.toolName === "") {
+                if (content && content.length > 0) {
+                    chatModel.setProperty(lastIdx, "content", content)
+                }
+                if (thought && thought.length > 0) {
+                    chatModel.setProperty(lastIdx, "thought", thought)
+                }
             }
         }
+        chatListView.positionViewAtEnd()
     }
 
     function startModelDownload(repo, quant) {
@@ -116,19 +201,8 @@ ApplicationWindow {
         window.currentModelName = fullSpec
         window.isDownloading = true
         window.downloadProgress = 0.0
-
-        var numFiles = 1
-        if (quant.toUpperCase().indexOf("Q8") !== -1) {
-            numFiles = 4
-        }
-        downloadSimTimer.targetFiles = numFiles
-        downloadSimTimer.stepCount = 0
-        downloadSimTimer.maxSteps = numFiles * 15
-        downloadSimTimer.repoSpec = fullSpec
-        downloadSimTimer.start()
-
-        console.log("JSON_IPC:" + JSON.stringify({ "type": "load_hf_model", "spec": fullSpec }))
-        window.loadHfModelRequested(fullSpec)
+        window.downloadStatusMessage = "⏳ Resolving Hugging Face repository & shards..."
+        sendWsCommand({ "type": "load_hf_model", "spec": fullSpec })
     }
 
     ListModel {
@@ -188,8 +262,8 @@ ApplicationWindow {
                 // Mode Selector
                 ComboBox {
                     id: modeCombo
-                    model: ["General", "Coder", "Automatic"]
-                    currentIndex: 0
+                    model: ["General", "Code", "Desktop"]
+                    currentIndex: window.currentMode === "code" ? 1 : (window.currentMode === "desktop" ? 2 : 0)
                     Layout.preferredWidth: 140
                     background: Rectangle {
                         color: "#252834"
@@ -207,7 +281,7 @@ ApplicationWindow {
                     onActivated: {
                         var m = modeCombo.currentText.toLowerCase()
                         window.currentMode = m
-                        window.switchModeRequested(m)
+                        sendWsCommand({ "type": "switch_mode", "mode": m })
                     }
                 }
 
@@ -229,8 +303,7 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                     }
                     onClicked: {
-                        window.speechEnabled = !window.speechEnabled
-                        window.toggleSpeechRequested()
+                        sendWsCommand({ "type": "toggle_speech" })
                     }
                 }
 
@@ -251,8 +324,7 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                     }
                     onClicked: {
-                        chatModel.clear()
-                        window.clearHistoryRequested()
+                        sendWsCommand({ "type": "clear_history" })
                     }
                 }
             }
@@ -273,7 +345,7 @@ ApplicationWindow {
 
             delegate: ColumnLayout {
                 width: chatListView.width - 40
-                spacing: 4
+                spacing: 6
 
                 // Role Header Badge
                 RowLayout {
@@ -296,35 +368,96 @@ ApplicationWindow {
                 Rectangle {
                     Layout.fillWidth: true
                     radius: 8
-                    color: model.role === "user" ? "#1e293b" : (model.isThinking ? "#1c1917" : (model.toolName !== "" ? "#1e1e24" : "#181a20"))
-                    border.color: model.role === "user" ? "#334155" : (model.isThinking ? "#44403c" : (model.toolName !== "" ? "#3f3f46" : "#27272a"))
+                    color: model.role === "user" ? "#1e293b" : (model.toolName !== "" ? "#1e1e24" : "#181a20")
+                    border.color: model.role === "user" ? "#334155" : (model.toolName !== "" ? "#3f3f46" : "#27272a")
                     border.width: 1
 
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 14
-                        spacing: 8
+                        spacing: 10
 
-                        // Thought block tag if thinking
-                        Label {
-                            visible: model.isThinking
-                            text: "🧠 Thinking Chain"
-                            color: "#a8a29e"
-                            font.italic: true
-                            font.pixelSize: 11
+                        // Collapsible Thought Process Box (Collapsed by default!)
+                        Rectangle {
+                            visible: model.thought !== undefined && model.thought !== null && model.thought.trim().length > 0
+                            Layout.fillWidth: true
+                            color: "#13151b"
+                            border.color: "#33384a"
+                            border.width: 1
+                            radius: 6
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                spacing: 6
+
+                                // Clickable toggle header
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 26
+                                    color: thoughtMouseArea.containsMouse ? "#202433" : "transparent"
+                                    radius: 4
+
+                                    MouseArea {
+                                        id: thoughtMouseArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            chatModel.setProperty(index, "thoughtExpanded", !model.thoughtExpanded)
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 6
+                                        anchors.rightMargin: 6
+                                        spacing: 8
+
+                                        Text {
+                                            text: model.thoughtExpanded ? "▼ 🧠 Thought Process" : "▶ 🧠 Thought Process (click to expand)"
+                                            color: "#eab308"
+                                            font.bold: true
+                                            font.pixelSize: 12
+                                        }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        Text {
+                                            text: model.thoughtExpanded ? "Hide" : "Show"
+                                            color: "#94a3b8"
+                                            font.pixelSize: 11
+                                        }
+                                    }
+                                }
+
+                                // Thought text content (visible only when expanded)
+                                TextEdit {
+                                    visible: model.thoughtExpanded === true
+                                    Layout.fillWidth: true
+                                    text: model.thought || ""
+                                    color: "#d4d4d8"
+                                    font.pixelSize: 12
+                                    font.italic: true
+                                    font.family: "Monospace"
+                                    wrapMode: TextEdit.Wrap
+                                    readOnly: true
+                                    selectByMouse: true
+                                }
+                            }
                         }
 
                         // Main Text Content
                         TextEdit {
+                            visible: model.content !== undefined && model.content !== null && model.content.length > 0
                             Layout.fillWidth: true
-                            text: model.content
-                            color: model.isThinking ? "#d6d3d1" : "#f1f5f9"
+                            text: model.content || ""
+                            color: "#f1f5f9"
                             font.pixelSize: 14
                             font.family: "Sans Serif"
                             wrapMode: TextEdit.Wrap
                             readOnly: true
                             selectByMouse: true
-                            textFormat: TextEdit.RichText
                         }
 
                         // Tool Arguments & Output if applicable
@@ -662,7 +795,6 @@ ApplicationWindow {
                     background: Rectangle { color: "#252834"; radius: 6 }
                     contentItem: Text { text: parent.text; color: "#94a3b8"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
                     onClicked: {
-                        downloadSimTimer.stop()
                         window.isDownloading = false
                         modelSetupDialog.close()
                     }
@@ -688,10 +820,10 @@ ApplicationWindow {
         var txt = messageInput.text.trim()
         if (txt.length === 0) return
 
-        appendMessage("user", txt, false, "", "", "")
+        appendMessage("user", txt, "", false, "", "", "")
         messageInput.text = ""
-        window.statusText = "Gemma is processing..."
+        window.statusText = "Gemma is thinking..."
         window.isThinking = true
-        window.sendMessageRequested(txt)
+        sendWsCommand({ "type": "send_message", "message": txt })
     }
 }
