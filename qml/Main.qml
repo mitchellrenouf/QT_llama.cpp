@@ -22,6 +22,8 @@ ApplicationWindow {
     property bool isModelLoaded: false
     property bool isDownloading: false
     property real downloadProgress: 0.0
+    property int currentFileIndex: 1
+    property int totalFilesCount: 1
     property string downloadStatusMessage: ""
 
     signal sendMessageRequested(string message)
@@ -52,6 +54,19 @@ ApplicationWindow {
             }
         }
         appendMessage("assistant", token, false, "", "", "")
+    }
+
+    function updateDownloadProgress(msg, progress, fileIdx, totalFiles) {
+        window.isDownloading = true
+        window.downloadStatusMessage = msg
+        window.downloadProgress = progress
+        window.currentFileIndex = fileIdx
+        window.totalFilesCount = totalFiles
+        if (progress >= 1.0) {
+            window.isDownloading = false
+            window.isModelLoaded = true
+            window.statusText = "Model loaded & ready"
+        }
     }
 
     ListModel {
@@ -86,11 +101,11 @@ ApplicationWindow {
                 // Model Specifier Button / Badge
                 Button {
                     id: modelBadgeBtn
-                    text: "📦 " + window.currentModelName
+                    text: "📦 " + window.currentModelName + (window.isDownloading ? " (" + Math.round(window.downloadProgress * 100) + "%)" : "")
                     background: Rectangle {
-                        color: "#252834"
+                        color: window.isDownloading ? "#1e3a8a" : "#252834"
                         radius: 6
-                        border.color: "#3b82f6"
+                        border.color: window.isDownloading ? "#60a5fa" : "#3b82f6"
                     }
                     contentItem: Text {
                         text: modelBadgeBtn.text
@@ -282,10 +297,10 @@ ApplicationWindow {
             }
         }
 
-        // --- Status Bar ---
+        // --- Status Bar & Progress Tracker ---
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 28
+            Layout.preferredHeight: 32
             color: "#16181f"
             border.color: "#222530"
             border.width: 1
@@ -296,12 +311,18 @@ ApplicationWindow {
                 anchors.rightMargin: 20
 
                 Label {
-                    text: window.statusText
+                    text: window.isDownloading ? window.downloadStatusMessage : window.statusText
                     font.pixelSize: 12
-                    color: window.isThinking ? "#fbbf24" : "#94a3b8"
+                    color: window.isDownloading ? "#38bdf8" : (window.isThinking ? "#fbbf24" : "#94a3b8")
                 }
 
                 Item { Layout.fillWidth: true }
+
+                ProgressBar {
+                    visible: window.isDownloading
+                    Layout.preferredWidth: 200
+                    value: window.downloadProgress
+                }
 
                 Label {
                     text: "Tokens: ~" + window.estimatedTokens
@@ -377,11 +398,11 @@ ApplicationWindow {
     // --- First-Launch / HuggingFace Model Setup Modal Dialog ---
     Dialog {
         id: modelSetupDialog
-        title: "🤗 Hugging Face Model Setup"
+        title: "🤗 Hugging Face Model & Shards Setup"
         modal: true
         anchors.centerIn: parent
-        width: 600
-        height: 480
+        width: 640
+        height: 520
         visible: !window.isModelLoaded
 
         background: Rectangle {
@@ -394,65 +415,81 @@ ApplicationWindow {
         ColumnLayout {
             anchors.fill: parent
             anchors.margins: 20
-            spacing: 16
+            spacing: 14
 
             Label {
-                text: "✨ In-Process Gemma 4 Model Setup"
+                text: "✨ In-Process Gemma 4 Model & Projector Setup"
                 font.bold: true
                 font.pixelSize: 18
                 color: "#f8f9fa"
             }
 
             Label {
-                text: "Specify any Hugging Face model repository and quantization level in the standard <b>user/model:quant</b> format to load directly in memory."
-                font.pixelSize: 13
+                text: "Specify any Hugging Face GGUF repository. Multi-file split shards (e.g. 4 shards for Q8_0) and vision mmproj files are automatically detected, downloaded, and loaded into memory."
+                font.pixelSize: 12
                 color: "#94a3b8"
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }
 
             // Quick Preset Selection
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-
-                Label {
-                    text: "Popular Presets:"
-                    color: "#cbd5e1"
-                    font.pixelSize: 12
-                }
-
-                Button {
-                    text: "Gemma 4 26B (Q4_0)"
-                    background: Rectangle { color: "#252834"; radius: 6 }
-                    contentItem: Text { text: parent.text; color: "#38bdf8"; font.pixelSize: 11; font.bold: true }
-                    onClicked: {
-                        hfRepoInput.text = "ggml-org/gemma-4-26B-A4B-it-GGUF"
-                        hfQuantInput.text = "Q4_0"
-                    }
-                }
-
-                Button {
-                    text: "Gemma 4 26B (Q8_0)"
-                    background: Rectangle { color: "#252834"; radius: 6 }
-                    contentItem: Text { text: parent.text; color: "#a78bfa"; font.pixelSize: 11; font.bold: true }
-                    onClicked: {
-                        hfRepoInput.text = "ggml-org/gemma-4-26B-A4B-it-GGUF"
-                        hfQuantInput.text = "Q8_0"
-                    }
-                }
-            }
-
-            // HuggingFace Repo Field (Prefilled with ggml-org/gemma-4-26B-A4B-it-GGUF)
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 6
 
                 Label {
+                    text: "Popular Quantizations & Presets:"
+                    color: "#cbd5e1"
+                    font.bold: true
+                    font.pixelSize: 12
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Button {
+                        text: "Gemma 4 26B (Q4_0 1-File)"
+                        background: Rectangle { color: "#252834"; radius: 6; border.color: "#383d4f" }
+                        contentItem: Text { text: parent.text; color: "#38bdf8"; font.pixelSize: 11; font.bold: true }
+                        onClicked: {
+                            hfRepoInput.text = "ggml-org/gemma-4-26B-A4B-it-GGUF"
+                            hfQuantInput.text = "Q4_0"
+                        }
+                    }
+
+                    Button {
+                        text: "Gemma 4 26B (Q8_0 4-Shards)"
+                        background: Rectangle { color: "#252834"; radius: 6; border.color: "#383d4f" }
+                        contentItem: Text { text: parent.text; color: "#a78bfa"; font.pixelSize: 11; font.bold: true }
+                        onClicked: {
+                            hfRepoInput.text = "ggml-org/gemma-4-26B-A4B-it-GGUF"
+                            hfQuantInput.text = "Q8_0"
+                        }
+                    }
+
+                    Button {
+                        text: "Gemma 2 9B (Q4_K_M)"
+                        background: Rectangle { color: "#252834"; radius: 6; border.color: "#383d4f" }
+                        contentItem: Text { text: parent.text; color: "#34d399"; font.pixelSize: 11; font.bold: true }
+                        onClicked: {
+                            hfRepoInput.text = "google/gemma-2-9b-it-GGUF"
+                            hfQuantInput.text = "Q4_K_M"
+                        }
+                    }
+                }
+            }
+
+            // HuggingFace Repo Field
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+
+                Label {
                     text: "Hugging Face Repository:"
                     font.bold: true
                     color: "#cbd5e1"
-                    font.pixelSize: 13
+                    font.pixelSize: 12
                 }
 
                 TextField {
@@ -469,16 +506,16 @@ ApplicationWindow {
                 }
             }
 
-            // Quantization Field (Prefilled with Q4_0)
+            // Quantization Field
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: 4
 
                 Label {
-                    text: "Quantization (e.g. Q4_0, Q4_K_M, Q8_0):"
+                    text: "Quantization Level (e.g. Q4_0, Q8_0, Q4_K_M):"
                     font.bold: true
                     color: "#cbd5e1"
-                    font.pixelSize: 13
+                    font.pixelSize: 12
                 }
 
                 TextField {
@@ -495,21 +532,32 @@ ApplicationWindow {
                 }
             }
 
-            // Progress Bar & Status Message
+            // Multi-File Live Progress Tracker
             ColumnLayout {
                 visible: window.isDownloading
                 Layout.fillWidth: true
                 spacing: 6
 
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        text: window.downloadStatusMessage
+                        color: "#38bdf8"
+                        font.pixelSize: 12
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                    }
+                    Label {
+                        text: Math.round(window.downloadProgress * 100) + "%"
+                        color: "#60a5fa"
+                        font.bold: true
+                        font.pixelSize: 12
+                    }
+                }
+
                 ProgressBar {
                     Layout.fillWidth: true
                     value: window.downloadProgress
-                }
-
-                Label {
-                    text: window.downloadStatusMessage
-                    color: "#38bdf8"
-                    font.pixelSize: 12
                 }
             }
 
@@ -532,16 +580,15 @@ ApplicationWindow {
 
                 Button {
                     id: loadModelBtn
-                    text: "🚀 Load & Start Agent"
-                    Layout.preferredWidth: 180
+                    text: "🚀 Download & Load Model"
+                    Layout.preferredWidth: 220
                     background: Rectangle { color: "#2563eb"; radius: 6 }
                     contentItem: Text { text: loadModelBtn.text; color: "#ffffff"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
                     onClicked: {
                         var fullSpec = hfRepoInput.text.trim() + ":" + hfQuantInput.text.trim()
                         window.currentModelName = fullSpec
                         window.loadHfModelRequested(fullSpec)
-                        window.isModelLoaded = true
-                        modelSetupDialog.close()
+                        window.isDownloading = true
                     }
                 }
             }

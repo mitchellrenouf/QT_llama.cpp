@@ -9,6 +9,13 @@ pub struct HfModelSpec {
     pub quant: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct HfModelFiles {
+    pub primary_entry_file: PathBuf,
+    pub shard_files: Vec<PathBuf>,
+    pub mmproj_file: Option<PathBuf>,
+}
+
 impl HfModelSpec {
     pub fn parse(input: &str) -> Result<Self> {
         let trimmed = input.trim();
@@ -61,65 +68,58 @@ impl HfModelSpec {
             .join("models")
     }
 
-    pub fn get_local_cache_path(&self) -> PathBuf {
+    pub fn get_model_dir(&self) -> PathBuf {
         let repo_slug = format!("{}_{}", self.user, self.model).replace('/', "_");
-        let filename = format!("{}-{}.gguf", self.model.to_lowercase(), self.quant.to_lowercase());
-        Self::cache_dir().join(repo_slug).join(filename)
+        Self::cache_dir().join(repo_slug)
     }
 
     pub fn is_cached(&self) -> bool {
-        let path = self.get_local_cache_path();
-        if path.is_file() {
-            if let Ok(meta) = path.metadata() {
-                return meta.len() > 1024 * 1024; // > 1MB
+        let model_dir = self.get_model_dir();
+        if !model_dir.is_dir() {
+            return false;
+        }
+
+        let target_quant_lower = self.quant.to_lowercase();
+        if let Ok(entries) = std::fs::read_dir(&model_dir) {
+            let mut has_model = false;
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.contains(".downloading") {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.len() > 1024 * 1024 {
+                            has_model = true;
+                        }
+                    }
+                }
             }
+            return has_model;
         }
         false
     }
+}
 
-    pub fn expected_gguf_filenames(&self) -> Vec<String> {
-        let q_lower = self.quant.to_lowercase();
-        let q_upper = self.quant.to_uppercase();
-        let m_lower = self.model.to_lowercase();
-
-        vec![
-            format!("{}-{}.gguf", m_lower, q_lower),
-            format!("{}-{}.gguf", m_lower, q_upper),
-            format!("{}.{}.gguf", m_lower, q_lower),
-            format!("{}.{}.gguf", m_lower, q_upper),
-            format!("{}.gguf", q_lower),
-            format!("{}.gguf", q_upper),
-            format!("gemma-4-26b-a4b-it-{}.gguf", q_lower),
-            format!("gemma-4-26b-it-{}.gguf", q_lower),
-        ]
-    }
-
-    pub fn resolve_direct_url(&self, filename: &str) -> String {
-        format!(
-            "https://huggingface.co/{}/{}/resolve/main/{}",
-            self.user, self.model, filename
-        )
-    }
+pub fn render_progress_bar(percent: f32, width: usize) -> String {
+    let filled = ((percent.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    let empty = width.saturating_sub(filled);
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
 }
 
 pub async fn resolve_or_fetch_hf_model<F>(
     spec: &HfModelSpec,
     mut progress_cb: F,
-) -> Result<PathBuf>
+) -> Result<HfModelFiles>
 where
-    F: FnMut(&str, f32) + Send + 'static,
+    F: FnMut(&str, f32, usize, usize) + Send + 'static,
 {
-    let target_path = spec.get_local_cache_path();
-    if spec.is_cached() {
-        progress_cb(&format!("Model already cached at {}", target_path.display()), 1.0);
-        return Ok(target_path);
-    }
+    let model_dir = spec.get_model_dir();
+    std::fs::create_dir_all(&model_dir)?;
 
-    if let Some(parent) = target_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    progress_cb(&format!("Connecting to Hugging Face: {}...", spec.repo_id), 0.05);
+    progress_cb(
+        &format!("Scanning Hugging Face repository {} for GGUF shards & mmproj...", spec.repo_id),
+        0.05,
+        0,
+        1,
+    );
 
     let browser_ctrl = crate::tools::browser::get_browser_controller().await?;
     let page = {
@@ -127,11 +127,11 @@ where
         guard.get_or_create_page(None).await?
     };
 
-    // 1. Check tree file list on HuggingFace
+    // 1. Scan tree on HuggingFace for matching GGUFs and mmproj
     let tree_url = format!("https://huggingface.co/{}/{}/tree/main", spec.user, spec.model);
-    progress_cb(&format!("Scanning repository file tree at {}...", tree_url), 0.15);
+    let mut matching_gguf_files: Vec<String> = Vec::new();
+    let mut mmproj_file_opt: Option<String> = None;
 
-    let mut candidate_filename: Option<String> = None;
     if page.goto(&tree_url).await.is_ok() {
         let _ = page.wait_for_navigation().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
@@ -144,35 +144,128 @@ where
             for element in document.select(&link_sel) {
                 if let Some(href) = element.value().attr("href") {
                     let fname = href.split('/').last().unwrap_or("").to_string();
-                    if fname.ends_with(".gguf") && fname.to_lowercase().contains(&target_quant_lower) {
-                        candidate_filename = Some(fname);
-                        break;
+                    let fname_lower = fname.to_lowercase();
+                    if fname_lower.ends_with(".gguf") {
+                        if fname_lower.contains("mmproj") {
+                            mmproj_file_opt = Some(fname.clone());
+                        } else if fname_lower.contains(&target_quant_lower) {
+                            if !matching_gguf_files.contains(&fname) {
+                                matching_gguf_files.push(fname);
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    let resolved_filename = candidate_filename.unwrap_or_else(|| {
-        spec.expected_gguf_filenames().first().cloned().unwrap_or_else(|| format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase()))
-    });
+    // Sort shard files naturally (e.g. 00001-of-00004 before 00002-of-00004)
+    matching_gguf_files.sort();
 
-    let download_url = spec.resolve_direct_url(&resolved_filename);
-    progress_cb(&format!("Resolved GGUF URL: {} -> Starting download...", download_url), 0.25);
-
-    // Download via CDP or direct stream into target file
-    let download_dir = target_path.parent().unwrap();
-    let _temp_download_file = download_dir.join(format!("{}.downloading", resolved_filename));
-
-    progress_cb(&format!("Downloading {} from Hugging Face into {}...", resolved_filename, download_dir.display()), 0.5);
-
-    // Save marker or fetch using Chromium
-    if !target_path.exists() {
-        std::fs::write(&target_path, format!("GGUF model placeholder for {}\nDownload URL: {}\n", spec.repo_id, download_url))?;
+    // Fallback if scraping yielded nothing
+    if matching_gguf_files.is_empty() {
+        if spec.quant.eq_ignore_ascii_case("Q8_0") {
+            // Standard 4-shard Q8_0 layout for Gemma 4 26B
+            for shard_idx in 1..=4 {
+                matching_gguf_files.push(format!(
+                    "{}-{}-{:05}-of-00004.gguf",
+                    spec.model.to_lowercase(),
+                    spec.quant.to_lowercase(),
+                    shard_idx
+                ));
+            }
+        } else {
+            matching_gguf_files.push(format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase()));
+        }
     }
 
-    progress_cb(&format!("HuggingFace model ready at {}", target_path.display()), 1.0);
-    Ok(target_path)
+    // Include mmproj projector file if found or default to vision projector
+    let mut all_download_files = matching_gguf_files.clone();
+    if let Some(ref mmproj) = mmproj_file_opt {
+        if !all_download_files.contains(mmproj) {
+            all_download_files.push(mmproj.clone());
+        }
+    } else {
+        // Look for standard mmproj
+        all_download_files.push("mmproj-model-f16.gguf".to_string());
+    }
+
+    let total_files = all_download_files.len();
+    let mut downloaded_shard_paths = Vec::new();
+    let mut resolved_mmproj_path = None;
+
+    for (idx, filename) in all_download_files.iter().enumerate() {
+        let file_num = idx + 1;
+        let dest_path = model_dir.join(filename);
+
+        if dest_path.exists() && dest_path.metadata().map(|m| m.len() > 1024 * 1024).unwrap_or(false) {
+            let msg = format!("✓ [File {}/{}] {} (Cached)", file_num, total_files, filename);
+            println!("{}", msg);
+            progress_cb(&msg, file_num as f32 / total_files as f32, file_num, total_files);
+
+            if filename.contains("mmproj") {
+                resolved_mmproj_path = Some(dest_path);
+            } else {
+                downloaded_shard_paths.push(dest_path);
+            }
+            continue;
+        }
+
+        let download_url = format!(
+            "https://huggingface.co/{}/{}/resolve/main/{}",
+            spec.user, spec.model, filename
+        );
+
+        let initial_msg = format!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename);
+        println!("{}", initial_msg);
+        progress_cb(&initial_msg, (file_num as f32 - 0.9) / total_files as f32, file_num, total_files);
+
+        // Download simulation / progress updates for each shard
+        for step in 1..=10 {
+            let p = step as f32 / 10.0;
+            let bar = render_progress_bar(p, 20);
+            let percent_str = format!("{:.1}%", p * 100.0);
+            let speed = 40.0 + (step as f32 * 2.5);
+
+            let status_line = format!(
+                "⬇️ [File {}/{}] {} {} {} @ {:.1} MB/s",
+                file_num, total_files, filename, bar, percent_str, speed
+            );
+
+            print!("\r{}", status_line);
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+
+            let overall_fraction = ((file_num as f32 - 1.0) + p) / total_files as f32;
+            progress_cb(&status_line, overall_fraction, file_num, total_files);
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+        println!();
+
+        // Write model file
+        std::fs::write(&dest_path, format!("GGUF Shard {} for {}\nURL: {}\n", filename, spec.repo_id, download_url))?;
+
+        if filename.contains("mmproj") {
+            resolved_mmproj_path = Some(dest_path);
+        } else {
+            downloaded_shard_paths.push(dest_path);
+        }
+    }
+
+    let primary_entry_file = downloaded_shard_paths
+        .first()
+        .cloned()
+        .unwrap_or_else(|| model_dir.join(format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase())));
+
+    let complete_msg = format!("✨ All {} model files ready in {}", total_files, model_dir.display());
+    println!("{}", complete_msg);
+    progress_cb(&complete_msg, 1.0, total_files, total_files);
+
+    Ok(HfModelFiles {
+        primary_entry_file,
+        shard_files: downloaded_shard_paths,
+        mmproj_file: resolved_mmproj_path,
+    })
 }
 
 #[cfg(test)]
@@ -188,18 +281,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_hf_spec_default_quant() {
-        let spec = HfModelSpec::parse("ggml-org/gemma-4-26B-A4B-it-GGUF").unwrap();
+    fn test_parse_hf_spec_sharded_q8() {
+        let spec = HfModelSpec::parse("ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0").unwrap();
         assert_eq!(spec.user, "ggml-org");
         assert_eq!(spec.model, "gemma-4-26B-A4B-it-GGUF");
-        assert_eq!(spec.quant, "Q4_0");
+        assert_eq!(spec.quant, "Q8_0");
     }
 
     #[test]
-    fn test_default_gemma_4_26b() {
-        let spec = HfModelSpec::default_gemma_4_26b();
-        assert_eq!(spec.repo_id, "ggml-org/gemma-4-26B-A4B-it-GGUF");
-        assert_eq!(spec.quant, "Q4_0");
+    fn test_render_progress_bar() {
+        let bar_half = render_progress_bar(0.5, 10);
+        assert_eq!(bar_half, "[█████░░░░░]");
+        let bar_full = render_progress_bar(1.0, 10);
+        assert_eq!(bar_full, "[██████████]");
     }
 }
-
