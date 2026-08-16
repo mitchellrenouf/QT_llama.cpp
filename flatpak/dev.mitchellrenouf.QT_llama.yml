@@ -53,18 +53,15 @@ modules:
         url: https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_610.43.02_linux.run
         sha256: 9f98ec1f6c950401041d3f1308e221f0d5db8771a8e10569001b64caaee31a92
 
-  # 2. AMD ROCm 7.14 Toolkit (HIP / hipBLAS extracted directly to bypass OS check)
+  # 2. AMD ROCm 7.14 Toolkit (HIP / hipBLAS extracted via tar)
   - name: rocm-toolkit
     buildsystem: simple
     build-commands:
-      - mkdir -p /var/tmp/rocm_tmp /app/rocm
-      - TMPDIR=/var/tmp/rocm_tmp sh rocm-installer-7.14.0-7.run --noexec --target /var/tmp/rocm_tmp/extracted
+      - mkdir -p /app/rocm
+      - sh rocm-installer-7.14.0-7.run --tar -xf -C /app/rocm
       - |
-        cd /var/tmp/rocm_tmp/extracted
-        if [ -d "opt/rocm" ]; then
-          cp -r opt/rocm*/* /app/rocm/ 2>/dev/null || true
-        fi
-        for deb in $(find . -name "*.deb" 2>/dev/null); do
+        # Unpack embedded Debian archives if present
+        for deb in $(find /app/rocm -name "*.deb" 2>/dev/null); do
           ar p "$deb" data.tar.xz 2>/dev/null | tar -xJ -C /app/rocm/ 2>/dev/null || \
           ar p "$deb" data.tar.zst 2>/dev/null | tar --zstd -x -C /app/rocm/ 2>/dev/null || \
           ar p "$deb" data.tar.gz 2>/dev/null | tar -xz -C /app/rocm/ 2>/dev/null || true
@@ -73,7 +70,6 @@ modules:
           cp -r /app/rocm/opt/rocm*/* /app/rocm/ 2>/dev/null || true
           rm -rf /app/rocm/opt 2>/dev/null || true
         fi
-      - rm -rf /var/tmp/rocm_tmp
       # Strip documentation, samples, and manual pages to optimize image footprint
       - rm -rf /app/rocm/doc /app/rocm/samples /app/rocm/share/doc /app/rocm/share/man
       - mkdir -p /app/lib
