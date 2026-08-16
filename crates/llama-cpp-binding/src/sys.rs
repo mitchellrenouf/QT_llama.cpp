@@ -194,4 +194,11 @@ extern "C" {
     pub fn llama_get_memory(ctx: *const llama_context) -> llama_memory_t;
     pub fn llama_memory_clear(mem: llama_memory_t, data: bool);
     pub fn llama_memory_seq_rm(mem: llama_memory_t, seq_id: llama_seq_id, p0: llama_pos, p1: llama_pos) -> bool;
+
+    pub fn qt_llama_fit_params(
+        model_path: *const c_char,
+        mparams: *mut llama_model_params,
+        cparams: *mut llama_context_params,
+        min_ctx: u32,
+    ) -> c_int;
 }

@@ -50,7 +50,7 @@ fn main() {
         .define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
         .define("LLAMA_BUILD_APP", "OFF")
-        .define("LLAMA_BUILD_COMMON", "OFF")
+        .define("LLAMA_BUILD_COMMON", "ON")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("CMAKE_BUILD_TYPE", "Release");
 
@@ -98,6 +98,19 @@ fn main() {
         }
     }
 
+    // Compile bridge for common_fit_params
+    let mut bridge_build = cc::Build::new();
+    bridge_build
+        .cpp(true)
+        .std("c++17")
+        .file("c_src/bridge.cpp")
+        .include(llama_root.join("include"))
+        .include(llama_root.join("ggml/include"))
+        .include(llama_root.join("common"));
+    bridge_build.compile("qt_llama_bridge");
+
+    println!("cargo:rustc-link-lib=static=llama-common");
+    println!("cargo:rustc-link-lib=static=llama-common-base");
     println!("cargo:rustc-link-lib=static=llama");
     println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-base");

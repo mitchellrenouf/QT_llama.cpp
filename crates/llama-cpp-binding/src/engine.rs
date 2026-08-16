@@ -65,57 +65,7 @@ impl LlamaEngine {
             .or_else(|| std::env::var("QT_LLAMA_GPU_LAYERS").ok())
             .and_then(|s| s.parse::<i32>().ok());
 
-        let file_size_gb = std::fs::metadata(model_path)
-            .map(|m| m.len() as f64 / (1024.0 * 1024.0 * 1024.0))
-            .unwrap_or(0.0);
-
-        let default_layers = if file_size_gb >= 12.0 {
-            23 // Intelligent allocation: ~10.1GB model + 1.34GB KV + 0.54GB compute fits in 16GB VRAM
-        } else if file_size_gb >= 8.0 {
-            26
-        } else {
-            -1 // All layers on GPU for smaller models
-        };
-
-        let mut actual_gpu_layers = env_override.unwrap_or(if n_gpu_layers >= 0 { n_gpu_layers } else { default_layers });
-        let mut model_ptr = std::ptr::null_mut();
         let mut m_params = unsafe { llama_model_default_params() };
-
-        // Try loading model with graceful step-down if VRAM is exceeded
-        for _attempt in 0..4 {
-            m_params.n_gpu_layers = actual_gpu_layers;
-            eprintln!(
-                "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
-                model_path.display(),
-                actual_gpu_layers
-            );
-
-            model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
-            if !model_ptr.is_null() {
-                break;
-            }
-
-            if actual_gpu_layers == -1 || actual_gpu_layers >= 28 {
-                actual_gpu_layers = 23;
-            } else if actual_gpu_layers > 4 {
-                actual_gpu_layers -= 3;
-            } else {
-                break;
-            }
-
-            eprintln!(
-                "[llama.cpp] GPU buffer allocation exceeded VRAM, spreading layers across GPU & CPU (n_gpu_layers = {})...",
-                actual_gpu_layers
-            );
-        }
-
-        if model_ptr.is_null() {
-            return Err(anyhow!("Failed to load GGUF model from {}", model_path.display()));
-        }
-
-        let total_layers = unsafe { llama_model_n_layer(model_ptr) };
-        let vocab_ptr = unsafe { llama_model_get_vocab(model_ptr) };
-
         let mut c_params = unsafe { llama_context_default_params() };
         c_params.n_ctx = if n_ctx > 0 && n_ctx <= 32768 { n_ctx } else { 8192 };
         c_params.n_batch = 2048;
@@ -123,6 +73,42 @@ impl LlamaEngine {
         c_params.n_threads = std::thread::available_parallelism().map(|p| p.get() as i32).unwrap_or(8);
         c_params.n_threads_batch = c_params.n_threads;
         c_params.no_perf = true;
+
+        if let Some(layers) = env_override {
+            m_params.n_gpu_layers = layers;
+        } else if n_gpu_layers >= 0 {
+            m_params.n_gpu_layers = n_gpu_layers;
+        } else {
+            // Auto mode: exactly like llama-server, run common_fit_params!
+            eprintln!("[llama.cpp] Probing device memory and fitting parameters using llama.cpp common_fit_params...");
+            let fit_status = unsafe {
+                qt_llama_fit_params(
+                    c_path.as_ptr(),
+                    &mut m_params,
+                    &mut c_params,
+                    2048,
+                )
+            };
+            eprintln!(
+                "[llama.cpp] Auto-fit completed (status: {}, fitted n_gpu_layers: {})",
+                fit_status,
+                m_params.n_gpu_layers
+            );
+        }
+
+        eprintln!(
+            "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
+            model_path.display(),
+            m_params.n_gpu_layers
+        );
+
+        let model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
+        if model_ptr.is_null() {
+            return Err(anyhow!("Failed to load GGUF model from {}", model_path.display()));
+        }
+
+        let total_layers = unsafe { llama_model_n_layer(model_ptr) };
+        let vocab_ptr = unsafe { llama_model_get_vocab(model_ptr) };
 
         let mut ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
         if ctx_ptr.is_null() {
