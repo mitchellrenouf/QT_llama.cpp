@@ -6,6 +6,7 @@ fn main() {
     let llama_root = manifest_dir.join("../../llama.cpp");
 
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=c_src/bridge.cpp");
     println!("cargo:rerun-if-env-changed=LLAMA_CUDA");
     println!("cargo:rerun-if-env-changed=LLAMA_VULKAN");
     println!("cargo:rerun-if-env-changed=LLAMA_HIPBLAS");

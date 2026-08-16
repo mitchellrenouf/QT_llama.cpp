@@ -314,7 +314,7 @@ impl LlamaClient {
 
         let (mut rx, _cancel) = engine.generate_stream(&prompt, max_tokens, temp);
 
-        let start_time = std::time::Instant::now();
+        let mut first_token_time: Option<std::time::Instant> = None;
         let mut token_count = 0usize;
 
         let mut raw_acc = String::new();
@@ -329,16 +329,22 @@ impl LlamaClient {
                 Err(e) => return Err(e),
             };
 
+            let start = first_token_time.get_or_insert_with(std::time::Instant::now);
             token_count += 1;
-            if token_count % 4 == 0 {
-                let elapsed = start_time.elapsed().as_secs_f64();
-                let tps = if elapsed > 0.001 { token_count as f64 / elapsed } else { 0.0 };
-                callback(StreamEvent::Metrics {
-                    token_count,
-                    elapsed_secs: elapsed,
-                    tokens_per_sec: tps,
-                });
-            }
+            let elapsed = start.elapsed().as_secs_f64();
+            let tps = if token_count > 1 && elapsed > 0.0001 {
+                (token_count - 1) as f64 / elapsed
+            } else if elapsed > 0.0001 {
+                token_count as f64 / elapsed
+            } else {
+                0.0
+            };
+
+            callback(StreamEvent::Metrics {
+                token_count,
+                elapsed_secs: elapsed,
+                tokens_per_sec: tps,
+            });
 
             raw_acc.push_str(&piece);
 
@@ -584,8 +590,14 @@ impl LlamaClient {
             }
         }
 
-        let total_elapsed = start_time.elapsed().as_secs_f64();
-        let final_tps = if total_elapsed > 0.001 { token_count as f64 / total_elapsed } else { 0.0 };
+        let total_elapsed = first_token_time.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
+        let final_tps = if token_count > 1 && total_elapsed > 0.0001 {
+            (token_count - 1) as f64 / total_elapsed
+        } else if total_elapsed > 0.0001 {
+            token_count as f64 / total_elapsed
+        } else {
+            0.0
+        };
         callback(StreamEvent::Metrics {
             token_count,
             elapsed_secs: total_elapsed,

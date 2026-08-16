@@ -18,15 +18,14 @@ int qt_llama_fit_params(
     size_t max_dev = llama_max_devices();
     size_t max_overrides = llama_max_tensor_buft_overrides();
 
-    // Allocate static storage so pointers remain valid during subsequent llama_model_load_from_file
     static thread_local std::vector<float> s_tensor_split;
     static thread_local std::vector<llama_model_tensor_buft_override> s_overrides;
     static thread_local std::vector<size_t> s_margins;
 
     s_tensor_split.assign(max_dev, 0.0f);
     s_overrides.assign(max_overrides, llama_model_tensor_buft_override{nullptr, nullptr});
-    // Standard llama-server margin: 1024 MiB per GPU device to leave headroom for CUDA graphs and compute buffers
-    s_margins.assign(max_dev, (size_t)1024 * 1024 * 1024);
+    // Set 384 MiB device margin: stable headroom for CUDA graphs and cuBLAS while maximizing GPU layer residency
+    s_margins.assign(max_dev, (size_t)384 * 1024 * 1024);
 
     mparams->tensor_buft_overrides = s_overrides.data();
     mparams->tensor_split = s_tensor_split.data();

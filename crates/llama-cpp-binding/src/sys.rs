@@ -195,6 +195,9 @@ extern "C" {
     pub fn llama_memory_clear(mem: llama_memory_t, data: bool);
     pub fn llama_memory_seq_rm(mem: llama_memory_t, seq_id: llama_seq_id, p0: llama_pos, p1: llama_pos) -> bool;
 
+    pub fn llama_log_set(log_callback: ggml_log_callback, user_data: *mut c_void);
+    pub fn ggml_log_set(log_callback: ggml_log_callback, user_data: *mut c_void);
+
     pub fn qt_llama_fit_params(
         model_path: *const c_char,
         mparams: *mut llama_model_params,
@@ -202,3 +205,5 @@ extern "C" {
         min_ctx: u32,
     ) -> c_int;
 }
+
+pub type ggml_log_callback = Option<unsafe extern "C" fn(level: c_int, text: *const c_char, user_data: *mut c_void)>;

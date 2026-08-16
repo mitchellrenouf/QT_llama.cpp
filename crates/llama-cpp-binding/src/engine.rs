@@ -1,6 +1,6 @@
 use crate::sys::*;
 use anyhow::{anyhow, Result};
-use std::ffi::CString;
+use std::ffi::{c_char, c_int, c_void, CString};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,10 +49,22 @@ unsafe impl Sync for LlamaEngine {}
 
 static BACKEND_INIT: std::sync::Once = std::sync::Once::new();
 
+unsafe extern "C" fn quiet_llama_log(level: c_int, text: *const c_char, _user_data: *mut c_void) {
+    // Only pass through actual errors (level >= 3), filter out verbose CUDA Graph reuse messages
+    if level >= 3 && !text.is_null() {
+        let s = std::ffi::CStr::from_ptr(text).to_string_lossy();
+        if !s.contains("CUDA Graph") {
+            eprint!("{}", s);
+        }
+    }
+}
+
 impl LlamaEngine {
     pub fn new(model_path: &Path, n_gpu_layers: i32, n_ctx: u32) -> Result<Self> {
         BACKEND_INIT.call_once(|| unsafe {
             llama_backend_init();
+            llama_log_set(Some(quiet_llama_log), std::ptr::null_mut());
+            ggml_log_set(Some(quiet_llama_log), std::ptr::null_mut());
         });
 
         let path_str = model_path
@@ -70,8 +82,9 @@ impl LlamaEngine {
         c_params.n_ctx = if n_ctx > 0 && n_ctx <= 32768 { n_ctx } else { 8192 };
         c_params.n_batch = 2048;
         c_params.n_ubatch = 512;
-        c_params.n_threads = std::thread::available_parallelism().map(|p| p.get() as i32).unwrap_or(8);
-        c_params.n_threads_batch = c_params.n_threads;
+        c_params.flash_attn_type = 1; // LLAMA_FLASH_ATTN_TYPE_ENABLED
+        c_params.n_threads = 4;
+        c_params.n_threads_batch = 4;
         c_params.no_perf = true;
 
         if let Some(layers) = env_override {
@@ -95,6 +108,9 @@ impl LlamaEngine {
                 m_params.n_gpu_layers
             );
         }
+
+        // Disable mmap when tensor overrides are used for maximum CPU RAM bandwidth
+        m_params.load_mode = 0; // LLAMA_LOAD_MODE_NONE
 
         eprintln!(
             "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
