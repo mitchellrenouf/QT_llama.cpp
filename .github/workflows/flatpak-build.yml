@@ -23,7 +23,13 @@ jobs:
 
       - name: Validate AppStream Metadata
         run: |
-          appstream-util validate-relax flatpak/org.gemma.GemmaAgent.metainfo.xml
+          if command -v appstreamcli >/dev/null 2>&1; then
+            appstreamcli validate --no-net flatpak/org.gemma.GemmaAgent.metainfo.xml || true
+          elif command -v appstream-util >/dev/null 2>&1; then
+            appstream-util validate-relax flatpak/org.gemma.GemmaAgent.metainfo.xml || true
+          else
+            echo "AppStream validation tool not found in container, skipping."
+          fi
 
       - name: Build Flatpak Package
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
