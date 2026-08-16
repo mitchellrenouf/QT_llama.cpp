@@ -8,8 +8,8 @@ on:
     branches: [ main ]
 
 jobs:
-  flatpak:
-    name: "Flatpak Builder"
+  main-app:
+    name: "Main App Flatpak"
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
@@ -48,12 +48,18 @@ jobs:
             flatpak-builder-lint manifest flatpak/dev.mitchellrenouf.QT_llama.yml || true
           fi
 
-      - name: Build Flatpak Package
+      - name: Build Main Flatpak Package
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           bundle: dev.mitchellrenouf.QT_llama.flatpak
           manifest-path: flatpak/dev.mitchellrenouf.QT_llama.yml
           run-tests: false
+
+      - name: Upload Main Flatpak Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QT_llama-flatpak-x86_64
+          path: dev.mitchellrenouf.QT_llama.flatpak
 
       - name: Publish Release Bundle
         if: startsWith(github.ref, 'refs/tags/')

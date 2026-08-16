@@ -29,6 +29,12 @@ fi
 EXTRA_LIB_PATHS=""
 for libdir in \
     /app/lib \
+    /app/extensions/cuda/lib64 \
+    /app/extensions/cuda/lib \
+    /app/extensions/rocm/lib \
+    /app/extensions/rocm/lib64 \
+    /app/extensions/oneapi/compiler/latest/lib \
+    /app/extensions/oneapi/lib \
     /app/cuda/lib64 \
     /app/cuda/lib \
     /app/rocm/lib \
@@ -59,15 +65,17 @@ if [ -n "$EXTRA_LIB_PATHS" ]; then
 fi
 
 # 3. Add CUDA, ROCm & oneAPI bin to PATH if installed
-if [ -d "/app/cuda/bin" ]; then
-    export PATH="/app/cuda/bin:$PATH"
-fi
-if [ -d "/app/rocm/bin" ]; then
-    export PATH="/app/rocm/bin:$PATH"
-fi
-if [ -d "/app/oneapi/compiler/latest/bin" ]; then
-    export PATH="/app/oneapi/compiler/latest/bin:$PATH"
-fi
+for bindir in \
+    /app/extensions/cuda/bin \
+    /app/extensions/rocm/bin \
+    /app/extensions/oneapi/compiler/latest/bin \
+    /app/cuda/bin \
+    /app/rocm/bin \
+    /app/oneapi/compiler/latest/bin; do
+    if [ -d "$bindir" ]; then
+        export PATH="$bindir:$PATH"
+    fi
+done
 
 # 4. Configure Qt6 QML import paths
 export QML_IMPORT_PATH="/app/share/qt_llama/qml:/app/share/gemma/qml:/usr/lib/qt6/qml:/usr/lib/x86_64-linux-gnu/qt6/qml:${QML_IMPORT_PATH}"
