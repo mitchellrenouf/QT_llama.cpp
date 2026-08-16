@@ -328,7 +328,10 @@ impl LlamaClient {
                 .replace("<|channel>thought", "")
                 .replace("<channel|>", "")
                 .replace("<thought>", "")
-                .replace("</thought>", "");
+                .replace("</thought>", "")
+                .replace("<end_of_turn>", "")
+                .replace("<start_of_turn>", "")
+                .replace("<|im_end|>", "");
             if in_thought {
                 callback(StreamEvent::Reasoning(clean_tail.clone()));
                 full_reasoning.push_str(&clean_tail);

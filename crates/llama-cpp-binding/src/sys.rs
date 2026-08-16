@@ -30,6 +30,12 @@ pub struct llama_sampler {
 }
 
 #[repr(C)]
+pub struct llama_memory_i {
+    _unused: [u8; 0],
+}
+pub type llama_memory_t = *mut llama_memory_i;
+
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct llama_model_params {
     pub devices: *mut *mut c_void,
@@ -183,4 +189,8 @@ extern "C" {
         idx: i32,
     ) -> llama_token;
     pub fn llama_sampler_free(smpl: *mut llama_sampler);
+
+    pub fn llama_get_memory(ctx: *const llama_context) -> llama_memory_t;
+    pub fn llama_memory_clear(mem: llama_memory_t, data: bool);
+    pub fn llama_memory_seq_rm(mem: llama_memory_t, seq_id: llama_seq_id, p0: llama_pos, p1: llama_pos) -> bool;
 }

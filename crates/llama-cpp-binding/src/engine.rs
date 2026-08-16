@@ -202,6 +202,14 @@ impl LlamaEngine {
             };
             let ctx = ctx_guard.ptr;
 
+            // Reset KV cache / memory module for clean prompt evaluation
+            unsafe {
+                let mem = llama_get_memory(ctx);
+                if !mem.is_null() {
+                    llama_memory_clear(mem, true);
+                }
+            }
+
             // Initialize Sampler
             let smpl = unsafe {
                 let chain_params = llama_sampler_chain_default_params();
