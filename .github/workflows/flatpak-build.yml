@@ -34,7 +34,13 @@ jobs:
           elif command -v appstream-util >/dev/null 2>&1; then
             appstream-util validate-relax flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml || true
           else
-            echo "AppStream validation tool not found in container, skipping."
+            echo "AppStream validator not available, skipping."
+          fi
+
+      - name: Lint Flatpak Manifest
+        run: |
+          if command -v flatpak-builder-lint >/dev/null 2>&1; then
+            flatpak-builder-lint manifest flatpak/dev.mitchellrenouf.QT_llama.yml || true
           fi
 
       - name: Build Flatpak Package
@@ -43,12 +49,11 @@ jobs:
           bundle: dev.mitchellrenouf.QT_llama.flatpak
           manifest-path: flatpak/dev.mitchellrenouf.QT_llama.yml
           run-tests: false
-          cache: false
 
       - name: Upload Flatpak Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dev.mitchellrenouf.QT_llama.flatpak
+          name: dev.mitchellrenouf.QT_llama-x86_64.flatpak
           path: dev.mitchellrenouf.QT_llama.flatpak
 
       - name: Publish Release Bundle

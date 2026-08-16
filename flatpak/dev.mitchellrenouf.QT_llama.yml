@@ -4,7 +4,7 @@ runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: qt_llama
+command: qt-llama-wrapper
 
 finish-args:
   - --socket=wayland
@@ -12,11 +12,11 @@ finish-args:
   - --socket=pulseaudio
   - --share=network
   - --share=ipc
+  - --device=dri
   - --device=all
   - --filesystem=host
   - --filesystem=xdg-config/qt_llama:create
   - --filesystem=xdg-cache/qt_llama:create
-  - --talk-name=org.freedesktop.Flatpak
   - --talk-name=org.freedesktop.Notifications
 
 build-options:
@@ -27,11 +27,8 @@ build-options:
 modules:
   - name: qt-llama
     buildsystem: simple
-    build-options:
-      env:
-        CARGO_HOME: /run/build/qt-llama/cargo
     build-commands:
-      # Set up vendored cargo sources for offline build
+      # 1. Setup offline vendored cargo configuration
       - mkdir -p ${CARGO_HOME}
       - mkdir -p .cargo
       - |
@@ -42,15 +39,24 @@ modules:
         [source.vendored-sources]
         directory = "vendor"
         EOF
-      # Build with Vulkan GPU acceleration (headers+loader from Freedesktop SDK 25.08 vulkan-stack)
+
+      # 2. Build release binary with Vulkan GPU acceleration (built-in vulkan-stack in Freedesktop SDK 25.08)
       - cargo build --release --features vulkan --no-default-features
+
+      # 3. Install binaries & wrapper script
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama
       - ln -sf /app/bin/qt_llama /app/bin/qt-llama
+      - install -Dm755 flatpak/qt-llama-wrapper.sh /app/bin/qt-llama-wrapper
+
+      # 4. Install AppStream metadata, desktop entry & application icon
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.desktop /app/share/applications/dev.mitchellrenouf.QT_llama.desktop
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml /app/share/metainfo/dev.mitchellrenouf.QT_llama.metainfo.xml
       - install -Dm644 flatpak/icons/dev.mitchellrenouf.QT_llama.svg /app/share/icons/hicolor/scalable/apps/dev.mitchellrenouf.QT_llama.svg
-      - mkdir -p /app/share/qt_llama/qml
+
+      # 5. Install QML resources
+      - mkdir -p /app/share/qt_llama/qml /app/share/gemma/qml
       - cp -r qml/* /app/share/qt_llama/qml/
+      - cp -r qml/* /app/share/gemma/qml/
     sources:
       - type: dir
         path: ..

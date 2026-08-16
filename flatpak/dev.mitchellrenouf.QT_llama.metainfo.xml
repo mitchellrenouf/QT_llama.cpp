@@ -8,12 +8,13 @@
 
   <description>
     <p>
-      QT_llama.cpp is an autonomous, general-purpose agent and vibe-coding assistant powered by in-process llama.cpp and Gemma 4 models.
+      QT_llama.cpp is an autonomous, general-purpose AI agent and vibe-coding assistant powered by in-process llama.cpp and Gemma 4 models.
       It features rich multimodal understanding, headless browser automation with Chrome DevTools Protocol, desktop screenshot analysis,
       media processing, and automated workspace tools.
     </p>
     <ul>
       <li>Autonomous tool orchestration and multi-step turn planning</li>
+      <li>Multi-GPU acceleration via Vulkan, CUDA, ROCm, and SYCL compute backends</li>
       <li>Full headless Chromium browser automation (Brave/Chromium/Chrome) and web search</li>
       <li>Desktop visual perception and GUI control</li>
       <li>Speech synthesis (TTS) and microphone audio recording</li>
@@ -26,17 +27,33 @@
   <provides>
     <binary>qt_llama</binary>
     <binary>qt-llama</binary>
+    <binary>qt-llama-wrapper</binary>
   </provides>
 
-  <developer_name>Mitchell Renouf</developer_name>
+  <developer id="dev.mitchellrenouf">
+    <name>Mitchell Renouf</name>
+  </developer>
 
   <url type="homepage">https://github.com/mitchellrenouf/QT_llama.cpp</url>
   <url type="bugtracker">https://github.com/mitchellrenouf/QT_llama.cpp/issues</url>
+  <url type="vcs-browser">https://github.com/mitchellrenouf/QT_llama.cpp</url>
+
+  <categories>
+    <category>Utility</category>
+    <category>Development</category>
+    <category>ArtificialIntelligence</category>
+  </categories>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
 
   <releases>
     <release version="0.4.0" date="2026-08-16">
       <description>
-        <p>Pure Linux release with Qt6 support, headless Chromium CDP automation, Flatpak packaging on Freedesktop SDK 24.08, and automated updates.</p>
+        <p>Pure Linux release with Qt6 support, multi-vendor GPU acceleration (Vulkan, CUDA, ROCm), headless Chromium CDP automation, Flatpak packaging on Freedesktop SDK 25.08, and automated updates.</p>
       </description>
     </release>
   </releases>

@@ -25,13 +25,16 @@ fn main() {
             || std::process::Command::new("which").arg("nvcc").output().map(|o| o.status.success()).unwrap_or(false)
         ));
 
-    // Check Vulkan presence
+    // Check Vulkan presence (including Flatpak SDK paths)
     let has_vulkan = is_vulkan_feat
         || env::var("LLAMA_VULKAN").map(|v| v == "1" || v == "ON").unwrap_or(false)
         || (is_auto_feat && (
             Path::new("/usr/include/vulkan/vulkan.h").exists()
             || Path::new("/usr/local/include/vulkan/vulkan.h").exists()
+            || Path::new("/app/include/vulkan/vulkan.h").exists()
             || env::var("VULKAN_SDK").is_ok()
+            // pkg-config check for Flatpak SDK vulkan-stack
+            || std::process::Command::new("pkg-config").args(["--exists", "vulkan"]).status().map(|s| s.success()).unwrap_or(false)
         ));
 
     let has_hipblas = is_hip_feat
@@ -50,6 +53,7 @@ fn main() {
     if has_cuda {
         println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration (NVIDIA cuBLAS)...");
         cfg.define("GGML_CUDA", "ON");
+        cfg.define("GGML_CUDA_NCCL", "OFF");
         if Path::new("/opt/cuda").exists() {
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/opt/cuda");
             cfg.define("CMAKE_CUDA_COMPILER", "/opt/cuda/bin/nvcc");
