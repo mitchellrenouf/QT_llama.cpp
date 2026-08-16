@@ -29,9 +29,46 @@ Functioning like **Gemini directly on your Linux desktop and terminal**, the app
 git clone --recurse-submodules https://github.com/mitchellrenouf/QT_llama.cpp.git
 cd QT_llama.cpp
 
-# Build optimized release binary
+# Build optimized release binary (auto-detects CUDA/Vulkan)
 cargo build --release
 ```
+
+### GPU Acceleration
+
+By default, the build system **auto-detects** available GPU backends. If `nvcc` is found in your PATH or at `/opt/cuda`, CUDA is enabled automatically. If Vulkan headers are found, Vulkan is enabled.
+
+You can also explicitly select a backend with Cargo features:
+
+```bash
+# Force CUDA only (NVIDIA GPUs)
+cargo build --release --features cuda --no-default-features
+
+# Force Vulkan only (AMD, Intel, NVIDIA — any Vulkan-capable GPU)
+cargo build --release --features vulkan --no-default-features
+
+# Both CUDA + Vulkan
+cargo build --release --features cuda,vulkan --no-default-features
+
+# AMD ROCm / HIP
+cargo build --release --features hipblas --no-default-features
+
+# Intel SYCL / oneAPI
+cargo build --release --features sycl --no-default-features
+```
+
+Environment variables also work:
+```bash
+LLAMA_CUDA=1 cargo build --release    # Enable CUDA
+LLAMA_VULKAN=1 cargo build --release  # Enable Vulkan
+```
+
+| Backend | GPU Vendor | Feature Flag | Auto-Detected? |
+|---------|-----------|--------------|----------------|
+| CUDA (cuBLAS) | NVIDIA | `--features cuda` | ✅ Yes (`nvcc` in PATH) |
+| Vulkan | AMD, Intel, NVIDIA | `--features vulkan` | ✅ Yes (`vulkan.h` found) |
+| HIP (ROCm) | AMD | `--features hipblas` | ❌ Explicit only |
+| SYCL (oneAPI) | Intel | `--features sycl` | ❌ Explicit only |
+| CPU only | Any | `--no-default-features` | — |
 
 ### 2. Launch GUI Interface (Default)
 ```bash
