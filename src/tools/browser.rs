@@ -18,6 +18,8 @@ use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::sleep;
 
+use crate::tools::web::WebFetchTool;
+
 static BROWSER_INSTANCE: OnceCell<Arc<Mutex<ChromiumController>>> = OnceCell::const_new();
 
 pub struct ChromiumController {
@@ -27,6 +29,16 @@ pub struct ChromiumController {
 
 impl ChromiumController {
     pub async fn ensure_latest_and_launch() -> Result<Self> {
+        let mut exec_path: Option<PathBuf> = None;
+
+        // 0. Check custom environment variable
+        if let Ok(custom_exe) = std::env::var("BROWSER_EXE") {
+            let p = PathBuf::from(custom_exe);
+            if p.is_file() {
+                exec_path = Some(p);
+            }
+        }
+
         // 1. First check if a system browser binary is already present
         let system_candidates = [
             "/usr/bin/chromium",
@@ -38,20 +50,26 @@ impl ChromiumController {
             "/usr/bin/microsoft-edge",
             "/app/bin/chromium",
             "/app/bin/chrome",
+            "/app/bin/brave",
             "/app/extra/bin/chromium",
+            "/var/lib/flatpak/exports/bin/com.brave.Browser",
+            "/var/lib/flatpak/exports/bin/org.chromium.Chromium",
+            "/var/lib/flatpak/exports/bin/com.google.Chrome",
+            "/var/lib/flatpak/exports/bin/com.microsoft.Edge",
         ];
 
-        let mut exec_path: Option<PathBuf> = None;
-        for candidate in system_candidates {
-            let p = PathBuf::from(candidate);
-            if p.is_file() {
-                exec_path = Some(p);
-                break;
+        if exec_path.is_none() {
+            for candidate in system_candidates {
+                let p = PathBuf::from(candidate);
+                if p.is_file() {
+                    exec_path = Some(p);
+                    break;
+                }
             }
         }
 
         if exec_path.is_none() {
-            for bin_name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave", "brave-browser"] {
+            for bin_name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave", "brave-browser", "microsoft-edge"] {
                 if let Ok(output) = std::process::Command::new("which").arg(bin_name).output() {
                     if output.status.success() {
                         let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -74,7 +92,7 @@ impl ChromiumController {
                 let info = fetcher
                     .fetch()
                     .await
-                    .map_err(|e| anyhow!("Failed to fetch latest Chromium binary via Chromiumoxide: {}", e))?;
+                    .map_err(|e| anyhow!("No local Chromium/Brave/Chrome binary found on system and auto-download failed: {}", e))?;
                 info.executable_path
             }
         };
@@ -167,22 +185,50 @@ impl Tool for BrowserOpenTool {
         })
     }
 
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
         let url = args["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
 
-        let controller_arc = get_browser_controller().await?;
-        let mut ctrl = controller_arc.lock().await;
+        match get_browser_controller().await {
+            Ok(controller_arc) => {
+                let mut ctrl = controller_arc.lock().await;
+                let page = ctrl.get_or_create_page(Some(url)).await?;
+                sleep(Duration::from_millis(1500)).await;
 
-        let page = ctrl.get_or_create_page(Some(url)).await?;
-        sleep(Duration::from_millis(1500)).await;
+                let page_title = page.get_title().await.unwrap_or(None).unwrap_or_default();
+                let page_url = page.url().await.unwrap_or(None).unwrap_or_else(|| url.to_string());
 
-        let page_title = page.get_title().await.unwrap_or(None).unwrap_or_default();
-        let page_url = page.url().await.unwrap_or(None).unwrap_or_else(|| url.to_string());
+                Ok(format!(
+                    "Successfully opened URL '{}' in Chromium DevTools engine (Title: '{}', URL: '{}').",
+                    url, page_title, page_url
+                ))
+            }
+            Err(_e) => {
+                // Fallback: Open URL with system browser (xdg-open or flatpak-spawn) and fetch content
+                let opened_sys = if Path::new("/.flatpak-info").exists() {
+                    std::process::Command::new("flatpak-spawn")
+                        .args(["--host", "xdg-open", url])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false)
+                } else {
+                    std::process::Command::new("xdg-open")
+                        .arg(url)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false)
+                };
 
-        Ok(format!(
-            "Successfully opened URL '{}' in latest Chromium (Title: '{}', URL: '{}').",
-            url, page_title, page_url
-        ))
+                let web_fetch = WebFetchTool;
+                let fetch_res = web_fetch.execute(workspace_root, json!({"url": url})).await.unwrap_or_default();
+
+                Ok(format!(
+                    "Opened '{}' in default desktop browser (status: {}). Page content:\n{}",
+                    url,
+                    if opened_sys { "desktop browser launched" } else { "headless scraper active" },
+                    fetch_res
+                ))
+            }
+        }
     }
 }
 
