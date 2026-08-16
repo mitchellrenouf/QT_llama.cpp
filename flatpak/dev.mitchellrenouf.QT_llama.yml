@@ -12,9 +12,8 @@ finish-args:
   - --socket=pulseaudio
   - --share=network
   - --share=ipc
+  - --device=all
   - --filesystem=host
-  - --filesystem=xdg-config/gemma:create
-  - --filesystem=xdg-cache/gemma:create
   - --filesystem=xdg-config/qt_llama:create
   - --filesystem=xdg-cache/qt_llama:create
   - --talk-name=org.freedesktop.Flatpak
@@ -26,17 +25,55 @@ build-options:
     CARGO_HOME: /run/build/qt-llama/cargo
 
 modules:
+  # Vulkan SDK headers for ggml-vulkan backend
+  - name: vulkan-headers
+    buildsystem: cmake-ninja
+    sources:
+      - type: archive
+        url: https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.3.283.tar.gz
+        sha256: a817ddb3b83e4b1ca0e80f2dffd6e2fb7ab7f4e09c879a6dae4c1c0f3e36a1c5
+    cleanup:
+      - /share
+
+  # Vulkan Loader (libvulkan.so) for linking
+  - name: vulkan-loader
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DVULKAN_HEADERS_INSTALL_DIR=/app
+    sources:
+      - type: archive
+        url: https://github.com/KhronosGroup/Vulkan-Loader/archive/refs/tags/v1.3.283.tar.gz
+        sha256: 839e3a0b2eecba6eb68c5d14d3d8caa8b46eb61a35a77ef0c97c0f4d27d0c0dc
+    cleanup:
+      - /lib/pkgconfig
+
+  # Main application
   - name: qt-llama
     buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/qt-llama/cargo
     build-commands:
-      - cargo build --release
+      # Set up vendored cargo sources for offline build
+      - mkdir -p ${CARGO_HOME}
+      - mkdir -p .cargo
+      - |
+        cat > .cargo/config.toml << 'EOF'
+        [source.crates-io]
+        replace-with = "vendored-sources"
+
+        [source.vendored-sources]
+        directory = "vendor"
+        EOF
+      # Build with Vulkan GPU acceleration (CUDA requires host toolkit, not available in Flatpak sandbox)
+      - cargo build --release --features vulkan --no-default-features
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama
       - ln -sf /app/bin/qt_llama /app/bin/qt-llama
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.desktop /app/share/applications/dev.mitchellrenouf.QT_llama.desktop
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml /app/share/metainfo/dev.mitchellrenouf.QT_llama.metainfo.xml
       - install -Dm644 flatpak/icons/dev.mitchellrenouf.QT_llama.svg /app/share/icons/hicolor/scalable/apps/dev.mitchellrenouf.QT_llama.svg
-      - mkdir -p /app/share/gemma/qml
-      - cp -r qml/* /app/share/gemma/qml/
+      - mkdir -p /app/share/qt_llama/qml
+      - cp -r qml/* /app/share/qt_llama/qml/
     sources:
       - type: dir
         path: ..

@@ -7,7 +7,11 @@ echo "=== Building QT_llama.cpp Flatpak (Freedesktop SDK 24.08) ==="
 echo "Checking Freedesktop SDK 24.08 and Rust extension..."
 flatpak install -y --noninteractive flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 org.freedesktop.Sdk.Extension.rust-stable//24.08 2>/dev/null || true
 
-# 2. Build and export bundle
+# 2. Vendor cargo dependencies for offline Flatpak build
+echo "Vendoring cargo dependencies..."
+cargo vendor
+
+# 3. Build and export bundle
 BUILD_DIR=".flatpak-build"
 REPO_DIR=".flatpak-repo"
 mkdir -p "$BUILD_DIR" "$REPO_DIR"
@@ -15,7 +19,7 @@ mkdir -p "$BUILD_DIR" "$REPO_DIR"
 echo "Building package with flatpak-builder..."
 flatpak-builder --force-clean --user --install-deps-from=flathub --repo="$REPO_DIR" "$BUILD_DIR" flatpak/dev.mitchellrenouf.QT_llama.yml
 
-# 3. Create standalone .flatpak single-file bundle
+# 4. Create standalone .flatpak single-file bundle
 echo "Creating standalone bundle dev.mitchellrenouf.QT_llama.flatpak..."
 flatpak build-bundle "$REPO_DIR" dev.mitchellrenouf.QT_llama.flatpak dev.mitchellrenouf.QT_llama 24.08
 

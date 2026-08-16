@@ -1,7 +1,7 @@
 # Rust build artifacts
 target/
 **/*.rs.bk
-Cargo.lock
+vendor/
 
 # Gemma Agent runtime dumps & sessions
 .gemma/

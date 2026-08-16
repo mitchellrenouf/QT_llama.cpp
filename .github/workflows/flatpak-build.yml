@@ -21,6 +21,13 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install Rust & Vendor Dependencies
+        run: |
+          # Install rust toolchain for vendoring
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source "$HOME/.cargo/env"
+          cargo vendor
+
       - name: Validate AppStream Metadata
         run: |
           if command -v appstreamcli >/dev/null 2>&1; then
