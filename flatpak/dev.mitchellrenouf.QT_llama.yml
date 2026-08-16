@@ -25,29 +25,6 @@ build-options:
     CARGO_HOME: /run/build/qt-llama/cargo
 
 modules:
-  # Vulkan SDK 1.4.357 headers for ggml-vulkan backend
-  - name: vulkan-headers
-    buildsystem: cmake-ninja
-    sources:
-      - type: archive
-        url: https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.357.tar.gz
-        sha256: 7dc0dbcf1d49dd3d7da3761c251c6097dfbaac475321a4a8a99269d3d5abecdc
-    cleanup:
-      - /share
-
-  # Vulkan Loader 1.4.357 (libvulkan.so) for linking
-  - name: vulkan-loader
-    buildsystem: cmake-ninja
-    config-opts:
-      - -DVULKAN_HEADERS_INSTALL_DIR=/app
-    sources:
-      - type: archive
-        url: https://github.com/KhronosGroup/Vulkan-Loader/archive/refs/tags/v1.4.357.tar.gz
-        sha256: 54fa49715782b919092c8353a8a7656180cad1a1b6879b61845e77c261edb2e7
-    cleanup:
-      - /lib/pkgconfig
-
-  # Main application
   - name: qt-llama
     buildsystem: simple
     build-options:
@@ -65,7 +42,7 @@ modules:
         [source.vendored-sources]
         directory = "vendor"
         EOF
-      # Build with Vulkan GPU acceleration
+      # Build with Vulkan GPU acceleration (headers+loader from Freedesktop SDK 25.08 vulkan-stack)
       - cargo build --release --features vulkan --no-default-features
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama
       - ln -sf /app/bin/qt_llama /app/bin/qt-llama

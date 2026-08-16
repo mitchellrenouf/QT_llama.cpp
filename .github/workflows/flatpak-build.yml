@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust & Vendor Dependencies
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          source "$HOME/.cargo/env"
+          . "$HOME/.cargo/env"
           cargo vendor
 
       - name: Validate AppStream Metadata
@@ -43,6 +43,7 @@ jobs:
           bundle: dev.mitchellrenouf.QT_llama.flatpak
           manifest-path: flatpak/dev.mitchellrenouf.QT_llama.yml
           run-tests: false
+          cache: false
 
       - name: Upload Flatpak Artifact
         uses: actions/upload-artifact@v4
