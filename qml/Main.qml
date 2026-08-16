@@ -412,15 +412,16 @@ ApplicationWindow {
                     }
                 }
 
-                // Backend Selector (Auto / CUDA / Vulkan / CPU)
+                // Backend Selector (Auto / CUDA / Vulkan / SYCL / CPU)
                 ComboBox {
                     id: backendCombo
-                    model: ["Auto", "CUDA", "Vulkan", "CPU"]
+                    model: ["Auto", "CUDA", "Vulkan", "SYCL", "CPU"]
                     currentIndex: {
                         var b = window.currentBackend.toLowerCase()
                         if (b === "cuda") return 1
                         if (b === "vulkan") return 2
-                        if (b === "cpu") return 3
+                        if (b === "sycl") return 3
+                        if (b === "cpu") return 4
                         return 0
                     }
                     Layout.preferredWidth: 125

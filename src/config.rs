@@ -27,6 +27,7 @@ pub enum BackendChoice {
     Auto,
     Cuda,
     Vulkan,
+    Sycl,
     Cpu,
 }
 
@@ -36,6 +37,7 @@ impl fmt::Display for BackendChoice {
             BackendChoice::Auto => write!(f, "auto"),
             BackendChoice::Cuda => write!(f, "cuda"),
             BackendChoice::Vulkan => write!(f, "vulkan"),
+            BackendChoice::Sycl => write!(f, "sycl"),
             BackendChoice::Cpu => write!(f, "cpu"),
         }
     }

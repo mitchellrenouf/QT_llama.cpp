@@ -36,8 +36,13 @@ int qt_llama_fit_params_backend(
         return (int)COMMON_PARAMS_FIT_STATUS_SUCCESS;
     }
 
-    if (choice == "cuda" || choice == "vulkan") {
-        std::string prefix = (choice == "cuda") ? "CUDA" : "Vulkan";
+    if (choice == "cuda" || choice == "vulkan" || choice == "sycl" || choice == "hip" || choice == "rocm") {
+        std::string prefix;
+        if (choice == "cuda") prefix = "CUDA";
+        else if (choice == "vulkan") prefix = "Vulkan";
+        else if (choice == "sycl") prefix = "SYCL";
+        else if (choice == "hip" || choice == "rocm") prefix = "ROCm";
+
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             auto * dev = ggml_backend_dev_get(i);
             if (!dev) continue;

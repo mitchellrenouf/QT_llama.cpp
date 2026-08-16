@@ -110,6 +110,19 @@ fn main() {
     if has_sycl {
         println!("cargo:warning=[llama-cpp-binding] Enabling Intel SYCL GPU Acceleration...");
         cfg.define("GGML_SYCL", "ON");
+        if let Ok(oneapi_dir) = env::var("ONEAPI_ROOT").or_else(|_| env::var("MKLROOT")) {
+            let p = PathBuf::from(oneapi_dir);
+            let icpx = p.join("compiler/latest/bin/icpx");
+            if icpx.exists() {
+                cfg.define("CMAKE_CXX_COMPILER", icpx);
+            }
+        } else if Path::new("/app/oneapi/compiler/latest/bin/icpx").exists() {
+            cfg.define("CMAKE_CXX_COMPILER", "/app/oneapi/compiler/latest/bin/icpx");
+            cfg.define("ONEAPI_ROOT", "/app/oneapi");
+        } else if Path::new("/opt/intel/oneapi/compiler/latest/bin/icpx").exists() {
+            cfg.define("CMAKE_CXX_COMPILER", "/opt/intel/oneapi/compiler/latest/bin/icpx");
+            cfg.define("ONEAPI_ROOT", "/opt/intel/oneapi");
+        }
     }
 
     let dst = cfg.build();

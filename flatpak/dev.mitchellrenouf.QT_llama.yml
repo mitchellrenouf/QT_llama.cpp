@@ -20,16 +20,18 @@ finish-args:
   - --talk-name=org.freedesktop.Notifications
 
 build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin:/app/cuda/bin:/app/rocm/bin
-  append-ld-library-path: /app/cuda/lib64:/app/rocm/lib:/app/rocm/lib64:/app/lib
+  append-path: /usr/lib/sdk/rust-stable/bin:/app/cuda/bin:/app/rocm/bin:/app/oneapi/compiler/latest/bin
+  append-ld-library-path: /app/cuda/lib64:/app/rocm/lib:/app/rocm/lib64:/app/oneapi/compiler/latest/lib:/app/lib
   env:
     CARGO_HOME: /run/build/qt-llama/cargo
     CUDA_PATH: /app/cuda
     CUDA_TOOLKIT_ROOT_DIR: /app/cuda
     ROCM_PATH: /app/rocm
     HIP_PATH: /app/rocm
+    ONEAPI_ROOT: /app/oneapi
     LLAMA_CUDA: "1"
     LLAMA_HIPBLAS: "1"
+    LLAMA_SYCL: "1"
     LLAMA_VULKAN: "1"
 
 modules:
@@ -67,7 +69,22 @@ modules:
         url: https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-7.14/rocm-installer-7.14.0-7.run
         sha256: 763887c73b744c66b74c4a95b7c4e4ae578153cce07e09234d97e0fd0e660fe8
 
-  # 3. SPIRV-Headers required for ggml-vulkan shader compilation
+  # 3. Intel oneAPI Toolkit (SYCL / DPC++ for Intel GPU Acceleration)
+  - name: intel-oneapi-toolkit
+    buildsystem: simple
+    build-commands:
+      - sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi
+      # Strip unneeded documentation and samples to optimize image footprint
+      - rm -rf /app/oneapi/doc /app/oneapi/samples /app/oneapi/share/doc
+      - mkdir -p /app/lib
+      - cp -P /app/oneapi/compiler/latest/lib/libsycl.so* /app/lib/ || true
+      - cp -P /app/oneapi/compiler/latest/lib/libOpenCL.so* /app/lib/ || true
+    sources:
+      - type: file
+        url: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c9c3d3e3-ddb4-490e-bb41-6e9041ba32a7/intel-oneapi-toolkit-2026.0.1.27_offline.sh
+        sha256: 30231d00de0108892ea6d50e785091b40cb8790bb006bca5e4f5e64735a33cfa
+
+  # 4. SPIRV-Headers required for ggml-vulkan shader compilation
   - name: spirv-headers
     buildsystem: cmake-ninja
     config-opts:
@@ -78,7 +95,7 @@ modules:
         url: https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.321.0.tar.gz
         sha256: 5bbea925663d4cd2bab23efad53874f2718248a73dcaf9dd21dff8cb48e602fc
 
-  # 4. Main QT_llama application (Built with CUDA, ROCm hipBLAS, and Vulkan enabled)
+  # 5. Main QT_llama application (Built with CUDA, ROCm hipBLAS, Intel SYCL, and Vulkan enabled)
   - name: qt-llama
     buildsystem: simple
     build-commands:
@@ -94,8 +111,8 @@ modules:
         directory = "vendor"
         EOF
 
-      # Build release binary with CUDA, ROCm/hipBLAS & Vulkan GPU acceleration
-      - cargo build --release --features cuda,vulkan,hipblas --no-default-features
+      # Build release binary with full Multi-GPU acceleration
+      - cargo build --release --features cuda,vulkan,hipblas,sycl --no-default-features
 
       # Install binaries & wrapper script
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama

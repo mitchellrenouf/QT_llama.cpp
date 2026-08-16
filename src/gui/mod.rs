@@ -310,6 +310,7 @@ where
                     let backend_choice = match backend_str.to_lowercase().as_str() {
                         "cuda" => crate::config::BackendChoice::Cuda,
                         "vulkan" => crate::config::BackendChoice::Vulkan,
+                        "sycl" => crate::config::BackendChoice::Sycl,
                         "cpu" => crate::config::BackendChoice::Cpu,
                         _ => crate::config::BackendChoice::Auto,
                     };
