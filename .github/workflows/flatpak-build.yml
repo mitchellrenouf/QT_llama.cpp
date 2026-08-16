@@ -24,9 +24,9 @@ jobs:
       - name: Validate AppStream Metadata
         run: |
           if command -v appstreamcli >/dev/null 2>&1; then
-            appstreamcli validate --no-net flatpak/org.gemma.GemmaAgent.metainfo.xml || true
+            appstreamcli validate --no-net flatpak/org.llamacpp.QT_llama.metainfo.xml || true
           elif command -v appstream-util >/dev/null 2>&1; then
-            appstream-util validate-relax flatpak/org.gemma.GemmaAgent.metainfo.xml || true
+            appstream-util validate-relax flatpak/org.llamacpp.QT_llama.metainfo.xml || true
           else
             echo "AppStream validation tool not found in container, skipping."
           fi
@@ -34,21 +34,21 @@ jobs:
       - name: Build Flatpak Package
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: org.gemma.GemmaAgent.flatpak
-          manifest-path: flatpak/org.gemma.GemmaAgent.yml
+          bundle: org.llamacpp.QT_llama.flatpak
+          manifest-path: flatpak/org.llamacpp.QT_llama.yml
           run-tests: false
-          stop-at: gemma-agent
+          stop-at: qt-llama
 
       - name: Upload Flatpak Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: org.gemma.GemmaAgent.flatpak
-          path: org.gemma.GemmaAgent.flatpak
+          name: org.llamacpp.QT_llama.flatpak
+          path: org.llamacpp.QT_llama.flatpak
 
       - name: Publish Release Bundle
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: org.gemma.GemmaAgent.flatpak
+          files: org.llamacpp.QT_llama.flatpak
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

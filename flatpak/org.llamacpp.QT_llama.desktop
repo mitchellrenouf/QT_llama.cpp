@@ -2,8 +2,8 @@
 Name=QT_llama.cpp
 GenericName=AI Agent & Vibe-Coder
 Comment=Multimodal Vision, Desktop Control, Browser Automation & General AI Agent for llama.cpp
-Exec=gemma-agent
-Icon=org.gemma.GemmaAgent
+Exec=qt_llama
+Icon=org.llamacpp.QT_llama
 Terminal=false
 Type=Application
 Categories=Utility;Development;AudioVideo;

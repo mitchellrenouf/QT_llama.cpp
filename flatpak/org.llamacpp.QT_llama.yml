@@ -1,10 +1,10 @@
-app-id: org.gemma.GemmaAgent
+app-id: org.llamacpp.QT_llama
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: gemma-agent
+command: qt_llama
 
 finish-args:
   - --socket=wayland
@@ -15,23 +15,26 @@ finish-args:
   - --filesystem=host
   - --filesystem=xdg-config/gemma:create
   - --filesystem=xdg-cache/gemma:create
+  - --filesystem=xdg-config/qt_llama:create
+  - --filesystem=xdg-cache/qt_llama:create
   - --talk-name=org.freedesktop.Flatpak
   - --talk-name=org.freedesktop.Notifications
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
-    CARGO_HOME: /run/build/gemma-agent/cargo
+    CARGO_HOME: /run/build/qt-llama/cargo
 
 modules:
-  - name: gemma-agent
+  - name: qt-llama
     buildsystem: simple
     build-commands:
       - cargo build --release
-      - install -Dm755 target/release/gemma-agent /app/bin/gemma-agent
-      - install -Dm644 flatpak/org.gemma.GemmaAgent.desktop /app/share/applications/org.gemma.GemmaAgent.desktop
-      - install -Dm644 flatpak/org.gemma.GemmaAgent.metainfo.xml /app/share/metainfo/org.gemma.GemmaAgent.metainfo.xml
-      - install -Dm644 flatpak/icons/org.gemma.GemmaAgent.svg /app/share/icons/hicolor/scalable/apps/org.gemma.GemmaAgent.svg
+      - install -Dm755 target/release/qt_llama /app/bin/qt_llama
+      - ln -sf /app/bin/qt_llama /app/bin/qt-llama
+      - install -Dm644 flatpak/org.llamacpp.QT_llama.desktop /app/share/applications/org.llamacpp.QT_llama.desktop
+      - install -Dm644 flatpak/org.llamacpp.QT_llama.metainfo.xml /app/share/metainfo/org.llamacpp.QT_llama.metainfo.xml
+      - install -Dm644 flatpak/icons/org.llamacpp.QT_llama.svg /app/share/icons/hicolor/scalable/apps/org.llamacpp.QT_llama.svg
       - mkdir -p /app/share/gemma/qml
       - cp -r qml/* /app/share/gemma/qml/
     sources:

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>org.gemma.GemmaAgent</id>
+  <id>org.llamacpp.QT_llama</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>QT_llama.cpp</name>
@@ -14,28 +14,29 @@
     </p>
     <ul>
       <li>Autonomous tool orchestration and multi-step turn planning</li>
-      <li>Full headless Chromium browser automation (Brave/Chromium/Chrome)</li>
+      <li>Full headless Chromium browser automation (Brave/Chromium/Chrome) and web search</li>
       <li>Desktop visual perception and GUI control</li>
       <li>Speech synthesis (TTS) and microphone audio recording</li>
       <li>Smart context management and auto-compaction for long tasks</li>
     </ul>
   </description>
 
-  <launchable type="desktop-id">org.gemma.GemmaAgent.desktop</launchable>
+  <launchable type="desktop-id">org.llamacpp.QT_llama.desktop</launchable>
 
   <provides>
-    <binary>gemma-agent</binary>
+    <binary>qt_llama</binary>
+    <binary>qt-llama</binary>
   </provides>
 
-  <developer_name>Gemma Team</developer_name>
+  <developer_name>llama.cpp Community</developer_name>
 
-  <url type="homepage">https://github.com/mitchell/gemma</url>
-  <url type="bugtracker">https://github.com/mitchell/gemma/issues</url>
+  <url type="homepage">https://github.com/mitchellrenouf/QT_llama.cpp</url>
+  <url type="bugtracker">https://github.com/mitchellrenouf/QT_llama.cpp/issues</url>
 
   <releases>
     <release version="0.4.0" date="2026-08-16">
       <description>
-        <p>Pure Linux release with Qt6 support, headless Chromium CDP automation, Flatpak packaging on Freedesktop SDK 26.08 beta, and automated updates.</p>
+        <p>Pure Linux release with Qt6 support, headless Chromium CDP automation, Flatpak packaging on Freedesktop SDK 24.08, and automated updates.</p>
       </description>
     </release>
   </releases>

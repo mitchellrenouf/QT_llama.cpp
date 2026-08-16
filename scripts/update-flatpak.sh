@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-APP_ID="org.gemma.GemmaAgent"
+APP_ID="org.llamacpp.QT_llama"
 
 echo "=== Checking updates for $APP_ID ==="
 

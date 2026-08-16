@@ -27,20 +27,61 @@ pub struct ChromiumController {
 
 impl ChromiumController {
     pub async fn ensure_latest_and_launch() -> Result<Self> {
-        // 1. Ensure latest Chromium binary is fetched before launch
-        let options = BrowserFetcherOptions::default()
-            .map_err(|e| anyhow!("Failed to create default browser fetcher options: {}", e))?;
-        let fetcher = BrowserFetcher::new(options);
-        let info = fetcher
-            .fetch()
-            .await
-            .map_err(|e| anyhow!("Failed to fetch latest Chromium binary via Chromiumoxide: {}", e))?;
+        // 1. First check if a system browser binary is already present
+        let system_candidates = [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/brave",
+            "/usr/bin/brave-browser",
+            "/usr/bin/microsoft-edge",
+            "/app/bin/chromium",
+            "/app/bin/chrome",
+            "/app/extra/bin/chromium",
+        ];
 
-        let exec_path: PathBuf = info.executable_path;
+        let mut exec_path: Option<PathBuf> = None;
+        for candidate in system_candidates {
+            let p = PathBuf::from(candidate);
+            if p.is_file() {
+                exec_path = Some(p);
+                break;
+            }
+        }
+
+        if exec_path.is_none() {
+            for bin_name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave", "brave-browser"] {
+                if let Ok(output) = std::process::Command::new("which").arg(bin_name).output() {
+                    if output.status.success() {
+                        let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let p = PathBuf::from(&path_str);
+                        if p.is_file() {
+                            exec_path = Some(p);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let final_exec_path = match exec_path {
+            Some(p) => p,
+            None => {
+                let options = BrowserFetcherOptions::default()
+                    .map_err(|e| anyhow!("Failed to create default browser fetcher options: {}", e))?;
+                let fetcher = BrowserFetcher::new(options);
+                let info = fetcher
+                    .fetch()
+                    .await
+                    .map_err(|e| anyhow!("Failed to fetch latest Chromium binary via Chromiumoxide: {}", e))?;
+                info.executable_path
+            }
+        };
 
         // 2. Configure headless Chromium
         let config = BrowserConfig::builder()
-            .chrome_executable(exec_path)
+            .chrome_executable(final_exec_path)
             .no_sandbox()
             .viewport(None)
             .arg("--disable-dev-shm-usage")
