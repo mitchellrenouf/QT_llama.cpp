@@ -50,12 +50,6 @@ jobs:
           manifest-path: flatpak/dev.mitchellrenouf.QT_llama.yml
           run-tests: false
 
-      - name: Upload Flatpak Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dev.mitchellrenouf.QT_llama-x86_64.flatpak
-          path: dev.mitchellrenouf.QT_llama.flatpak
-
       - name: Publish Release Bundle
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
