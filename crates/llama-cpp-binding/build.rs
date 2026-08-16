@@ -67,6 +67,9 @@ fn main() {
             if nvcc.exists() {
                 cfg.define("CMAKE_CUDA_COMPILER", nvcc);
             }
+        } else if Path::new("/usr/lib/sdk/cuda").exists() {
+            cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/usr/lib/sdk/cuda");
+            cfg.define("CMAKE_CUDA_COMPILER", "/usr/lib/sdk/cuda/bin/nvcc");
         } else if Path::new("/app/cuda").exists() {
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/app/cuda");
             cfg.define("CMAKE_CUDA_COMPILER", "/app/cuda/bin/nvcc");
@@ -98,6 +101,9 @@ fn main() {
             if hipcc.exists() {
                 cfg.define("CMAKE_CXX_COMPILER", hipcc);
             }
+        } else if Path::new("/usr/lib/sdk/rocm").exists() {
+            cfg.define("ROCM_PATH", "/usr/lib/sdk/rocm");
+            cfg.define("CMAKE_CXX_COMPILER", "/usr/lib/sdk/rocm/bin/hipcc");
         } else if Path::new("/app/rocm").exists() {
             cfg.define("ROCM_PATH", "/app/rocm");
             cfg.define("CMAKE_CXX_COMPILER", "/app/rocm/bin/hipcc");
@@ -116,6 +122,9 @@ fn main() {
             if icpx.exists() {
                 cfg.define("CMAKE_CXX_COMPILER", icpx);
             }
+        } else if Path::new("/usr/lib/sdk/oneapi/compiler/latest/bin/icpx").exists() {
+            cfg.define("CMAKE_CXX_COMPILER", "/usr/lib/sdk/oneapi/compiler/latest/bin/icpx");
+            cfg.define("ONEAPI_ROOT", "/usr/lib/sdk/oneapi");
         } else if Path::new("/app/oneapi/compiler/latest/bin/icpx").exists() {
             cfg.define("CMAKE_CXX_COMPILER", "/app/oneapi/compiler/latest/bin/icpx");
             cfg.define("ONEAPI_ROOT", "/app/oneapi");

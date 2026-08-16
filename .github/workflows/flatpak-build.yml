@@ -48,6 +48,21 @@ jobs:
             flatpak-builder-lint manifest flatpak/dev.mitchellrenouf.QT_llama.yml || true
           fi
 
+      - name: Build & Install GPU SDK Extensions
+        run: |
+          mkdir -p .repo
+          echo "=== Building & Installing CUDA SDK Extension ==="
+          flatpak-builder --force-clean --user --install --repo=.repo .build-cuda flatpak/org.freedesktop.Sdk.Extension.cuda.yml || echo "CUDA SDK build deferred"
+          rm -rf .build-cuda tmp 2>/dev/null || true
+
+          echo "=== Building & Installing ROCm SDK Extension ==="
+          flatpak-builder --force-clean --user --install --repo=.repo .build-rocm flatpak/org.freedesktop.Sdk.Extension.rocm.yml || echo "ROCm SDK build deferred"
+          rm -rf .build-rocm tmp 2>/dev/null || true
+
+          echo "=== Building & Installing Intel oneAPI SDK Extension ==="
+          flatpak-builder --force-clean --user --install --repo=.repo .build-oneapi flatpak/org.freedesktop.Sdk.Extension.oneapi.yml || echo "oneAPI SDK build deferred"
+          rm -rf .build-oneapi tmp 2>/dev/null || true
+
       - name: Build Main Flatpak Package
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:

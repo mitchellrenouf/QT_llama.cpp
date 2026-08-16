@@ -1,0 +1,34 @@
+id: org.freedesktop.Sdk.Extension.oneapi
+branch: '6.11'
+runtime: org.kde.Sdk
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+build-extension: true
+appstream-compose: false
+
+build-options:
+  prefix: /usr/lib/sdk/oneapi
+
+modules:
+  - name: intel-oneapi-toolkit
+    buildsystem: simple
+    build-commands:
+      - mkdir -p tmp
+      - TMPDIR=$PWD/tmp sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /usr/lib/sdk/oneapi --tmp-dir $PWD/tmp
+      - rm -rf tmp
+      - rm -rf /usr/lib/sdk/oneapi/doc /usr/lib/sdk/oneapi/samples /usr/lib/sdk/oneapi/share/doc
+      - mkdir -p /usr/lib/sdk/oneapi/share/metainfo
+      - |
+        cat > /usr/lib/sdk/oneapi/share/metainfo/org.freedesktop.Sdk.Extension.oneapi.metainfo.xml << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <component type="runtime">
+          <id>org.freedesktop.Sdk.Extension.oneapi</id>
+          <metadata_license>CC0-1.0</metadata_license>
+          <name>Intel oneAPI SDK Extension</name>
+          <summary>Intel oneAPI SYCL and DPC++ Development SDK for Flatpak SDK</summary>
+        </component>
+        EOF
+    sources:
+      - type: file
+        url: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c9c3d3e3-ddb4-490e-bb41-6e9041ba32a7/intel-oneapi-toolkit-2026.0.1.27_offline.sh
+        sha256: 30231d00de0108892ea6d50e785091b40cb8790bb006bca5e4f5e64735a33cfa

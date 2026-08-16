@@ -1,0 +1,34 @@
+id: org.freedesktop.Sdk.Extension.cuda
+branch: '6.11'
+runtime: org.kde.Sdk
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+build-extension: true
+appstream-compose: false
+
+build-options:
+  prefix: /usr/lib/sdk/cuda
+
+modules:
+  - name: cuda-toolkit
+    buildsystem: simple
+    build-commands:
+      - mkdir -p tmp
+      - TMPDIR=$PWD/tmp sh cuda_13.3.1_610.43.02_linux.run --silent --toolkit --toolkitpath=/usr/lib/sdk/cuda --tmpdir $PWD/tmp --override --no-man-page
+      - rm -rf tmp
+      - rm -rf /usr/lib/sdk/cuda/doc /usr/lib/sdk/cuda/samples /usr/lib/sdk/cuda/extras /usr/lib/sdk/cuda/nsight* /usr/lib/sdk/cuda/nvvp*
+      - mkdir -p /usr/lib/sdk/cuda/share/metainfo
+      - |
+        cat > /usr/lib/sdk/cuda/share/metainfo/org.freedesktop.Sdk.Extension.cuda.metainfo.xml << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <component type="runtime">
+          <id>org.freedesktop.Sdk.Extension.cuda</id>
+          <metadata_license>CC0-1.0</metadata_license>
+          <name>CUDA 13.3 SDK Extension</name>
+          <summary>NVIDIA CUDA Development SDK for Flatpak SDK</summary>
+        </component>
+        EOF
+    sources:
+      - type: file
+        url: https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_610.43.02_linux.run
+        sha256: 9f98ec1f6c950401041d3f1308e221f0d5db8771a8e10569001b64caaee31a92
