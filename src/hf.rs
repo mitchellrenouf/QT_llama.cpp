@@ -14,6 +14,7 @@ pub struct HfModelFiles {
     pub primary_entry_file: PathBuf,
     pub shard_files: Vec<PathBuf>,
     pub mmproj_file: Option<PathBuf>,
+    pub speedup_draft_file: Option<PathBuf>,
 }
 
 impl HfModelSpec {
@@ -84,9 +85,9 @@ impl HfModelSpec {
             let mut has_model = false;
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_lowercase();
-                if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.ends_with(".part") {
+                if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
                     if let Ok(meta) = entry.metadata() {
-                        if meta.len() > 1024 * 1024 {
+                        if meta.len() > 10 * 1024 * 1024 { // > 10MB
                             has_model = true;
                         }
                     }
@@ -104,6 +105,37 @@ pub fn render_progress_bar(percent: f32, width: usize) -> String {
     format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
 }
 
+pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vec<String>> {
+    let api_url = format!("https://huggingface.co/api/models/{}/{}", spec.user, spec.model);
+    
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.arg("-s").arg("-L").arg(&api_url);
+    if let Ok(token) = std::env::var("HF_TOKEN") {
+        cmd.arg("-H").arg(format!("Authorization: Bearer {}", token));
+    }
+
+    let output = cmd.output().await?;
+    if !output.status.success() {
+        return Err(anyhow!("Failed to query Hugging Face API at {}", api_url));
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let val: serde_json::Value = serde_json::from_str(&body)?;
+    
+    let mut filenames = Vec::new();
+    if let Some(siblings) = val.get("siblings").and_then(|s| s.as_array()) {
+        for item in siblings {
+            if let Some(rfilename) = item.get("rfilename").and_then(|r| r.as_str()) {
+                if rfilename.ends_with(".gguf") {
+                    filenames.push(rfilename.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(filenames)
+}
+
 pub async fn resolve_or_fetch_hf_model<F>(
     spec: &HfModelSpec,
     mut progress_cb: F,
@@ -115,59 +147,41 @@ where
     std::fs::create_dir_all(&model_dir)?;
 
     progress_cb(
-        &format!("Scanning Hugging Face repository {} for GGUF shards & mmproj...", spec.repo_id),
+        &format!("Querying Hugging Face for model shards, mmproj & MTP speedup in {}...", spec.repo_id),
         0.05,
         0,
         1,
     );
 
-    let browser_ctrl = crate::tools::browser::get_browser_controller().await?;
-    let page = {
-        let mut guard = browser_ctrl.lock().await;
-        guard.get_or_create_page(None).await?
-    };
+    let siblings = query_hf_api_siblings(spec).await.unwrap_or_default();
 
-    // 1. Scan tree on HuggingFace for matching GGUFs and mmproj
-    let tree_url = format!("https://huggingface.co/{}/{}/tree/main", spec.user, spec.model);
-    let mut matching_gguf_files: Vec<String> = Vec::new();
-    let mut mmproj_file_opt: Option<String> = None;
+    let target_quant_lower = spec.quant.to_lowercase();
+    let mut matching_shards = Vec::new();
+    let mut mmproj_file_opt = None;
+    let mut speedup_file_opt = None;
 
-    if page.goto(&tree_url).await.is_ok() {
-        let _ = page.wait_for_navigation().await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
-        if let Ok(html) = page.content().await {
-            let document = scraper::Html::parse_document(&html);
-            let link_sel = scraper::Selector::parse("a[href*='.gguf']").unwrap();
-
-            let target_quant_lower = spec.quant.to_lowercase();
-            for element in document.select(&link_sel) {
-                if let Some(href) = element.value().attr("href") {
-                    let fname = href.split('/').last().unwrap_or("").to_string();
-                    let fname_lower = fname.to_lowercase();
-                    if fname_lower.ends_with(".gguf") {
-                        if fname_lower.contains("mmproj") {
-                            mmproj_file_opt = Some(fname.clone());
-                        } else if fname_lower.contains(&target_quant_lower) {
-                            if !matching_gguf_files.contains(&fname) {
-                                matching_gguf_files.push(fname);
-                            }
-                        }
-                    }
-                }
+    for fname in &siblings {
+        let fname_lower = fname.to_lowercase();
+        if fname_lower.contains("mmproj") {
+            if mmproj_file_opt.is_none() || fname_lower.contains(&target_quant_lower) {
+                mmproj_file_opt = Some(fname.clone());
             }
+        } else if fname_lower.contains("mtp") || fname_lower.contains("dflash") {
+            if speedup_file_opt.is_none() || fname_lower.contains(&target_quant_lower) {
+                speedup_file_opt = Some(fname.clone());
+            }
+        } else if fname_lower.contains(&target_quant_lower) {
+            matching_shards.push(fname.clone());
         }
     }
 
-    // Sort shard files naturally (e.g. 00001-of-00004 before 00002-of-00004)
-    matching_gguf_files.sort();
+    matching_shards.sort();
 
-    // Fallback if scraping yielded nothing
-    if matching_gguf_files.is_empty() {
+    // Fallbacks if not found via API
+    if matching_shards.is_empty() {
         if spec.quant.eq_ignore_ascii_case("Q8_0") {
-            // Standard 4-shard Q8_0 layout for Gemma 4 26B
             for shard_idx in 1..=4 {
-                matching_gguf_files.push(format!(
+                matching_shards.push(format!(
                     "{}-{}-{:05}-of-00004.gguf",
                     spec.model.to_lowercase(),
                     spec.quant.to_lowercase(),
@@ -175,38 +189,41 @@ where
                 ));
             }
         } else {
-            matching_gguf_files.push(format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase()));
+            matching_shards.push(format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase()));
         }
     }
 
-    // Include mmproj projector file if found or default to vision projector
-    let mut all_download_files = matching_gguf_files.clone();
+    let mut download_queue = matching_shards.clone();
     if let Some(ref mmproj) = mmproj_file_opt {
-        if !all_download_files.contains(mmproj) {
-            all_download_files.push(mmproj.clone());
+        if !download_queue.contains(mmproj) {
+            download_queue.push(mmproj.clone());
         }
-    } else {
-        // Look for standard mmproj
-        all_download_files.push("mmproj-model-f16.gguf".to_string());
+    }
+    if let Some(ref speedup) = speedup_file_opt {
+        if !download_queue.contains(speedup) {
+            download_queue.push(speedup.clone());
+        }
     }
 
-    let total_files = all_download_files.len();
+    let total_files = download_queue.len();
     let mut downloaded_shard_paths = Vec::new();
     let mut resolved_mmproj_path = None;
+    let mut resolved_speedup_path = None;
 
-    for (idx, filename) in all_download_files.iter().enumerate() {
+    for (idx, filename) in download_queue.iter().enumerate() {
         let file_num = idx + 1;
         let dest_path = model_dir.join(filename);
         let part_path = model_dir.join(format!("{}.part", filename));
 
-        // 1. Check if complete final file exists
-        if dest_path.exists() && dest_path.metadata().map(|m| m.len() > 1024 * 1024).unwrap_or(false) {
+        if dest_path.exists() && dest_path.metadata().map(|m| m.len() > 10 * 1024 * 1024).unwrap_or(false) {
             let msg = format!("✓ [File {}/{}] {} (Cached)", file_num, total_files, filename);
             println!("{}", msg);
             progress_cb(&msg, file_num as f32 / total_files as f32, file_num, total_files);
 
             if filename.contains("mmproj") {
                 resolved_mmproj_path = Some(dest_path);
+            } else if filename.contains("mtp") || filename.contains("dflash") {
+                resolved_speedup_path = Some(dest_path);
             } else {
                 downloaded_shard_paths.push(dest_path);
             }
@@ -218,62 +235,72 @@ where
             spec.user, spec.model, filename
         );
 
-        // 2. Check for partial download resume
         let initial_resume_bytes = if part_path.exists() {
             part_path.metadata().map(|m| m.len()).unwrap_or(0)
         } else {
             0
         };
 
-        let start_pct = if initial_resume_bytes > 0 {
+        if initial_resume_bytes > 0 {
             let mb = initial_resume_bytes as f64 / (1024.0 * 1024.0);
-            let resume_msg = format!("🔄 [File {}/{}] Resuming {} from {:.1} MB...", file_num, total_files, filename, mb);
-            println!("{}", resume_msg);
-            0.35f32 // resumed start point
+            println!("🔄 [File {}/{}] Resuming {} from {:.1} MB...", file_num, total_files, filename, mb);
         } else {
-            let start_msg = format!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename);
-            println!("{}", start_msg);
-            0.0f32
-        };
-
-        progress_cb(
-            &format!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename),
-            ((file_num as f32 - 1.0) + start_pct) / total_files as f32,
-            file_num,
-            total_files,
-        );
-
-        // Download streaming simulation with resume progression
-        let steps_start = ((start_pct * 10.0).round() as usize).max(1);
-        for step in steps_start..=10 {
-            let p = step as f32 / 10.0;
-            let bar = render_progress_bar(p, 20);
-            let percent_str = format!("{:.1}%", p * 100.0);
-            let speed = 42.0 + (step as f32 * 2.0);
-
-            let status_line = format!(
-                "⬇️ [File {}/{}] {} {} {} @ {:.1} MB/s",
-                file_num, total_files, filename, bar, percent_str, speed
-            );
-
-            print!("\r{}", status_line);
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-
-            let overall_fraction = ((file_num as f32 - 1.0) + p) / total_files as f32;
-            progress_cb(&status_line, overall_fraction, file_num, total_files);
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            println!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename);
         }
-        println!();
 
-        // Write complete file and remove partial marker
-        std::fs::write(&dest_path, format!("GGUF Shard {} for {}\nURL: {}\n", filename, spec.repo_id, download_url))?;
+        // Run real streaming curl download with resume support
+        let mut curl_cmd = tokio::process::Command::new("curl");
+        curl_cmd.arg("-f")
+            .arg("-L")
+            .arg("-C").arg("-") // Auto-resume from partial byte offset
+            .arg("-o").arg(&part_path)
+            .arg(&download_url);
+
+        if let Ok(token) = std::env::var("HF_TOKEN") {
+            curl_cmd.arg("-H").arg(format!("Authorization: Bearer {}", token));
+        }
+
+        let mut child = curl_cmd
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()?;
+
+        let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+        loop {
+            tokio::select! {
+                res = child.wait() => {
+                    let status = res?;
+                    if !status.success() {
+                        return Err(anyhow!("Failed to download {}. Check network or HF_TOKEN.", filename));
+                    }
+                    break;
+                }
+                _ = check_interval.tick() => {
+                    if let Ok(meta) = part_path.metadata() {
+                        let cur_len = meta.len();
+                        let mb = cur_len as f64 / (1024.0 * 1024.0);
+                        let msg = format!("⬇️ [File {}/{}] {} ({:.1} MB downloaded)...", file_num, total_files, filename, mb);
+                        let file_pct = (mb / 4000.0).clamp(0.05, 0.95) as f32;
+                        let overall = ((file_num as f32 - 1.0) + file_pct) / total_files as f32;
+                        progress_cb(&msg, overall, file_num, total_files);
+                    }
+                }
+            }
+        }
+
+        // Successfully downloaded: promote .part to final .gguf
         if part_path.exists() {
-            let _ = std::fs::remove_file(&part_path);
+            std::fs::rename(&part_path, &dest_path)?;
         }
+
+        let done_msg = format!("✓ [File {}/{}] {} (Downloaded)", file_num, total_files, filename);
+        println!("{}", done_msg);
+        progress_cb(&done_msg, file_num as f32 / total_files as f32, file_num, total_files);
 
         if filename.contains("mmproj") {
             resolved_mmproj_path = Some(dest_path);
+        } else if filename.contains("mtp") || filename.contains("dflash") {
+            resolved_speedup_path = Some(dest_path);
         } else {
             downloaded_shard_paths.push(dest_path);
         }
@@ -284,7 +311,7 @@ where
         .cloned()
         .unwrap_or_else(|| model_dir.join(format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase())));
 
-    let complete_msg = format!("✨ All {} model files ready in {}", total_files, model_dir.display());
+    let complete_msg = format!("✨ All {} model weights ready in {}", total_files, model_dir.display());
     println!("{}", complete_msg);
     progress_cb(&complete_msg, 1.0, total_files, total_files);
 
@@ -292,6 +319,7 @@ where
         primary_entry_file,
         shard_files: downloaded_shard_paths,
         mmproj_file: resolved_mmproj_path,
+        speedup_draft_file: resolved_speedup_path,
     })
 }
 

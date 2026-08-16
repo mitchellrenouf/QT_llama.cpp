@@ -277,6 +277,42 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
         return Some(p);
     }
 
+    if let Ok(spec) = crate::hf::HfModelSpec::parse(model_arg) {
+        let model_dir = spec.get_model_dir();
+        if model_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&model_dir) {
+                let target_quant = spec.quant.to_lowercase();
+                let mut best_match = None;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                    if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+                        if name.contains(&target_quant) {
+                            return Some(path);
+                        }
+                        best_match = Some(path);
+                    }
+                }
+                if let Some(m) = best_match {
+                    return Some(m);
+                }
+            }
+        }
+    }
+
+    let cache_dir = dirs::home_dir().unwrap_or_default().join(".cache/gemma/models");
+    if cache_dir.is_dir() {
+        for entry in walkdir::WalkDir::new(&cache_dir).into_iter().flatten() {
+            if entry.file_type().is_file() {
+                let path = entry.into_path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
     let candidates = [
         PathBuf::from("models").join(model_arg),
         PathBuf::from(model_arg).with_extension("gguf"),
