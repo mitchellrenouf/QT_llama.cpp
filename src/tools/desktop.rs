@@ -9,10 +9,17 @@ use std::process::Command;
 
 pub fn is_executable_in_path(cmd: &str) -> Option<PathBuf> {
     if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        for dir in path_var.split(separator) {
             let p = Path::new(dir).join(cmd);
             if p.is_file() {
                 return Some(p);
+            }
+            if cfg!(windows) && !cmd.ends_with(".exe") {
+                let p_exe = Path::new(dir).join(format!("{}.exe", cmd));
+                if p_exe.is_file() {
+                    return Some(p_exe);
+                }
             }
         }
     }

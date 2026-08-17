@@ -6,6 +6,25 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: qt-llama-wrapper
 
+add-extensions:
+  dev.mitchellrenouf.QT_llama.Extension.cuda:
+    directory: extensions/cuda
+    version: '6.11'
+    add-ld-path: lib64:lib
+    no-autodownload: true
+
+  dev.mitchellrenouf.QT_llama.Extension.rocm:
+    directory: extensions/rocm
+    version: '6.11'
+    add-ld-path: lib:lib64
+    no-autodownload: true
+
+  dev.mitchellrenouf.QT_llama.Extension.oneapi:
+    directory: extensions/oneapi
+    version: '6.11'
+    add-ld-path: compiler/latest/lib:lib
+    no-autodownload: true
+
 finish-args:
   - --socket=wayland
   - --socket=fallback-x11
@@ -20,94 +39,13 @@ finish-args:
   - --talk-name=org.freedesktop.Notifications
 
 build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin:/app/cuda/bin:/app/rocm/bin:/app/oneapi/compiler/latest/bin
-  append-ld-library-path: /app/cuda/lib64:/app/rocm/lib:/app/rocm/lib64:/app/oneapi/compiler/latest/lib:/app/lib
+  append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/qt-llama/cargo
-    CUDA_PATH: /app/cuda
-    CUDA_TOOLKIT_ROOT_DIR: /app/cuda
-    ROCM_PATH: /app/rocm
-    HIP_PATH: /app/rocm
-    ONEAPI_ROOT: /app/oneapi
-    MKLROOT: /app/oneapi/mkl/latest
-    MKL_DIR: /app/oneapi/mkl/latest/lib/cmake/mkl
-    TBB_DIR: /app/oneapi/tbb/latest/lib/cmake/tbb
-    TBB_ROOT: /app/oneapi/tbb/latest
-    LLAMA_CUDA: "1"
-    LLAMA_HIPBLAS: "1"
-    LLAMA_SYCL: "1"
     LLAMA_VULKAN: "1"
 
 modules:
-  # 1. NVIDIA CUDA 13.3 Toolkit (Install via /var/tmp to prevent tmpfs exhaustion)
-  - name: cuda-toolkit
-    buildsystem: simple
-    build-commands:
-      - mkdir -p /var/tmp/cuda_tmp
-      - TMPDIR=/var/tmp/cuda_tmp sh cuda_13.3.1_610.43.02_linux.run --silent --toolkit --toolkitpath=/app/cuda --tmpdir=/var/tmp/cuda_tmp --override --no-man-page
-      - rm -rf /var/tmp/cuda_tmp
-      # Strip unneeded samples, documentation, and graphical tools to optimize image footprint
-      - rm -rf /app/cuda/doc /app/cuda/samples /app/cuda/extras /app/cuda/nsight* /app/cuda/nvvp*
-      - mkdir -p /app/lib
-      - cp -P /app/cuda/lib64/libcudart.so* /app/lib/ || true
-      - cp -P /app/cuda/lib64/libcublas.so* /app/lib/ || true
-      - cp -P /app/cuda/lib64/libcublasLt.so* /app/lib/ || true
-    sources:
-      - type: file
-        url: https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_610.43.02_linux.run
-        sha256: 9f98ec1f6c950401041d3f1308e221f0d5db8771a8e10569001b64caaee31a92
-
-  # 2. AMD ROCm 7.14 Toolkit (HIP / hipBLAS extracted via tar)
-  - name: rocm-toolkit
-    buildsystem: simple
-    build-commands:
-      - mkdir -p /app/rocm
-      - sh rocm-installer-7.14.0-7.run --tar -xf -C /app/rocm
-      - |
-        # Unpack embedded Debian archives if present
-        for deb in $(find /app/rocm -name "*.deb" 2>/dev/null); do
-          ar p "$deb" data.tar.xz 2>/dev/null | tar -xJ -C /app/rocm/ 2>/dev/null || \
-          ar p "$deb" data.tar.zst 2>/dev/null | tar --zstd -x -C /app/rocm/ 2>/dev/null || \
-          ar p "$deb" data.tar.gz 2>/dev/null | tar -xz -C /app/rocm/ 2>/dev/null || true
-        done
-        if [ -d "/app/rocm/opt" ]; then
-          cp -r /app/rocm/opt/rocm*/* /app/rocm/ 2>/dev/null || true
-          rm -rf /app/rocm/opt 2>/dev/null || true
-        fi
-      # Strip documentation, samples, and manual pages to optimize image footprint
-      - rm -rf /app/rocm/doc /app/rocm/samples /app/rocm/share/doc /app/rocm/share/man
-      - mkdir -p /app/lib
-      - cp -P /app/rocm/lib/libamdhip64.so* /app/lib/ 2>/dev/null || true
-      - cp -P /app/rocm/lib/libhipblas.so* /app/lib/ 2>/dev/null || true
-      - cp -P /app/rocm/lib/libhipblaslt.so* /app/lib/ 2>/dev/null || true
-      - cp -P /app/rocm/lib/libhsa-runtime64.so* /app/lib/ 2>/dev/null || true
-      - cp -P /app/rocm/lib/librocm-core.so* /app/lib/ 2>/dev/null || true
-    sources:
-      - type: file
-        url: https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-7.14/rocm-installer-7.14.0-7.run
-        sha256: 763887c73b744c66b74c4a95b7c4e4ae578153cce07e09234d97e0fd0e660fe8
-
-  # 3. Intel oneAPI Toolkit (SYCL / DPC++ for Intel GPU Acceleration)
-  - name: intel-oneapi-toolkit
-    buildsystem: simple
-    build-commands:
-      - mkdir -p /var/tmp/oneapi_tmp
-      - TMPDIR=/var/tmp/oneapi_tmp sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi
-      - rm -rf /var/tmp/oneapi_tmp
-      # Strip unneeded documentation and samples to optimize image footprint
-      - rm -rf /app/oneapi/doc /app/oneapi/samples /app/oneapi/share/doc
-      - mkdir -p /app/lib
-      - cp -P /app/oneapi/compiler/latest/lib/libsycl.so* /app/lib/ 2>/dev/null || true
-      - cp -P /app/oneapi/compiler/latest/lib/libOpenCL.so* /app/lib/ 2>/dev/null || true
-      - cp -P /app/oneapi/tbb/latest/lib/libtbb* /app/lib/ 2>/dev/null || true
-      - cp -P /app/oneapi/mkl/latest/lib/libmkl* /app/lib/ 2>/dev/null || true
-      - cp -P /app/oneapi/dnnl/latest/lib/libdnnl.so* /app/lib/ 2>/dev/null || true
-    sources:
-      - type: file
-        url: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c9c3d3e3-ddb4-490e-bb41-6e9041ba32a7/intel-oneapi-toolkit-2026.0.1.27_offline.sh
-        sha256: 30231d00de0108892ea6d50e785091b40cb8790bb006bca5e4f5e64735a33cfa
-
-  # 4. SPIRV-Headers required for ggml-vulkan shader compilation
+  # 1. SPIRV-Headers required for ggml-vulkan shader compilation
   - name: spirv-headers
     buildsystem: cmake-ninja
     config-opts:
@@ -118,7 +56,7 @@ modules:
         url: https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.321.0.tar.gz
         sha256: 5bbea925663d4cd2bab23efad53874f2718248a73dcaf9dd21dff8cb48e602fc
 
-  # 5. Main QT_llama application (Built with CUDA, ROCm, oneAPI & Vulkan)
+  # 2. Main QT_llama application (Vulkan built-in + GPU extension hooks)
   - name: qt-llama
     buildsystem: simple
     build-commands:
@@ -134,8 +72,8 @@ modules:
         directory = "vendor"
         EOF
 
-      # Build release binary with full Multi-GPU acceleration
-      - cargo build --release --features cuda,vulkan,hipblas,sycl --no-default-features
+      # Build release binary with Vulkan GPU acceleration
+      - cargo build --release --features vulkan --no-default-features
 
       # Install binaries & wrapper script
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama
@@ -151,6 +89,9 @@ modules:
       - mkdir -p /app/share/qt_llama/qml /app/share/gemma/qml
       - cp -r qml/* /app/share/qt_llama/qml/
       - cp -r qml/* /app/share/gemma/qml/
+
+      # Create extension mount point directories
+      - mkdir -p /app/extensions/cuda /app/extensions/rocm /app/extensions/oneapi
     sources:
       - type: dir
         path: ..

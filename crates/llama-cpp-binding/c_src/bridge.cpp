@@ -6,8 +6,45 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
+#include <cstdlib>
 
 extern "C" {
+
+void qt_llama_load_all_backends() {
+    static bool s_loaded = false;
+    if (s_loaded) return;
+    s_loaded = true;
+
+    // 1. Primary default discovery (binary dir and standard paths)
+    ggml_backend_load_all();
+
+    // 2. Custom environment backend search paths
+    if (const char * env_path = std::getenv("GGML_BACKEND_PATH")) {
+        ggml_backend_load_all_from_path(env_path);
+    }
+    if (const char * env_path = std::getenv("QT_LLAMA_BACKEND_PATH")) {
+        ggml_backend_load_all_from_path(env_path);
+    }
+
+    // 3. Scan well-known Linux / Flatpak / extension directories
+    const char * search_dirs[] = {
+        "/app/lib",
+        "/app/lib/ggml",
+        "/app/extensions/cuda/lib",
+        "/app/extensions/cuda/lib64",
+        "/app/extensions/rocm/lib",
+        "/app/extensions/rocm/lib64",
+        "/app/extensions/oneapi/compiler/latest/lib",
+        "/app/extensions/oneapi/lib",
+        "/usr/local/lib",
+        "/usr/lib",
+        nullptr
+    };
+
+    for (int i = 0; search_dirs[i] != nullptr; ++i) {
+        ggml_backend_load_all_from_path(search_dirs[i]);
+    }
+}
 
 int qt_llama_fit_params_backend(
     const char * model_path,
@@ -20,8 +57,8 @@ int qt_llama_fit_params_backend(
         return (int)COMMON_PARAMS_FIT_STATUS_ERROR;
     }
 
-    // Initialize/load all ggml backends
-    ggml_backend_load_all();
+    // Initialize & discover all dynamically available ggml backends
+    qt_llama_load_all_backends();
 
     static thread_local std::vector<ggml_backend_dev_t> s_selected_devs;
     s_selected_devs.clear();
@@ -36,11 +73,11 @@ int qt_llama_fit_params_backend(
         return (int)COMMON_PARAMS_FIT_STATUS_SUCCESS;
     }
 
-    if (choice == "cuda" || choice == "vulkan" || choice == "sycl" || choice == "hip" || choice == "rocm") {
+    if (choice == "cuda" || choice == "vulkan" || choice == "sycl" || choice == "oneapi" || choice == "hip" || choice == "rocm") {
         std::string prefix;
         if (choice == "cuda") prefix = "CUDA";
         else if (choice == "vulkan") prefix = "Vulkan";
-        else if (choice == "sycl") prefix = "SYCL";
+        else if (choice == "sycl" || choice == "oneapi") prefix = "SYCL";
         else if (choice == "hip" || choice == "rocm") prefix = "ROCm";
 
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
@@ -56,7 +93,30 @@ int qt_llama_fit_params_backend(
             mparams->devices = s_selected_devs.data();
         }
     } else {
-        mparams->devices = nullptr; // all available
+        // Auto mode: Prioritize high-performance native backends over Vulkan/CPU
+        // Priority: CUDA -> ROCm/HIP -> SYCL -> Vulkan -> CPU
+        const char * priority_prefixes[] = {"CUDA", "ROCm", "HIP", "SYCL", "Vulkan", nullptr};
+        for (int p = 0; priority_prefixes[p] != nullptr; ++p) {
+            const char * prefix = priority_prefixes[p];
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                auto * dev = ggml_backend_dev_get(i);
+                if (!dev) continue;
+                const char * name = ggml_backend_dev_name(dev);
+                if (name && std::strncmp(name, prefix, std::strlen(prefix)) == 0) {
+                    s_selected_devs.push_back(dev);
+                }
+            }
+            if (!s_selected_devs.empty()) {
+                break; // Found preferred hardware acceleration devices
+            }
+        }
+
+        if (!s_selected_devs.empty()) {
+            s_selected_devs.push_back(nullptr);
+            mparams->devices = s_selected_devs.data();
+        } else {
+            mparams->devices = nullptr; // fallback to all / CPU
+        }
     }
 
     size_t max_dev = llama_max_devices();

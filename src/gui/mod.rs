@@ -20,6 +20,7 @@ pub fn find_qml_entrypoint(workspace_root: &Path) -> Option<PathBuf> {
     let candidates = [
         workspace_root.join("qml").join("Main.qml"),
         PathBuf::from("qml/Main.qml"),
+        PathBuf::from("qml\\Main.qml"),
         PathBuf::from("/app/share/qt_llama/qml/Main.qml"),
         PathBuf::from("/app/share/gemma/qml/Main.qml"),
         PathBuf::from("/app/share/qt_llama/Main.qml"),
@@ -36,9 +37,53 @@ pub fn find_qml_entrypoint(workspace_root: &Path) -> Option<PathBuf> {
 }
 
 pub fn find_qml_runner() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        if let Ok(qtdir) = std::env::var("QTDIR") {
+            let p = PathBuf::from(&qtdir).join("bin").join("qml.exe");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        if let Ok(qt_root) = std::env::var("QT_ROOT") {
+            let p = PathBuf::from(&qt_root).join("bin").join("qml.exe");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        if let Ok(qt6_dir) = std::env::var("QT6_DIR") {
+            let p = PathBuf::from(&qt6_dir).join("bin").join("qml.exe");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        let win_candidates = [
+            r"C:\Qt\6.8.2\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.8.1\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.8.0\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.7.3\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.7.2\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.7.1\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.7.0\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.6.3\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.6.2\msvc2022_64\bin\qml.exe",
+            r"C:\Qt\6.5.3\msvc2022_64\bin\qml.exe",
+            r"C:\Qt6\bin\qml.exe",
+            r"C:\vcpkg\installed\x64-windows\tools\qt6\qml.exe",
+        ];
+        for path_str in win_candidates {
+            let p = PathBuf::from(path_str);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+
     let candidate_names = [
         "qml6",
         "qml",
+        "qml6.exe",
+        "qml.exe",
         "/usr/bin/qml6",
         "/usr/bin/qml",
         "/usr/lib/qt6/bin/qml",
@@ -46,6 +91,7 @@ pub fn find_qml_runner() -> Option<PathBuf> {
         "/app/bin/qml6",
         "/app/bin/qml",
         "qmlscene",
+        "qmlscene.exe",
         "/usr/bin/qmlscene",
         "/usr/lib/qt6/bin/qmlscene",
     ];
@@ -63,7 +109,11 @@ pub fn find_qml_runner() -> Option<PathBuf> {
 }
 
 pub fn is_display_available() -> bool {
-    std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok()
+    if cfg!(windows) {
+        true
+    } else {
+        std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok()
+    }
 }
 
 pub async fn launch_qt_gui(config: &Config) -> Result<()> {
@@ -80,7 +130,8 @@ pub async fn launch_qt_gui(config: &Config) -> Result<()> {
     // Bind local WebSocket server on ephemeral port
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
-    let _ = std::fs::write("/tmp/gemma_agent_port", port.to_string());
+    let port_file = std::env::temp_dir().join("gemma_agent_port");
+    let _ = std::fs::write(&port_file, port.to_string());
 
     let agent = Arc::new(Mutex::new(GemmaAgent::new(config.clone())));
 

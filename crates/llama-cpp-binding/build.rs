@@ -10,6 +10,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LLAMA_CUDA");
     println!("cargo:rerun-if-env-changed=LLAMA_VULKAN");
     println!("cargo:rerun-if-env-changed=LLAMA_HIPBLAS");
+    println!("cargo:rerun-if-env-changed=LLAMA_SYCL");
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=VULKAN_SDK");
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let is_windows = target_os == "windows";
+    let is_macos = target_os == "macos";
 
     let is_cuda_feat = env::var("CARGO_FEATURE_CUDA").is_ok();
     let is_vulkan_feat = env::var("CARGO_FEATURE_VULKAN").is_ok();
@@ -17,25 +24,27 @@ fn main() {
     let is_sycl_feat = env::var("CARGO_FEATURE_SYCL").is_ok();
     let is_auto_feat = env::var("CARGO_FEATURE_AUTO").is_ok();
 
-    // Check CUDA presence (including /opt/cuda, /usr/local/cuda, /app/cuda)
+    // Check CUDA presence (Windows %CUDA_PATH%, /opt/cuda, /usr/local/cuda, /app/cuda, nvcc in PATH)
     let has_cuda = is_cuda_feat
         || env::var("LLAMA_CUDA").map(|v| v == "1" || v == "ON").unwrap_or(false)
         || (is_auto_feat && (
-            Path::new("/opt/cuda/bin/nvcc").exists()
+            env::var("CUDA_PATH").is_ok()
+            || env::var("CUDA_TOOLKIT_ROOT_DIR").is_ok()
+            || Path::new("/opt/cuda/bin/nvcc").exists()
             || Path::new("/usr/local/cuda/bin/nvcc").exists()
             || Path::new("/app/cuda/bin/nvcc").exists()
             || std::process::Command::new("which").arg("nvcc").output().map(|o| o.status.success()).unwrap_or(false)
+            || (is_windows && std::process::Command::new("where").arg("nvcc").output().map(|o| o.status.success()).unwrap_or(false))
         ));
 
-    // Check Vulkan presence (including Flatpak SDK paths)
+    // Check Vulkan presence
     let has_vulkan = is_vulkan_feat
         || env::var("LLAMA_VULKAN").map(|v| v == "1" || v == "ON").unwrap_or(false)
         || (is_auto_feat && (
-            Path::new("/usr/include/vulkan/vulkan.h").exists()
+            env::var("VULKAN_SDK").is_ok()
+            || Path::new("/usr/include/vulkan/vulkan.h").exists()
             || Path::new("/usr/local/include/vulkan/vulkan.h").exists()
             || Path::new("/app/include/vulkan/vulkan.h").exists()
-            || env::var("VULKAN_SDK").is_ok()
-            // pkg-config check for Flatpak SDK vulkan-stack
             || std::process::Command::new("pkg-config").args(["--exists", "vulkan"]).status().map(|s| s.success()).unwrap_or(false)
         ));
 
@@ -66,12 +75,19 @@ fn main() {
         println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration (NVIDIA cuBLAS)...");
         cfg.define("GGML_CUDA", "ON");
         cfg.define("GGML_CUDA_NCCL", "OFF");
-        if let Ok(cuda_dir) = env::var("CUDA_TOOLKIT_ROOT_DIR").or_else(|_| env::var("CUDA_PATH")) {
-            let p = PathBuf::from(cuda_dir);
+
+        if let Ok(cuda_dir) = env::var("CUDA_PATH").or_else(|_| env::var("CUDA_TOOLKIT_ROOT_DIR")) {
+            let p = PathBuf::from(&cuda_dir);
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", &p);
-            let nvcc = p.join("bin/nvcc");
-            if nvcc.exists() {
-                cfg.define("CMAKE_CUDA_COMPILER", nvcc);
+            let nvcc_candidates = [
+                p.join("bin").join("nvcc.exe"),
+                p.join("bin").join("nvcc"),
+            ];
+            for nvcc in &nvcc_candidates {
+                if nvcc.exists() {
+                    cfg.define("CMAKE_CUDA_COMPILER", nvcc);
+                    break;
+                }
             }
             prefix_paths.push(p.display().to_string());
         } else if Path::new("/usr/lib/sdk/cuda").exists() {
@@ -96,6 +112,9 @@ fn main() {
     if has_vulkan {
         println!("cargo:warning=[llama-cpp-binding] Enabling Vulkan GPU Acceleration...");
         cfg.define("GGML_VULKAN", "ON");
+        if let Ok(sdk) = env::var("VULKAN_SDK") {
+            prefix_paths.push(sdk);
+        }
         if Path::new("/app/share/cmake/SPIRV-Headers").exists() {
             cfg.define("SPIRV-Headers_DIR", "/app/share/cmake/SPIRV-Headers");
         }
@@ -103,6 +122,7 @@ fn main() {
 
     if has_hipblas {
         println!("cargo:warning=[llama-cpp-binding] Enabling AMD ROCm / HIP Acceleration...");
+        cfg.define("GGML_HIP", "ON");
         cfg.define("GGML_HIPBLAS", "ON");
         if let Ok(rocm_dir) = env::var("ROCM_PATH").or_else(|_| env::var("HIP_PATH")) {
             let p = PathBuf::from(rocm_dir);
@@ -185,11 +205,11 @@ fn main() {
 
     let dst = cfg.build();
 
-    // Dynamically search all build output directories for static libraries
+    // Dynamically search all build output directories for static/import libraries
     for entry in walkdir::WalkDir::new(&dst).into_iter().flatten() {
         if entry.file_type().is_file() {
             if let Some(ext) = entry.path().extension() {
-                if ext == "a" {
+                if ext == "a" || ext == "lib" || ext == "so" || ext == "dylib" {
                     if let Some(parent) = entry.path().parent() {
                         println!("cargo:rustc-link-search=native={}", parent.display());
                     }
@@ -218,17 +238,32 @@ fn main() {
 
     if has_cuda {
         println!("cargo:rustc-link-lib=static=ggml-cuda");
-        let cuda_lib_candidates = [
-            "/opt/cuda/lib64",
-            "/opt/cuda/lib",
-            "/usr/local/cuda/lib64",
-            "/usr/local/cuda/lib",
-            "/usr/lib/x86_64-linux-gnu",
-            "/usr/lib64",
-            "/usr/lib",
+        let mut cuda_lib_candidates = vec![
+            "/opt/cuda/lib64".to_string(),
+            "/opt/cuda/lib".to_string(),
+            "/usr/local/cuda/lib64".to_string(),
+            "/usr/local/cuda/lib".to_string(),
+            "/app/cuda/lib64".to_string(),
+            "/app/cuda/lib".to_string(),
+            "/app/extensions/cuda/lib64".to_string(),
+            "/app/extensions/cuda/lib".to_string(),
+            "/usr/lib/sdk/cuda/lib64".to_string(),
+            "/usr/lib/sdk/cuda/lib".to_string(),
+            "/usr/lib/x86_64-linux-gnu".to_string(),
+            "/usr/lib64".to_string(),
+            "/usr/lib".to_string(),
         ];
+
+        if let Ok(cuda_path) = env::var("CUDA_PATH").or_else(|_| env::var("CUDA_TOOLKIT_ROOT_DIR")) {
+            let p = PathBuf::from(&cuda_path);
+            cuda_lib_candidates.push(p.join("lib").join("x64").display().to_string());
+            cuda_lib_candidates.push(p.join("lib").join("Win32").display().to_string());
+            cuda_lib_candidates.push(p.join("lib64").display().to_string());
+            cuda_lib_candidates.push(p.join("lib").display().to_string());
+        }
+
         for p in cuda_lib_candidates {
-            if Path::new(p).exists() {
+            if Path::new(&p).exists() {
                 println!("cargo:rustc-link-search=native={}", p);
             }
         }
@@ -239,15 +274,75 @@ fn main() {
 
     if has_vulkan {
         println!("cargo:rustc-link-lib=static=ggml-vulkan");
-        println!("cargo:rustc-link-lib=dylib=vulkan");
+        if let Ok(sdk) = env::var("VULKAN_SDK") {
+            let p = PathBuf::from(sdk);
+            if is_windows {
+                println!("cargo:rustc-link-search=native={}", p.join("Lib").display());
+            } else {
+                println!("cargo:rustc-link-search=native={}", p.join("lib").display());
+            }
+        }
+        if is_windows {
+            println!("cargo:rustc-link-lib=dylib=vulkan-1");
+        } else {
+            println!("cargo:rustc-link-lib=dylib=vulkan");
+        }
     }
 
     if has_hipblas {
         println!("cargo:rustc-link-lib=static=ggml-hip");
+        let rocm_lib_candidates = [
+            "/opt/rocm/lib",
+            "/opt/rocm/lib64",
+            "/usr/lib/sdk/rocm/lib",
+            "/usr/lib/sdk/rocm/lib64",
+            "/app/rocm/lib",
+            "/app/rocm/lib64",
+            "/app/extensions/rocm/lib",
+            "/app/extensions/rocm/lib64",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib64",
+            "/usr/lib",
+        ];
+        for p in rocm_lib_candidates {
+            if Path::new(p).exists() {
+                println!("cargo:rustc-link-search=native={}", p);
+            }
+        }
         println!("cargo:rustc-link-lib=dylib=hipblas");
         println!("cargo:rustc-link-lib=dylib=rocblas");
+        println!("cargo:rustc-link-lib=dylib=amdhip64");
     }
 
-    println!("cargo:rustc-link-lib=dylib=gomp");
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    if has_sycl {
+        println!("cargo:rustc-link-lib=static=ggml-sycl");
+        let oneapi_lib_candidates = [
+            "/opt/intel/oneapi/compiler/latest/lib",
+            "/opt/intel/oneapi/mkl/latest/lib",
+            "/opt/intel/oneapi/tbb/latest/lib",
+            "/usr/lib/sdk/oneapi/compiler/latest/lib",
+            "/app/oneapi/compiler/latest/lib",
+            "/app/extensions/oneapi/compiler/latest/lib",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib64",
+            "/usr/lib",
+        ];
+        for p in oneapi_lib_candidates {
+            if Path::new(p).exists() {
+                println!("cargo:rustc-link-search=native={}", p);
+            }
+        }
+        println!("cargo:rustc-link-lib=dylib=sycl");
+        println!("cargo:rustc-link-lib=dylib=OpenCL");
+    }
+
+    // Platform-specific standard C++ & OpenMP runtime libraries
+    if !is_windows {
+        if is_macos {
+            println!("cargo:rustc-link-lib=dylib=c++");
+        } else {
+            println!("cargo:rustc-link-lib=dylib=gomp");
+            println!("cargo:rustc-link-lib=dylib=stdc++");
+        }
+    }
 }
