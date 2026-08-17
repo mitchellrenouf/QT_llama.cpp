@@ -1,9 +1,12 @@
 use crate::device::{DeviceManager, DeviceType};
-use crate::gguf::GgufFile;
+use crate::gguf::{GgufFile, GgufTensorInfo};
 use crate::kv_cache::KvCacheManager;
 use crate::ops;
+use crate::quant::{dequantize_q8_0, quantize_f32_to_q8_0};
 use anyhow::Result;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -54,6 +57,10 @@ pub struct QTensorModel {
     pub vocab: Vec<String>,
     pub vocab_to_id: HashMap<String, i32>,
     pub gguf_path: PathBuf,
+    pub token_embd_info: Option<GgufTensorInfo>,
+    pub output_norm_weights: Vec<f32>,
+    pub data_offset: u64,
+    pub active_candidate_tokens: Vec<i32>,
 }
 
 impl QTensorModel {
@@ -98,11 +105,20 @@ impl QTensorModel {
         // Load Vocabulary from GGUF metadata
         let mut vocab = Vec::new();
         let mut vocab_to_id = HashMap::new();
+        let mut active_candidate_tokens = Vec::new();
+
         if let Some(tokens_meta) = gguf.get_meta("tokenizer.ggml.tokens").and_then(|v| v.as_array()) {
             for (id, val) in tokens_meta.iter().enumerate() {
                 if let Some(s) = val.as_str() {
                     vocab.push(s.to_string());
                     vocab_to_id.insert(s.to_string(), id as i32);
+
+                    // Collect candidate tokens: English words, punctuation, numbers, special symbols
+                    let is_printable = s.chars().all(|c| c.is_ascii_alphanumeric() || c.is_ascii_punctuation() || c.is_ascii_whitespace() || c == ' ');
+                    let is_special = s.starts_with('<') && s.ends_with('>');
+                    if is_printable || is_special {
+                        active_candidate_tokens.push(id as i32);
+                    }
                 }
             }
         }
@@ -139,6 +155,24 @@ impl QTensorModel {
             &layer_devices,
         )?;
 
+        let token_embd_info = gguf.tensors.get("token_embd.weight").cloned();
+        let output_norm_info = gguf.tensors.get("output_norm.weight").cloned();
+
+        let output_norm_weights = if let Some(ref info) = output_norm_info {
+            if let Ok(bytes) = gguf.read_tensor_bytes(info) {
+                let f32_count = bytes.len() / 4;
+                let mut vals = vec![0.0f32; f32_count];
+                for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+                    vals[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                }
+                vals
+            } else {
+                vec![1.0f32; dim]
+            }
+        } else {
+            vec![1.0f32; dim]
+        };
+
         eprintln!(
             "[qtensor] Initialized model: {} layers, {} dim, {} max_context, {} vocab items ({} GPU layers, {} CPU layers)",
             n_layers,
@@ -157,7 +191,39 @@ impl QTensorModel {
             vocab,
             vocab_to_id,
             gguf_path,
+            token_embd_info,
+            output_norm_weights,
+            data_offset: gguf.data_offset,
+            active_candidate_tokens,
         })
+    }
+
+    /// Read raw Q8_0 embedding vector for a single token directly from GGUF weight table
+    pub fn read_token_embedding(&self, token_id: i32, out: &mut [f32]) -> Result<()> {
+        let dim = self.config.dim;
+        assert_eq!(out.len(), dim);
+
+        if let Some(ref info) = self.token_embd_info {
+            let row_bytes = (dim / 32) * 34; // 88 * 34 = 2992 bytes
+            let offset = self.data_offset + info.offset + (token_id.max(0) as u64) * (row_bytes as u64);
+
+            let mut file = File::open(&self.gguf_path)?;
+            file.seek(SeekFrom::Start(offset))?;
+
+            let mut buffer = vec![0u8; row_bytes];
+            file.read_exact(&mut buffer)?;
+
+            dequantize_q8_0(&buffer, out);
+            return Ok(());
+        }
+
+        // Fallback initialized embedding vector
+        let scale = (dim as f32).sqrt();
+        for i in 0..dim {
+            let pseudo = (((token_id as usize + i * 31) % 1000) as f32 / 1000.0 - 0.5) * 0.02;
+            out[i] = pseudo * scale;
+        }
+        Ok(())
     }
 
     /// Tokenize text using longest-matching BPE over the loaded GGUF vocabulary
@@ -243,14 +309,17 @@ impl QTensorModel {
 
     /// Initialize generation state from prompt tokens
     pub fn init_generation_state(&self, prompt_tokens: &[i32]) -> GenerationState {
-        let mut hidden = vec![0.0f32; self.config.dim];
+        let dim = self.config.dim;
+        let mut hidden = vec![0.0f32; dim];
         let last_token = *prompt_tokens.last().unwrap_or(&1);
 
-        // Initialize embedding scale: sqrt(dim)
-        let scale = (self.config.dim as f32).sqrt();
-        for i in 0..self.config.dim {
-            let pseudo_weight = (((last_token as usize + i * 31) % 1000) as f32 / 1000.0 - 0.5) * 0.02;
-            hidden[i] = pseudo_weight * scale;
+        // Load real embedding vector for last token from weights
+        let _ = self.read_token_embedding(last_token, &mut hidden);
+
+        // Scale embedding by sqrt(dim) as per Gemma specification
+        let scale = (dim as f32).sqrt();
+        for val in hidden.iter_mut() {
+            *val *= scale;
         }
 
         GenerationState {
@@ -271,7 +340,6 @@ impl QTensorModel {
 
         // 2. Multi-layer forward pass with residual connections
         for _l in 0..self.config.n_layers {
-            // Layer RMSNorm
             let mut layer_normed = vec![0.0f32; dim];
             ops::rms_norm(&normed, None, 1e-6, &mut layer_normed);
 
@@ -293,33 +361,68 @@ impl QTensorModel {
             }
         }
 
-        state.hidden = normed;
+        // Apply final output RMSNorm
+        if !self.output_norm_weights.is_empty() {
+            ops::rms_norm(&normed, Some(&self.output_norm_weights), 1e-6, &mut state.hidden);
+        } else {
+            ops::rms_norm(&normed, None, 1e-6, &mut state.hidden);
+        }
 
-        // 3. Compute top vocabulary candidate logits
-        let vocab_len = self.vocab.len().min(self.config.vocab_size);
+        // 3. Quantize normalized hidden state to Q8_0 for projection against token embeddings
+        let n_blocks = dim / 32;
+        let mut q8_act = vec![0u8; n_blocks * 34];
+        quantize_f32_to_q8_0(&state.hidden, &mut q8_act);
+
+        // 4. Sample top candidate token
         let mut best_score = -1e20f32;
         let mut best_token = 107; // Default to end-of-turn if loop completes
 
-        // Autoregressive token selection based on transformer hidden activations
-        let seed = state.pos * 17 + (state.current_token as usize) * 31;
-        
-        let candidate_start = seed % vocab_len.saturating_sub(1000).max(1);
-        let candidate_end = (candidate_start + 1000).min(vocab_len);
+        let candidate_pool_len = self.active_candidate_tokens.len();
+        if candidate_pool_len > 0 {
+            let max_candidates = candidate_pool_len.min(1000);
+            let mut row_buffer = vec![0u8; n_blocks * 34];
 
-        for tid in candidate_start..candidate_end {
-            let mut score = 0.0f32;
-            for i in 0..16 {
-                let w = (((tid * 13 + i * 37) % 500) as f32 / 500.0 - 0.5) * 0.1;
-                score += state.hidden[i * 100 % dim] * w;
-            }
+            if let (Some(ref info), Ok(mut file)) = (&self.token_embd_info, File::open(&self.gguf_path)) {
+                let row_bytes = n_blocks * 34;
 
-            if temperature > 0.0 {
-                score /= temperature;
-            }
+                for &tid in &self.active_candidate_tokens[..max_candidates] {
+                    let offset = self.data_offset + info.offset + (tid as u64) * (row_bytes as u64);
+                    if file.seek(SeekFrom::Start(offset)).is_ok() && file.read_exact(&mut row_buffer).is_ok() {
+                        let mut dot = 0.0f32;
+                        for b in 0..n_blocks {
+                            let w_off = b * 34;
+                            let a_off = b * 34;
 
-            if score > best_score {
-                best_score = score;
-                best_token = tid as i32;
+                            let w_d_raw = u16::from_le_bytes([row_buffer[w_off], row_buffer[w_off + 1]]);
+                            let a_d_raw = u16::from_le_bytes([q8_act[a_off], q8_act[a_off + 1]]);
+
+                            let w_d = crate::quant::f16_to_f32(w_d_raw);
+                            let a_d = crate::quant::f16_to_f32(a_d_raw);
+
+                            let mut block_sum = 0i32;
+                            for k in 0..32 {
+                                let qw = row_buffer[w_off + 2 + k] as i8 as i32;
+                                let qa = q8_act[a_off + 2 + k] as i8 as i32;
+                                block_sum += qw * qa;
+                            }
+                            dot += (block_sum as f32) * w_d * a_d;
+                        }
+
+                        // Repetition penalty
+                        if state.history_tokens.iter().rev().take(32).any(|&t| t == tid) {
+                            dot -= 2.0;
+                        }
+
+                        if temperature > 0.0 {
+                            dot /= temperature;
+                        }
+
+                        if dot > best_score {
+                            best_score = dot;
+                            best_token = tid;
+                        }
+                    }
+                }
             }
         }
 

@@ -22,9 +22,11 @@ fn test_inspect_gemma_gguf() {
     let mut names: Vec<&String> = gguf.tensors.keys().collect();
     names.sort();
 
-    println!("First 20 tensors:");
-    for name in names.iter().take(20) {
-        let info = &gguf.tensors[*name];
-        println!("  - {} {:?} {:?}", info.name, info.shape.dims, info.dtype);
+    let model = qtensor::model::QTensorModel::load_from_gguf(&path, 8192).expect("Load model");
+    println!("Vocab size: {}", model.vocab.len());
+    let words = ["Hello", " How", " can", " I", " help", " you", " today", "The", " workspace", "<|call>", "<call|>"];
+    for w in words {
+        let t = model.tokenize(w);
+        println!("Tokenize '{}' -> {:?}", w, t);
     }
 }

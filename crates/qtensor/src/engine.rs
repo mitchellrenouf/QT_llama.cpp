@@ -3,6 +3,7 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 pub struct QTensorEngine {
@@ -61,6 +62,7 @@ impl QTensorEngine {
             };
 
             let mut generated = 0;
+            let start_time = Instant::now();
 
             while generated < max_tokens {
                 if cancel_flag.load(Ordering::Relaxed) {
@@ -100,6 +102,14 @@ impl QTensorEngine {
                     break;
                 }
             }
+
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let tps = if elapsed > 0.0001 {
+                generated as f64 / elapsed
+            } else {
+                0.0
+            };
+            eprintln!("[qtensor] Generated {} tokens in {:.2}s ({:.1} tk/s)", generated, elapsed, tps);
         });
 
         (rx, cancelled)
