@@ -210,7 +210,7 @@ impl LlamaClient {
     pub fn new(_server_url: &str, _api_key: &str) -> Self {
         let model_path = find_model_file("gemma-4-26b-it-q4_0.gguf");
         let engine = if let Some(path) = model_path {
-            match LlamaEngine::new(&path, 99, 8192, None) {
+            match LlamaEngine::new(&path, -1, 8192, "auto", "auto", None) {
                 Ok(eng) => Some(Arc::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: llama.cpp engine init deferred: {}", e);
@@ -255,7 +255,14 @@ impl LlamaClient {
             println!("Loading in-process GGUF model: {}", path.display());
             let n_layers = config.n_gpu_layers.unwrap_or(-1);
             let backend_str = config.backend.to_string();
-            match LlamaEngine::new(&path, n_layers, config.ctx_size, Some(&backend_str)) {
+            match LlamaEngine::new(
+                &path,
+                n_layers,
+                config.ctx_size,
+                &config.cache_type_k,
+                &config.cache_type_v,
+                Some(&backend_str),
+            ) {
                 Ok(eng) => Some(Arc::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: llama.cpp engine init deferred: {}", e);

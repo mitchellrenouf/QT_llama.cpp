@@ -145,6 +145,8 @@ impl GemmaAgent {
             model_path,
             n_layers,
             self.config.ctx_size,
+            &self.config.cache_type_k,
+            &self.config.cache_type_v,
             Some(&backend_str),
         )?;
         self.client = crate::client::LlamaClient::with_engine(

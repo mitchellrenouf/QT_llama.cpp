@@ -48,6 +48,10 @@ async fn main() -> anyhow::Result<()> {
     }
     println!(" Model Path  : {}", config.model.cyan());
     println!(" Context Size: {} tokens (GPU KV cache)", config.ctx_size.to_string().bright_yellow().bold());
+    let auto_cache = if config.ctx_size >= 131_072 { "q4_0" } else { "f16" };
+    let cache_k = if config.cache_type_k == "auto" { auto_cache } else { &config.cache_type_k };
+    let cache_v = if config.cache_type_v == "auto" { auto_cache } else { &config.cache_type_v };
+    println!(" KV Cache    : K={} / V={}", cache_k.bright_yellow(), cache_v.bright_yellow());
     println!(" Max Context : {} tokens (auto-compact enabled)", config.max_context_tokens.to_string().yellow());
     println!(" Auto-Approve: {}", config.auto_approve.to_string().bright_white());
 

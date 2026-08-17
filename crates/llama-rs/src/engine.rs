@@ -39,11 +39,18 @@ pub struct GenerationChunk {
 }
 
 impl LlamaEngine {
-    pub fn new<P: AsRef<Path>>(model_path: P, n_gpu_layers: i32, ctx_size: u32, backend: Option<&str>) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(
+        model_path: P,
+        n_gpu_layers: i32,
+        ctx_size: u32,
+        cache_type_k: &str,
+        cache_type_v: &str,
+        backend: Option<&str>,
+    ) -> Result<Self> {
         let model_path = model_path.as_ref();
         if !matches!(backend, Some("cpu")) {
             if let Some(server_path) = find_llama_server() {
-                match LlamaCppServer::start(&server_path, model_path, n_gpu_layers, ctx_size) {
+                match LlamaCppServer::start(&server_path, model_path, n_gpu_layers, ctx_size, cache_type_k, cache_type_v) {
                     Ok(server) => {
                         eprintln!("[llama.cpp] CUDA graph backend active on port {}", server.port);
                         return Ok(Self { inner: Arc::new(EngineBackend::LlamaCpp(Arc::new(server))) });
@@ -99,14 +106,30 @@ impl LlamaEngine {
 }
 
 impl LlamaCppServer {
-    fn start(executable: &Path, model: &Path, n_gpu_layers: i32, ctx_size: u32) -> Result<Self> {
+    fn start(
+        executable: &Path,
+        model: &Path,
+        n_gpu_layers: i32,
+        ctx_size: u32,
+        cache_type_k: &str,
+        cache_type_v: &str,
+    ) -> Result<Self> {
         let port = TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port();
-        let gpu_layers = if n_gpu_layers < 0 { 99 } else { n_gpu_layers };
+        let gpu_layers = if n_gpu_layers < 0 {
+            if ctx_size >= 131_072 { "auto" } else { "all" }.to_owned()
+        } else {
+            n_gpu_layers.to_string()
+        };
+        let auto_cache = if ctx_size >= 131_072 { "q4_0" } else { "f16" };
+        let cache_k = if cache_type_k == "auto" { auto_cache } else { cache_type_k };
+        let cache_v = if cache_type_v == "auto" { auto_cache } else { cache_type_v };
         let mut command = Command::new(executable);
         command
             .args(["--model", &model.to_string_lossy()])
             .args(["--n-gpu-layers", &gpu_layers.to_string()])
             .args(["--ctx-size", &ctx_size.to_string()])
+            .args(["--cache-type-k", cache_k])
+            .args(["--cache-type-v", cache_v])
             .args(["--flash-attn", "on"])
             .args(["--parallel", "1"])
             .args(["--host", "127.0.0.1"])
@@ -115,6 +138,13 @@ impl LlamaCppServer {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if ctx_size >= 131_072 && n_gpu_layers < 0 {
+            // The memory fitter places a few tensors on CPU at very large
+            // contexts. Direct loading avoids slow mmap-backed CPU overrides.
+            command
+                .args(["--load-mode", "none"])
+                .args(["--fit-target", "256"]);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

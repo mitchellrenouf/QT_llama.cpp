@@ -84,6 +84,16 @@ pub struct Config {
     #[arg(long = "ctx-size", env = "LLAMA_CTX_SIZE", default_value_t = 8192)]
     pub ctx_size: u32,
 
+    /// KV cache data type for keys (auto uses f16 normally and q4_0 for contexts >= 128k)
+    #[arg(long = "cache-type-k", env = "LLAMA_CACHE_TYPE_K", default_value = "auto",
+        value_parser = ["auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"])]
+    pub cache_type_k: String,
+
+    /// KV cache data type for values (auto uses f16 normally and q4_0 for contexts >= 128k)
+    #[arg(long = "cache-type-v", env = "LLAMA_CACHE_TYPE_V", default_value = "auto",
+        value_parser = ["auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"])]
+    pub cache_type_v: String,
+
     /// Max context tokens before auto-compaction triggers (default 256k)
     #[arg(long, default_value_t = 256000)]
     pub max_context_tokens: usize,
