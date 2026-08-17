@@ -311,6 +311,14 @@ pub fn run(port: u16) -> anyhow::Result<()> {
                             "Model loaded: {}",
                             e["model_name"].as_str().unwrap_or("")
                         )),
+                        "session_saved" => status.borrow_mut().set_text(format!(
+                            "Conversation saved: {}",
+                            e["path"].as_str().unwrap_or("")
+                        )),
+                        "session_loaded" => status.borrow_mut().set_text(format!(
+                            "Conversation loaded · ~{} tokens",
+                            e["tokens"].as_u64().unwrap_or(0)
+                        )),
                         "error" => {
                             *busy.borrow_mut() = false;
                             status.borrow_mut().set_text(format!(
@@ -325,6 +333,34 @@ pub fn run(port: u16) -> anyhow::Result<()> {
         })
         .build();
     let file = Menu::new("File")
+        .action("Save conversation…", {
+            let tx = tx.clone();
+            move || {
+                let name = qtrs::inputdialog::get_text(
+                    None,
+                    "Save conversation",
+                    "Conversation name:",
+                    "conversation",
+                );
+                if !name.trim().is_empty() {
+                    let _ = tx.send(json!({"type":"save_session","name":name.trim()}));
+                }
+            }
+        })
+        .action("Load conversation…", {
+            let tx = tx.clone();
+            move || {
+                let name = qtrs::inputdialog::get_text(
+                    None,
+                    "Load conversation",
+                    "Conversation name:",
+                    "conversation",
+                );
+                if !name.trim().is_empty() {
+                    let _ = tx.send(json!({"type":"load_session","name":name.trim()}));
+                }
+            }
+        })
         .action("Clear conversation", {
             let tx = tx.clone();
             move || {

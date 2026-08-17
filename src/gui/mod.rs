@@ -330,6 +330,45 @@ async fn handle_ws_session<S>(
                     "tokens": agent_lock.estimate_tokens(),
                 }));
             }
+            "save_session" => {
+                if let Some(name) = cmd.get("name").and_then(|value| value.as_str()) {
+                    let agent_lock = agent.lock().await;
+                    match agent_lock.save_session(name) {
+                        Ok(path) => {
+                            let _ = out_tx.send(serde_json::json!({
+                                "type": "session_saved",
+                                "path": path.display().to_string(),
+                            }));
+                        }
+                        Err(e) => {
+                            let _ = out_tx.send(serde_json::json!({
+                                "type": "error",
+                                "message": format!("Could not save conversation: {e}"),
+                            }));
+                        }
+                    }
+                }
+            }
+            "load_session" => {
+                if let Some(name) = cmd.get("name").and_then(|value| value.as_str()) {
+                    let mut agent_lock = agent.lock().await;
+                    match agent_lock.load_session(name) {
+                        Ok(path) => {
+                            let _ = out_tx.send(serde_json::json!({
+                                "type": "session_loaded",
+                                "path": path.display().to_string(),
+                                "tokens": agent_lock.estimate_tokens(),
+                            }));
+                        }
+                        Err(e) => {
+                            let _ = out_tx.send(serde_json::json!({
+                                "type": "error",
+                                "message": format!("Could not load conversation: {e}"),
+                            }));
+                        }
+                    }
+                }
+            }
             "toggle_speech" => {
                 let mut agent_lock = agent.lock().await;
                 let enabled = agent_lock.toggle_speech();
