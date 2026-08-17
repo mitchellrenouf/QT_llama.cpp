@@ -2,8 +2,8 @@ use crate::types::{DType, Shape};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Cursor, Read, Seek};
-use std::path::Path;
+use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 pub const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" in little endian
 
@@ -75,58 +75,65 @@ pub struct GgufFile {
     pub metadata: HashMap<String, GgufValue>,
     pub tensors: HashMap<String, GgufTensorInfo>,
     pub data_offset: u64,
-    pub raw_data: Vec<u8>,
+    pub path: PathBuf,
 }
 
 impl GgufFile {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let mut file = File::open(path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        Self::from_buffer(buffer)
-    }
+        let p_buf = path.as_ref().to_path_buf();
+        let mut file = File::open(&p_buf)?;
 
-    pub fn from_buffer(buffer: Vec<u8>) -> Result<Self> {
-        let mut cursor = Cursor::new(&buffer[..]);
-
-        let magic = read_u32_le(&mut cursor)?;
+        let magic = read_u32_le(&mut file)?;
         if magic != GGUF_MAGIC {
             return Err(anyhow!("Invalid GGUF magic number: 0x{:08X}", magic));
         }
 
-        let version = read_u32_le(&mut cursor)?;
+        let version = read_u32_le(&mut file)?;
         if version < 2 || version > 3 {
             return Err(anyhow!("Unsupported GGUF version: {}", version));
         }
 
-        let tensor_count = read_u64_le(&mut cursor)?;
-        let kv_count = read_u64_le(&mut cursor)?;
+        let tensor_count = read_u64_le(&mut file)?;
+        let kv_count = read_u64_le(&mut file)?;
 
         let mut metadata = HashMap::with_capacity(kv_count as usize);
-
         for _ in 0..kv_count {
-            let key = read_gguf_string(&mut cursor)?;
-            let val_type = read_u32_le(&mut cursor)?;
-            let value = read_gguf_value(&mut cursor, val_type)?;
+            let key = read_gguf_string(&mut file)?;
+            let val_type = read_u32_le(&mut file)?;
+            let value = read_gguf_value(&mut file, val_type)?;
             metadata.insert(key, value);
         }
 
         let mut tensors = HashMap::with_capacity(tensor_count as usize);
-
         for _ in 0..tensor_count {
-            let name = read_gguf_string(&mut cursor)?;
-            let n_dims = read_u32_le(&mut cursor)? as usize;
+            let name = read_gguf_string(&mut file)?;
+            let n_dims = read_u32_le(&mut file)? as usize;
 
             let mut dims = [1; 4];
-            for i in 0..n_dims {
-                dims[i] = read_u64_le(&mut cursor)? as usize;
+            for d in 0..n_dims.min(4) {
+                dims[d] = read_u64_le(&mut file)? as usize;
+            }
+            // Skip any extra dimensions
+            for _ in 4..n_dims {
+                let _ = read_u64_le(&mut file)?;
             }
 
-            let dtype_raw = read_u32_le(&mut cursor)?;
-            let dtype = DType::from_u32(dtype_raw)
-                .ok_or_else(|| anyhow!("Unknown GGUF tensor dtype: {}", dtype_raw))?;
+            let type_id = read_u32_le(&mut file)?;
+            let dtype = match type_id {
+                0 => DType::F32,
+                1 => DType::F16,
+                2 => DType::Q4_0,
+                3 => DType::Q4_1,
+                8 => DType::Q8_0,
+                12 => DType::Q4_K,
+                13 => DType::Q5_K,
+                14 => DType::Q6_K,
+                16 => DType::IQ4_XS,
+                30 => DType::BF16,
+                _ => return Err(anyhow!("Unsupported GGUF dtype ID: {}", type_id)),
+            };
 
-            let offset = read_u64_le(&mut cursor)?;
+            let offset = read_u64_le(&mut file)?;
             let shape = Shape {
                 dims,
                 n_dims: n_dims.min(4),
@@ -152,7 +159,7 @@ impl GgufFile {
             .and_then(|v| v.as_u32())
             .unwrap_or(32) as u64;
 
-        let cur_pos = cursor.position();
+        let cur_pos = file.stream_position()?;
         let data_offset = if cur_pos % alignment == 0 {
             cur_pos
         } else {
@@ -164,37 +171,56 @@ impl GgufFile {
             metadata,
             tensors,
             data_offset,
-            raw_data: buffer,
+            path: p_buf,
         })
     }
 
-    /// Read raw tensor byte slice
-    pub fn get_tensor_data(&self, tensor: &GgufTensorInfo) -> Result<&[u8]> {
-        let start = (self.data_offset + tensor.offset) as usize;
-        let end = start + tensor.size_bytes;
-
-        if end > self.raw_data.len() {
-            return Err(anyhow!("Tensor data out of bounds for '{}'", tensor.name));
-        }
-
-        Ok(&self.raw_data[start..end])
+    /// Read raw tensor bytes directly from file on-demand
+    pub fn read_tensor_bytes(&self, tensor: &GgufTensorInfo) -> Result<Vec<u8>> {
+        let mut file = File::open(&self.path)?;
+        let start = self.data_offset + tensor.offset;
+        file.seek(SeekFrom::Start(start))?;
+        let mut buf = vec![0u8; tensor.size_bytes];
+        file.read_exact(&mut buf)?;
+        Ok(buf)
     }
 
-    /// Find tensor by name
-    pub fn get_tensor(&self, name: &str) -> Option<&GgufTensorInfo> {
-        self.tensors.get(name)
-    }
-
-    /// Read metadata value
     pub fn get_meta(&self, key: &str) -> Option<&GgufValue> {
         self.metadata.get(key)
     }
+}
 
-    /// Get architecture string (e.g. "gemma2", "gemma4", "llama")
-    pub fn architecture(&self) -> &str {
-        self.get_meta("general.architecture")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
+fn read_gguf_string<R: Read>(reader: &mut R) -> Result<String> {
+    let len = read_u64_le(reader)? as usize;
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+fn read_gguf_value<R: Read>(reader: &mut R, val_type: u32) -> Result<GgufValue> {
+    match val_type {
+        0 => Ok(GgufValue::Uint8(read_u8(reader)?)),
+        1 => Ok(GgufValue::Int8(read_i8(reader)?)),
+        2 => Ok(GgufValue::Uint16(read_u16_le(reader)?)),
+        3 => Ok(GgufValue::Int16(read_i16_le(reader)?)),
+        4 => Ok(GgufValue::Uint32(read_u32_le(reader)?)),
+        5 => Ok(GgufValue::Int32(read_i32_le(reader)?)),
+        6 => Ok(GgufValue::Float32(read_f32_le(reader)?)),
+        7 => Ok(GgufValue::Bool(read_u8(reader)? != 0)),
+        8 => Ok(GgufValue::String(read_gguf_string(reader)?)),
+        9 => {
+            let item_type = read_u32_le(reader)?;
+            let len = read_u64_le(reader)? as usize;
+            let mut arr = Vec::with_capacity(len);
+            for _ in 0..len {
+                arr.push(read_gguf_value(reader, item_type)?);
+            }
+            Ok(GgufValue::Array(arr))
+        }
+        10 => Ok(GgufValue::Uint64(read_u64_le(reader)?)),
+        11 => Ok(GgufValue::Int64(read_i64_le(reader)?)),
+        12 => Ok(GgufValue::Float64(read_f64_le(reader)?)),
+        _ => Err(anyhow!("Unknown GGUF value type ID: {}", val_type)),
     }
 }
 
@@ -256,38 +282,4 @@ fn read_f64_le<R: Read>(reader: &mut R) -> Result<f64> {
     let mut b = [0u8; 8];
     reader.read_exact(&mut b)?;
     Ok(f64::from_le_bytes(b))
-}
-
-fn read_gguf_string<R: Read>(reader: &mut R) -> Result<String> {
-    let len = read_u64_le(reader)? as usize;
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf)?;
-    Ok(String::from_utf8(buf)?)
-}
-
-fn read_gguf_value<R: Read + Seek>(reader: &mut R, val_type: u32) -> Result<GgufValue> {
-    match val_type {
-        0 => Ok(GgufValue::Uint8(read_u8(reader)?)),
-        1 => Ok(GgufValue::Int8(read_i8(reader)?)),
-        2 => Ok(GgufValue::Uint16(read_u16_le(reader)?)),
-        3 => Ok(GgufValue::Int16(read_i16_le(reader)?)),
-        4 => Ok(GgufValue::Uint32(read_u32_le(reader)?)),
-        5 => Ok(GgufValue::Int32(read_i32_le(reader)?)),
-        6 => Ok(GgufValue::Float32(read_f32_le(reader)?)),
-        7 => Ok(GgufValue::Bool(read_u8(reader)? != 0)),
-        8 => Ok(GgufValue::String(read_gguf_string(reader)?)),
-        9 => {
-            let item_type = read_u32_le(reader)?;
-            let len = read_u64_le(reader)? as usize;
-            let mut arr = Vec::with_capacity(len);
-            for _ in 0..len {
-                arr.push(read_gguf_value(reader, item_type)?);
-            }
-            Ok(GgufValue::Array(arr))
-        }
-        10 => Ok(GgufValue::Uint64(read_u64_le(reader)?)),
-        11 => Ok(GgufValue::Int64(read_i64_le(reader)?)),
-        12 => Ok(GgufValue::Float64(read_f64_le(reader)?)),
-        _ => Err(anyhow!("Unsupported GGUF value type: {}", val_type)),
-    }
 }

@@ -1,9 +1,10 @@
+use crate::cuda::{CudaBuffer, CudaStream};
 use crate::device::{DeviceManager, DeviceType};
 use crate::gguf::GgufFile;
 use crate::kv_cache::KvCacheManager;
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
@@ -23,12 +24,12 @@ pub struct ModelConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            dim: 2304,
+            dim: 2816,
             n_layers: 30,
             n_heads: 16,
             n_kv_heads: 8,
             head_dim: 256,
-            vocab_size: 256000,
+            vocab_size: 262144,
             sliding_window: 4096,
             rope_freq_base: 500000.0,
             rope_freq_scale: 1.0,
@@ -45,17 +46,19 @@ pub struct QTensorModel {
     pub layer_devices: Vec<DeviceType>,
     pub vocab: Vec<String>,
     pub vocab_to_id: HashMap<String, i32>,
+    pub gguf_path: PathBuf,
 }
 
 impl QTensorModel {
     pub fn load_from_gguf<P: AsRef<Path>>(path: P, max_context: usize) -> Result<Self> {
-        let gguf = GgufFile::open(path)?;
+        let gguf_path = path.as_ref().to_path_buf();
+        let gguf = GgufFile::open(&gguf_path)?;
         
         let dim = gguf.get_meta("gemma2.embedding_length")
             .or_else(|| gguf.get_meta("gemma4.embedding_length"))
             .or_else(|| gguf.get_meta("general.embedding_length"))
             .and_then(|v| v.as_u32())
-            .unwrap_or(2304) as usize;
+            .unwrap_or(2816) as usize;
 
         let n_layers = gguf.get_meta("gemma2.block_count")
             .or_else(|| gguf.get_meta("gemma4.block_count"))
@@ -97,7 +100,7 @@ impl QTensorModel {
             }
         }
 
-        let vocab_size = if !vocab.is_empty() { vocab.len() } else { 256000 };
+        let vocab_size = if !vocab.is_empty() { vocab.len() } else { 262144 };
 
         let config = ModelConfig {
             dim,
@@ -147,6 +150,7 @@ impl QTensorModel {
             layer_devices,
             vocab,
             vocab_to_id,
+            gguf_path,
         })
     }
 
@@ -157,7 +161,6 @@ impl QTensorModel {
         }
 
         let mut tokens = Vec::new();
-        // Standard Gemma special token prefix
         if let Some(&bos) = self.vocab_to_id.get("<bos>").or_else(|| self.vocab_to_id.get("<s>")) {
             tokens.push(bos);
         }
