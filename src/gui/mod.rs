@@ -70,11 +70,28 @@ pub fn find_qml_runner() -> Option<PathBuf> {
             r"C:\Qt\6.5.3\msvc2022_64\bin\qml.exe",
             r"C:\Qt6\bin\qml.exe",
             r"C:\vcpkg\installed\x64-windows\tools\qt6\qml.exe",
+            r"C:\tools\Qt\bin\qml.exe",
         ];
         for path_str in win_candidates {
             let p = PathBuf::from(path_str);
             if p.is_file() {
                 return Some(p);
+            }
+        }
+
+        // Scan Python site-packages and Scripts for PySide6 QML runner
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            let py_dir = PathBuf::from(local_appdata).join("Programs").join("Python");
+            if py_dir.is_dir() {
+                for entry in walkdir::WalkDir::new(&py_dir).max_depth(4).into_iter().flatten() {
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    if name == "pyside6-qml.exe" || name == "qml.exe" {
+                        let p = entry.into_path();
+                        if p.is_file() {
+                            return Some(p);
+                        }
+                    }
+                }
             }
         }
     }
@@ -84,6 +101,8 @@ pub fn find_qml_runner() -> Option<PathBuf> {
         "qml",
         "qml6.exe",
         "qml.exe",
+        "pyside6-qml",
+        "pyside6-qml.exe",
         "/usr/bin/qml6",
         "/usr/bin/qml",
         "/usr/lib/qt6/bin/qml",
@@ -124,8 +143,25 @@ pub async fn launch_qt_gui(config: &Config) -> Result<()> {
     let qml_file = find_qml_entrypoint(&config.workspace_root)
         .ok_or_else(|| anyhow!("Could not find qml/Main.qml application file."))?;
 
-    let qml_runner = find_qml_runner()
-        .ok_or_else(|| anyhow!("Could not locate Qt6 QML runner (checked: qml6, qml, /usr/lib/qt6/bin/qml, qmlscene)."))?;
+    let qml_runner = if let Some(ref runner_path) = config.qml_runner {
+        if runner_path.is_file() {
+            runner_path.clone()
+        } else {
+            return Err(anyhow!("Specified --qml-runner path '{}' does not exist or is not a file.", runner_path.display()));
+        }
+    } else {
+        find_qml_runner().ok_or_else(|| {
+            if cfg!(windows) {
+                anyhow!(
+                    "Could not locate Qt6 QML runner (qml.exe, qml6.exe, qmlscene.exe, pyside6-qml.exe).\n\
+                     To run the GUI on Windows, please install Qt6 or pass '--qml-runner <path-to-qml.exe>'.\n\
+                     Tip: You can install PySide6 via 'pip install PySide6' which provides the QML runtime."
+                )
+            } else {
+                anyhow!("Could not locate Qt6 QML runner (checked: qml6, qml, /usr/lib/qt6/bin/qml, qmlscene).")
+            }
+        })?
+    };
 
     // Bind local WebSocket server on ephemeral port
     let listener = TcpListener::bind("127.0.0.1:0").await?;

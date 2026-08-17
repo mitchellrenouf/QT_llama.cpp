@@ -109,9 +109,19 @@ pub struct Config {
     /// Custom browser user-data-dir path or profile directory (e.g. "Default", ~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser, or ~/.config/BraveSoftware/Brave-Origin)
     #[arg(long, env = "BROWSER_PROFILE")]
     pub browser_profile: Option<String>,
+
+    /// Custom path to Qt6 QML runner executable (e.g. qml.exe, qml6.exe, qmlscene.exe)
+    #[arg(long = "qml-runner", env = "QT_QML_RUNNER")]
+    pub qml_runner: Option<PathBuf>,
 }
 
 pub fn detect_os_name() -> String {
+    if cfg!(windows) {
+        return "Windows".to_string();
+    }
+    if cfg!(target_os = "macos") {
+        return "macOS".to_string();
+    }
     if Path::new("/.flatpak-info").exists() {
         return "Flatpak Sandbox (Freedesktop SDK 26.08)".to_string();
     }

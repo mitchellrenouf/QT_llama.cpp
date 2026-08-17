@@ -62,15 +62,33 @@ impl HfModelSpec {
     }
 
     pub fn cache_dir() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".cache")
-            .join("gemma")
-            .join("models")
+        if let Ok(path) = std::env::var("HF_HUB_CACHE") {
+            return PathBuf::from(path);
+        }
+        if let Ok(hf_home) = std::env::var("HF_HOME") {
+            return PathBuf::from(hf_home).join("hub");
+        }
+        if let Ok(llama_cache) = std::env::var("LLAMA_CACHE") {
+            return PathBuf::from(llama_cache);
+        }
+
+        #[cfg(windows)]
+        {
+            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+                let p = PathBuf::from(local_appdata).join("huggingface").join("hub");
+                return p;
+            }
+        }
+
+        if let Some(home) = dirs::home_dir() {
+            return home.join(".cache").join("huggingface").join("hub");
+        }
+
+        PathBuf::from(".cache").join("huggingface").join("hub")
     }
 
     pub fn get_model_dir(&self) -> PathBuf {
-        let repo_slug = format!("{}_{}", self.user, self.model).replace('/', "_");
+        let repo_slug = format!("models--{}--{}", self.user, self.model);
         Self::cache_dir().join(repo_slug)
     }
 
@@ -81,19 +99,15 @@ impl HfModelSpec {
         }
 
         let target_quant_lower = self.quant.to_lowercase();
-        if let Ok(entries) = std::fs::read_dir(&model_dir) {
-            let mut has_model = false;
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-                if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
-                    if let Ok(meta) = entry.metadata() {
-                        if meta.len() > 10 * 1024 * 1024 { // > 10MB
-                            has_model = true;
-                        }
+        for entry in walkdir::WalkDir::new(&model_dir).into_iter().flatten() {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.len() > 10 * 1024 * 1024 { // > 10MB
+                        return true;
                     }
                 }
             }
-            return has_model;
         }
         false
     }

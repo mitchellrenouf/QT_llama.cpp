@@ -640,83 +640,103 @@ impl LlamaClient {
     }
 }
 
+pub fn get_llama_cache_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Ok(p) = std::env::var("HF_HUB_CACHE") {
+        roots.push(PathBuf::from(p));
+    }
+    if let Ok(p) = std::env::var("HF_HOME") {
+        roots.push(PathBuf::from(p).join("hub"));
+    }
+    if let Ok(p) = std::env::var("LLAMA_CACHE") {
+        roots.push(PathBuf::from(p));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            roots.push(PathBuf::from(&local_appdata).join("huggingface").join("hub"));
+            roots.push(PathBuf::from(&local_appdata).join("llama.cpp"));
+        }
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            roots.push(PathBuf::from(&userprofile).join(".cache").join("huggingface").join("hub"));
+            roots.push(PathBuf::from(&userprofile).join(".cache").join("llama.cpp"));
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".cache").join("huggingface").join("hub"));
+        roots.push(home.join(".cache").join("llama.cpp"));
+        roots.push(home.join(".cache").join("gemma").join("models"));
+    }
+
+    let mut unique_roots = Vec::new();
+    for r in roots {
+        if r.is_dir() && !unique_roots.contains(&r) {
+            unique_roots.push(r);
+        }
+    }
+    unique_roots
+}
+
 pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     let p = PathBuf::from(model_arg);
     if p.is_file() {
         return Some(p);
     }
 
-    if let Ok(spec) = crate::hf::HfModelSpec::parse(model_arg) {
-        // 1. Check HF Hub cache (~/.cache/huggingface/hub/models--{user}--{model}/)
-        let hf_hub_dir = dirs::home_dir().unwrap_or_default()
-            .join(".cache/huggingface/hub")
-            .join(format!("models--{}--{}", spec.user, spec.model));
-        if hf_hub_dir.is_dir() {
-            let target_quant = spec.quant.to_lowercase();
-            for entry in walkdir::WalkDir::new(&hf_hub_dir).into_iter().flatten() {
-                let path = entry.into_path();
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                if name.ends_with(".gguf") && !name.contains("mmproj") && !name.contains("mtp") {
-                    if name.contains(&target_quant) {
-                        return Some(path);
-                    }
-                }
-            }
-            // fallback to any .gguf in this hub repo
-            for entry in walkdir::WalkDir::new(&hf_hub_dir).into_iter().flatten() {
-                let path = entry.into_path();
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                if name.ends_with(".gguf") && !name.contains("mmproj") && !name.contains("mtp") {
-                    return Some(path);
-                }
-            }
-        }
+    let cache_roots = get_llama_cache_roots();
 
-        // 2. Check local gemma cache dir
-        let model_dir = spec.get_model_dir();
-        if model_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&model_dir) {
-                let target_quant = spec.quant.to_lowercase();
+    if let Ok(spec) = crate::hf::HfModelSpec::parse(model_arg) {
+        let repo_slug = format!("models--{}--{}", spec.user, spec.model);
+        let target_quant = spec.quant.to_lowercase();
+
+        // 1. Search for matching repo slug in all llama.cpp / Hugging Face cache directories
+        for root in &cache_roots {
+            let repo_dir = root.join(&repo_slug);
+            if repo_dir.is_dir() {
                 let mut best_match = None;
-                for entry in entries.flatten() {
-                    let path = entry.path();
+                for entry in walkdir::WalkDir::new(&repo_dir).into_iter().flatten() {
+                    let path = entry.into_path();
                     let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
                     if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
                         if name.contains(&target_quant) {
                             return Some(path);
                         }
-                        best_match = Some(path);
+                        if best_match.is_none() {
+                            best_match = Some(path);
+                        }
                     }
                 }
                 if let Some(m) = best_match {
                     return Some(m);
                 }
             }
-        }
-    }
 
-    // 3. Scan whole HF hub cache for matching quant or gemma-4
-    let hf_hub_base = dirs::home_dir().unwrap_or_default().join(".cache/huggingface/hub");
-    if hf_hub_base.is_dir() {
-        for entry in walkdir::WalkDir::new(&hf_hub_base).into_iter().flatten() {
-            let path = entry.into_path();
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            if name.ends_with(".gguf") && !name.contains("mmproj") && !name.contains("mtp") {
-                if name.contains("gemma-4") || name.contains("gemma") {
-                    return Some(path);
+            // Legacy folder name check (e.g. user_model)
+            let legacy_dir = root.join(format!("{}_{}", spec.user, spec.model));
+            if legacy_dir.is_dir() {
+                for entry in walkdir::WalkDir::new(&legacy_dir).into_iter().flatten() {
+                    let path = entry.into_path();
+                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                    if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+                        if name.contains(&target_quant) {
+                            return Some(path);
+                        }
+                    }
                 }
             }
         }
     }
 
-    // 4. Scan ~/.cache/gemma/models
-    let cache_dir = dirs::home_dir().unwrap_or_default().join(".cache/gemma/models");
-    if cache_dir.is_dir() {
-        for entry in walkdir::WalkDir::new(&cache_dir).into_iter().flatten() {
-            if entry.file_type().is_file() {
-                let path = entry.into_path();
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+    // 2. Scan whole cache roots for matching model file
+    for root in &cache_roots {
+        for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
+            let path = entry.into_path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+                if name.contains("gemma-4") || name.contains("gemma") {
                     return Some(path);
                 }
             }
