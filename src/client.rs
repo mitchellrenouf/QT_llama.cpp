@@ -245,7 +245,10 @@ impl LlamaClient {
     }
 
     pub fn with_config(config: &Config) -> Self {
-        let model_path = if let Some(hf_spec_str) = &config.hf {
+        let explicit_model = PathBuf::from(&config.model);
+        let model_path = if explicit_model.is_file() {
+            Some(explicit_model)
+        } else if let Some(hf_spec_str) = config.hf.as_deref().filter(|s| !s.trim().is_empty()) {
             find_model_file(hf_spec_str).or_else(|| find_model_file(&config.model))
         } else {
             find_model_file(&config.model)
@@ -835,6 +838,14 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_explicit_model_path_wins_over_hf_default() {
+        let path = std::env::temp_dir().join(format!("rustllama-explicit-{}.gguf", std::process::id()));
+        std::fs::write(&path, b"test").unwrap();
+        assert_eq!(find_model_file(path.to_str().unwrap()), Some(path.clone()));
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn test_parse_gemma_tool_call_screenshot() {

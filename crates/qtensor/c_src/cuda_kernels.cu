@@ -480,6 +480,82 @@ void cuda_op_gemv_q4_0(
     k_gemv_q4_0_f32<<<blocks, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
 }
 
+// Exact top-K candidates per disjoint vocabulary partition. The union of each
+// partition's top K necessarily contains the global top K, while avoiding a
+// full-vocabulary device-to-host copy.
+__global__ void k_vocab_topk_f32(
+    const float* __restrict__ logits,
+    const uint8_t* __restrict__ valid,
+    const int32_t* __restrict__ recent,
+    float* __restrict__ out_scores,
+    int32_t* __restrict__ out_ids,
+    int vocab_size,
+    int n_recent,
+    int generated_count,
+    int k
+) {
+    extern __shared__ unsigned char scratch[];
+    float* warp_scores = reinterpret_cast<float*>(scratch);
+    int32_t* warp_ids = reinterpret_cast<int32_t*>(warp_scores + 32);
+    int32_t* selected = warp_ids + 32;
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const int partition_start = (int)(((long long)vocab_size * blockIdx.x) / gridDim.x);
+    const int partition_end = (int)(((long long)vocab_size * (blockIdx.x + 1)) / gridDim.x);
+
+    for (int rank = 0; rank < k; ++rank) {
+        float best = -3.402823466e+38F;
+        int32_t best_id = -1;
+        for (int id = partition_start + threadIdx.x; id < partition_end; id += blockDim.x) {
+            if (!valid[id]) continue;
+            if (generated_count < 4 && (id == 1 || id == 2 || id == 105 || id == 106 || id == 107)) continue;
+            bool already_selected = false;
+            for (int r = 0; r < rank; ++r) already_selected |= selected[r] == id;
+            if (already_selected) continue;
+            float score = logits[id];
+            for (int r = 0; r < n_recent; ++r) score -= recent[r] == id ? 1.8f : 0.0f;
+            if (score > best || (score == best && id < best_id)) {
+                best = score;
+                best_id = id;
+            }
+        }
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            float other_score = __shfl_down_sync(0xffffffff, best, offset);
+            int32_t other_id = __shfl_down_sync(0xffffffff, best_id, offset);
+            if (other_score > best || (other_score == best && other_id >= 0 && (best_id < 0 || other_id < best_id))) {
+                best = other_score;
+                best_id = other_id;
+            }
+        }
+        if (lane == 0) {
+            warp_scores[warp] = best;
+            warp_ids[warp] = best_id;
+        }
+        __syncthreads();
+        if (warp == 0) {
+            int n_warps = blockDim.x >> 5;
+            best = lane < n_warps ? warp_scores[lane] : -3.402823466e+38F;
+            best_id = lane < n_warps ? warp_ids[lane] : -1;
+            #pragma unroll
+            for (int offset = 16; offset > 0; offset >>= 1) {
+                float other_score = __shfl_down_sync(0xffffffff, best, offset);
+                int32_t other_id = __shfl_down_sync(0xffffffff, best_id, offset);
+                if (other_score > best || (other_score == best && other_id >= 0 && (best_id < 0 || other_id < best_id))) {
+                    best = other_score;
+                    best_id = other_id;
+                }
+            }
+            if (lane == 0) {
+                selected[rank] = best_id;
+                out_scores[blockIdx.x * k + rank] = best;
+                out_ids[blockIdx.x * k + rank] = best_id;
+            }
+        }
+        __syncthreads();
+    }
+}
+
 void cuda_op_gemv_q4_0_qkv(
     const uint8_t* d_w_q,
     const uint8_t* d_w_k,
@@ -529,6 +605,27 @@ void cuda_op_gemv_q8_0(
     int rows_per_block = threads / WARP_SIZE;
     int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
     k_gemv_q8_0_f32<<<blocks, threads, 0, stream>>>(d_w_q8, d_x, d_y, n_rows, n_cols);
+}
+
+void cuda_op_vocab_topk(
+    const float* d_logits,
+    const uint8_t* d_valid,
+    const int32_t* d_recent,
+    float* d_scores,
+    int32_t* d_ids,
+    int vocab_size,
+    int n_recent,
+    int generated_count,
+    int k,
+    int partitions,
+    cudaStream_t stream
+) {
+    const int threads = 256;
+    const int shared = (32 * (sizeof(float) + sizeof(int32_t))) + k * sizeof(int32_t);
+    k_vocab_topk_f32<<<partitions, threads, shared, stream>>>(
+        d_logits, d_valid, d_recent, d_scores, d_ids,
+        vocab_size, n_recent, generated_count, k
+    );
 }
 
 void cuda_op_add(

@@ -164,12 +164,31 @@ pub struct QTensorModel {
     pub gpu_d_final_hidden: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_vocab_logits: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_valid_vocab: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_recent_tokens: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<i32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_topk_scores: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_topk_ids: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<i32>>>,
 }
 
 impl QTensorModel {
     pub fn load_from_gguf<P: AsRef<Path>>(path: P, max_context: usize) -> Result<Self> {
         let gguf_path = path.as_ref().to_path_buf();
         let gguf = GgufFile::open(&gguf_path)?;
+
+        if gguf
+            .get_meta("general.architecture")
+            .and_then(|v| v.as_str())
+            == Some("gemma4-assistant")
+        {
+            anyhow::bail!(
+                "Gemma 4 assistant GGUFs are MTP draft heads and require a target model; \
+                 they cannot be loaded as a standalone generation model"
+            );
+        }
         
         let dim = gguf.get_meta("gemma2.embedding_length")
             .or_else(|| gguf.get_meta("gemma4.embedding_length"))
@@ -197,7 +216,7 @@ impl QTensorModel {
         }
 
         let vocab_size = if !vocab.is_empty() { vocab.len() } else { 262144 };
-        let valid_vocab_token = (0..vocab_size)
+        let valid_vocab_token: Vec<bool> = (0..vocab_size)
             .map(|tid| {
                 vocab.get(tid).map_or(true, |piece| {
                     !piece.starts_with("<unused")
@@ -508,6 +527,14 @@ impl QTensorModel {
         };
 
         #[cfg(feature = "cuda")]
+        let gpu_valid_vocab = if cuda_dev.is_some() {
+            let bytes: Vec<u8> = valid_vocab_token.iter().map(|&v| u8::from(v)).collect();
+            crate::cuda::CudaBuffer::from_host_on(0, &bytes).ok()
+        } else {
+            None
+        };
+
+        #[cfg(feature = "cuda")]
         let (gpu_d_final_hidden, gpu_d_vocab_logits) = if cuda_dev.is_some() {
             (
                 crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
@@ -515,6 +542,17 @@ impl QTensorModel {
             )
         } else {
             (None, None)
+        };
+
+        #[cfg(feature = "cuda")]
+        let (gpu_d_recent_tokens, gpu_d_topk_scores, gpu_d_topk_ids) = if cuda_dev.is_some() {
+            (
+                crate::cuda::CudaBuffer::alloc_on(0, 32).ok(),
+                crate::cuda::CudaBuffer::alloc_on(0, 128 * 40).ok(),
+                crate::cuda::CudaBuffer::alloc_on(0, 128 * 40).ok(),
+            )
+        } else {
+            (None, None, None)
         };
 
         eprintln!(
@@ -550,6 +588,14 @@ impl QTensorModel {
             gpu_d_final_hidden: parking_lot::Mutex::new(gpu_d_final_hidden),
             #[cfg(feature = "cuda")]
             gpu_d_vocab_logits: parking_lot::Mutex::new(gpu_d_vocab_logits),
+            #[cfg(feature = "cuda")]
+            gpu_valid_vocab,
+            #[cfg(feature = "cuda")]
+            gpu_d_recent_tokens: parking_lot::Mutex::new(gpu_d_recent_tokens),
+            #[cfg(feature = "cuda")]
+            gpu_d_topk_scores: parking_lot::Mutex::new(gpu_d_topk_scores),
+            #[cfg(feature = "cuda")]
+            gpu_d_topk_ids: parking_lot::Mutex::new(gpu_d_topk_ids),
         })
     }
 
@@ -1153,31 +1199,56 @@ impl QTensorModel {
         let gpu_scored: Option<Vec<(f32, i32)>> = if let (Some(ref dev), Some(ref g_table)) = (&self.cuda_dev, &self.gpu_token_embd_table) {
             let mut hid_guard = self.gpu_d_final_hidden.lock();
             let mut log_guard = self.gpu_d_vocab_logits.lock();
-            if let (Some(ref mut d_hid), Some(ref mut d_log)) = (hid_guard.as_mut(), log_guard.as_mut()) {
+            let mut recent_guard = self.gpu_d_recent_tokens.lock();
+            let mut scores_guard = self.gpu_d_topk_scores.lock();
+            let mut ids_guard = self.gpu_d_topk_ids.lock();
+            if let (Some(ref mut d_hid), Some(ref mut d_log), Some(ref valid), Some(ref mut d_recent), Some(ref mut d_scores), Some(ref mut d_ids)) = (
+                hid_guard.as_mut(), log_guard.as_mut(), self.gpu_valid_vocab.as_ref(),
+                recent_guard.as_mut(), scores_guard.as_mut(), ids_guard.as_mut(),
+            ) {
                 if dev.copy_from_host_async(d_hid, &state.hidden).is_ok() {
                     dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
-                    let mut logits = vec![0.0f32; self.config.vocab_size];
-                    if d_log.copy_to_host(&mut logits).is_ok() {
-                        for &token in &recent_tokens {
-                            if let Some(logit) = logits.get_mut(token.max(0) as usize) {
-                                *logit -= 1.8;
+                    if std::env::var_os("QTENSOR_FULL_LOGITS").is_some() {
+                        let mut logits = vec![0.0f32; self.config.vocab_size];
+                        if d_log.copy_to_host(&mut logits).is_ok() {
+                            for &token in &recent_tokens {
+                                if let Some(logit) = logits.get_mut(token.max(0) as usize) {
+                                    *logit -= 1.8;
+                                }
                             }
+                            Some(logits.into_iter().enumerate().filter_map(|(tid, score)| {
+                                if !self.valid_vocab_token[tid]
+                                    || (generated_count < 4 && matches!(tid, 1 | 2 | 105 | 106 | 107))
+                                {
+                                    None
+                                } else {
+                                    Some((score, tid as i32))
+                                }
+                            }).collect())
+                        } else {
+                            None
                         }
-                        let mut scored = Vec::with_capacity(self.config.vocab_size);
-                        for tid in 0..self.config.vocab_size {
-                            if !self.valid_vocab_token[tid] {
-                                continue;
-                            }
-
-                            if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
-                                continue;
-                            }
-
-                            scored.push((logits[tid], tid as i32));
-                        }
-                        Some(scored)
                     } else {
-                        None
+                        let mut recent_upload = [0i32; 32];
+                        recent_upload[..recent_tokens.len()].copy_from_slice(&recent_tokens);
+                        if dev.copy_from_host_async(d_recent, &recent_upload).is_ok() {
+                            const PARTITIONS: usize = 128;
+                            const K: usize = 40;
+                            dev.vocab_topk(
+                                d_log, valid, d_recent, d_scores, d_ids,
+                                self.config.vocab_size, recent_tokens.len(), generated_count,
+                                K, PARTITIONS,
+                            );
+                            let mut scores = vec![0.0f32; PARTITIONS * K];
+                            let mut ids = vec![0i32; PARTITIONS * K];
+                            if d_scores.copy_to_host(&mut scores).is_ok() && d_ids.copy_to_host(&mut ids).is_ok() {
+                                Some(scores.into_iter().zip(ids).filter(|(_, id)| *id >= 0).collect())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                 } else {
                     None

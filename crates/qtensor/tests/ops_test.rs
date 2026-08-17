@@ -162,3 +162,53 @@ fn test_cuda_q8_gemv_matches_reference() {
         assert!((actual - expected).abs() < 1e-3, "row {index}: {actual} != {expected}");
     }
 }
+
+#[cfg(feature = "cuda")]
+#[test]
+fn test_cuda_vocab_topk_contains_exact_global_topk() {
+    use qtensor::cuda::{CudaBuffer, CudaDevice};
+
+    if !CudaDevice::is_available() {
+        return;
+    }
+
+    const N: usize = 4096;
+    const K: usize = 40;
+    const PARTITIONS: usize = 8;
+    let logits: Vec<f32> = (0..N)
+        .map(|i| ((i * 7919 % 65521) as f32) * 0.001 + i as f32 * 1e-7)
+        .collect();
+    let valid: Vec<u8> = (0..N).map(|i| u8::from(i % 17 != 0)).collect();
+    let recent = [31i32, 777, 2049, 4001];
+    let mut recent_padded = [0i32; 32];
+    recent_padded[..recent.len()].copy_from_slice(&recent);
+
+    let dev = CudaDevice::new(0).unwrap();
+    let d_logits = CudaBuffer::from_host(&logits).unwrap();
+    let d_valid = CudaBuffer::from_host(&valid).unwrap();
+    let d_recent = CudaBuffer::from_host(&recent_padded).unwrap();
+    let mut d_scores = CudaBuffer::alloc(PARTITIONS * K).unwrap();
+    let mut d_ids = CudaBuffer::alloc(PARTITIONS * K).unwrap();
+    dev.vocab_topk(
+        &d_logits, &d_valid, &d_recent, &mut d_scores, &mut d_ids,
+        N, recent.len(), 10, K, PARTITIONS,
+    );
+    let mut scores = vec![0.0f32; PARTITIONS * K];
+    let mut ids = vec![0i32; PARTITIONS * K];
+    d_scores.copy_to_host(&mut scores).unwrap();
+    d_ids.copy_to_host(&mut ids).unwrap();
+
+    let mut actual: Vec<_> = scores.into_iter().zip(ids).collect();
+    actual.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    actual.truncate(K);
+    let mut expected: Vec<_> = logits.iter().copied().enumerate()
+        .filter(|(id, _)| valid[*id] != 0)
+        .map(|(id, mut score)| {
+            if recent.contains(&(id as i32)) { score -= 1.8; }
+            (score, id as i32)
+        })
+        .collect();
+    expected.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    expected.truncate(K);
+    assert_eq!(actual, expected);
+}

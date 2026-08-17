@@ -48,6 +48,12 @@ extern "C" {
         d_act: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream,
     );
     fn cuda_op_gemv_q8_0(d_w_q8: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
+    fn cuda_op_vocab_topk(
+        d_logits: *const f32, d_valid: *const u8, d_recent: *const i32,
+        d_scores: *mut f32, d_ids: *mut i32, vocab_size: i32,
+        n_recent: i32, generated_count: i32, k: i32, partitions: i32,
+        stream: CudaStream,
+    );
     fn cuda_op_add(d_a: *const f32, d_b: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_embedding(d_table: *const f32, d_out: *mut f32, token: i32, dim: i32, stream: CudaStream);
     fn cuda_op_attention(
@@ -577,6 +583,34 @@ impl CudaDevice {
                 exp_ffn_dim as i32,
                 n_active as i32,
                 self.stream,
+            );
+        }
+    }
+
+    pub fn vocab_topk(
+        &self,
+        logits: &CudaBuffer<f32>,
+        valid: &CudaBuffer<u8>,
+        recent: &CudaBuffer<i32>,
+        scores: &mut CudaBuffer<f32>,
+        ids: &mut CudaBuffer<i32>,
+        vocab_size: usize,
+        n_recent: usize,
+        generated_count: usize,
+        k: usize,
+        partitions: usize,
+    ) {
+        assert!(valid.len() >= vocab_size);
+        assert!(recent.len() >= n_recent);
+        assert!(scores.len() >= k * partitions);
+        assert!(ids.len() >= k * partitions);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_vocab_topk(
+                logits.as_ptr(), valid.as_ptr(), recent.as_ptr(),
+                scores.as_mut_ptr(), ids.as_mut_ptr(), vocab_size as i32,
+                n_recent as i32, generated_count as i32, k as i32,
+                partitions as i32, self.stream,
             );
         }
     }
