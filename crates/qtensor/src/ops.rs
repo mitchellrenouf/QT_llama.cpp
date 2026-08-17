@@ -1,0 +1,145 @@
+use crate::quant::{quantize_f32_to_q8_0, vec_dot_q4_0_q8_0};
+
+/// In-place or out-of-place RMS Normalization: y = x / sqrt(mean(x^2) + eps) * weight
+pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32, out: &mut [f32]) {
+    assert_eq!(x.len(), out.len());
+    let dim = x.len();
+
+    let mut sum_sq = 0.0f32;
+    for &val in x {
+        sum_sq += val * val;
+    }
+
+    let mean_sq = sum_sq / (dim as f32);
+    let scale = 1.0f32 / (mean_sq + eps).sqrt();
+
+    if let Some(w) = weight {
+        assert_eq!(w.len(), dim);
+        for i in 0..dim {
+            out[i] = x[i] * scale * w[i];
+        }
+    } else {
+        for i in 0..dim {
+            out[i] = x[i] * scale;
+        }
+    }
+}
+
+/// Rotary Positional Embedding (RoPE) for query/key vectors
+pub fn rope_1d(
+    vec: &mut [f32],
+    pos: usize,
+    head_dim: usize,
+    freq_base: f32,
+    freq_scale: f32,
+) {
+    let half_dim = head_dim / 2;
+    let theta_base = freq_base;
+
+    for i in 0..half_dim {
+        let theta = (pos as f32) * freq_scale / theta_base.powf((2 * i) as f32 / head_dim as f32);
+        let cos_th = theta.cos();
+        let sin_th = theta.sin();
+
+        let v0 = vec[i];
+        let v1 = vec[i + half_dim];
+
+        vec[i] = v0 * cos_th - v1 * sin_th;
+        vec[i + half_dim] = v0 * sin_th + v1 * cos_th;
+    }
+}
+
+/// SiLU activation: x / (1 + exp(-x))
+#[inline]
+pub fn silu(x: f32) -> f32 {
+    x / (1.0f32 + (-x).exp())
+}
+
+/// SwiGLU forward elementwise: out = silu(gate) * up
+pub fn swiglu(gate: &[f32], up: &[f32], out: &mut [f32]) {
+    assert_eq!(gate.len(), up.len());
+    assert_eq!(gate.len(), out.len());
+
+    for i in 0..gate.len() {
+        out[i] = silu(gate[i]) * up[i];
+    }
+}
+
+/// Softmax over a vector of logits
+pub fn softmax(logits: &mut [f32]) {
+    if logits.is_empty() {
+        return;
+    }
+
+    let mut max_val = logits[0];
+    for &val in logits.iter().skip(1) {
+        if val > max_val {
+            max_val = val;
+        }
+    }
+
+    let mut sum_exp = 0.0f32;
+    for val in logits.iter_mut() {
+        let e = (*val - max_val).exp();
+        *val = e;
+        sum_exp += e;
+    }
+
+    if sum_exp > 0.0 {
+        let inv_sum = 1.0f32 / sum_exp;
+        for val in logits.iter_mut() {
+            *val *= inv_sum;
+        }
+    }
+}
+
+/// Quantized Matrix-Vector Multiplication: y = W * x (where W is Q4_0 and x is F32)
+/// Using Q8_0 activation quantization
+pub fn mat_vec_mul_q4_0(
+    w_q4_bytes: &[u8],
+    x_f32: &[f32],
+    y_out: &mut [f32],
+    n_rows: usize,
+    n_cols: usize,
+) {
+    assert_eq!(x_f32.len(), n_cols);
+    assert_eq!(y_out.len(), n_rows);
+    assert_eq!(n_cols % 32, 0);
+
+    // Quantize input activations x to Q8_0 once
+    let mut x_q8 = vec![0u8; (n_cols / 32) * 34];
+    quantize_f32_to_q8_0(x_f32, &mut x_q8);
+
+    let row_bytes = (n_cols / 32) * 18;
+
+    for r in 0..n_rows {
+        let row_start = r * row_bytes;
+        let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
+        y_out[r] = vec_dot_q4_0_q8_0(row_slice, &x_q8, n_cols);
+    }
+}
+
+/// Dense F32 Matrix-Matrix Multiplication: C = A * B
+pub fn mat_mul_f32(
+    a: &[f32],
+    b: &[f32],
+    c: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    assert_eq!(a.len(), m * k);
+    assert_eq!(b.len(), k * n);
+    assert_eq!(c.len(), m * n);
+
+    for i in 0..m {
+        let a_row = &a[i * k..(i + 1) * k];
+        for j in 0..n {
+            let mut sum = 0.0f32;
+            for p in 0..k {
+                sum += a_row[p] * b[p * n + j];
+            }
+            c[i * n + j] = sum;
+        }
+    }
+}

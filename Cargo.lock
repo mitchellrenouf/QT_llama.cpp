@@ -1616,6 +1616,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qtensor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "thiserror",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

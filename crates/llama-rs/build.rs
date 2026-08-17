@@ -73,9 +73,19 @@ fn main() {
         .define("GGML_BMI2", "ON")
         .define("GGML_CPU_REPACK", "ON");
 
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "release".to_string());
     if is_windows {
-        cfg.cflag("/O2").cflag("/Oi").cflag("/Ot");
-        cfg.cxxflag("/O2").cxxflag("/Oi").cxxflag("/Ot");
+        if profile == "debug" {
+            cfg.define("CMAKE_BUILD_TYPE", "Debug");
+            cfg.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDebugDLL");
+        } else {
+            cfg.define("CMAKE_BUILD_TYPE", "Release");
+            cfg.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
+            cfg.cflag("/O2").cflag("/Oi").cflag("/Ot");
+            cfg.cxxflag("/O2").cxxflag("/Oi").cxxflag("/Ot");
+        }
+    } else {
+        cfg.define("CMAKE_BUILD_TYPE", "Release");
     }
 
     let mut prefix_paths = Vec::new();

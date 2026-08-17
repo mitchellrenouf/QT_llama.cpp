@@ -1,0 +1,17 @@
+[package]
+name = "qtensor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Mitchell <mitchell@localhost>"]
+description = "QTensor: High-performance pure Rust tensor compute engine with quantized math (Q4_0, Q8_0), GGUF parsing, and CUDA GPU acceleration"
+
+[features]
+default = ["cuda"]
+cuda = []
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "2.0"
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }
