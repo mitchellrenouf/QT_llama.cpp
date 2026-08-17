@@ -77,6 +77,22 @@ __global__ void k_swiglu_f32(
     }
 }
 
+// 2b. CUDA GeGLU Kernel: out = gelu_approx(gate) * up
+__global__ void k_geglu_f32(
+    const float* __restrict__ gate,
+    const float* __restrict__ up,
+    float* __restrict__ out,
+    int size
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        float x = gate[idx];
+        float u = up[idx];
+        float gelu_x = 0.5f * x * (1.0f + tanhf(0.7978845608f * x * (1.0f + 0.044715f * x * x)));
+        out[idx] = gelu_x * u;
+    }
+}
+
 // 3. CUDA RoPE 256k Kernel (Rotary Position Embedding supporting 256,000+ context)
 __global__ void k_rope_256k_f32(
     float* __restrict__ vec,
@@ -275,6 +291,18 @@ void cuda_op_swiglu(
     int threads = 256;
     int blocks = (size + threads - 1) / threads;
     k_swiglu_f32<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_out, size);
+}
+
+void cuda_op_geglu(
+    const float* d_gate,
+    const float* d_up,
+    float* d_out,
+    int size,
+    cudaStream_t stream
+) {
+    int threads = 256;
+    int blocks = (size + threads - 1) / threads;
+    k_geglu_f32<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_out, size);
 }
 
 void cuda_op_rope_256k(

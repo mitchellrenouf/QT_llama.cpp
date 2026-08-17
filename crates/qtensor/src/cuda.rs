@@ -35,6 +35,7 @@ extern "C" {
     // Exported custom kernel launches from cuda_kernels.cu
     fn cuda_op_rms_norm(d_x: *const f32, d_w: *const f32, d_out: *mut f32, dim: i32, eps: f32, stream: CudaStream);
     fn cuda_op_swiglu(d_gate: *const f32, d_up: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
+    fn cuda_op_geglu(d_gate: *const f32, d_up: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_rope_256k(d_vec: *mut f32, pos: i32, head_dim: i32, n_heads: i32, freq_base: f32, freq_scale: f32, stream: CudaStream);
     fn cuda_op_gemv_q4_0(d_w_q4: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
     fn cuda_op_add(d_a: *const f32, d_b: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
@@ -255,6 +256,26 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             cuda_op_swiglu(
+                d_gate.as_ptr(),
+                d_up.as_ptr(),
+                d_out.as_mut_ptr(),
+                d_gate.len() as i32,
+                self.stream,
+            );
+        }
+    }
+
+    pub fn geglu(
+        &self,
+        d_gate: &CudaBuffer<f32>,
+        d_up: &CudaBuffer<f32>,
+        d_out: &mut CudaBuffer<f32>,
+    ) {
+        assert_eq!(d_gate.len(), d_up.len());
+        assert_eq!(d_gate.len(), d_out.len());
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_geglu(
                 d_gate.as_ptr(),
                 d_up.as_ptr(),
                 d_out.as_mut_ptr(),
