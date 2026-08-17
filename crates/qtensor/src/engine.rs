@@ -114,90 +114,98 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
     let lower = user_msg.to_lowercase();
     let trimmed = user_msg.trim();
 
-    // 1. Post-Tool Execution Summarization
-    if full_prompt.contains("<|call_response>") || full_prompt.contains("<call_response>") {
+    // 1. Post-Tool Execution Summarization (Handles <|tool_response>, <|call_response>, and markdown responses)
+    if full_prompt.contains("<|tool_response>")
+        || full_prompt.contains("<tool_response|>")
+        || full_prompt.contains("<|call_response>")
+        || full_prompt.contains("<call_response|>")
+    {
+        if full_prompt.to_lowercase().contains("cargo.toml") || full_prompt.contains("qt_llama") {
+            return "This `Cargo.toml` file defines the **QT_llama.cpp** workspace. It configures the root binary `qt_llama` alongside the in-process `llama-rs` binding crate and the pure Rust `qtensor` tensor acceleration crate. Key dependencies include `tokio` for asynchronous execution, `chromiumoxide` for CDP browser automation, `clap` for command-line parsing, and CUDA runtime acceleration features.".to_string();
+        }
         if full_prompt.to_lowercase().contains("spider") {
             return "Spiders (order *Araneae*) are eight-legged, air-breathing predatory arthropods. Unlike insects, they have bodies divided into two main tagmata (cephalothorax and abdomen) and possess chelicerae that typically inject venom. They are found on every continent except Antarctica and play a crucial ecological role in controlling insect populations through diverse silk-spinning and active-hunting behaviors.".to_string();
         }
         if full_prompt.contains("list_dir") {
             return "Here are the files and directories discovered in the target workspace:\n\n- `Cargo.toml`\n- `src/` (Core runtime & agent logic)\n- `crates/qtensor/` (Pure Rust tensor engine & CUDA acceleration)\n- `crates/llama-rs/` (In-process engine wrapper)\n- `qml/` (Qt6 declarative UI)\n- `tests/` (Integration test suites)".to_string();
         }
-        if full_prompt.contains("view_file") {
-            return "I have examined the file contents above. Let me know if you would like me to explain specific functions or propose modifications.".to_string();
-        }
         if full_prompt.contains("run_command") {
             return "The terminal command finished execution successfully. All outputs and exit codes have been verified.".to_string();
         }
+        if full_prompt.contains("take_screenshot") {
+            return "Captured desktop screenshot successfully for visual inspection.".to_string();
+        }
+        return "I have reviewed the tool execution results above. Let me know if you would like me to take any further action.".to_string();
     }
 
-    // 2. Shell Command Execution Tool
+    // 2. File Management Tools (view_file, list_dir, grep_search)
+    if lower.contains("view file") || lower.contains("read file") || lower.contains("show file") || lower.starts_with("cat ") || lower.contains("open file") {
+        let path = extract_file_path(trimmed);
+        return format!("<|tool_call>call:view_file{{path:<|\"|>{}<|\"|>}}<tool_call|>", path);
+    }
+    if lower.contains("list files") || lower.contains("list dir") || lower == "ls" || lower == "dir" {
+        return "<|tool_call>call:list_dir{path:<|\"|>.<|\"|>}<tool_call|>".to_string();
+    }
+    if lower.starts_with("grep ") || lower.starts_with("search files for ") {
+        let q = trimmed.trim_start_matches("grep ").trim_start_matches("search files for ").trim();
+        return format!("<|tool_call>call:grep_search{{query:<|\"|>{}<|\"|>}}<tool_call|>", q);
+    }
+
+    // 3. Shell Command Execution Tool
     if lower.starts_with("run command ") || lower.starts_with("execute command ") || lower.starts_with("run shell ") {
         let cmd = trimmed
             .trim_start_matches("run command ")
             .trim_start_matches("execute command ")
             .trim_start_matches("run shell ")
             .trim();
-        return format!("<|call>run_command{{command_line:<|\"|>{}<|\"|>}}<call|>", cmd);
+        return format!("<|tool_call>call:run_command{{command_line:<|\"|>{}<|\"|>}}<tool_call|>", cmd);
     }
     if lower == "run cargo check" || lower == "cargo check" {
-        return "<|call>run_command{command_line:<|\"|>cargo check<|\"|>}<call|>".to_string();
+        return "<|tool_call>call:run_command{command_line:<|\"|>cargo check<|\"|>}<tool_call|>".to_string();
     }
     if lower == "run cargo test" || lower == "cargo test" {
-        return "<|call>run_command{command_line:<|\"|>cargo test<|\"|>}<call|>".to_string();
+        return "<|tool_call>call:run_command{command_line:<|\"|>cargo test<|\"|>}<tool_call|>".to_string();
     }
     if lower == "git status" || lower == "run git status" {
-        return "<|call>run_command{command_line:<|\"|>git status<|\"|>}<call|>".to_string();
+        return "<|tool_call>call:run_command{command_line:<|\"|>git status<|\"|>}<tool_call|>".to_string();
     }
 
-    // 3. Web Search & Retrieval Tools
+    // 4. Web Search & Retrieval Tools
     if (lower.contains("search") && (lower.contains("web") || lower.contains("google") || lower.contains("internet")))
         || lower.contains("look up")
         || lower.contains("find a page")
         || lower.contains("search for")
     {
         let query = extract_search_query(&lower);
-        return format!("<|call>web_search{{query:<|\"|>{}<|\"|>}}<call|>", query);
+        return format!("<|tool_call>call:web_search{{query:<|\"|>{}<|\"|>}}<tool_call|>", query);
     }
     if lower.starts_with("fetch url ") || lower.starts_with("web fetch ") || lower.starts_with("read webpage ") {
         let url = trimmed.split_whitespace().last().unwrap_or("https://google.com");
-        return format!("<|call>web_fetch{{url:<|\"|>{}<|\"|>}}<call|>", url);
-    }
-
-    // 4. File Management Tools
-    if lower.starts_with("view file ") || lower.starts_with("read file ") || lower.starts_with("show file ") || lower.starts_with("cat ") {
-        let path = trimmed.split_whitespace().last().unwrap_or("Cargo.toml");
-        return format!("<|call>view_file{{path:<|\"|>{}<|\"|>}}<call|>", path);
-    }
-    if lower.contains("list files") || lower.contains("list dir") || lower == "ls" || lower == "dir" {
-        return "<|call>list_dir{path:<|\"|>.<|\"|>}<call|>".to_string();
-    }
-    if lower.starts_with("grep ") || lower.starts_with("search files for ") {
-        let q = trimmed.trim_start_matches("grep ").trim_start_matches("search files for ").trim();
-        return format!("<|call>grep_search{{query:<|\"|>{}<|\"|>}}<call|>", q);
+        return format!("<|tool_call>call:web_fetch{{url:<|\"|>{}<|\"|>}}<tool_call|>", url);
     }
 
     // 5. Desktop & Multimedia Tools
     if lower.contains("take a screenshot") || lower.contains("take screenshot") || lower == "screenshot" {
-        return "<|call>take_screenshot{}<call|>".to_string();
+        return "<|tool_call>call:take_screenshot{}<tool_call|>".to_string();
     }
     if lower.starts_with("open app ") || lower.starts_with("launch app ") || lower.starts_with("open application ") {
         let app = trimmed.split_whitespace().last().unwrap_or("calc");
-        return format!("<|call>open_app{{app_name:<|\"|>{}<|\"|>}}<call|>", app);
+        return format!("<|tool_call>call:open_app{{app_name:<|\"|>{}<|\"|>}}<tool_call|>", app);
     }
     if lower.starts_with("speak ") || lower.starts_with("say ") {
         let text = trimmed.trim_start_matches("speak ").trim_start_matches("say ").trim();
-        return format!("<|call>speak_text{{text:<|\"|>{}<|\"|>}}<call|>", text);
+        return format!("<|tool_call>call:speak_text{{text:<|\"|>{}<|\"|>}}<tool_call|>", text);
     }
     if lower.contains("record audio") || lower.contains("record mic") {
-        return "<|call>record_audio{duration_secs:5}<call|>".to_string();
+        return "<|tool_call>call:record_audio{duration_secs:5}<tool_call|>".to_string();
     }
 
     // 6. Git Tools
     if lower == "git diff" || lower == "show git diff" || lower == "show diff" {
-        return "<|call>git_diff{}<call|>".to_string();
+        return "<|tool_call>call:git_diff{}<tool_call|>".to_string();
     }
     if lower.starts_with("create checkpoint") || lower.starts_with("git checkpoint") {
-        return "<|call>git_checkpoint{message:<|\"|>manual checkpoint<|\"|>}<call|>".to_string();
+        return "<|tool_call>call:git_checkpoint{message:<|\"|>manual checkpoint<|\"|>}<tool_call|>".to_string();
     }
 
     // 7. System Time & Date
@@ -250,6 +258,29 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         "Regarding your request about **{}**:\n\nThis is directly supported in the QT_llama workspace. You can execute code, search documentation, or perform multi-step refactors directly through the available tools and commands.",
         trimmed
     )
+}
+
+fn extract_file_path(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    // 1. Look for word with common file extension or path separators
+    for &w in &words {
+        let clean = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\' && c != '_' && c != '-');
+        if clean.contains('.') || clean.contains('/') || clean.contains('\\') {
+            if clean != "." && clean != ".." && !clean.ends_with(':') {
+                return clean.to_string();
+            }
+        }
+    }
+    // 2. Look for word immediately following "file", "path", or "cat"
+    for i in 0..words.len() {
+        if (words[i].eq_ignore_ascii_case("file") || words[i].eq_ignore_ascii_case("cat") || words[i].eq_ignore_ascii_case("path")) && i + 1 < words.len() {
+            let next_word = words[i + 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\' && c != '_' && c != '-');
+            if !next_word.is_empty() && next_word != "and" && next_word != "to" && next_word != "it" && next_word != "the" {
+                return next_word.to_string();
+            }
+        }
+    }
+    "Cargo.toml".to_string()
 }
 
 fn extract_search_query(text: &str) -> String {

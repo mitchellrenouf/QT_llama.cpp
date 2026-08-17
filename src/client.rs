@@ -131,7 +131,10 @@ pub fn parse_kwargs_to_json(args: &str) -> String {
 pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
     let text = raw
         .trim()
+        .trim_start_matches("<|call>")
         .trim_start_matches("<|tool_call>")
+        .trim_end_matches("<call|>")
+        .trim_end_matches("</call>")
         .trim_end_matches("<tool_call|>")
         .trim_end_matches("</tool_call>")
         .trim();
@@ -382,14 +385,22 @@ impl LlamaClient {
             raw_acc.push_str(&piece);
 
             loop {
-                // 1. Check for tool calls: "<|tool_call>"
-                if let Some(tool_start) = raw_acc.find("<|tool_call>") {
+                // 1. Check for tool calls: "<|call>" or "<|tool_call>"
+                let tool_start_opt = raw_acc.find("<|call>").or_else(|| raw_acc.find("<|tool_call>"));
+                if let Some(tool_start) = tool_start_opt {
                     let end_opt = raw_acc[tool_start..]
-                        .find("<tool_call|>")
+                        .find("<call|>")
+                        .or_else(|| raw_acc[tool_start..].find("</call>"))
+                        .or_else(|| raw_acc[tool_start..].find("<tool_call|>"))
                         .or_else(|| raw_acc[tool_start..].find("</tool_call>"));
 
                     if let Some(rel_end) = end_opt {
-                        let tag_len = if raw_acc[tool_start + rel_end..].starts_with("<tool_call|>") {
+                        let rest = &raw_acc[tool_start + rel_end..];
+                        let tag_len = if rest.starts_with("<call|>") {
+                            "<call|>".len()
+                        } else if rest.starts_with("</call>") {
+                            "</call>".len()
+                        } else if rest.starts_with("<tool_call|>") {
                             "<tool_call|>".len()
                         } else {
                             "</tool_call>".len()
@@ -595,7 +606,7 @@ impl LlamaClient {
 
         // Flush remaining buffer at EOF
         if !raw_acc.is_empty() {
-            if raw_acc.contains("<|tool_call>") {
+            if raw_acc.contains("<|tool_call>") || raw_acc.contains("<|call>") {
                 if let Some(tc) = parse_gemma_tool_call(&raw_acc) {
                     callback(StreamEvent::ToolCallAssembled(tc.clone()));
                     tool_calls.push(tc);

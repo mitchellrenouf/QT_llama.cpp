@@ -2,7 +2,7 @@ use crate::types::{DType, Shape};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 pub const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" in little endian
