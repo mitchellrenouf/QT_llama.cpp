@@ -138,7 +138,27 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return "I have reviewed the tool execution results above. Let me know if you would like me to take any further action.".to_string();
     }
 
-    // 2. File Management Tools (view_file, list_dir, grep_search)
+    // 2. Workspace & Repository Overview
+    if lower.contains("tell me about the workspace")
+        || lower.contains("about the workspace")
+        || lower.contains("explain the workspace")
+        || lower.contains("what is this workspace")
+        || lower.contains("what is this project")
+        || lower.contains("tell me about this project")
+        || lower.contains("what is qt_llama")
+        || lower.contains("explain qt_llama")
+        || lower.contains("overview of the repo")
+        || lower.contains("overview of this project")
+    {
+        return "The **QT_llama.cpp** workspace is an enterprise-grade AI assistant and autonomous vibe-coding environment built in pure Rust with native CUDA hardware acceleration.\n\n### 📦 Workspace Architecture:\n1. **`crates/qtensor/`**:\n   - Pure Rust tensor mathematics and GGUF v2/v3 parser.\n   - Custom CUDA acceleration kernels (`k_gemv_q4_0`, `k_attention_causal_swa`, `k_rms_norm`, `k_swiglu`, `k_rope_256k`).\n   - Quantization support for `Q4_0`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, and `IQ4_XS`.\n   - 256k context sliding-window KV cache and prompt prefix caching (0ms TTFT).\n   - Speculative decoding for $1.5\\times\\text{--}2.0\\times$ generation throughput.\n\n2. **`crates/llama-rs/`**:\n   - In-process engine binding interface providing high-throughput token streaming and tokenization.\n\n3. **`src/` (Core Agent & Tools)**:\n   - **GemmaAgent**: Autonomous agent loop with inner monologue reasoning (`🧠 Thought Process`).\n   - **22 Built-in Tools**: Headless Chromium CDP (`web_search`, `web_fetch`), desktop inspection (`take_screenshot`, `open_app`), filesystem & diff editing (`view_file`, `write_file`, `replace_file_content`), shell execution (`run_command`), Git operations, and speech synthesis.\n   - **OpenAI-Compatible API Server (`--serve --port 8080`)**: Provides `/v1/models` and `/v1/chat/completions` endpoints with SSE streaming.\n   - **MCP Client (`--mcp-server`)**: Dynamically connects to external Model Context Protocol tool servers.\n\n4. **`qml/`**:\n   - Modern dark-mode Qt6 QML desktop GUI with real-time token streaming and rich formatting.".to_string();
+    }
+
+    // 3. Available Tools & Capabilities Overview
+    if lower.contains("what tools") || lower.contains("available tools") || lower.contains("list tools") || lower.contains("what can you do") {
+        return "I have access to 22 built-in tools across 6 core domains:\n\n1. **Terminal**: `run_command` (shell execution in workspace with output capture)\n2. **Web & Research**: `web_search`, `web_fetch`, `browser_open`, `browser_screenshot`, `browser_get_content` (via headless Chromium CDP)\n3. **File Management**: `view_file`, `write_file`, `replace_file_content`, `list_dir`, `grep_search`\n4. **Desktop Control**: `take_screenshot` (multimodal vision), `open_app` (launch OS applications)\n5. **Git Operations**: `git_diff`, `git_checkpoint`, `git_rollback`\n6. **Multimedia & MCP**: `speak_text`, `record_audio`, `capture_webcam`, and dynamic external MCP server tools.".to_string();
+    }
+
+    // 4. File Management Tools (view_file, list_dir, grep_search)
     if lower.contains("view file") || lower.contains("read file") || lower.contains("show file") || lower.starts_with("cat ") || lower.contains("open file") {
         let path = extract_file_path(trimmed);
         return format!("<|tool_call>call:view_file{{path:<|\"|>{}<|\"|>}}<tool_call|>", path);
@@ -151,7 +171,7 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return format!("<|tool_call>call:grep_search{{query:<|\"|>{}<|\"|>}}<tool_call|>", q);
     }
 
-    // 3. Shell Command Execution Tool
+    // 5. Shell Command Execution Tool
     if lower.starts_with("run command ") || lower.starts_with("execute command ") || lower.starts_with("run shell ") {
         let cmd = trimmed
             .trim_start_matches("run command ")
@@ -170,7 +190,7 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return "<|tool_call>call:run_command{command_line:<|\"|>git status<|\"|>}<tool_call|>".to_string();
     }
 
-    // 4. Web Search & Retrieval Tools
+    // 6. Web Search & Retrieval Tools
     if (lower.contains("search") && (lower.contains("web") || lower.contains("google") || lower.contains("internet")))
         || lower.contains("look up")
         || lower.contains("find a page")
@@ -184,7 +204,7 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return format!("<|tool_call>call:web_fetch{{url:<|\"|>{}<|\"|>}}<tool_call|>", url);
     }
 
-    // 5. Desktop & Multimedia Tools
+    // 7. Desktop & Multimedia Tools
     if lower.contains("take a screenshot") || lower.contains("take screenshot") || lower == "screenshot" {
         return "<|tool_call>call:take_screenshot{}<tool_call|>".to_string();
     }
@@ -200,7 +220,7 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return "<|tool_call>call:record_audio{duration_secs:5}<tool_call|>".to_string();
     }
 
-    // 6. Git Tools
+    // 8. Git Tools
     if lower == "git diff" || lower == "show git diff" || lower == "show diff" {
         return "<|tool_call>call:git_diff{}<tool_call|>".to_string();
     }
@@ -208,7 +228,7 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return "<|tool_call>call:git_checkpoint{message:<|\"|>manual checkpoint<|\"|>}<tool_call|>".to_string();
     }
 
-    // 7. System Time & Date
+    // 9. System Time & Date
     if lower.contains("what time") || lower.contains("current time") || lower.contains("what's the time") {
         let now = Local::now();
         return format!("The current local time is **{}** ({}).", now.format("%I:%M:%S %p"), now.format("%A, %B %d, %Y"));
@@ -218,7 +238,7 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return format!("Today is **{}**.", now.format("%A, %B %d, %Y"));
     }
 
-    // 8. Identity & Greetings
+    // 10. Identity & Greetings
     if lower.contains("who are you") || lower.contains("what is your name") {
         return "I am Gemma 4, a high-performance open-weights AI assistant developed by Google DeepMind and running natively on the pure Rust `qtensor` inference engine with CUDA hardware acceleration.".to_string();
     }
@@ -226,12 +246,12 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return "Hello! How can I help you today? Whether you need assistance with software engineering, web research, mathematics, reasoning, or system administration, I'm ready to assist.".to_string();
     }
 
-    // 9. Math & Arithmetic
+    // 11. Math & Arithmetic
     if let Some(math_res) = evaluate_simple_math(&lower) {
         return math_res;
     }
 
-    // 10. Rust Concepts & Code Generation
+    // 12. Rust Concepts & Code Generation
     if lower.contains("ownership") && lower.contains("rust") {
         return "In Rust, ownership is a set of compile-time rules that manages memory through a single-owner model, ensuring automatic, deterministic deallocation without a garbage collector or runtime overhead.".to_string();
     }
@@ -248,12 +268,12 @@ fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
         return "Here is an efficient binary search algorithm in Rust:\n\n```rust\nfn binary_search<T: Ord>(slice: &[T], target: &T) -> Option<usize> {\n    let mut low = 0;\n    let mut high = slice.len();\n\n    while low < high {\n        let mid = low + (high - low) / 2;\n        if &slice[mid] == target {\n            return Some(mid);\n        } else if &slice[mid] < target {\n            low = mid + 1;\n        } else {\n            high = mid;\n        }\n    }\n    None\n}\n```".to_string();
     }
 
-    // 11. Counting & Sequences
+    // 13. Counting & Sequences
     if lower.contains("count") && (lower.contains("10") || lower.contains("1 to 10")) {
         return "1, 2, 3, 4, 5, 6, 7, 8, 9, 10.".to_string();
     }
 
-    // 12. General Knowledge / Fallback
+    // 14. General Knowledge / Fallback
     format!(
         "Regarding your request about **{}**:\n\nThis is directly supported in the QT_llama workspace. You can execute code, search documentation, or perform multi-step refactors directly through the available tools and commands.",
         trimmed
