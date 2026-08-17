@@ -74,7 +74,8 @@ fn main() {
         );
     }
 
-    if cfg!(target_os = "windows") {
+    #[cfg(windows)]
+    {
         if env::var_os("VCINSTALLDIR").is_none()
             && !command_exists("cl.exe")
             && !visual_studio_cxx_installed()
@@ -84,7 +85,10 @@ fn main() {
             );
         }
         println!("cargo:warning=Using native Qt 6 Widgets with MSVC.");
-    } else if !command_works("c++", &["--version"]) {
+    }
+
+    #[cfg(not(windows))]
+    if !command_works("c++", &["--version"]) {
         panic!("A C++ compiler is required for the native Qt binding. Install your platform's C++ build tools.");
     }
 
