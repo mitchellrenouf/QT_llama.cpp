@@ -1435,7 +1435,6 @@ dependencies = [
  "cmake",
  "futures-util",
  "qtensor",
- "regex",
  "serde",
  "serde_json",
  "thiserror",

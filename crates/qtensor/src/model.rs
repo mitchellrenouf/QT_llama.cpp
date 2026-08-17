@@ -577,7 +577,9 @@ impl QTensorModel {
                         dev.gemv_q4_0(g_q, d_cur, d_q, layer.q_dim, dim);
                         dev.gemv_q4_0(g_k, d_cur, d_k, layer.kv_dim, dim);
                         dev.gemv_q4_0(g_v, d_cur, d_v, layer.kv_dim, dim);
-                        let _ = dev.sync();
+                        // Synchronous D2H copies below wait for this stream's queued
+                        // kernels, so a separate stream synchronization only adds a
+                        // full-device round trip to every transformer layer.
                         let _ = d_q.copy_to_host(&mut q);
                         let _ = d_k.copy_to_host(&mut k);
                         let _ = d_v.copy_to_host(&mut v);
@@ -685,7 +687,6 @@ impl QTensorModel {
                 if let (Some(ref mut d_in), Some(ref mut d_out)) = (in_guard.as_mut(), out_guard.as_mut()) {
                     if d_in.copy_from_host(&attn_out).is_ok() {
                         dev.gemv_q4_0(g_out, d_in, d_out, dim, layer.q_dim);
-                        let _ = dev.sync();
                         let _ = d_out.copy_to_host(&mut attn_proj);
                         true
                     } else {
@@ -825,7 +826,6 @@ impl QTensorModel {
                 } else { false };
 
                 if mlp_q || moe_q {
-                    let _ = dev.sync();
                     if mlp_q {
                         let down_g = layer.gpu_d_mlp_down.lock();
                         if let Some(ref d_down) = down_g.as_ref() {
@@ -1074,7 +1074,6 @@ impl QTensorModel {
             if let (Some(ref mut d_hid), Some(ref mut d_log)) = (hid_guard.as_mut(), log_guard.as_mut()) {
                 if d_hid.copy_from_host(&state.hidden).is_ok() {
                     dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
-                    let _ = dev.sync();
                     let mut logits = vec![0.0f32; self.config.vocab_size];
                     if d_log.copy_to_host(&mut logits).is_ok() {
                         let mut scored = Vec::with_capacity(self.config.vocab_size);

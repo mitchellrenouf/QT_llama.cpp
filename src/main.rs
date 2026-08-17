@@ -39,10 +39,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("{}", "==================================================".magenta());
-    println!("{}", "   🚀 QT_llama.cpp GENERAL-PURPOSE & VIBE-CODING CLI   ".bright_cyan().bold());
+    println!("{}", "   🚀 RUSTLLAMA GENERAL-PURPOSE & VIBE-CODING CLI   ".bright_cyan().bold());
     println!("{}", "==================================================".magenta());
     println!(" Mode        : {}", config.mode.to_string().bright_yellow().bold());
-    println!(" Inference   : {}", "Local llama.cpp GGUF Engine".bright_green().bold());
+    println!(" Inference   : {}", "Native qtensor GGUF Engine".bright_green().bold());
     if let Some(hf_spec) = &config.hf {
         println!(" HuggingFace : {}", hf_spec.bright_cyan().bold());
     }
@@ -238,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
             }
             "/help" => {
                 println!("\n{}", "==================================================".cyan());
-                println!("{}", "   💡 QT_llama.cpp COMMAND REFERENCE (/help)     ".bright_yellow().bold());
+                println!("{}", "   💡 RUSTLLAMA COMMAND REFERENCE (/help)     ".bright_yellow().bold());
                 println!("{}", "==================================================".cyan());
                 println!("  /hf [repo:quant]               - Download & load Hugging Face GGUF model (default: ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0)");
                 println!("  /model <path>                  - Load a local .gguf model file");

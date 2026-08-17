@@ -80,7 +80,7 @@ pub struct Config {
     #[arg(long, default_value_t = 8192)]
     pub max_tokens: u32,
 
-    /// In-process llama.cpp engine context window size in tokens (default: 8192)
+    /// Native qtensor engine context window size in tokens (default: 8192)
     #[arg(long = "ctx-size", env = "LLAMA_CTX_SIZE", default_value_t = 8192)]
     pub ctx_size: u32,
 

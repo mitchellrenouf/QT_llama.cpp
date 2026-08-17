@@ -213,7 +213,7 @@ impl LlamaClient {
             match LlamaEngine::new(&path, -1, 8192, "auto", "auto", None) {
                 Ok(eng) => Some(Arc::new(eng)),
                 Err(e) => {
-                    eprintln!("Notice: llama.cpp engine init deferred: {}", e);
+                    eprintln!("Notice: qtensor engine init deferred: {}", e);
                     None
                 }
             }
@@ -265,7 +265,7 @@ impl LlamaClient {
             ) {
                 Ok(eng) => Some(Arc::new(eng)),
                 Err(e) => {
-                    eprintln!("Notice: llama.cpp engine init deferred: {}", e);
+                    eprintln!("Notice: qtensor engine init deferred: {}", e);
                     None
                 }
             }
@@ -285,9 +285,9 @@ impl LlamaClient {
 
     pub async fn health_check(&self) -> Result<String> {
         if self.engine.is_some() {
-            Ok("Local llama.cpp Engine Active".to_string())
+            Ok("Native qtensor Engine Active".to_string())
         } else {
-            Err(anyhow!("No active in-process llama.cpp engine loaded. (Place a .gguf model in .cache/gemma or pass --model <path>)"))
+            Err(anyhow!("No active native qtensor engine loaded. (Place a .gguf model in .cache/gemma or pass --model <path>)"))
         }
     }
 
@@ -335,7 +335,7 @@ impl LlamaClient {
         let engine = self
             .engine
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("llama.cpp engine not loaded"))?;
+            .ok_or_else(|| anyhow::anyhow!("qtensor engine not loaded"))?;
 
         let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
         if let Some(tools) = &request.tools {
@@ -732,17 +732,14 @@ pub fn get_llama_cache_roots() -> Vec<PathBuf> {
     {
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             roots.push(PathBuf::from(&local_appdata).join("huggingface").join("hub"));
-            roots.push(PathBuf::from(&local_appdata).join("llama.cpp"));
         }
         if let Ok(userprofile) = std::env::var("USERPROFILE") {
             roots.push(PathBuf::from(&userprofile).join(".cache").join("huggingface").join("hub"));
-            roots.push(PathBuf::from(&userprofile).join(".cache").join("llama.cpp"));
         }
     }
 
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join(".cache").join("huggingface").join("hub"));
-        roots.push(home.join(".cache").join("llama.cpp"));
         roots.push(home.join(".cache").join("gemma").join("models"));
     }
 
@@ -767,7 +764,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
         let repo_slug = format!("models--{}--{}", spec.user, spec.model);
         let target_quant = spec.quant.to_lowercase();
 
-        // 1. Search for matching repo slug in all llama.cpp / Hugging Face cache directories
+        // 1. Search for matching repo slug in Hugging Face cache directories
         for root in &cache_roots {
             let repo_dir = root.join(&repo_slug);
             if repo_dir.is_dir() {
