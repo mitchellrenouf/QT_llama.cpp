@@ -54,14 +54,35 @@ async fn main() -> anyhow::Result<()> {
 
     println!("{}", "--------------------------------------------------".dimmed());
 
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+
+    if !agent.has_model_loaded() {
+        if let Some(hf_spec) = config.hf.clone() {
+            println!("{} Model weights for '{}' are not cached locally.", "📥".cyan(), hf_spec.bright_cyan().bold());
+            print!("{} Download & load model weights now? [Y/n]: ", "❓".yellow());
+            io::stdout().flush()?;
+            let mut ans = String::new();
+            if handle.read_line(&mut ans).is_ok() {
+                let trimmed = ans.trim().to_lowercase();
+                if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
+                    println!("\nFetching and downloading Hugging Face model: {}...", hf_spec.cyan());
+                    match agent.load_hf_model(&hf_spec, |msg, _p, _cur, _tot| {
+                        println!("  {}", msg);
+                    }).await {
+                        Ok(_) => println!("{} Model successfully loaded into in-process engine!\n", "✔".green().bold()),
+                        Err(e) => println!("{} Failed to download model: {}\n", "✖".red(), e),
+                    }
+                }
+            }
+        }
+    }
+
     if let Err(e) = agent.health_check().await {
         println!("{}", format!("ℹ Notice: {}", e).yellow());
     }
 
     println!("\nEnter your task or question (type {}/help{} for command menu, or {}/exit{} to quit):\n", "'".bright_cyan(), "'".bright_cyan(), "'".dimmed(), "'".dimmed());
-
-    let stdin = io::stdin();
-    let mut handle = stdin.lock();
 
     loop {
         let est_tokens = agent.estimate_tokens();
@@ -86,6 +107,52 @@ async fn main() -> anyhow::Result<()> {
             "/exit" | "/quit" => {
                 println!("{}", "Goodbye!".bright_yellow());
                 break;
+            }
+            "/hf" | "/download" => {
+                let spec = parts.get(1).copied().unwrap_or("ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0");
+                println!("Fetching and downloading Hugging Face model: {}...", spec.cyan());
+                match agent.load_hf_model(spec, |msg, _p, _cur, _tot| {
+                    println!("  {}", msg);
+                }).await {
+                    Ok(_) => println!("{} Model {} loaded successfully!", "✔".green().bold(), spec.cyan()),
+                    Err(e) => println!("{} Failed to download model: {}", "✖".red(), e),
+                }
+                continue;
+            }
+            "/model" => {
+                if let Some(path_str) = parts.get(1) {
+                    let p = std::path::PathBuf::from(path_str);
+                    match agent.reload_model(&p) {
+                        Ok(_) => println!("{} Local model loaded: {}", "✔".green().bold(), p.display().to_string().cyan()),
+                        Err(e) => println!("{} Failed to load model: {}", "✖".red(), e),
+                    }
+                } else {
+                    println!("Usage: /model <path-to-gguf>");
+                }
+                continue;
+            }
+            "/backend" => {
+                if let Some(name) = parts.get(1) {
+                    let choice = match name.to_lowercase().as_str() {
+                        "cuda" => crate::config::BackendChoice::Cuda,
+                        "rocm" | "hip" => crate::config::BackendChoice::Hipblas,
+                        "sycl" | "oneapi" => crate::config::BackendChoice::Sycl,
+                        "vulkan" => crate::config::BackendChoice::Vulkan,
+                        "cpu" => crate::config::BackendChoice::Cpu,
+                        "auto" => crate::config::BackendChoice::Auto,
+                        _ => {
+                            println!("{} Invalid backend. Use: cuda, rocm, sycl, vulkan, cpu, auto", "✖".red());
+                            continue;
+                        }
+                    };
+                    match agent.switch_backend(choice) {
+                        Ok(_) => println!("{} Switched backend to: {}", "✔".green().bold(), name.bright_yellow().bold()),
+                        Err(e) => println!("{} Failed to switch backend: {}", "✖".red(), e),
+                    }
+                } else {
+                    println!("\nActive backend: {}\nUsage: /backend cuda | rocm | sycl | vulkan | cpu | auto\n", agent.get_config().backend.to_string().bright_yellow().bold());
+                }
+                continue;
             }
             "/mode" => {
                 if let Some(target_mode) = parts.get(1).map(|s| s.to_lowercase()) {
@@ -154,9 +221,12 @@ async fn main() -> anyhow::Result<()> {
                 println!("\n{}", "==================================================".cyan());
                 println!("{}", "   💡 QT_llama.cpp COMMAND REFERENCE (/help)     ".bright_yellow().bold());
                 println!("{}", "==================================================".cyan());
-                println!("  /speech                        - Toggle Text-to-Speech audio output (Disabled by default)");
-                println!("  /mode [general|coder|automatic] - Switch between General, Coding & Automatic Inner Monologue Modes");
-                println!("  /automatic, /auto              - Switch instantly into Autonomous Inner Monologue Mode");
+                println!("  /hf [repo:quant]               - Download & load Hugging Face GGUF model (default: ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0)");
+                println!("  /model <path>                  - Load a local .gguf model file");
+                println!("  /backend [cuda|rocm|sycl|vulkan|cpu|auto] - Switch active GPU/CPU compute backend");
+                println!("  /speech                        - Toggle Text-to-Speech audio output");
+                println!("  /mode [general|coder|automatic] - Switch between General, Coding & Automatic Modes");
+                println!("  /automatic, /auto              - Switch instantly into Autonomous Mode");
                 println!("  /status                        - View system telemetry, active mode, rules & token stats");
                 println!("  /save [name]                   - Save current session history to .gemma/sessions/");
                 println!("  /load [name]                   - Load a saved session history file");

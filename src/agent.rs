@@ -114,6 +114,17 @@ impl GemmaAgent {
         Ok(())
     }
 
+    pub async fn load_hf_model<F>(&mut self, spec_str: &str, progress_cb: F) -> Result<()>
+    where
+        F: FnMut(&str, f32, usize, usize) + Send + 'static,
+    {
+        let spec = crate::hf::HfModelSpec::parse(spec_str)?;
+        let files = crate::hf::resolve_or_fetch_hf_model(&spec, progress_cb).await?;
+        self.reload_model(&files.primary_entry_file)?;
+        self.config.hf = Some(spec_str.to_string());
+        Ok(())
+    }
+
     pub fn switch_backend(&mut self, backend: crate::config::BackendChoice) -> Result<()> {
         self.config.backend = backend;
         let model_path = if let Some(hf_spec_str) = &self.config.hf {
