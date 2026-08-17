@@ -85,7 +85,7 @@ fn main() {
     prefix_paths.push("/usr".to_string());
 
     if has_cuda {
-        println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling CUDA GPU Acceleration for pure GGML...");
         cfg.define("GGML_CUDA", "ON");
         cfg.define("GGML_CUDA_NCCL", "OFF");
         cfg.define("GGML_CUDA_FA", "ON");
@@ -128,7 +128,7 @@ fn main() {
     }
 
     if has_vulkan {
-        println!("cargo:warning=[llama-cpp-binding] Enabling Vulkan GPU Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling Vulkan GPU Acceleration for pure GGML...");
         cfg.define("GGML_VULKAN", "ON");
         if let Ok(sdk) = env::var("VULKAN_SDK") {
             let p = PathBuf::from(sdk);
@@ -139,12 +139,12 @@ fn main() {
     }
 
     if has_hipblas {
-        println!("cargo:warning=[llama-cpp-binding] Enabling AMD ROCm / HIP Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling AMD ROCm / HIP Acceleration for pure GGML...");
         cfg.define("GGML_HIPBLAS", "ON");
     }
 
     if has_sycl {
-        println!("cargo:warning=[llama-cpp-binding] Enabling Intel SYCL GPU Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling Intel SYCL GPU Acceleration for pure GGML...");
         cfg.define("GGML_SYCL", "ON");
     }
 

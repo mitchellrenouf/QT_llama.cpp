@@ -8,7 +8,7 @@ Functioning like **Gemini directly on your Linux desktop and terminal**, the app
 
 ## 🌟 Highlights & Architecture
 
-- **In-Process `llama.cpp` Inference Engine**: Direct C/C++ FFI bindings via the `llama-cpp-binding` crate. Loads GGUF models directly in memory with KV caching, batch evaluation, and fast token generation with zero HTTP network overhead.
+- **In-Process `llama-rs` Pure GGML Engine**: High-performance Rust GGML runtime via the `llama-rs` crate. Loads GGUF models directly in memory with KV caching, batch evaluation, and fast token generation with zero HTTP network overhead.
 - **Git Submodule Integration**: `llama.cpp` is linked directly as a Git submodule (`llama.cpp/`) and built statically via CMake during compilation.
 - **Pure Chromiumoxide Web Engine**: 100% headless Chromium DevTools Protocol (CDP) for all browser automation, searches (`web_search`), and live web extractions (`web_fetch`). Completely eliminates `reqwest` and HTTP client dependencies.
 - **Modern Qt6 QML Desktop Interface (Default)**: Sleek dark-mode GUI (`qml/Main.qml`) with real-time token streaming, formatted markdown bubbles, thinking animation blocks, tool call inspection cards, and speech synthesis toggles.
