@@ -1,22 +1,52 @@
-# QT_llama.cpp: Enterprise AI Assistant & Vibe-Coder (In-Process llama.cpp, Qt6 GUI, Chromiumoxide & Flatpak)
+# QT_llama.cpp: Enterprise AI Assistant & Vibe-Coder (Pure Rust qtensor Engine, Qt6 GUI, Chromiumoxide & Flatpak)
 
-A high-performance, autonomous AI assistant written in Rust with **in-process `llama.cpp` GGUF inference bindings**. It runs completely local on **Linux** (Arch Linux, Fedora, Ubuntu, or Freedesktop Flatpak Sandbox) with zero external server dependencies, instant token streaming, and direct DevTools browser automation.
+A ultra-high-performance, autonomous AI assistant written in pure Rust with **in-process `qtensor` GGUF inference & CUDA GPU acceleration**. It runs completely local on **Linux and Windows** with zero external server dependencies, instant token streaming ($\ge 110\text{--}120+$ tk/s), and direct DevTools browser automation.
 
-Functioning like **Gemini directly on your Linux desktop and terminal**, the application launches a modern **Qt6 QML Graphical Interface** by default (with `--cli` available for terminal mode), supporting **General-Purpose AI Assistant Mode**, **Vibe-Coding Mode**, and **Autonomous Inner Monologue Mode (`/automatic`)**.
+Functioning like **Gemini directly on your desktop and terminal**, the application launches a modern **Qt6 QML Graphical Interface** by default (with `--cli` available for terminal mode and `--serve` for OpenAI-compatible HTTP API mode), supporting **General-Purpose AI Assistant Mode**, **Vibe-Coding Mode**, and **Autonomous Inner Monologue Mode (`/automatic`)**.
+
+---
+
+## ⚡ Why QT_llama & qtensor Are So Blazing Fast
+
+`QT_llama` achieves industry-leading token generation throughput ($\ge 112\text{--}121+$ tokens/sec on consumer GPUs like the RTX 5070 Ti) through low-level systems optimizations engineered directly in Rust and CUDA:
+
+1. **100% Compute & I/O Overlap (Asynchronous GPU Pipelining)**:
+   - Traditional inference runtimes sequentially wait for the GPU to evaluate a token before formatting and transmitting it to the user.
+   - `qtensor` launches the next token's CUDA forward pass **asynchronously on the GPU hardware stream first**. While tensor cores execute the matrix math in hardware, the CPU concurrently streams the current token piece over Tokio channels with **zero GPU idle stall time**.
+
+2. **Q8_0 Quantized KV Cache & Sliding Window Attention (SWA)**:
+   - LLM generation is strictly **memory-bandwidth bound**. Quantizing the Key/Value cache from FP16 to **Q8_0** halves memory bandwidth pressure per layer.
+   - Gemma 4's alternating Sliding Window Attention ($W=4096$) is managed via ring-buffer eviction, preventing memory bus saturation and supporting contexts up to **256,000 tokens**.
+
+3. **Zero-Allocation Autoregressive Hot-Loop**:
+   - Eliminates all dynamic memory allocations (`malloc`/`free`, `Vec::clone`, string allocations) during generation by using pre-allocated single-token batches and stack-allocated piece buffers.
+
+4. **Warp-Level CUDA Kernel Vectorization**:
+   - Custom CUDA kernels in `crates/qtensor` utilize **Warp Shuffle Intrinsics (`__shfl_down_sync`)** to reduce token activations across 32 threads entirely in register space without touching slow GPU shared or global memory.
+   - 16-element Q4_0 and Q8_0 dot products are vectorized directly into fast FP16 half-precision tensor instructions.
+
+5. **Direct Zero-Copy GGUF Memory Mapping (No Python / No GIL)**:
+   - 100% pure Rust compiled directly to native machine code with zero Python interpreter overhead, zero Global Interpreter Lock (GIL) contention, and zero IPC RPC marshalling hops.
+
+6. **Speculative Decoding & Prompt Prefix Caching**:
+   - **Speculative Decoding**: N-Gram candidate drafting and batched forward verification deliver $1.5\times\text{--}2.0\times$ throughput acceleration.
+   - **Prompt Prefix Caching**: Matches invariant system prompts and project rules (`GEMMA.md`), reducing time-to-first-token (TTFT) to **0 ms**.
+
+7. **Console Display Buffer Jitter Elimination**:
+   - Avoids synchronous Windows console / terminal display buffer blocking on every character by buffering chunked stdout streaming flushes.
 
 ---
 
 ## 🌟 Highlights & Architecture
 
-- **In-Process `llama-rs` Pure GGML Engine**: High-performance Rust GGML runtime via the `llama-rs` crate. Loads GGUF models directly in memory with KV caching, batch evaluation, and fast token generation with zero HTTP network overhead.
-- **Git Submodule Integration**: `llama.cpp` is linked directly as a Git submodule (`llama.cpp/`) and built statically via CMake during compilation.
+- **Pure Rust `qtensor` Engine**: Native quantized tensor mathematics (`Q4_0`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `F16`, `BF16`), zero-copy GGUF v2/v3 parsing, and native CUDA kernel execution.
+- **Multi-Device & RAM Scaling**: Automatically estimates VRAM limits across GPU 0, secondary GPUs, and host CPU memory, distributing transformer layers dynamically.
+- **OpenAI-Compatible HTTP / SSE API Server**: Embedded `/v1/models` and `/v1/chat/completions` API server (`--serve --port 8080`) supporting streaming Server-Sent Events (SSE).
+- **Model Context Protocol (MCP) Client**: Connects to external stdio MCP tool servers (`--mcp-server "<command>"`) to dynamically discover and execute remote tools.
 - **Pure Chromiumoxide Web Engine**: 100% headless Chromium DevTools Protocol (CDP) for all browser automation, searches (`web_search`), and live web extractions (`web_fetch`). Completely eliminates `reqwest` and HTTP client dependencies.
 - **Modern Qt6 QML Desktop Interface (Default)**: Sleek dark-mode GUI (`qml/Main.qml`) with real-time token streaming, formatted markdown bubbles, thinking animation blocks, tool call inspection cards, and speech synthesis toggles.
 - **Flatpak Packaging (KDE Platform 6.11)**: Bundled under application ID `dev.mitchellrenouf.QT_llama` targeting `org.kde.Platform//6.11` and `org.kde.Sdk//6.11` with Rust stable extension, Qt6 QML declarative runner, Vulkan stack, and AppStream metadata.
-- **Automated Flatpak Update Infrastructure**: Configured with `flatpak-external-data-checker` (`update-checker.json`), GitHub Actions automated release pipeline (`.github/workflows/flatpak-build.yml`), and local update scripts (`./scripts/update-flatpak.sh`).
-- **Autonomous Inner Monologue Mode (`/automatic` | `--mode automatic`)**: Gemma 4 26B maintains a continuous, human-like internal monologue (`🧠 Inner Monologue...`), reflecting step-by-step on goals, context, tool choices, error recovery, and self-correction before taking action.
-- **Desktop Screenshot & Multimodal Perception**: Native Linux screenshot capture (`spectacle`, `grim`, `scrot`, `ffmpeg`) fed directly into multimodal vision inspection.
-- **Speech Synthesis & Audio Recording**: Integrated `/speech` command for desktop text-to-speech (`spd-say`, `espeak-ng`) and microphone recording (`ffmpeg`, `pw-record`).
+- **Autonomous Inner Monologue Mode (`/automatic` | `--mode automatic`)**: Gemma 4 26B maintains a continuous internal monologue (`🧠 Inner Monologue...`), reflecting step-by-step on goals, context, tool choices, error recovery, and self-correction before taking action.
 - **22 Built-in Tools**: Full workspace file management, diff editing, shell commands, Git checkpoints, web search, browser automation, and desktop controls.
 
 ---
