@@ -103,7 +103,7 @@ impl GemmaAgent {
     pub fn reload_model(&mut self, model_path: &std::path::Path) -> Result<()> {
         let n_layers = self.config.n_gpu_layers.unwrap_or(-1);
         let backend_str = self.config.backend.to_string();
-        let engine = llama_cpp_binding::LlamaEngine::new(
+        let engine = llama_rs::LlamaEngine::new(
             model_path,
             n_layers,
             self.config.ctx_size,

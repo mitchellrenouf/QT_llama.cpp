@@ -12,20 +12,20 @@ path = "src/main.rs"
 
 [features]
 default = ["auto"]
-auto = ["llama-cpp-binding/auto"]
-cuda = ["llama-cpp-binding/cuda"]
-vulkan = ["llama-cpp-binding/vulkan"]
-hipblas = ["llama-cpp-binding/hipblas"]
-sycl = ["llama-cpp-binding/sycl"]
+auto = ["llama-rs/auto"]
+cuda = ["llama-rs/cuda"]
+vulkan = ["llama-rs/vulkan"]
+hipblas = ["llama-rs/hipblas"]
+sycl = ["llama-rs/sycl"]
 
 [workspace]
 members = [
     ".",
-    "crates/llama-cpp-binding",
+    "crates/llama-rs",
 ]
 
 [dependencies]
-llama-cpp-binding = { path = "crates/llama-cpp-binding" }
+llama-rs = { path = "crates/llama-rs" }
 tokio = { version = "1.43", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

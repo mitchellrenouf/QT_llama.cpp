@@ -1,9 +1,9 @@
 [package]
-name = "llama-cpp-binding"
+name = "llama-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Mitchell <mitchell@localhost>"]
-description = "High-performance safe Rust bindings for in-process llama.cpp inference"
+description = "High-performance safe Rust GGML runtime for in-process LLM inference"
 
 [dependencies]
 anyhow = "1.0"

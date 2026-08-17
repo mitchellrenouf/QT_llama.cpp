@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-pub use llama_cpp_binding::{format_gemma_chat, ChatMessage, FunctionCall, LlamaEngine, ToolCall};
+pub use llama_rs::{format_gemma_chat, ChatMessage, FunctionCall, LlamaEngine, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -300,7 +300,7 @@ impl LlamaClient {
             for tool in tools {
                 sys_prompt.push_str(&format!(
                     "<|tool|>{}<tool|>\n",
-                    llama_cpp_binding::format_tool_declaration_canonical(
+                    llama_rs::format_tool_declaration_canonical(
                         &tool.function.name,
                         &tool.function.description,
                         &tool.function.parameters

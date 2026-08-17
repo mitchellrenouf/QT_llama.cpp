@@ -6,7 +6,8 @@ fn main() {
     let llama_root = manifest_dir.join("../../llama.cpp");
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=c_src/bridge.cpp");
+    println!("cargo:rerun-if-changed=c_src/ggml_engine.h");
+    println!("cargo:rerun-if-changed=c_src/ggml_engine.cpp");
     println!("cargo:rerun-if-env-changed=LLAMA_CUDA");
     println!("cargo:rerun-if-env-changed=LLAMA_VULKAN");
     println!("cargo:rerun-if-env-changed=LLAMA_HIPBLAS");
@@ -61,7 +62,7 @@ fn main() {
         .define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
         .define("LLAMA_BUILD_APP", "OFF")
-        .define("LLAMA_BUILD_COMMON", "ON")
+        .define("LLAMA_BUILD_COMMON", "OFF")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("CMAKE_BUILD_TYPE", "Release")
         .define("GGML_NATIVE", "ON")
@@ -84,7 +85,7 @@ fn main() {
     prefix_paths.push("/usr".to_string());
 
     if has_cuda {
-        println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration (NVIDIA cuBLAS)...");
+        println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration for pure GGML...");
         cfg.define("GGML_CUDA", "ON");
         cfg.define("GGML_CUDA_NCCL", "OFF");
         cfg.define("GGML_CUDA_FA", "ON");
@@ -98,121 +99,53 @@ fn main() {
                 p.join("bin").join("nvcc.exe"),
                 p.join("bin").join("nvcc"),
             ];
-            for nvcc in &nvcc_candidates {
-                if nvcc.exists() {
-                    cfg.define("CMAKE_CUDA_COMPILER", nvcc);
+            for cand in &nvcc_candidates {
+                if cand.exists() {
+                    cfg.define("CMAKE_CUDA_COMPILER", cand);
                     break;
                 }
             }
             prefix_paths.push(p.display().to_string());
-        } else if Path::new("/usr/lib/sdk/cuda").exists() {
-            cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/usr/lib/sdk/cuda");
-            cfg.define("CMAKE_CUDA_COMPILER", "/usr/lib/sdk/cuda/bin/nvcc");
-            prefix_paths.push("/usr/lib/sdk/cuda".to_string());
-        } else if Path::new("/app/cuda").exists() {
-            cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/app/cuda");
-            cfg.define("CMAKE_CUDA_COMPILER", "/app/cuda/bin/nvcc");
-            prefix_paths.push("/app/cuda".to_string());
-        } else if Path::new("/opt/cuda").exists() {
-            cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/opt/cuda");
-            cfg.define("CMAKE_CUDA_COMPILER", "/opt/cuda/bin/nvcc");
-            prefix_paths.push("/opt/cuda".to_string());
-        } else if Path::new("/usr/local/cuda").exists() {
-            cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/usr/local/cuda");
-            cfg.define("CMAKE_CUDA_COMPILER", "/usr/local/cuda/bin/nvcc");
-            prefix_paths.push("/usr/local/cuda".to_string());
+        }
+
+        let well_known_cuda_dirs = [
+            "/opt/cuda",
+            "/usr/local/cuda",
+            "/app/cuda",
+            "/app/extensions/cuda",
+            "/usr/lib/sdk/cuda",
+        ];
+        for dir in &well_known_cuda_dirs {
+            let p = Path::new(dir);
+            if p.exists() {
+                prefix_paths.push(p.display().to_string());
+                let nvcc = p.join("bin/nvcc");
+                if nvcc.exists() {
+                    cfg.define("CMAKE_CUDA_COMPILER", &nvcc);
+                }
+            }
         }
     }
 
     if has_vulkan {
-        println!("cargo:warning=[llama-cpp-binding] Enabling Vulkan GPU Acceleration...");
+        println!("cargo:warning=[llama-cpp-binding] Enabling Vulkan GPU Acceleration for pure GGML...");
         cfg.define("GGML_VULKAN", "ON");
         if let Ok(sdk) = env::var("VULKAN_SDK") {
-            prefix_paths.push(sdk);
-        }
-        if Path::new("/app/share/cmake/SPIRV-Headers").exists() {
-            cfg.define("SPIRV-Headers_DIR", "/app/share/cmake/SPIRV-Headers");
+            let p = PathBuf::from(sdk);
+            cfg.define("Vulkan_INCLUDE_DIR", p.join("Include"));
+            cfg.define("Vulkan_LIBRARY", p.join("Lib").join("vulkan-1.lib"));
+            prefix_paths.push(p.display().to_string());
         }
     }
 
     if has_hipblas {
-        println!("cargo:warning=[llama-cpp-binding] Enabling AMD ROCm / HIP Acceleration...");
-        cfg.define("GGML_HIP", "ON");
+        println!("cargo:warning=[llama-cpp-binding] Enabling AMD ROCm / HIP Acceleration for pure GGML...");
         cfg.define("GGML_HIPBLAS", "ON");
-        if let Ok(rocm_dir) = env::var("ROCM_PATH").or_else(|_| env::var("HIP_PATH")) {
-            let p = PathBuf::from(rocm_dir);
-            cfg.define("ROCM_PATH", &p);
-            let hipcc = p.join("bin/hipcc");
-            if hipcc.exists() {
-                cfg.define("CMAKE_CXX_COMPILER", hipcc);
-            }
-            prefix_paths.push(p.display().to_string());
-        } else if Path::new("/usr/lib/sdk/rocm").exists() {
-            cfg.define("ROCM_PATH", "/usr/lib/sdk/rocm");
-            cfg.define("CMAKE_CXX_COMPILER", "/usr/lib/sdk/rocm/bin/hipcc");
-            prefix_paths.push("/usr/lib/sdk/rocm".to_string());
-        } else if Path::new("/app/rocm").exists() {
-            cfg.define("ROCM_PATH", "/app/rocm");
-            cfg.define("CMAKE_CXX_COMPILER", "/app/rocm/bin/hipcc");
-            prefix_paths.push("/app/rocm".to_string());
-        } else if Path::new("/opt/rocm").exists() {
-            cfg.define("ROCM_PATH", "/opt/rocm");
-            cfg.define("CMAKE_CXX_COMPILER", "/opt/rocm/bin/hipcc");
-            prefix_paths.push("/opt/rocm".to_string());
-        }
     }
 
     if has_sycl {
-        println!("cargo:warning=[llama-cpp-binding] Enabling Intel SYCL GPU Acceleration...");
+        println!("cargo:warning=[llama-cpp-binding] Enabling Intel SYCL GPU Acceleration for pure GGML...");
         cfg.define("GGML_SYCL", "ON");
-        let oneapi_root = if let Ok(oneapi_dir) = env::var("ONEAPI_ROOT").or_else(|_| env::var("MKLROOT")) {
-            PathBuf::from(oneapi_dir)
-        } else if Path::new("/usr/lib/sdk/oneapi").exists() {
-            PathBuf::from("/usr/lib/sdk/oneapi")
-        } else if Path::new("/app/oneapi").exists() {
-            PathBuf::from("/app/oneapi")
-        } else if Path::new("/opt/intel/oneapi").exists() {
-            PathBuf::from("/opt/intel/oneapi")
-        } else {
-            PathBuf::from("/app/oneapi")
-        };
-
-        cfg.define("ONEAPI_ROOT", &oneapi_root);
-        let icpx = oneapi_root.join("compiler/latest/bin/icpx");
-        if icpx.exists() {
-            cfg.define("CMAKE_CXX_COMPILER", icpx);
-        }
-        let mkl_dir = oneapi_root.join("mkl/latest");
-        if mkl_dir.exists() {
-            cfg.define("MKLROOT", &mkl_dir);
-            cfg.define("MKL_ROOT", &mkl_dir);
-            cfg.define("MKL_DIR", mkl_dir.join("lib/cmake/mkl"));
-            prefix_paths.push(mkl_dir.display().to_string());
-            prefix_paths.push(mkl_dir.join("lib/cmake/mkl").display().to_string());
-        }
-
-        let tbb_dir = oneapi_root.join("tbb/latest");
-        if tbb_dir.exists() {
-            cfg.define("TBB_DIR", tbb_dir.join("lib/cmake/tbb"));
-            cfg.define("TBB_ROOT", &tbb_dir);
-            prefix_paths.push(tbb_dir.display().to_string());
-            prefix_paths.push(tbb_dir.join("lib/cmake/tbb").display().to_string());
-            prefix_paths.push(tbb_dir.join("lib/cmake/TBB").display().to_string());
-            prefix_paths.push(tbb_dir.join("lib64/cmake/tbb").display().to_string());
-            prefix_paths.push(tbb_dir.join("lib64/cmake/TBB").display().to_string());
-        }
-
-        let dnnl_dir = oneapi_root.join("dnnl/latest");
-        if dnnl_dir.exists() {
-            cfg.define("DNNL_DIR", dnnl_dir.join("lib/cmake/dnnl"));
-            cfg.define("DNNL_ROOT", &dnnl_dir);
-            prefix_paths.push(dnnl_dir.display().to_string());
-            prefix_paths.push(dnnl_dir.join("lib/cmake/dnnl").display().to_string());
-            prefix_paths.push(dnnl_dir.join("lib64/cmake/dnnl").display().to_string());
-        }
-
-        prefix_paths.push(oneapi_root.display().to_string());
-        prefix_paths.push(oneapi_root.join("compiler/latest").display().to_string());
     }
 
     let joined_prefix = prefix_paths.join(";");
@@ -220,7 +153,7 @@ fn main() {
 
     let dst = cfg.build();
 
-    // Dynamically search all build output directories for static/import libraries
+    // Search build output directories for static/import libraries
     for entry in walkdir::WalkDir::new(&dst).into_iter().flatten() {
         if entry.file_type().is_file() {
             if let Some(ext) = entry.path().extension() {
@@ -233,7 +166,7 @@ fn main() {
         }
     }
 
-    // Compile bridge for common_fit_params
+    // Compile pure GGML engine C++ bridge
     let mut bridge_build = cc::Build::new();
     bridge_build
         .cpp(true)
@@ -243,15 +176,25 @@ fn main() {
         .flag_if_supported("/Oi")
         .flag_if_supported("/Ot")
         .flag_if_supported("/fp:fast")
-        .file("c_src/bridge.cpp")
-        .include(llama_root.join("include"))
+        .file("c_src/ggml_engine.cpp")
         .include(llama_root.join("ggml/include"))
-        .include(llama_root.join("common"));
-    bridge_build.compile("qt_llama_bridge");
+        .include(llama_root.join("ggml/src"));
 
-    println!("cargo:rustc-link-lib=static=llama-common");
-    println!("cargo:rustc-link-lib=static=llama-common-base");
-    println!("cargo:rustc-link-lib=static=llama");
+    if has_cuda {
+        bridge_build.define("GGML_USE_CUDA", "1");
+    }
+    if has_vulkan {
+        bridge_build.define("GGML_USE_VULKAN", "1");
+    }
+    if has_hipblas {
+        bridge_build.define("GGML_USE_HIPBLAS", "1");
+    }
+    if has_sycl {
+        bridge_build.define("GGML_USE_SYCL", "1");
+    }
+
+    bridge_build.compile("qt_llama_ggml_engine");
+
     println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-base");
     println!("cargo:rustc-link-lib=static=ggml-cpu");
