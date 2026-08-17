@@ -356,7 +356,7 @@ impl LlamaClient {
         let mut raw_acc = String::new();
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
-        let mut in_thought = false;
+        let mut in_thought = prompt.ends_with("<|channel>thought\n") || prompt.ends_with("<|channel>thought");
         let mut tool_calls = Vec::new();
 
         while let Some(piece_res) = rx.recv().await {
@@ -481,6 +481,30 @@ impl LlamaClient {
                             raw_acc.remove(0);
                         }
                         in_thought = true;
+                        continue;
+                    }
+                    if let Some(pos) = raw_acc.find("<channel|>") {
+                        let before = &raw_acc[..pos];
+                        if !before.is_empty() {
+                            callback(StreamEvent::Content(before.to_string()));
+                            full_content.push_str(before);
+                        }
+                        raw_acc = raw_acc[pos + "<channel|>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
+                        continue;
+                    }
+                    if let Some(pos) = raw_acc.find("</channel>") {
+                        let before = &raw_acc[..pos];
+                        if !before.is_empty() {
+                            callback(StreamEvent::Content(before.to_string()));
+                            full_content.push_str(before);
+                        }
+                        raw_acc = raw_acc[pos + "</channel>".len()..].to_string();
+                        if raw_acc.starts_with('\n') {
+                            raw_acc.remove(0);
+                        }
                         continue;
                     }
 

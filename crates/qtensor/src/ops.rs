@@ -52,6 +52,23 @@ pub fn rope_1d(
     }
 }
 
+/// GELU approximate activation (Gemma): 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+#[inline]
+pub fn gelu_approx(x: f32) -> f32 {
+    let sqrt_2_over_pi = 0.7978845608f32;
+    0.5f32 * x * (1.0f32 + (sqrt_2_over_pi * (x + 0.044715f32 * x * x * x)).tanh())
+}
+
+/// GeGLU forward elementwise: out = gelu_approx(gate) * up
+pub fn geglu(gate: &[f32], up: &[f32], out: &mut [f32]) {
+    assert_eq!(gate.len(), up.len());
+    assert_eq!(gate.len(), out.len());
+
+    for i in 0..gate.len() {
+        out[i] = gelu_approx(gate[i]) * up[i];
+    }
+}
+
 /// SiLU activation: x / (1 + exp(-x))
 #[inline]
 pub fn silu(x: f32) -> f32 {

@@ -81,18 +81,16 @@ impl QTensorEngine {
                     (piece_str, eog)
                 };
 
-                if is_eog && generated >= 4 {
-                    break;
-                }
-
                 let trimmed = piece.trim();
-                if (trimmed == "<end_of_turn>"
+                if is_eog
+                    || next_token == 106
+                    || next_token == 1
+                    || trimmed == "<end_of_turn>"
                     || trimmed == "<turn|>"
                     || trimmed == "<|turn_end|>"
                     || trimmed == "<|im_end|>"
                     || trimmed == "</s>"
-                    || trimmed == "<eos>")
-                    && generated >= 4
+                    || trimmed == "<eos>"
                 {
                     break;
                 }

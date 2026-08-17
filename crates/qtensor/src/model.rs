@@ -2,7 +2,7 @@ use crate::device::{DeviceManager, DeviceType};
 use crate::gguf::{GgufFile, GgufTensorInfo};
 use crate::kv_cache::KvCacheManager;
 use crate::ops;
-use crate::quant::{dequantize_q8_0, quantize_f32_to_q8_0};
+use crate::quant::dequantize_q8_0;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::fs::File;
@@ -13,14 +13,7 @@ use std::path::{Path, PathBuf};
 pub struct ModelConfig {
     pub dim: usize,
     pub n_layers: usize,
-    pub n_heads: usize,
-    pub n_kv_heads: usize,
-    pub head_dim: usize,
     pub vocab_size: usize,
-    pub sliding_window: usize,
-    pub rope_freq_base: f32,
-    pub rope_freq_scale: f32,
-    pub rms_norm_eps: f32,
     pub max_context: usize,
 }
 
@@ -29,20 +22,22 @@ impl Default for ModelConfig {
         Self {
             dim: 2816,
             n_layers: 30,
-            n_heads: 16,
-            n_kv_heads: 8,
-            head_dim: 256,
             vocab_size: 262144,
-            sliding_window: 4096,
-            rope_freq_base: 500000.0,
-            rope_freq_scale: 1.0,
-            rms_norm_eps: 1e-6,
             max_context: 256000,
         }
     }
 }
 
 pub struct TransformerLayer {
+    pub is_swa: bool,
+    pub head_dim: usize,
+    pub n_heads: usize,
+    pub n_kv_heads: usize,
+    pub q_dim: usize,
+    pub kv_dim: usize,
+    pub rope_freq_base: f32,
+    pub sliding_window: usize,
+
     pub attn_norm: Vec<f32>,
     pub attn_q: Vec<u8>,
     pub attn_k: Vec<u8>,
@@ -51,11 +46,25 @@ pub struct TransformerLayer {
     pub attn_q_norm: Vec<f32>,
     pub attn_k_norm: Vec<f32>,
     pub post_attention_norm: Vec<f32>,
+
+    // Dense shared FFN
     pub ffn_norm: Vec<f32>,
     pub ffn_gate: Vec<u8>,
     pub ffn_up: Vec<u8>,
     pub ffn_down: Vec<u8>,
     pub post_ffw_norm: Vec<f32>,
+    pub post_ffw_norm_1: Vec<f32>,
+    pub pre_ffw_norm_2: Vec<f32>,
+    pub post_ffw_norm_2: Vec<f32>,
+    pub layer_output_scale: f32,
+
+    // MoE Router & Experts
+    pub is_moe: bool,
+    pub ffn_gate_inp: Vec<f32>,       // [2816, 128]
+    pub ffn_gate_inp_scale: Vec<f32>, // [2816]
+    pub ffn_down_exps_scale: Vec<f32>,// [128]
+    pub ffn_gate_up_exps_offset: u64,
+    pub ffn_down_exps_offset: u64,
 }
 
 pub struct GenerationState {
@@ -64,8 +73,8 @@ pub struct GenerationState {
     pub generated_count: usize,
     pub history_tokens: Vec<i32>,
     pub hidden: Vec<f32>,
-    pub k_cache: Vec<Vec<Vec<f32>>>, // [n_layers][seq_len][n_kv_heads * head_dim]
-    pub v_cache: Vec<Vec<Vec<f32>>>, // [n_layers][seq_len][n_kv_heads * head_dim]
+    pub k_cache: Vec<Vec<Vec<f32>>>, // [n_layers][seq_len][kv_dim]
+    pub v_cache: Vec<Vec<Vec<f32>>>, // [n_layers][seq_len][kv_dim]
 }
 
 pub struct QTensorModel {
@@ -80,8 +89,7 @@ pub struct QTensorModel {
     pub output_norm_weights: Vec<f32>,
     pub layers: Vec<TransformerLayer>,
     pub data_offset: u64,
-    pub active_candidate_tokens: Vec<i32>,
-    pub preloaded_embeddings: Vec<(i32, Vec<u8>)>,
+    pub token_embd_table: Vec<u8>,
 }
 
 impl QTensorModel {
@@ -101,78 +109,25 @@ impl QTensorModel {
             .and_then(|v| v.as_u32())
             .unwrap_or(30) as usize;
 
-        let n_heads = gguf.get_meta("gemma2.attention.head_count")
-            .or_else(|| gguf.get_meta("gemma4.attention.head_count"))
-            .or_else(|| gguf.get_meta("general.attention.head_count"))
-            .and_then(|v| v.as_u32())
-            .unwrap_or(16) as usize;
-
-        let n_kv_heads = gguf.get_meta("gemma2.attention.head_count_kv")
-            .or_else(|| gguf.get_meta("gemma4.attention.head_count_kv"))
-            .or_else(|| gguf.get_meta("general.attention.head_count_kv"))
-            .and_then(|v| v.as_u32())
-            .unwrap_or(8) as usize;
-
-        let head_dim = 256;
-
-        let sliding_window = gguf.get_meta("gemma2.attention.sliding_window")
-            .or_else(|| gguf.get_meta("gemma4.attention.sliding_window"))
-            .and_then(|v| v.as_u32())
-            .unwrap_or(4096) as usize;
-
         // Load Vocabulary from GGUF metadata
         let mut vocab = Vec::new();
         let mut vocab_to_id = HashMap::new();
-        let mut spaced_words = Vec::new();
-        let mut other_candidates = Vec::new();
 
         if let Some(tokens_meta) = gguf.get_meta("tokenizer.ggml.tokens").and_then(|v| v.as_array()) {
             for (id, val) in tokens_meta.iter().enumerate() {
                 if let Some(s) = val.as_str() {
                     vocab.push(s.to_string());
                     vocab_to_id.insert(s.to_string(), id as i32);
-
-                    let is_printable = s.chars().all(|c| {
-                        c.is_ascii_alphanumeric()
-                            || c.is_ascii_punctuation()
-                            || c.is_ascii_whitespace()
-                            || c == ' '
-                            || c == '\u{2581}'
-                            || c == '_'
-                            || c == '-'
-                            || c == '/'
-                            || c == '`'
-                    });
-                    let is_special = (s.starts_with('<') && s.ends_with('>')) || (s.starts_with("<|") && s.ends_with("|>"));
-                    let is_unused = s.starts_with("<unused") || s == "<pad>" || s == "<unk>" || s == "<mask>" || s == "[multimodal]";
-                    if (is_printable || is_special) && !is_unused && !s.is_empty() && (id >= 500 || id == 106 || id == 107) {
-                        if s.starts_with('\u{2581}') || s.starts_with(' ') || s == "\n" || s == "." || s == "," || s == "!" || s == "?" || id == 106 || id == 107 {
-                            spaced_words.push(id as i32);
-                        } else {
-                            other_candidates.push(id as i32);
-                        }
-                    }
                 }
             }
         }
-
-        let mut active_candidate_tokens = Vec::new();
-        active_candidate_tokens.extend(spaced_words);
-        active_candidate_tokens.extend(other_candidates);
 
         let vocab_size = if !vocab.is_empty() { vocab.len() } else { 262144 };
 
         let config = ModelConfig {
             dim,
             n_layers,
-            n_heads,
-            n_kv_heads,
-            head_dim,
             vocab_size,
-            sliding_window,
-            rope_freq_base: 500000.0,
-            rope_freq_scale: 1.0,
-            rms_norm_eps: 1e-6,
             max_context: max_context.max(8192),
         };
 
@@ -180,15 +135,15 @@ impl QTensorModel {
         let layer_bytes = 450_000_000;
         let layer_devices = device_manager.plan_layers(n_layers, layer_bytes);
 
-        let sw_layers: Vec<usize> = (0..n_layers).filter(|i| i % 2 == 0).collect();
+        let sw_layers: Vec<usize> = (0..n_layers).filter(|i| i % 6 != 5).collect();
 
         let kv_cache = KvCacheManager::new(
             n_layers,
-            n_kv_heads,
-            head_dim,
+            8,
+            256,
             config.max_context,
             &sw_layers,
-            sliding_window,
+            1024,
             &layer_devices,
         )?;
 
@@ -204,6 +159,15 @@ impl QTensorModel {
         // Load layer weights
         let mut layers = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
+            let is_swa = (l % 6) != 5;
+            let (head_dim, n_heads, n_kv_heads, rope_freq_base, sliding_window) = if is_swa {
+                (256, 16, 8, 10000.0f32, 1024)
+            } else {
+                (512, 16, 2, 1000000.0f32, 0)
+            };
+            let q_dim = n_heads * head_dim;
+            let kv_dim = n_kv_heads * head_dim;
+
             let attn_norm = read_f32_tensor_opt(&gguf, &format!("blk.{}.attn_norm.weight", l), dim)?;
             let attn_q = read_raw_tensor_opt(&gguf, &format!("blk.{}.attn_q.weight", l))?;
             let attn_k = read_raw_tensor_opt(&gguf, &format!("blk.{}.attn_k.weight", l))?;
@@ -218,8 +182,32 @@ impl QTensorModel {
             let ffn_up = read_raw_tensor_opt(&gguf, &format!("blk.{}.ffn_up.weight", l))?;
             let ffn_down = read_raw_tensor_opt(&gguf, &format!("blk.{}.ffn_down.weight", l))?;
             let post_ffw_norm = read_f32_tensor_opt(&gguf, &format!("blk.{}.post_ffw_norm.weight", l), dim)?;
+            let post_ffw_norm_1 = read_f32_tensor_opt(&gguf, &format!("blk.{}.post_ffw_norm_1.weight", l), dim)?;
+            let pre_ffw_norm_2 = read_f32_tensor_opt(&gguf, &format!("blk.{}.pre_ffw_norm_2.weight", l), dim)?;
+            let post_ffw_norm_2 = read_f32_tensor_opt(&gguf, &format!("blk.{}.post_ffw_norm_2.weight", l), dim)?;
+            let layer_output_scale = read_f32_tensor_opt(&gguf, &format!("blk.{}.layer_output_scale.weight", l), 1)?
+                .first().copied().unwrap_or(1.0);
+
+            // MoE tensors
+            let ffn_gate_inp = read_f32_tensor_opt(&gguf, &format!("blk.{}.ffn_gate_inp.weight", l), dim * 128)?;
+            let ffn_gate_inp_scale = read_f32_tensor_opt(&gguf, &format!("blk.{}.ffn_gate_inp.scale", l), dim)?;
+            let ffn_down_exps_scale = read_f32_tensor_opt(&gguf, &format!("blk.{}.ffn_down_exps.scale", l), 128)?;
+
+            let ffn_gate_up_exps_offset = gguf.tensors.get(&format!("blk.{}.ffn_gate_up_exps.weight", l))
+                .map(|t| gguf.data_offset + t.offset).unwrap_or(0);
+            let ffn_down_exps_offset = gguf.tensors.get(&format!("blk.{}.ffn_down_exps.weight", l))
+                .map(|t| gguf.data_offset + t.offset).unwrap_or(0);
+            let is_moe = ffn_gate_up_exps_offset > 0;
 
             layers.push(TransformerLayer {
+                is_swa,
+                head_dim,
+                n_heads,
+                n_kv_heads,
+                q_dim,
+                kv_dim,
+                rope_freq_base,
+                sliding_window,
                 attn_norm,
                 attn_q,
                 attn_k,
@@ -233,21 +221,27 @@ impl QTensorModel {
                 ffn_up,
                 ffn_down,
                 post_ffw_norm,
+                post_ffw_norm_1,
+                pre_ffw_norm_2,
+                post_ffw_norm_2,
+                layer_output_scale,
+                is_moe,
+                ffn_gate_inp,
+                ffn_gate_inp_scale,
+                ffn_down_exps_scale,
+                ffn_gate_up_exps_offset,
+                ffn_down_exps_offset,
             });
         }
 
-        // Preload candidate vocabulary embeddings in memory
-        let mut preloaded_embeddings = Vec::new();
+        // Preload complete token embedding table in memory
         let row_bytes = (dim / 32) * 34;
-        let preload_count = active_candidate_tokens.len().min(40000);
+        let mut token_embd_table = vec![0u8; vocab_size * row_bytes];
 
         if let (Some(ref info), Ok(mut file)) = (&token_embd_info, File::open(&gguf_path)) {
-            for &tid in &active_candidate_tokens[..preload_count] {
-                let offset = gguf.data_offset + info.offset + (tid as u64) * (row_bytes as u64);
-                let mut buf = vec![0u8; row_bytes];
-                if file.seek(SeekFrom::Start(offset)).is_ok() && file.read_exact(&mut buf).is_ok() {
-                    preloaded_embeddings.push((tid, buf));
-                }
+            let offset = gguf.data_offset + info.offset;
+            if file.seek(SeekFrom::Start(offset)).is_ok() {
+                let _ = file.read_exact(&mut token_embd_table);
             }
         }
 
@@ -273,35 +267,20 @@ impl QTensorModel {
             output_norm_weights,
             layers,
             data_offset: gguf.data_offset,
-            active_candidate_tokens,
-            preloaded_embeddings,
+            token_embd_table,
         })
     }
 
-    /// Read raw Q8_0 embedding vector for a single token directly from GGUF weight table
+    /// Read raw Q8_0 embedding vector for a single token directly from in-memory table
     pub fn read_token_embedding(&self, token_id: i32, out: &mut [f32]) -> Result<()> {
         let dim = self.config.dim;
         assert_eq!(out.len(), dim);
 
-        // Check preloaded embeddings first
-        for (tid, buf) in &self.preloaded_embeddings {
-            if *tid == token_id {
-                dequantize_q8_0(buf, out);
-                return Ok(());
-            }
-        }
-
-        if let Some(ref info) = self.token_embd_info {
-            let row_bytes = (dim / 32) * 34; // 88 * 34 = 2992 bytes
-            let offset = self.data_offset + info.offset + (token_id.max(0) as u64) * (row_bytes as u64);
-
-            let mut file = File::open(&self.gguf_path)?;
-            file.seek(SeekFrom::Start(offset))?;
-
-            let mut buffer = vec![0u8; row_bytes];
-            file.read_exact(&mut buffer)?;
-
-            dequantize_q8_0(&buffer, out);
+        let row_bytes = (dim / 32) * 34;
+        let tid = (token_id.max(0) as usize).min(self.config.vocab_size - 1);
+        let offset = tid * row_bytes;
+        if offset + row_bytes <= self.token_embd_table.len() {
+            dequantize_q8_0(&self.token_embd_table[offset..offset + row_bytes], out);
             return Ok(());
         }
 
@@ -322,12 +301,6 @@ impl QTensorModel {
         v_cache: &mut [Vec<Vec<f32>>],
     ) -> Vec<f32> {
         let dim = self.config.dim;
-        let head_dim = self.config.head_dim;
-        let n_heads = self.config.n_heads;
-        let n_kv_heads = self.config.n_kv_heads;
-        let q_dim = n_heads * head_dim; // 4096
-        let kv_dim = n_kv_heads * head_dim; // 2048
-        let ffn_dim = 2112;
 
         let mut hidden = vec![0.0f32; dim];
         let _ = self.read_token_embedding(token_id, &mut hidden);
@@ -337,45 +310,55 @@ impl QTensorModel {
             *val *= scale;
         }
 
+        let mut file_opt = File::open(&self.gguf_path).ok();
+
         for (l, layer) in self.layers.iter().enumerate() {
             // Layer RMSNorm
             let mut cur = vec![0.0f32; dim];
             ops::rms_norm(&hidden, Some(&layer.attn_norm), 1e-6, &mut cur);
 
             // Q, K, V Projections
-            let mut q = vec![0.0f32; q_dim];
-            let mut k = vec![0.0f32; kv_dim];
-            let mut v = vec![0.0f32; kv_dim];
+            let mut q = vec![0.0f32; layer.q_dim];
+            let mut k = vec![0.0f32; layer.kv_dim];
+            let mut v = vec![0.0f32; layer.kv_dim];
 
             if !layer.attn_q.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.attn_q, &cur, &mut q, q_dim, dim);
+                ops::mat_vec_mul_q4_0(&layer.attn_q, &cur, &mut q, layer.q_dim, dim);
             }
             if !layer.attn_k.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.attn_k, &cur, &mut k, kv_dim, dim);
+                ops::mat_vec_mul_q4_0(&layer.attn_k, &cur, &mut k, layer.kv_dim, dim);
             }
             if !layer.attn_v.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.attn_v, &cur, &mut v, kv_dim, dim);
+                ops::mat_vec_mul_q4_0(&layer.attn_v, &cur, &mut v, layer.kv_dim, dim);
+            } else {
+                v.copy_from_slice(&k);
             }
 
-            // Head RMSNorm & RoPE
-            for h in 0..n_heads {
-                let q_head = &mut q[h * head_dim..(h + 1) * head_dim];
+            // Head RMSNorm & RoPE for Q
+            for h in 0..layer.n_heads {
+                let q_head = &mut q[h * layer.head_dim..(h + 1) * layer.head_dim];
                 if !layer.attn_q_norm.is_empty() {
-                    let mut normed_q = vec![0.0f32; head_dim];
+                    let mut normed_q = vec![0.0f32; layer.head_dim];
                     ops::rms_norm(q_head, Some(&layer.attn_q_norm), 1e-6, &mut normed_q);
                     q_head.copy_from_slice(&normed_q);
                 }
-                ops::rope_1d(q_head, pos, head_dim, self.config.rope_freq_base, self.config.rope_freq_scale);
+                ops::rope_1d(q_head, pos, layer.head_dim, layer.rope_freq_base, 1.0);
             }
 
-            for h in 0..n_kv_heads {
-                let k_head = &mut k[h * head_dim..(h + 1) * head_dim];
+            // Head RMSNorm & RoPE for K, and RMSNorm for V
+            for h in 0..layer.n_kv_heads {
+                let k_head = &mut k[h * layer.head_dim..(h + 1) * layer.head_dim];
                 if !layer.attn_k_norm.is_empty() {
-                    let mut normed_k = vec![0.0f32; head_dim];
+                    let mut normed_k = vec![0.0f32; layer.head_dim];
                     ops::rms_norm(k_head, Some(&layer.attn_k_norm), 1e-6, &mut normed_k);
                     k_head.copy_from_slice(&normed_k);
                 }
-                ops::rope_1d(k_head, pos, head_dim, self.config.rope_freq_base, self.config.rope_freq_scale);
+                ops::rope_1d(k_head, pos, layer.head_dim, layer.rope_freq_base, 1.0);
+
+                let v_head = &mut v[h * layer.head_dim..(h + 1) * layer.head_dim];
+                let mut normed_v = vec![0.0f32; layer.head_dim];
+                ops::rms_norm(v_head, None, 1e-6, &mut normed_v);
+                v_head.copy_from_slice(&normed_v);
             }
 
             // Store into KV cache
@@ -384,30 +367,35 @@ impl QTensorModel {
 
             // Multi-head Attention
             let seq_len = k_cache[l].len();
-            let mut attn_out = vec![0.0f32; q_dim];
-            let q_scale = 1.0f32 / (head_dim as f32).sqrt();
+            let mut attn_out = vec![0.0f32; layer.q_dim];
+            let start_t = if layer.is_swa && layer.sliding_window > 0 {
+                seq_len.saturating_sub(layer.sliding_window)
+            } else {
+                0
+            };
+            let attn_window_len = seq_len - start_t;
 
-            for h in 0..n_heads {
-                let kv_h = h / (n_heads / n_kv_heads);
-                let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            for h in 0..layer.n_heads {
+                let kv_h = h / (layer.n_heads / layer.n_kv_heads);
+                let q_head = &q[h * layer.head_dim..(h + 1) * layer.head_dim];
 
-                let mut scores = vec![0.0f32; seq_len];
-                for t in 0..seq_len {
-                    let k_t = &k_cache[l][t][kv_h * head_dim..(kv_h + 1) * head_dim];
+                let mut scores = vec![0.0f32; attn_window_len];
+                for (idx, t) in (start_t..seq_len).enumerate() {
+                    let k_t = &k_cache[l][t][kv_h * layer.head_dim..(kv_h + 1) * layer.head_dim];
                     let mut dot = 0.0f32;
-                    for d in 0..head_dim {
+                    for d in 0..layer.head_dim {
                         dot += q_head[d] * k_t[d];
                     }
-                    scores[t] = dot * q_scale;
+                    scores[idx] = dot; // f_attention_scale = 1.0 in Gemma 4
                 }
 
                 ops::softmax(&mut scores);
 
-                let out_head = &mut attn_out[h * head_dim..(h + 1) * head_dim];
-                for t in 0..seq_len {
-                    let v_t = &v_cache[l][t][kv_h * head_dim..(kv_h + 1) * head_dim];
-                    let s = scores[t];
-                    for d in 0..head_dim {
+                let out_head = &mut attn_out[h * layer.head_dim..(h + 1) * layer.head_dim];
+                for (idx, t) in (start_t..seq_len).enumerate() {
+                    let v_t = &v_cache[l][t][kv_h * layer.head_dim..(kv_h + 1) * layer.head_dim];
+                    let s = scores[idx];
+                    for d in 0..layer.head_dim {
                         out_head[d] += s * v_t[d];
                     }
                 }
@@ -416,46 +404,156 @@ impl QTensorModel {
             // Attention Output Projection
             let mut attn_proj = vec![0.0f32; dim];
             if !layer.attn_output.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.attn_output, &attn_out, &mut attn_proj, dim, q_dim);
+                ops::mat_vec_mul_q4_0(&layer.attn_output, &attn_out, &mut attn_proj, dim, layer.q_dim);
             }
 
-            // Post-Attention Norm
+            // Post-Attention Norm & Residual
             let mut normed_attn = vec![0.0f32; dim];
             ops::rms_norm(&attn_proj, Some(&layer.post_attention_norm), 1e-6, &mut normed_attn);
 
-            // Residual 1
+            let mut attn_res = vec![0.0f32; dim];
             for i in 0..dim {
-                hidden[i] += normed_attn[i];
+                attn_res[i] = hidden[i] + normed_attn[i];
             }
 
-            // Feed-Forward Network
-            let mut ffn_in = vec![0.0f32; dim];
-            ops::rms_norm(&hidden, Some(&layer.ffn_norm), 1e-6, &mut ffn_in);
+            // 1. Shared Dense MLP
+            let ffn_dim = 2112;
+            let mut ffn_in_shared = vec![0.0f32; dim];
+            ops::rms_norm(&attn_res, Some(&layer.ffn_norm), 1e-6, &mut ffn_in_shared);
 
             let mut gate = vec![0.0f32; ffn_dim];
             let mut up = vec![0.0f32; ffn_dim];
 
             if !layer.ffn_gate.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.ffn_gate, &ffn_in, &mut gate, ffn_dim, dim);
+                ops::mat_vec_mul_q4_0(&layer.ffn_gate, &ffn_in_shared, &mut gate, ffn_dim, dim);
             }
             if !layer.ffn_up.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.ffn_up, &ffn_in, &mut up, ffn_dim, dim);
+                ops::mat_vec_mul_q4_0(&layer.ffn_up, &ffn_in_shared, &mut up, ffn_dim, dim);
             }
 
             let mut ffn_act = vec![0.0f32; ffn_dim];
-            ops::swiglu(&gate, &up, &mut ffn_act);
+            ops::geglu(&gate, &up, &mut ffn_act);
 
-            let mut ffn_out = vec![0.0f32; dim];
+            let mut mlp_raw = vec![0.0f32; dim];
             if !layer.ffn_down.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.ffn_down, &ffn_act, &mut ffn_out, dim, ffn_dim);
+                ops::mat_vec_mul_q4_0(&layer.ffn_down, &ffn_act, &mut mlp_raw, dim, ffn_dim);
+            }
+
+            let mut mlp_out = vec![0.0f32; dim];
+            ops::rms_norm(&mlp_raw, Some(&layer.post_ffw_norm_1), 1e-6, &mut mlp_out);
+
+            // 2. MoE Top-8 Active Experts
+            let mut moe_raw = vec![0.0f32; dim];
+            if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
+                if let Some(ref mut file) = file_opt {
+                    // Expert input norm
+                    let mut ffn_in_moe = vec![0.0f32; dim];
+                    ops::rms_norm(&attn_res, Some(&layer.pre_ffw_norm_2), 1e-6, &mut ffn_in_moe);
+
+                    // Router logits
+                    let mut router_tmp = vec![0.0f32; dim];
+                    ops::rms_norm(&attn_res, None, 1e-6, &mut router_tmp);
+                    let inv_sqrt_dim = 1.0f32 / (dim as f32).sqrt();
+                    for i in 0..dim {
+                        let scale = if i < layer.ffn_gate_inp_scale.len() { layer.ffn_gate_inp_scale[i] } else { 1.0 };
+                        router_tmp[i] = router_tmp[i] * inv_sqrt_dim * scale;
+                    }
+
+                    // Compute 128 expert logits
+                    let mut expert_logits = vec![(0.0f32, 0usize); 128];
+                    for e in 0..128 {
+                        let mut dot = 0.0f32;
+                        let col_offset = e * dim;
+                        if col_offset + dim <= layer.ffn_gate_inp.len() {
+                            for i in 0..dim {
+                                dot += router_tmp[i] * layer.ffn_gate_inp[col_offset + i];
+                            }
+                        }
+                        expert_logits[e] = (dot, e);
+                    }
+
+                    // Pick Top-8 experts
+                    expert_logits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                    let top8 = &expert_logits[..8];
+
+                    // Softmax over Top-8
+                    let max_l = top8[0].0;
+                    let mut ex_probs = [0.0f32; 8];
+                    let mut sum_exp = 0.0f32;
+                    for i in 0..8 {
+                        let p = (top8[i].0 - max_l).exp();
+                        ex_probs[i] = p;
+                        sum_exp += p;
+                    }
+                    for i in 0..8 {
+                        ex_probs[i] /= sum_exp.max(1e-6);
+                    }
+
+                    // Evaluate active experts
+                    let exp_ffn_dim = 704;
+                    let gate_up_bytes_per_exp = 1408 * (dim / 32) * 18; // 2,230,272 bytes
+                    let down_bytes_per_exp = 2816 * (exp_ffn_dim / 32) * 18; // 1,115,136 bytes
+
+                    let mut gate_up_buf = vec![0u8; gate_up_bytes_per_exp];
+                    let mut down_buf = vec![0u8; down_bytes_per_exp];
+
+                    for (k, &(_, exp_idx)) in top8.iter().enumerate() {
+                        let alpha = ex_probs[k];
+                        if alpha <= 0.0001 {
+                            continue;
+                        }
+
+                        let gu_off = layer.ffn_gate_up_exps_offset + (exp_idx as u64) * (gate_up_bytes_per_exp as u64);
+                        let down_off = layer.ffn_down_exps_offset + (exp_idx as u64) * (down_bytes_per_exp as u64);
+
+                        if file.seek(SeekFrom::Start(gu_off)).is_ok() && file.read_exact(&mut gate_up_buf).is_ok() {
+                            let half_bytes = gate_up_bytes_per_exp / 2;
+                            let gate_slice = &gate_up_buf[..half_bytes];
+                            let up_slice = &gate_up_buf[half_bytes..];
+
+                            let mut exp_gate = vec![0.0f32; exp_ffn_dim];
+                            let mut exp_up = vec![0.0f32; exp_ffn_dim];
+
+                            ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, exp_ffn_dim, dim);
+                            ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, exp_ffn_dim, dim);
+
+                            let mut exp_act = vec![0.0f32; exp_ffn_dim];
+                            ops::geglu(&exp_gate, &exp_up, &mut exp_act);
+
+                            if file.seek(SeekFrom::Start(down_off)).is_ok() && file.read_exact(&mut down_buf).is_ok() {
+                                let mut exp_down = vec![0.0f32; dim];
+                                ops::mat_vec_mul_q4_0(&down_buf, &exp_act, &mut exp_down, dim, exp_ffn_dim);
+
+                                let scale = if exp_idx < layer.ffn_down_exps_scale.len() {
+                                    layer.ffn_down_exps_scale[exp_idx]
+                                } else {
+                                    1.0
+                                };
+
+                                for i in 0..dim {
+                                    moe_raw[i] += alpha * exp_down[i] * scale;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut moe_out = vec![0.0f32; dim];
+            ops::rms_norm(&moe_raw, Some(&layer.post_ffw_norm_2), 1e-6, &mut moe_out);
+
+            // 3. Combine shared MLP and MoE
+            let mut ffn_combined = vec![0.0f32; dim];
+            for i in 0..dim {
+                ffn_combined[i] = mlp_out[i] + moe_out[i];
             }
 
             let mut normed_ffn = vec![0.0f32; dim];
-            ops::rms_norm(&ffn_out, Some(&layer.post_ffw_norm), 1e-6, &mut normed_ffn);
+            ops::rms_norm(&ffn_combined, Some(&layer.post_ffw_norm), 1e-6, &mut normed_ffn);
 
-            // Residual 2
+            // 4. Residual 2 & Layer Output Scale
             for i in 0..dim {
-                hidden[i] += normed_ffn[i];
+                hidden[i] = (attn_res[i] + normed_ffn[i]) * layer.layer_output_scale;
             }
         }
 
@@ -477,7 +575,7 @@ impl QTensorModel {
             tokens.push(bos);
         }
 
-        let formatted = text.replace(' ', " ");
+        let formatted = text.replace(' ', "\u{2581}");
         let mut char_indices: Vec<usize> = formatted.char_indices().map(|(i, _)| i).collect();
         char_indices.push(formatted.len());
 
@@ -544,7 +642,7 @@ impl QTensorModel {
                 return true;
             }
         }
-        token == 1 || token == 2 || token == 107
+        token == 1 || token == 2 || token == 106 || token == 107
     }
 
     /// Initialize generation state with fast prompt prefill pass
@@ -554,7 +652,7 @@ impl QTensorModel {
         let mut v_cache = vec![Vec::new(); n_layers];
         let mut hidden = vec![0.0f32; self.config.dim];
 
-        let window = 2.min(prompt_tokens.len());
+        let window = 32.min(prompt_tokens.len());
         let start = prompt_tokens.len().saturating_sub(window);
 
         for (i, &token_id) in prompt_tokens[start..].iter().enumerate() {
@@ -577,58 +675,71 @@ impl QTensorModel {
     /// Execute real multi-layer transformer forward pass on single token and sample next token ID
     pub fn step_generation(&self, state: &mut GenerationState, temperature: f32) -> i32 {
         let dim = self.config.dim;
-
-        // 1. Quantize normalized hidden state to Q8_0 for projection against token embeddings
+        let row_bytes = (dim / 32) * 34;
         let n_blocks = dim / 32;
-        let mut q8_act = vec![0u8; n_blocks * 34];
-        quantize_f32_to_q8_0(&state.hidden, &mut q8_act);
 
-        // 2. Score candidate tokens directly from preloaded in-memory embeddings in parallel
         let recent_tokens = state.history_tokens.iter().rev().take(32).copied().collect::<Vec<_>>();
         let generated_count = state.generated_count;
 
         let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8).min(16);
-        let chunk_size = (self.preloaded_embeddings.len() + n_threads - 1) / n_threads;
+        let chunk_size = (self.config.vocab_size + n_threads - 1) / n_threads;
 
         let mut all_scored: Vec<(f32, i32)> = std::thread::scope(|s| {
             let mut handles = Vec::new();
-            for chunk in self.preloaded_embeddings.chunks(chunk_size) {
-                let q8_act_ref = &q8_act;
+            for thread_idx in 0..n_threads {
+                let start_tid = thread_idx * chunk_size;
+                let end_tid = (start_tid + chunk_size).min(self.config.vocab_size);
+                if start_tid >= end_tid {
+                    continue;
+                }
+
+                let hidden_ref = &state.hidden;
                 let recent_tokens_ref = &recent_tokens;
+                let table_ref = &self.token_embd_table;
+                let vocab_ref = &self.vocab;
+
                 handles.push(s.spawn(move || {
-                    let mut scored = Vec::with_capacity(chunk.len());
-                    for &(tid, ref row_buffer) in chunk {
-                        if generated_count < 4 && (tid == 1 || tid == 2 || tid == 106 || tid == 107) {
+                    let mut scored = Vec::with_capacity(end_tid - start_tid);
+                    for tid in start_tid..end_tid {
+                        if tid < vocab_ref.len() {
+                            let piece = &vocab_ref[tid];
+                            if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
+                                continue;
+                            }
+                        }
+
+                        if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
                             continue;
                         }
+
+                        let row_off = tid * row_bytes;
+                        if row_off + row_bytes > table_ref.len() {
+                            continue;
+                        }
+
+                        let row_buf = &table_ref[row_off..row_off + row_bytes];
 
                         let mut dot = 0.0f32;
                         for b in 0..n_blocks {
                             let w_off = b * 34;
-                            let a_off = b * 34;
-
-                            let w_d_raw = u16::from_le_bytes([row_buffer[w_off], row_buffer[w_off + 1]]);
-                            let a_d_raw = u16::from_le_bytes([q8_act_ref[a_off], q8_act_ref[a_off + 1]]);
-
+                            let w_d_raw = u16::from_le_bytes([row_buf[w_off], row_buf[w_off + 1]]);
                             let w_d = crate::quant::f16_to_f32(w_d_raw);
-                            let a_d = crate::quant::f16_to_f32(a_d_raw);
 
-                            let mut block_sum = 0i32;
+                            let mut block_sum = 0.0f32;
                             for k in 0..32 {
-                                let qw = row_buffer[w_off + 2 + k] as i8 as i32;
-                                let qa = q8_act_ref[a_off + 2 + k] as i8 as i32;
-                                block_sum += qw * qa;
+                                let qw = row_buf[w_off + 2 + k] as i8 as f32;
+                                block_sum += qw * hidden_ref[b * 32 + k];
                             }
-                            dot += (block_sum as f32) * w_d * a_d;
+                            dot += block_sum * w_d;
                         }
 
                         let mut score = 30.0 * (dot / 30.0).tanh();
 
-                        if recent_tokens_ref.contains(&tid) {
-                            score -= 2.5;
+                        if recent_tokens_ref.contains(&(tid as i32)) {
+                            score -= 3.5;
                         }
 
-                        scored.push((score, tid));
+                        scored.push((score, tid as i32));
                     }
                     scored
                 }));
