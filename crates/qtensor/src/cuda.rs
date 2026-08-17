@@ -178,6 +178,9 @@ pub struct CudaDevice {
     stream: CudaStream,
 }
 
+unsafe impl Send for CudaDevice {}
+unsafe impl Sync for CudaDevice {}
+
 impl CudaDevice {
     pub fn count() -> usize {
         let mut count = 0;

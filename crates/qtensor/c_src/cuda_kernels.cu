@@ -17,16 +17,21 @@ __inline__ __device__ float warp_reduce_sum(float val) {
 
 // Block-level sum reduction
 __inline__ __device__ float block_reduce_sum(float val) {
-    static __shared__ float shared[32];
-    int lane = threadIdx.x % WARP_SIZE;
-    int wid = threadIdx.x / WARP_SIZE;
+    __shared__ float shared[32];
+    int lane = threadIdx.x & 31;
+    int wid = threadIdx.x >> 5;
 
     val = warp_reduce_sum(val);
-    if (lane == 0) shared[wid] = val;
+    if (lane == 0) {
+        shared[wid] = val;
+    }
     __syncthreads();
 
-    val = (threadIdx.x < blockDim.x / WARP_SIZE) ? shared[lane] : 0.0f;
-    if (wid == 0) val = warp_reduce_sum(val);
+    int n_warps = (blockDim.x + 31) >> 5;
+    val = (lane < n_warps) ? shared[lane] : 0.0f;
+    if (wid == 0) {
+        val = warp_reduce_sum(val);
+    }
     return val;
 }
 
@@ -141,10 +146,7 @@ __global__ void k_gemv_q4_0_f32(
     for (int b = tid; b < n_blocks; b += blockDim.x) {
         int w_off = b * 18;
         uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
-        
-        __half d_half;
-        memcpy(&d_half, &d_raw, sizeof(__half));
-        float d = __half2float(d_half);
+        float d = __half2float(__ushort_as_half(d_raw));
 
         const uint8_t* qs = row_w + w_off + 2;
         int x_base = b * 32;
@@ -190,10 +192,7 @@ __global__ void k_gemv_q8_0_f32(
     for (int b = tid; b < n_blocks; b += blockDim.x) {
         int w_off = b * 34;
         uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
-        
-        __half d_half;
-        memcpy(&d_half, &d_raw, sizeof(__half));
-        float d = __half2float(d_half);
+        float d = __half2float(__ushort_as_half(d_raw));
 
         const int8_t* qs = (const int8_t*)(row_w + w_off + 2);
         int x_base = b * 32;
@@ -370,8 +369,7 @@ void cuda_op_gemv_q4_0(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = (n_cols / 32 < 256) ? (n_cols / 32) : 256;
-    if (threads < 32) threads = 32;
+    int threads = 128;
     k_gemv_q4_0_f32<<<n_rows, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
 }
 
@@ -383,8 +381,7 @@ void cuda_op_gemv_q8_0(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = (n_cols / 32 < 256) ? (n_cols / 32) : 256;
-    if (threads < 32) threads = 32;
+    int threads = 128;
     k_gemv_q8_0_f32<<<n_rows, threads, 0, stream>>>(d_w_q8, d_x, d_y, n_rows, n_cols);
 }
 

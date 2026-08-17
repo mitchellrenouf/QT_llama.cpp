@@ -65,6 +65,21 @@ pub struct TransformerLayer {
     pub ffn_down_exps_scale: Vec<f32>,// [128]
     pub ffn_gate_up_exps_offset: u64,
     pub ffn_down_exps_offset: u64,
+
+    #[cfg(feature = "cuda")]
+    pub gpu_attn_q: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_attn_k: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_attn_v: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_attn_output: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_gate: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_up: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_down: Option<crate::cuda::CudaBuffer<u8>>,
 }
 
 pub struct GenerationState {
@@ -91,6 +106,10 @@ pub struct QTensorModel {
     pub data_offset: u64,
     pub token_embd_table: Vec<u8>,
     pub mmap: Option<std::sync::Arc<memmap2::Mmap>>,
+    #[cfg(feature = "cuda")]
+    pub cuda_dev: Option<std::sync::Arc<crate::cuda::CudaDevice>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_token_embd_table: Option<crate::cuda::CudaBuffer<u8>>,
 }
 
 impl QTensorModel {
@@ -157,6 +176,9 @@ impl QTensorModel {
             vec![1.0f32; dim]
         };
 
+        #[cfg(feature = "cuda")]
+        let cuda_dev = crate::cuda::CudaDevice::new(0).ok().map(std::sync::Arc::new);
+
         // Load layer weights
         let mut layers = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
@@ -200,6 +222,21 @@ impl QTensorModel {
                 .map(|t| gguf.data_offset + t.offset).unwrap_or(0);
             let is_moe = ffn_gate_up_exps_offset > 0;
 
+            #[cfg(feature = "cuda")]
+            let gpu_attn_q = if cuda_dev.is_some() && !attn_q.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &attn_q).ok() } else { None };
+            #[cfg(feature = "cuda")]
+            let gpu_attn_k = if cuda_dev.is_some() && !attn_k.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &attn_k).ok() } else { None };
+            #[cfg(feature = "cuda")]
+            let gpu_attn_v = if cuda_dev.is_some() && !attn_v.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &attn_v).ok() } else { None };
+            #[cfg(feature = "cuda")]
+            let gpu_attn_output = if cuda_dev.is_some() && !attn_output.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &attn_output).ok() } else { None };
+            #[cfg(feature = "cuda")]
+            let gpu_ffn_gate = if cuda_dev.is_some() && !ffn_gate.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_gate).ok() } else { None };
+            #[cfg(feature = "cuda")]
+            let gpu_ffn_up = if cuda_dev.is_some() && !ffn_up.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_up).ok() } else { None };
+            #[cfg(feature = "cuda")]
+            let gpu_ffn_down = if cuda_dev.is_some() && !ffn_down.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_down).ok() } else { None };
+
             layers.push(TransformerLayer {
                 is_swa,
                 head_dim,
@@ -232,6 +269,20 @@ impl QTensorModel {
                 ffn_down_exps_scale,
                 ffn_gate_up_exps_offset,
                 ffn_down_exps_offset,
+                #[cfg(feature = "cuda")]
+                gpu_attn_q,
+                #[cfg(feature = "cuda")]
+                gpu_attn_k,
+                #[cfg(feature = "cuda")]
+                gpu_attn_v,
+                #[cfg(feature = "cuda")]
+                gpu_attn_output,
+                #[cfg(feature = "cuda")]
+                gpu_ffn_gate,
+                #[cfg(feature = "cuda")]
+                gpu_ffn_up,
+                #[cfg(feature = "cuda")]
+                gpu_ffn_down,
             });
         }
 
@@ -245,6 +296,13 @@ impl QTensorModel {
                 let _ = file.read_exact(&mut token_embd_table);
             }
         }
+
+        #[cfg(feature = "cuda")]
+        let gpu_token_embd_table = if cuda_dev.is_some() && !token_embd_table.is_empty() {
+            crate::cuda::CudaBuffer::from_host_on(0, &token_embd_table).ok()
+        } else {
+            None
+        };
 
         eprintln!(
             "[qtensor] Initialized model: {} layers, {} dim, {} max_context, {} vocab items ({} GPU layers, {} CPU layers)",
@@ -275,6 +333,10 @@ impl QTensorModel {
             data_offset: gguf.data_offset,
             token_embd_table,
             mmap,
+            #[cfg(feature = "cuda")]
+            cuda_dev,
+            #[cfg(feature = "cuda")]
+            gpu_token_embd_table,
         })
     }
 
@@ -327,16 +389,44 @@ impl QTensorModel {
             let mut k = vec![0.0f32; layer.kv_dim];
             let mut v = vec![0.0f32; layer.kv_dim];
 
-            if !layer.attn_q.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.attn_q, &cur, &mut q, layer.q_dim, dim);
-            }
-            if !layer.attn_k.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.attn_k, &cur, &mut k, layer.kv_dim, dim);
-            }
-            if !layer.attn_v.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.attn_v, &cur, &mut v, layer.kv_dim, dim);
+            #[cfg(feature = "cuda")]
+            let used_gpu = if let (Some(ref dev), Some(ref g_q), Some(ref g_k), Some(ref g_v)) = (&self.cuda_dev, &layer.gpu_attn_q, &layer.gpu_attn_k, &layer.gpu_attn_v) {
+                if let (Ok(d_cur), Ok(mut d_q), Ok(mut d_k), Ok(mut d_v)) = (
+                    crate::cuda::CudaBuffer::from_host_on(0, &cur),
+                    crate::cuda::CudaBuffer::alloc_on(0, layer.q_dim),
+                    crate::cuda::CudaBuffer::alloc_on(0, layer.kv_dim),
+                    crate::cuda::CudaBuffer::alloc_on(0, layer.kv_dim),
+                ) {
+                    dev.gemv_q4_0(g_q, &d_cur, &mut d_q, layer.q_dim, dim);
+                    dev.gemv_q4_0(g_k, &d_cur, &mut d_k, layer.kv_dim, dim);
+                    dev.gemv_q4_0(g_v, &d_cur, &mut d_v, layer.kv_dim, dim);
+                    let _ = dev.sync();
+                    let _ = d_q.copy_to_host(&mut q);
+                    let _ = d_k.copy_to_host(&mut k);
+                    let _ = d_v.copy_to_host(&mut v);
+                    true
+                } else {
+                    false
+                }
             } else {
-                v.copy_from_slice(&k);
+                false
+            };
+
+            #[cfg(not(feature = "cuda"))]
+            let used_gpu = false;
+
+            if !used_gpu {
+                if !layer.attn_q.is_empty() {
+                    ops::mat_vec_mul_q4_0(&layer.attn_q, &cur, &mut q, layer.q_dim, dim);
+                }
+                if !layer.attn_k.is_empty() {
+                    ops::mat_vec_mul_q4_0(&layer.attn_k, &cur, &mut k, layer.kv_dim, dim);
+                }
+                if !layer.attn_v.is_empty() {
+                    ops::mat_vec_mul_q4_0(&layer.attn_v, &cur, &mut v, layer.kv_dim, dim);
+                } else {
+                    v.copy_from_slice(&k);
+                }
             }
 
             // Head RMSNorm & RoPE for Q
@@ -408,7 +498,27 @@ impl QTensorModel {
 
             // Attention Output Projection
             let mut attn_proj = vec![0.0f32; dim];
-            if !layer.attn_output.is_empty() {
+            #[cfg(feature = "cuda")]
+            let out_used_gpu = if let (Some(ref dev), Some(ref g_out)) = (&self.cuda_dev, &layer.gpu_attn_output) {
+                if let (Ok(d_ctx), Ok(mut d_out)) = (
+                    crate::cuda::CudaBuffer::from_host_on(0, &attn_out),
+                    crate::cuda::CudaBuffer::alloc_on(0, dim),
+                ) {
+                    dev.gemv_q4_0(g_out, &d_ctx, &mut d_out, dim, layer.q_dim);
+                    let _ = dev.sync();
+                    let _ = d_out.copy_to_host(&mut attn_proj);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            #[cfg(not(feature = "cuda"))]
+            let out_used_gpu = false;
+
+            if !out_used_gpu && !layer.attn_output.is_empty() {
                 ops::mat_vec_mul_q4_0(&layer.attn_output, &attn_out, &mut attn_proj, dim, layer.q_dim);
             }
 
@@ -426,22 +536,48 @@ impl QTensorModel {
             let mut ffn_in_shared = vec![0.0f32; dim];
             ops::rms_norm(&attn_res, Some(&layer.ffn_norm), 1e-6, &mut ffn_in_shared);
 
-            let mut gate = vec![0.0f32; ffn_dim];
-            let mut up = vec![0.0f32; ffn_dim];
-
-            if !layer.ffn_gate.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.ffn_gate, &ffn_in_shared, &mut gate, ffn_dim, dim);
-            }
-            if !layer.ffn_up.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.ffn_up, &ffn_in_shared, &mut up, ffn_dim, dim);
-            }
-
-            let mut ffn_act = vec![0.0f32; ffn_dim];
-            ops::geglu(&gate, &up, &mut ffn_act);
-
             let mut mlp_raw = vec![0.0f32; dim];
-            if !layer.ffn_down.is_empty() {
-                ops::mat_vec_mul_q4_0(&layer.ffn_down, &ffn_act, &mut mlp_raw, dim, ffn_dim);
+
+            #[cfg(feature = "cuda")]
+            let mlp_used_gpu = if let (Some(ref dev), Some(ref g_gate), Some(ref g_up), Some(ref g_down)) = (&self.cuda_dev, &layer.gpu_ffn_gate, &layer.gpu_ffn_up, &layer.gpu_ffn_down) {
+                if let (Ok(d_in), Ok(mut d_gate), Ok(mut d_up), Ok(mut d_act), Ok(mut d_raw)) = (
+                    crate::cuda::CudaBuffer::from_host_on(0, &ffn_in_shared),
+                    crate::cuda::CudaBuffer::alloc_on(0, ffn_dim),
+                    crate::cuda::CudaBuffer::alloc_on(0, ffn_dim),
+                    crate::cuda::CudaBuffer::alloc_on(0, ffn_dim),
+                    crate::cuda::CudaBuffer::alloc_on(0, dim),
+                ) {
+                    dev.gemv_q4_0(g_gate, &d_in, &mut d_gate, ffn_dim, dim);
+                    dev.gemv_q4_0(g_up, &d_in, &mut d_up, ffn_dim, dim);
+                    dev.geglu(&d_gate, &d_up, &mut d_act);
+                    dev.gemv_q4_0(g_down, &d_act, &mut d_raw, dim, ffn_dim);
+                    let _ = dev.sync();
+                    let _ = d_raw.copy_to_host(&mut mlp_raw);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            #[cfg(not(feature = "cuda"))]
+            let mlp_used_gpu = false;
+
+            if !mlp_used_gpu {
+                let mut gate = vec![0.0f32; ffn_dim];
+                let mut up = vec![0.0f32; ffn_dim];
+                if !layer.ffn_gate.is_empty() {
+                    ops::mat_vec_mul_q4_0(&layer.ffn_gate, &ffn_in_shared, &mut gate, ffn_dim, dim);
+                }
+                if !layer.ffn_up.is_empty() {
+                    ops::mat_vec_mul_q4_0(&layer.ffn_up, &ffn_in_shared, &mut up, ffn_dim, dim);
+                }
+                let mut ffn_act = vec![0.0f32; ffn_dim];
+                ops::geglu(&gate, &up, &mut ffn_act);
+                if !layer.ffn_down.is_empty() {
+                    ops::mat_vec_mul_q4_0(&layer.ffn_down, &ffn_act, &mut mlp_raw, dim, ffn_dim);
+                }
             }
 
             let mut mlp_out = vec![0.0f32; dim];
@@ -682,71 +818,81 @@ impl QTensorModel {
         let recent_tokens = state.history_tokens.iter().rev().take(32).copied().collect::<Vec<_>>();
         let generated_count = state.generated_count;
 
-        let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8).min(16);
-        let chunk_size = (self.config.vocab_size + n_threads - 1) / n_threads;
+        #[cfg(feature = "cuda")]
+        let gpu_scored: Option<Vec<(f32, i32)>> = None;
 
-        let mut all_scored: Vec<(f32, i32)> = std::thread::scope(|s| {
-            let mut handles = Vec::new();
-            for thread_idx in 0..n_threads {
-                let start_tid = thread_idx * chunk_size;
-                let end_tid = (start_tid + chunk_size).min(self.config.vocab_size);
-                if start_tid >= end_tid {
-                    continue;
-                }
+        #[cfg(not(feature = "cuda"))]
+        let gpu_scored: Option<Vec<(f32, i32)>> = None;
 
-                let hidden_ref = &state.hidden;
-                let recent_tokens_ref = &recent_tokens;
-                let table_ref = &self.token_embd_table;
-                let vocab_ref = &self.vocab;
+        let mut all_scored: Vec<(f32, i32)> = if let Some(scored) = gpu_scored {
+            scored
+        } else {
+            let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8).min(16);
+            let chunk_size = (self.config.vocab_size + n_threads - 1) / n_threads;
 
-                handles.push(s.spawn(move || {
-                    let mut scored = Vec::with_capacity(end_tid - start_tid);
-                    for tid in start_tid..end_tid {
-                        if tid < vocab_ref.len() {
-                            let piece = &vocab_ref[tid];
-                            if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
+            std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                for thread_idx in 0..n_threads {
+                    let start_tid = thread_idx * chunk_size;
+                    let end_tid = (start_tid + chunk_size).min(self.config.vocab_size);
+                    if start_tid >= end_tid {
+                        continue;
+                    }
+
+                    let hidden_ref = &state.hidden;
+                    let recent_tokens_ref = &recent_tokens;
+                    let table_ref = &self.token_embd_table;
+                    let vocab_ref = &self.vocab;
+
+                    handles.push(s.spawn(move || {
+                        let mut scored = Vec::with_capacity(end_tid - start_tid);
+                        for tid in start_tid..end_tid {
+                            if tid < vocab_ref.len() {
+                                let piece = &vocab_ref[tid];
+                                if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
+                                    continue;
+                                }
+                            }
+
+                            if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
                                 continue;
                             }
-                        }
 
-                        if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
-                            continue;
-                        }
-
-                        let row_off = tid * row_bytes;
-                        if row_off + row_bytes > table_ref.len() {
-                            continue;
-                        }
-
-                        let row_buf = &table_ref[row_off..row_off + row_bytes];
-
-                        let mut dot = 0.0f32;
-                        for b in 0..n_blocks {
-                            let w_off = b * 34;
-                            let w_d_raw = u16::from_le_bytes([row_buf[w_off], row_buf[w_off + 1]]);
-                            let w_d = crate::quant::f16_to_f32(w_d_raw);
-
-                            let mut block_sum = 0.0f32;
-                            for k in 0..32 {
-                                let qw = row_buf[w_off + 2 + k] as i8 as f32;
-                                block_sum += qw * hidden_ref[b * 32 + k];
+                            let row_off = tid * row_bytes;
+                            if row_off + row_bytes > table_ref.len() {
+                                continue;
                             }
-                            dot += block_sum * w_d;
+
+                            let row_buf = &table_ref[row_off..row_off + row_bytes];
+
+                            let mut dot = 0.0f32;
+                            for b in 0..n_blocks {
+                                let w_off = b * 34;
+                                let w_d_raw = u16::from_le_bytes([row_buf[w_off], row_buf[w_off + 1]]);
+                                let w_d = crate::quant::f16_to_f32(w_d_raw);
+
+                                let mut block_sum = 0.0f32;
+                                for k in 0..32 {
+                                    let qw = row_buf[w_off + 2 + k] as i8 as f32;
+                                    block_sum += qw * hidden_ref[b * 32 + k];
+                                }
+                                dot += block_sum * w_d;
+                            }
+
+                            let mut score = 30.0 * (dot / 30.0).tanh();
+
+                            if recent_tokens_ref.contains(&(tid as i32)) {
+                                score -= 3.5;
+                            }
+
+                            scored.push((score, tid as i32));
                         }
-
-                        let mut score = 30.0 * (dot / 30.0).tanh();
-
-                        if recent_tokens_ref.contains(&(tid as i32)) {
-                            score -= 3.5;
-                        }
-
-                        scored.push((score, tid as i32));
-                    }
-                    scored
-                }));
-            }
-            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-        });
+                        scored
+                    }));
+                }
+                handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+            })
+        };
 
         all_scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         all_scored.truncate(40); // Top-40
