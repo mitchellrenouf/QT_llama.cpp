@@ -133,17 +133,18 @@ __global__ void k_gemv_q4_0_f32(
     int n_rows,
     int n_cols
 ) {
-    int row = blockIdx.x;
+    int lane = threadIdx.x & 31;
+    int warp = threadIdx.x >> 5;
+    int row = blockIdx.x * (blockDim.x / WARP_SIZE) + warp;
     if (row >= n_rows) return;
 
-    int tid = threadIdx.x;
     int n_blocks = n_cols / 32;
     int row_bytes = n_blocks * 18;
     const uint8_t* row_w = w_q4 + row * row_bytes;
 
     float local_sum = 0.0f;
 
-    for (int b = tid; b < n_blocks; b += blockDim.x) {
+    for (int b = 0; b < n_blocks; ++b) {
         int w_off = b * 18;
         uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
         float d = __half2float(__ushort_as_half(d_raw));
@@ -151,22 +152,14 @@ __global__ void k_gemv_q4_0_f32(
         const uint8_t* qs = row_w + w_off + 2;
         int x_base = b * 32;
 
-        float block_sum = 0.0f;
-        #pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            uint8_t byte = qs[i];
-            int q0 = (byte & 0x0F) - 8;
-            int q1 = ((byte >> 4) & 0x0F) - 8;
-
-            block_sum += (float)q0 * x[x_base + i];
-            block_sum += (float)q1 * x[x_base + i + 16];
-        }
-
-        local_sum += block_sum * d;
+        int packed_lane = lane & 15;
+        uint8_t byte = qs[packed_lane];
+        int q = lane < 16 ? ((byte & 0x0F) - 8) : (((byte >> 4) & 0x0F) - 8);
+        local_sum += (float)q * x[x_base + lane] * d;
     }
 
-    float total_row_sum = block_reduce_sum(local_sum);
-    if (tid == 0) {
+    float total_row_sum = warp_reduce_sum(local_sum);
+    if (lane == 0) {
         y[row] = total_row_sum;
     }
 }
@@ -179,17 +172,18 @@ __global__ void k_gemv_q8_0_f32(
     int n_rows,
     int n_cols
 ) {
-    int row = blockIdx.x;
+    int lane = threadIdx.x & 31;
+    int warp = threadIdx.x >> 5;
+    int row = blockIdx.x * (blockDim.x / WARP_SIZE) + warp;
     if (row >= n_rows) return;
 
-    int tid = threadIdx.x;
     int n_blocks = n_cols / 32;
     int row_bytes = n_blocks * 34;
     const uint8_t* row_w = w_q8 + row * row_bytes;
 
     float local_sum = 0.0f;
 
-    for (int b = tid; b < n_blocks; b += blockDim.x) {
+    for (int b = 0; b < n_blocks; ++b) {
         int w_off = b * 34;
         uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
         float d = __half2float(__ushort_as_half(d_raw));
@@ -197,17 +191,11 @@ __global__ void k_gemv_q8_0_f32(
         const int8_t* qs = (const int8_t*)(row_w + w_off + 2);
         int x_base = b * 32;
 
-        float block_sum = 0.0f;
-        #pragma unroll
-        for (int i = 0; i < 32; ++i) {
-            block_sum += (float)qs[i] * x[x_base + i];
-        }
-
-        local_sum += block_sum * d;
+        local_sum += (float)qs[lane] * x[x_base + lane] * d;
     }
 
-    float total_row_sum = block_reduce_sum(local_sum);
-    if (tid == 0) {
+    float total_row_sum = warp_reduce_sum(local_sum);
+    if (lane == 0) {
         y[row] = 30.0f * tanhf(total_row_sum / 30.0f);
     }
 }
@@ -369,8 +357,10 @@ void cuda_op_gemv_q4_0(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = 128;
-    k_gemv_q4_0_f32<<<n_rows, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
+    int threads = 256;
+    int rows_per_block = threads / WARP_SIZE;
+    int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    k_gemv_q4_0_f32<<<blocks, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
 }
 
 void cuda_op_gemv_q8_0(
@@ -381,8 +371,10 @@ void cuda_op_gemv_q8_0(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = 128;
-    k_gemv_q8_0_f32<<<n_rows, threads, 0, stream>>>(d_w_q8, d_x, d_y, n_rows, n_cols);
+    int threads = 256;
+    int rows_per_block = threads / WARP_SIZE;
+    int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    k_gemv_q8_0_f32<<<blocks, threads, 0, stream>>>(d_w_q8, d_x, d_y, n_rows, n_cols);
 }
 
 void cuda_op_add(
@@ -440,7 +432,9 @@ __global__ void k_moe_gate_up_topk_q4_0_f32(
     int dim,
     int n_active
 ) {
-    int row = blockIdx.x;       // row in 0..exp_ffn_dim
+    int lane = threadIdx.x & 31;
+    int warp = threadIdx.x >> 5;
+    int row = blockIdx.x * (blockDim.x / WARP_SIZE) + warp;
     int slot = blockIdx.y;      // slot in 0..n_active
     if (row >= exp_ffn_dim || slot >= n_active) return;
 
@@ -453,11 +447,10 @@ __global__ void k_moe_gate_up_topk_q4_0_f32(
     const uint8_t* gate_row_w = exp_base + row * row_bytes;
     const uint8_t* up_row_w = exp_base + (exp_ffn_dim + row) * row_bytes;
 
-    int tid = threadIdx.x;
     float local_gate = 0.0f;
     float local_up = 0.0f;
 
-    for (int b = tid; b < n_blocks; b += blockDim.x) {
+    for (int b = 0; b < n_blocks; ++b) {
         int w_off = b * 18;
         int x_base = b * 32;
 
@@ -471,29 +464,20 @@ __global__ void k_moe_gate_up_topk_q4_0_f32(
         float d_u = __half2float(__ushort_as_half(d_raw_u));
         const uint8_t* qs_u = up_row_w + w_off + 2;
 
-        float block_gate = 0.0f;
-        float block_up = 0.0f;
-
-        #pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            uint8_t byte_g = qs_g[i];
-            int q0_g = (byte_g & 0x0F) - 8;
-            int q1_g = ((byte_g >> 4) & 0x0F) - 8;
-            block_gate += (float)q0_g * x_in[x_base + i] + (float)q1_g * x_in[x_base + i + 16];
-
-            uint8_t byte_u = qs_u[i];
-            int q0_u = (byte_u & 0x0F) - 8;
-            int q1_u = ((byte_u >> 4) & 0x0F) - 8;
-            block_up += (float)q0_u * x_in[x_base + i] + (float)q1_u * x_in[x_base + i + 16];
-        }
-        local_gate += d_g * block_gate;
-        local_up += d_u * block_up;
+        int packed_lane = lane & 15;
+        uint8_t byte_g = qs_g[packed_lane];
+        uint8_t byte_u = qs_u[packed_lane];
+        int q_g = lane < 16 ? ((byte_g & 0x0F) - 8) : (((byte_g >> 4) & 0x0F) - 8);
+        int q_u = lane < 16 ? ((byte_u & 0x0F) - 8) : (((byte_u >> 4) & 0x0F) - 8);
+        float xv = x_in[x_base + lane];
+        local_gate += d_g * (float)q_g * xv;
+        local_up += d_u * (float)q_u * xv;
     }
 
-    float total_gate = block_reduce_sum(local_gate);
-    float total_up = block_reduce_sum(local_up);
+    float total_gate = warp_reduce_sum(local_gate);
+    float total_up = warp_reduce_sum(local_up);
 
-    if (tid == 0) {
+    if (lane == 0) {
         // Fused approximate GeGLU: GELU(gate) * up
         float x = total_gate;
         float gelu_x = 0.5f * x * (1.0f + tanhf(0.7978845608f * x * (1.0f + 0.044715f * x * x)));
@@ -514,7 +498,9 @@ __global__ void k_moe_down_topk_q4_0_f32(
     int exp_ffn_dim,
     int n_active
 ) {
-    int row = blockIdx.x;       // row in 0..dim
+    int lane = threadIdx.x & 31;
+    int warp = threadIdx.x >> 5;
+    int row = blockIdx.x * (blockDim.x / WARP_SIZE) + warp;
     int slot = blockIdx.y;      // slot in 0..n_active
     if (row >= dim || slot >= n_active) return;
 
@@ -531,10 +517,9 @@ __global__ void k_moe_down_topk_q4_0_f32(
     const uint8_t* row_w = exp_base + row * row_bytes;
     const float* act_slot = act_in + slot * exp_ffn_dim;
 
-    int tid = threadIdx.x;
     float local_sum = 0.0f;
 
-    for (int b = tid; b < n_blocks; b += blockDim.x) {
+    for (int b = 0; b < n_blocks; ++b) {
         int w_off = b * 18;
         uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
         float d = __half2float(__ushort_as_half(d_raw));
@@ -542,20 +527,15 @@ __global__ void k_moe_down_topk_q4_0_f32(
         const uint8_t* qs = row_w + w_off + 2;
         int x_base = b * 32;
 
-        float block_sum = 0.0f;
-        #pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            uint8_t byte = qs[i];
-            int q0 = (byte & 0x0F) - 8;
-            int q1 = ((byte >> 4) & 0x0F) - 8;
-            block_sum += (float)q0 * act_slot[x_base + i] + (float)q1 * act_slot[x_base + i + 16];
-        }
-        local_sum += d * block_sum;
+        int packed_lane = lane & 15;
+        uint8_t byte = qs[packed_lane];
+        int q = lane < 16 ? ((byte & 0x0F) - 8) : (((byte >> 4) & 0x0F) - 8);
+        local_sum += d * (float)q * act_slot[x_base + lane];
     }
 
-    float total_down = block_reduce_sum(local_sum);
+    float total_down = warp_reduce_sum(local_sum);
 
-    if (tid == 0) {
+    if (lane == 0) {
         atomicAdd(&out_moe[row], total_down * alpha);
     }
 }
@@ -576,13 +556,15 @@ void cuda_op_moe_topk_q4_0(
 ) {
     cudaMemsetAsync(d_out_moe, 0, dim * sizeof(float), stream);
 
-    dim3 grid_gu(exp_ffn_dim, n_active);
-    k_moe_gate_up_topk_q4_0_f32<<<grid_gu, 128, 0, stream>>>(
+    const int threads = 256;
+    const int rows_per_block = threads / WARP_SIZE;
+    dim3 grid_gu((exp_ffn_dim + rows_per_block - 1) / rows_per_block, n_active);
+    k_moe_gate_up_topk_q4_0_f32<<<grid_gu, threads, 0, stream>>>(
         d_gate_up_exps, d_active_exp_ids, d_x_in, d_act_scratch, exp_ffn_dim, dim, n_active
     );
 
-    dim3 grid_down(dim, n_active);
-    k_moe_down_topk_q4_0_f32<<<grid_down, 128, 0, stream>>>(
+    dim3 grid_down((dim + rows_per_block - 1) / rows_per_block, n_active);
+    k_moe_down_topk_q4_0_f32<<<grid_down, threads, 0, stream>>>(
         d_down_exps, d_active_exp_ids, d_active_exp_weights, d_down_exps_scale,
         d_act_scratch, d_out_moe, dim, exp_ffn_dim, n_active
     );

@@ -32,23 +32,9 @@ impl LayerKvCache {
         let sw_size = sliding_window.unwrap_or(max_context);
         let cap = if is_swa { sw_size.min(max_context) } else { max_context };
 
-        let total_elements = cap * n_kv_heads * head_dim;
-
-        #[cfg(feature = "cuda")]
-        if on_device {
-            let d_k = CudaBuffer::alloc_on(device_id, total_elements)?;
-            let d_v = CudaBuffer::alloc_on(device_id, total_elements)?;
-            return Ok(Self {
-                is_sliding_window: is_swa,
-                sliding_window: sw_size,
-                max_capacity: cap,
-                cur_seq_len: 0,
-                d_k: Some(d_k),
-                d_v: Some(d_v),
-                host_k: Vec::new(),
-                host_v: Vec::new(),
-            });
-        }
+        // GenerationState owns the active cache. Keep this manager metadata-only
+        // until its storage is wired into the forward pass.
+        let _ = (n_kv_heads, head_dim, on_device, device_id);
 
         Ok(Self {
             is_sliding_window: is_swa,
@@ -59,8 +45,8 @@ impl LayerKvCache {
             d_k: None,
             #[cfg(feature = "cuda")]
             d_v: None,
-            host_k: vec![0.0f32; total_elements],
-            host_v: vec![0.0f32; total_elements],
+            host_k: Vec::new(),
+            host_v: Vec::new(),
         })
     }
 

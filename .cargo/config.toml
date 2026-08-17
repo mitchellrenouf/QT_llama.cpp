@@ -1,9 +1,3 @@
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-
 # Qt's headers require C++17 with MSVC.  `cc` (used by qtrs' generated Qt
 # bridge) reads this target-specific variable, so Windows users do not need to
 # set CXXFLAGS manually.

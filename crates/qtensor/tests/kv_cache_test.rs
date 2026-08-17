@@ -31,6 +31,7 @@ fn test_256k_kv_cache_initialization() {
     // Global attention layer has full 256k capacity
     assert_eq!(cache_mgr.layers[1].is_sliding_window, false);
     assert_eq!(cache_mgr.layers[1].max_capacity, max_context);
+    assert!(cache_mgr.layers.iter().all(|layer| layer.host_k.is_empty() && layer.host_v.is_empty()));
 
     // Step increment
     cache_mgr.layers[0].step_increment();

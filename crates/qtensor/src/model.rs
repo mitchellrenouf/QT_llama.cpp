@@ -4,6 +4,7 @@ use crate::kv_cache::KvCacheManager;
 use crate::ops;
 use crate::quant::dequantize_q8_0;
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -540,6 +541,11 @@ impl QTensorModel {
         v_cache: &mut [Vec<Vec<f32>>],
     ) -> Vec<f32> {
         let dim = self.config.dim;
+        let profile = std::env::var_os("QTENSOR_PROFILE").is_some();
+        let mut profile_qkv = std::time::Duration::ZERO;
+        let mut profile_attention = std::time::Duration::ZERO;
+        let mut profile_output = std::time::Duration::ZERO;
+        let mut profile_ffn = std::time::Duration::ZERO;
 
         let mut hidden = vec![0.0f32; dim];
         let _ = self.read_token_embedding(token_id, &mut hidden);
@@ -558,6 +564,7 @@ impl QTensorModel {
             let mut q = vec![0.0f32; layer.q_dim];
             let mut k = vec![0.0f32; layer.kv_dim];
             let mut v = vec![0.0f32; layer.kv_dim];
+            let profile_start = std::time::Instant::now();
 
             #[cfg(feature = "cuda")]
             let used_gpu = if let (Some(ref dev), Some(ref g_q), Some(ref g_k), Some(ref g_v)) = (&self.cuda_dev, &layer.gpu_attn_q, &layer.gpu_attn_k, &layer.gpu_attn_v) {
@@ -589,14 +596,16 @@ impl QTensorModel {
             let used_gpu = false;
 
             if !used_gpu {
+                let mut cur_q8 = vec![0u8; ops::q8_0_size(dim)];
+                crate::quant::quantize_f32_to_q8_0(&cur, &mut cur_q8);
                 if !layer.attn_q.is_empty() {
-                    ops::mat_vec_mul_q4_0(&layer.attn_q, &cur, &mut q, layer.q_dim, dim);
+                    ops::mat_vec_mul_q4_0_q8_0(&layer.attn_q, &cur_q8, &mut q, layer.q_dim, dim);
                 }
                 if !layer.attn_k.is_empty() {
-                    ops::mat_vec_mul_q4_0(&layer.attn_k, &cur, &mut k, layer.kv_dim, dim);
+                    ops::mat_vec_mul_q4_0_q8_0(&layer.attn_k, &cur_q8, &mut k, layer.kv_dim, dim);
                 }
                 if !layer.attn_v.is_empty() {
-                    ops::mat_vec_mul_q4_0(&layer.attn_v, &cur, &mut v, layer.kv_dim, dim);
+                    ops::mat_vec_mul_q4_0_q8_0(&layer.attn_v, &cur_q8, &mut v, layer.kv_dim, dim);
                 } else {
                     v.copy_from_slice(&k);
                 }
@@ -608,8 +617,9 @@ impl QTensorModel {
                 if !layer.attn_q_norm.is_empty() {
                     ops::rms_norm_inplace(q_head, Some(&layer.attn_q_norm), 1e-6);
                 }
-                ops::rope_1d(q_head, pos, layer.head_dim, layer.rope_freq_base, 1.0);
             }
+            profile_qkv += profile_start.elapsed();
+            ops::rope_1d_batched(&mut q, pos, layer.n_heads, layer.head_dim, layer.rope_freq_base, 1.0);
 
             // Head RMSNorm & RoPE for K, and RMSNorm for V
             for h in 0..layer.n_kv_heads {
@@ -617,17 +627,18 @@ impl QTensorModel {
                 if !layer.attn_k_norm.is_empty() {
                     ops::rms_norm_inplace(k_head, Some(&layer.attn_k_norm), 1e-6);
                 }
-                ops::rope_1d(k_head, pos, layer.head_dim, layer.rope_freq_base, 1.0);
 
                 let v_head = &mut v[h * layer.head_dim..(h + 1) * layer.head_dim];
                 ops::rms_norm_inplace(v_head, None, 1e-6);
             }
+            ops::rope_1d_batched(&mut k, pos, layer.n_kv_heads, layer.head_dim, layer.rope_freq_base, 1.0);
 
             // Store into KV cache
             k_cache[l].push(k.clone());
             v_cache[l].push(v.clone());
 
             // Multi-head Attention
+            let profile_start = std::time::Instant::now();
             let seq_len = k_cache[l].len();
             let mut attn_out = vec![0.0f32; layer.q_dim];
             let start_t = if layer.is_swa && layer.sliding_window > 0 {
@@ -662,8 +673,10 @@ impl QTensorModel {
                     }
                 }
             }
+            profile_attention += profile_start.elapsed();
 
             // Attention Output Projection
+            let profile_start = std::time::Instant::now();
             let mut attn_proj = vec![0.0f32; dim];
             #[cfg(feature = "cuda")]
             let out_used_gpu = if let (Some(ref dev), Some(ref g_out)) = (&self.cuda_dev, &layer.gpu_attn_output) {
@@ -700,8 +713,10 @@ impl QTensorModel {
             for i in 0..dim {
                 attn_res[i] = hidden[i] + normed_attn[i];
             }
+            profile_output += profile_start.elapsed();
 
             // 1. Prepare Shared Dense MLP & MoE inputs
+            let profile_start = std::time::Instant::now();
             let ffn_dim = 2112;
             let mut ffn_in_shared = vec![0.0f32; dim];
             ops::rms_norm(&attn_res, Some(&layer.ffn_norm), 1e-6, &mut ffn_in_shared);
@@ -836,11 +851,13 @@ impl QTensorModel {
             if !mlp_queued {
                 let mut gate = vec![0.0f32; ffn_dim];
                 let mut up = vec![0.0f32; ffn_dim];
+                let mut ffn_q8 = vec![0u8; ops::q8_0_size(dim)];
+                crate::quant::quantize_f32_to_q8_0(&ffn_in_shared, &mut ffn_q8);
                 if !layer.ffn_gate.is_empty() {
-                    ops::mat_vec_mul_q4_0(&layer.ffn_gate, &ffn_in_shared, &mut gate, ffn_dim, dim);
+                    ops::mat_vec_mul_q4_0_q8_0(&layer.ffn_gate, &ffn_q8, &mut gate, ffn_dim, dim);
                 }
                 if !layer.ffn_up.is_empty() {
-                    ops::mat_vec_mul_q4_0(&layer.ffn_up, &ffn_in_shared, &mut up, ffn_dim, dim);
+                    ops::mat_vec_mul_q4_0_q8_0(&layer.ffn_up, &ffn_q8, &mut up, ffn_dim, dim);
                 }
                 let mut ffn_act = vec![0.0f32; ffn_dim];
                 ops::geglu(&gate, &up, &mut ffn_act);
@@ -852,6 +869,8 @@ impl QTensorModel {
             if !moe_queued && layer.is_moe && !top8_experts.is_empty() {
                 let gate_up_bytes_per_exp = 1408 * (dim / 32) * 18;
                 let down_bytes_per_exp = 2816 * (704 / 32) * 18;
+                let mut moe_q8 = vec![0u8; ops::q8_0_size(dim)];
+                crate::quant::quantize_f32_to_q8_0(&ffn_in_moe, &mut moe_q8);
 
                 for (k, &exp_idx) in top8_experts.iter().enumerate() {
                     let alpha = ex_probs[k];
@@ -870,8 +889,8 @@ impl QTensorModel {
                             let mut exp_gate = vec![0.0f32; 704];
                             let mut exp_up = vec![0.0f32; 704];
 
-                            ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, 704, dim);
-                            ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, 704, dim);
+                            ops::mat_vec_mul_q4_0_q8_0(gate_slice, &moe_q8, &mut exp_gate, 704, dim);
+                            ops::mat_vec_mul_q4_0_q8_0(up_slice, &moe_q8, &mut exp_up, 704, dim);
 
                             let mut exp_act = vec![0.0f32; 704];
                             ops::geglu(&exp_gate, &exp_up, &mut exp_act);
@@ -912,11 +931,22 @@ impl QTensorModel {
             for i in 0..dim {
                 hidden[i] = (attn_res[i] + normed_ffn[i]) * layer.layer_output_scale;
             }
+            profile_ffn += profile_start.elapsed();
         }
 
         // Final output RMSNorm
         let mut final_hidden = vec![0.0f32; dim];
         ops::rms_norm(&hidden, Some(&self.output_norm_weights), 1e-6, &mut final_hidden);
+
+        if profile {
+            eprintln!(
+                "[profile pos={pos}] qkv={:.2}ms attention={:.2}ms output={:.2}ms ffn={:.2}ms",
+                profile_qkv.as_secs_f64() * 1000.0,
+                profile_attention.as_secs_f64() * 1000.0,
+                profile_output.as_secs_f64() * 1000.0,
+                profile_ffn.as_secs_f64() * 1000.0,
+            );
+        }
 
         final_hidden
     }
@@ -1033,7 +1063,6 @@ impl QTensorModel {
     pub fn step_generation(&self, state: &mut GenerationState, temperature: f32) -> i32 {
         let dim = self.config.dim;
         let row_bytes = (dim / 32) * 34;
-        let n_blocks = dim / 32;
 
         let recent_tokens = state.history_tokens.iter().rev().take(32).copied().collect::<Vec<_>>();
         let generated_count = state.generated_count;
@@ -1089,75 +1118,44 @@ impl QTensorModel {
         let mut all_scored: Vec<(f32, i32)> = if let Some(scored) = gpu_scored {
             scored
         } else {
-            let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8).min(16);
-            let chunk_size = (self.config.vocab_size + n_threads - 1) / n_threads;
+            let mut hidden_q8 = vec![0u8; row_bytes];
+            crate::quant::quantize_f32_to_q8_0(&state.hidden, &mut hidden_q8);
 
-            std::thread::scope(|s| {
-                let mut handles = Vec::new();
-                for thread_idx in 0..n_threads {
-                    let start_tid = thread_idx * chunk_size;
-                    let end_tid = (start_tid + chunk_size).min(self.config.vocab_size);
-                    if start_tid >= end_tid {
-                        continue;
+            self.token_embd_table
+                .par_chunks_exact(row_bytes)
+                .enumerate()
+                .take(self.config.vocab_size)
+                .filter_map(|(tid, row)| {
+                    if tid < self.vocab.len() {
+                        let piece = &self.vocab[tid];
+                        if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
+                            return None;
+                        }
+                    }
+                    if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
+                        return None;
                     }
 
-                    let hidden_ref = &state.hidden;
-                    let recent_tokens_ref = &recent_tokens;
-                    let table_ref = &self.token_embd_table;
-                    let vocab_ref = &self.vocab;
-
-                    handles.push(s.spawn(move || {
-                        let mut scored = Vec::with_capacity(end_tid - start_tid);
-                        for tid in start_tid..end_tid {
-                            if tid < vocab_ref.len() {
-                                let piece = &vocab_ref[tid];
-                                if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
-                                    continue;
-                                }
-                            }
-
-                            if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
-                                continue;
-                            }
-
-                            let row_off = tid * row_bytes;
-                            if row_off + row_bytes > table_ref.len() {
-                                continue;
-                            }
-
-                            let row_buf = &table_ref[row_off..row_off + row_bytes];
-
-                            let mut dot = 0.0f32;
-                            for b in 0..n_blocks {
-                                let w_off = b * 34;
-                                let w_d_raw = u16::from_le_bytes([row_buf[w_off], row_buf[w_off + 1]]);
-                                let w_d = crate::quant::f16_to_f32(w_d_raw);
-
-                                let mut block_sum = 0.0f32;
-                                for k in 0..32 {
-                                    let qw = row_buf[w_off + 2 + k] as i8 as f32;
-                                    block_sum += qw * hidden_ref[b * 32 + k];
-                                }
-                                dot += block_sum * w_d;
-                            }
-
-                            let mut score = 30.0 * (dot / 30.0).tanh();
-
-                            if recent_tokens_ref.contains(&(tid as i32)) {
-                                score -= 3.5;
-                            }
-
-                            scored.push((score, tid as i32));
-                        }
-                        scored
-                    }));
-                }
-                handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-            })
+                    let dot = crate::quant::vec_dot_q8_0_q8_0(row, &hidden_q8, dim);
+                    let mut score = 30.0 * (dot / 30.0).tanh();
+                    if recent_tokens.contains(&(tid as i32)) {
+                        score -= 3.5;
+                    }
+                    Some((score, tid as i32))
+                })
+                .collect()
         };
 
-        all_scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        all_scored.truncate(40); // Top-40
+        // Partition in linear time before sorting the small candidate set. A
+        // full sort of a 256k-token vocabulary was needlessly O(vocab log vocab).
+        let score_order = |a: &(f32, i32), b: &(f32, i32)| {
+            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+        };
+        if all_scored.len() > 40 {
+            all_scored.select_nth_unstable_by(40, score_order);
+            all_scored.truncate(40);
+        }
+        all_scored.sort_unstable_by(score_order);
 
         // Softmax sampling over top-40 candidates
         let max_logit = all_scored.first().map(|x| x.0).unwrap_or(0.0);

@@ -88,7 +88,7 @@ pub fn normalize_relaxed_json(raw: &str) -> String {
     }
 
     // Quote unquoted string values: {"text": Hello world} -> {"text": "Hello world"}
-    let re_vals = regex::Regex::new(r#":\s*([a-zA-Z][^"{}[\]:,]+?)(\s*[},])"#).unwrap();
+    let re_vals = regex::Regex::new(r#":\s*([a-zA-Z][^"{}\[\]:,]+?)(\s*[},])"#).unwrap();
     let s2 = re_vals
         .replace_all(&s, |caps: &regex::Captures| {
             let val = caps.get(1).unwrap().as_str().trim();
@@ -278,7 +278,7 @@ impl LlamaClient {
 
     pub async fn health_check(&self) -> Result<String> {
         if self.engine.is_some() {
-            Ok("In-Process llama.cpp Engine Active".to_string())
+            Ok("Local llama.cpp Engine Active".to_string())
         } else {
             Err(anyhow!("No active in-process llama.cpp engine loaded. (Place a .gguf model in .cache/gemma or pass --model <path>)"))
         }
@@ -853,5 +853,14 @@ mod tests {
         let tc = parse_gemma_tool_call(raw).expect("should parse tool call");
         assert_eq!(tc.function.name, "bash_execute");
         assert!(tc.function.arguments.contains("ls -la"));
+    }
+
+    #[test]
+    fn test_parse_gemma_tool_call_with_unquoted_command() {
+        let raw = r#"<|tool_call>call:run_command{command_line: Get-Date}<tool_call|>"#;
+        let tc = parse_gemma_tool_call(raw).expect("should parse relaxed tool call");
+        assert_eq!(tc.function.name, "run_command");
+        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments).unwrap();
+        assert_eq!(args["command_line"], "Get-Date");
     }
 }

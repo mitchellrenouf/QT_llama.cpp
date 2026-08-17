@@ -160,11 +160,66 @@ pub fn mat_vec_mul_q4_0(
     assert_eq!(x_f32.len(), n_cols);
     assert_eq!(y_out.len(), n_rows);
 
-    let n_cols_aligned = ((n_cols + 31) / 32) * 32;
-    let mut x_q8 = vec![0u8; (n_cols_aligned / 32) * 34];
+    let mut x_q8 = vec![0u8; q8_0_size(n_cols)];
     quantize_f32_to_q8_0(x_f32, &mut x_q8);
 
-    let row_bytes = (n_cols_aligned / 32) * 18;
+    mat_vec_mul_q4_0_q8_0(w_q4_bytes, &x_q8, y_out, n_rows, n_cols);
+}
+
+/// Apply identical RoPE frequencies to a contiguous set of attention heads.
+/// Trigonometric values depend on position and dimension, not on the head, so
+/// compute them once instead of once per head.
+pub fn rope_1d_batched(
+    vec: &mut [f32],
+    pos: usize,
+    n_heads: usize,
+    head_dim: usize,
+    freq_base: f32,
+    freq_scale: f32,
+) {
+    assert_eq!(vec.len(), n_heads * head_dim);
+    let half_dim = head_dim / 2;
+
+    for i in 0..half_dim {
+        let theta = (pos as f32) * freq_scale
+            / freq_base.powf((2 * i) as f32 / head_dim as f32);
+        let cos_th = theta.cos();
+        let sin_th = theta.sin();
+
+        for head in vec.chunks_exact_mut(head_dim) {
+            let v0 = head[i];
+            let v1 = head[i + half_dim];
+            head[i] = v0 * cos_th - v1 * sin_th;
+            head[i + half_dim] = v0 * sin_th + v1 * cos_th;
+        }
+    }
+}
+
+/// Number of bytes required to hold `n_cols` Q8_0 activations.
+#[inline]
+pub fn q8_0_size(n_cols: usize) -> usize {
+    n_cols.div_ceil(32) * 34
+}
+
+/// Matrix-vector multiplication using an already quantized activation vector.
+///
+/// Transformer projections commonly reuse the same input (Q/K/V and gate/up).
+/// Keeping quantization outside this function avoids doing identical work and
+/// allocating an identical temporary for every projection.
+pub fn mat_vec_mul_q4_0_q8_0(
+    w_q4_bytes: &[u8],
+    x_q8: &[u8],
+    y_out: &mut [f32],
+    n_rows: usize,
+    n_cols: usize,
+) {
+    if w_q4_bytes.is_empty() {
+        return;
+    }
+    assert_eq!(y_out.len(), n_rows);
+    assert!(x_q8.len() >= q8_0_size(n_cols));
+
+    let row_bytes = n_cols.div_ceil(32) * 18;
 
     if n_rows <= 64 {
         for (r, y) in y_out.iter_mut().enumerate() {

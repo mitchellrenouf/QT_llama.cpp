@@ -338,6 +338,13 @@ impl Tool for RunCommandTool {
         let cwd_str = args["cwd"].as_str().unwrap_or(".");
         let exec_dir = workspace_root.join(cwd_str);
 
+        #[cfg(windows)]
+        let output = Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", cmd_str])
+            .current_dir(&exec_dir)
+            .output()?;
+
+        #[cfg(not(windows))]
         let output = Command::new("sh")
             .args(["-c", cmd_str])
             .current_dir(&exec_dir)

@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     println!("{}", "   🚀 QT_llama.cpp GENERAL-PURPOSE & VIBE-CODING CLI   ".bright_cyan().bold());
     println!("{}", "==================================================".magenta());
     println!(" Mode        : {}", config.mode.to_string().bright_yellow().bold());
-    println!(" Inference   : {}", "In-Process llama.cpp GGUF Engine".bright_green().bold());
+    println!(" Inference   : {}", "Local llama.cpp GGUF Engine".bright_green().bold());
     if let Some(hf_spec) = &config.hf {
         println!(" HuggingFace : {}", hf_spec.bright_cyan().bold());
     }

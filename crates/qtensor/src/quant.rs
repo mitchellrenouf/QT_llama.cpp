@@ -282,6 +282,70 @@ fn vec_dot_q4_0_q8_0_scalar(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 
     sum
 }
 
+/// Dot product between two Q8_0 vectors. This is used by the tied Q8_0 token
+/// embedding/output matrix and mirrors llama.cpp's Q8_0 x Q8_0 decode path.
+#[inline]
+pub fn vec_dot_q8_0_q8_0(x: &[u8], y: &[u8], n_elements: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        return unsafe { vec_dot_q8_0_q8_0_avx2(x, y, n_elements) };
+    }
+
+    vec_dot_q8_0_q8_0_scalar(x, y, n_elements)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn vec_dot_q8_0_q8_0_avx2(x: &[u8], y: &[u8], n_elements: usize) -> f32 {
+    let mut accum = _mm256_setzero_ps();
+    for block in 0..n_elements / 32 {
+        let off = block * 34;
+        let dx = f16_to_f32(u16::from_le_bytes([
+            *x.get_unchecked(off),
+            *x.get_unchecked(off + 1),
+        ]));
+        let dy = f16_to_f32(u16::from_le_bytes([
+            *y.get_unchecked(off),
+            *y.get_unchecked(off + 1),
+        ]));
+        let xv = _mm256_loadu_si256(x.as_ptr().add(off + 2) as *const __m256i);
+        let yv = _mm256_loadu_si256(y.as_ptr().add(off + 2) as *const __m256i);
+
+        let x_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(xv));
+        let x_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(xv, 1));
+        let y_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(yv));
+        let y_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(yv, 1));
+        let products = _mm256_add_epi32(
+            _mm256_madd_epi16(x_lo, y_lo),
+            _mm256_madd_epi16(x_hi, y_hi),
+        );
+        let scaled = _mm256_mul_ps(
+            _mm256_cvtepi32_ps(products),
+            _mm256_set1_ps(dx * dy),
+        );
+        accum = _mm256_add_ps(accum, scaled);
+    }
+    let mut lanes = [0.0f32; 8];
+    _mm256_storeu_ps(lanes.as_mut_ptr(), accum);
+    lanes.iter().sum()
+}
+
+#[inline]
+fn vec_dot_q8_0_q8_0_scalar(x: &[u8], y: &[u8], n_elements: usize) -> f32 {
+    let mut sum = 0.0f32;
+    for block in 0..n_elements / 32 {
+        let off = block * 34;
+        let dx = f16_to_f32(u16::from_le_bytes([x[off], x[off + 1]]));
+        let dy = f16_to_f32(u16::from_le_bytes([y[off], y[off + 1]]));
+        let mut block_sum = 0i32;
+        for i in 0..32 {
+            block_sum += (x[off + 2 + i] as i8 as i32) * (y[off + 2 + i] as i8 as i32);
+        }
+        sum += block_sum as f32 * (dx * dy);
+    }
+    sum
+}
+
 /// Dequantize F16 buffer to F32
 pub fn dequantize_f16_to_f32(src: &[u8], dst: &mut [f32]) {
     assert!(src.len() >= dst.len() * 2);

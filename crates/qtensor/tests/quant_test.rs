@@ -49,3 +49,22 @@ fn test_vec_dot_q4_q8() {
     let dot = vec_dot_q4_0_q8_0(&q4_block, &q8_block, 32);
     assert!((dot - 32.0).abs() < 0.5, "Expected ~32.0, got {}", dot);
 }
+
+#[test]
+fn test_vec_dot_q8_q8_matches_dequantized_reference() {
+    let x: Vec<f32> = (0..96).map(|i| (i as f32 * 0.13).sin() * 3.0).collect();
+    let y: Vec<f32> = (0..96).map(|i| (i as f32 * 0.07).cos() * 2.0).collect();
+    let mut qx = vec![0u8; 3 * 34];
+    let mut qy = vec![0u8; 3 * 34];
+    quantize_f32_to_q8_0(&x, &mut qx);
+    quantize_f32_to_q8_0(&y, &mut qy);
+
+    let mut dx = vec![0.0; 96];
+    let mut dy = vec![0.0; 96];
+    dequantize_q8_0(&qx, &mut dx);
+    dequantize_q8_0(&qy, &mut dy);
+    let expected: f32 = dx.iter().zip(&dy).map(|(a, b)| a * b).sum();
+    let actual = vec_dot_q8_0_q8_0(&qx, &qy, 96);
+
+    assert!((actual - expected).abs() < 1e-3, "{actual} != {expected}");
+}
