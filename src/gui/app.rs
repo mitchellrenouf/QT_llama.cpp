@@ -92,6 +92,40 @@ pub fn run(port: u16) -> anyhow::Result<()> {
         });
     }
     sidebar_layout.add(backend);
+    sidebar_layout.add(Label::new("GENERATION").parent(&sidebar).build());
+    let mut temperature = DoubleSpinBox::new()
+        .range(0.0, 2.0)
+        .value(0.7)
+        .decimals(2)
+        .suffix("  temperature")
+        .parent(&sidebar)
+        .build();
+    {
+        let tx = tx.clone();
+        temperature.connect_value_changed(move |value| {
+            if let Ok(temperature) = value.trim().parse::<f64>() {
+                let _ = tx.send(json!({
+                    "type":"update_generation_settings",
+                    "temperature":temperature,
+                }));
+            }
+        });
+    }
+    sidebar_layout.add(temperature);
+    let max_tokens_tx = tx.clone();
+    let max_tokens = SpinBox::new()
+        .range(64, 32_768)
+        .value(8192)
+        .suffix("  max tokens")
+        .on_value_changed(move |value| {
+            let _ = max_tokens_tx.send(json!({
+                "type":"update_generation_settings",
+                "max_tokens":value,
+            }));
+        })
+        .parent(&sidebar)
+        .build();
+    sidebar_layout.add(max_tokens);
     let mut speech = CheckBox::new("Read replies aloud").parent(&sidebar).build();
     {
         let tx = tx.clone();

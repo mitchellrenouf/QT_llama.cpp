@@ -9,16 +9,26 @@ use tokio::sync::{mpsc, Mutex};
 pub enum AgentEvent {
     StreamToken(String),
     ThinkingToken(String),
-    ToolStarted { name: String, args: String },
-    ToolFinished { name: String, result: String },
-    TurnDone { total_tokens: usize },
+    ToolStarted {
+        name: String,
+        args: String,
+    },
+    ToolFinished {
+        name: String,
+        result: String,
+    },
+    TurnDone {
+        total_tokens: usize,
+    },
     DownloadProgress {
         message: String,
         progress: f32,
         file_idx: usize,
         total_files: usize,
     },
-    ModelLoaded { model_name: String },
+    ModelLoaded {
+        model_name: String,
+    },
     Error(String),
 }
 
@@ -71,7 +81,9 @@ impl AgentBridge {
                     match agent_lock.process_user_request(&user_text).await {
                         Ok(_) => {
                             let total = agent_lock.estimate_tokens();
-                            let _ = tx.send(AgentEvent::TurnDone { total_tokens: total });
+                            let _ = tx.send(AgentEvent::TurnDone {
+                                total_tokens: total,
+                            });
                         }
                         Err(e) => {
                             let _ = tx.send(AgentEvent::Error(e.to_string()));
@@ -97,20 +109,29 @@ impl AgentBridge {
                         match crate::hf::HfModelSpec::parse(&repo_spec) {
                             Ok(spec) => {
                                 let tx_progress = tx.clone();
-                                let res = crate::hf::resolve_or_fetch_hf_model(&spec, move |msg, p, file_idx, total_files| {
-                                    let _ = tx_progress.send(AgentEvent::DownloadProgress {
-                                        message: msg.to_string(),
-                                        progress: p,
-                                        file_idx,
-                                        total_files,
-                                    });
-                                }).await;
+                                let res = crate::hf::resolve_or_fetch_hf_model(
+                                    &spec,
+                                    move |msg, p, file_idx, total_files| {
+                                        let _ = tx_progress.send(AgentEvent::DownloadProgress {
+                                            message: msg.to_string(),
+                                            progress: p,
+                                            file_idx,
+                                            total_files,
+                                        });
+                                    },
+                                )
+                                .await;
 
                                 match res {
                                     Ok(model_files) => {
                                         let mut agent_lock = agent_clone.lock().await;
-                                        if let Err(e) = agent_lock.reload_model(&model_files.primary_entry_file) {
-                                            let _ = tx.send(AgentEvent::Error(format!("Failed to load GGUF model: {}", e)));
+                                        if let Err(e) =
+                                            agent_lock.reload_model(&model_files.primary_entry_file)
+                                        {
+                                            let _ = tx.send(AgentEvent::Error(format!(
+                                                "Failed to load GGUF model: {}",
+                                                e
+                                            )));
                                         } else {
                                             let _ = tx.send(AgentEvent::ModelLoaded {
                                                 model_name: spec.repo_id.clone(),
@@ -118,12 +139,18 @@ impl AgentBridge {
                                         }
                                     }
                                     Err(e) => {
-                                        let _ = tx.send(AgentEvent::Error(format!("Hugging Face model resolution error: {}", e)));
+                                        let _ = tx.send(AgentEvent::Error(format!(
+                                            "Hugging Face model resolution error: {}",
+                                            e
+                                        )));
                                     }
                                 }
                             }
                             Err(e) => {
-                                let _ = tx.send(AgentEvent::Error(format!("Invalid Hugging Face spec: {}", e)));
+                                let _ = tx.send(AgentEvent::Error(format!(
+                                    "Invalid Hugging Face spec: {}",
+                                    e
+                                )));
                             }
                         }
                     });

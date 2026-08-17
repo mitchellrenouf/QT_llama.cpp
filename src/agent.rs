@@ -73,9 +73,10 @@ impl GemmaAgent {
     }
 
     pub fn reset_context(&mut self) {
-        let system_prompt = self
-            .config
-            .get_system_prompt(self.config.mode, &self.workspace_rules.combined_instructions);
+        let system_prompt = self.config.get_system_prompt(
+            self.config.mode,
+            &self.workspace_rules.combined_instructions,
+        );
         self.history = vec![ChatMessage::system(system_prompt)];
         println!("{}", "Context cleared.".green());
     }
@@ -108,9 +109,16 @@ impl GemmaAgent {
             match crate::tools::mcp::McpClient::spawn(program, args).await {
                 Ok(client) => match client.list_tools().await {
                     Ok(tools) => {
-                        println!("   Loaded {} MCP tool(s):", tools.len().to_string().bright_green().bold());
+                        println!(
+                            "   Loaded {} MCP tool(s):",
+                            tools.len().to_string().bright_green().bold()
+                        );
                         for t in tools {
-                            println!("     - {} ({})", t.name().bright_cyan(), t.description().dimmed());
+                            println!(
+                                "     - {} ({})",
+                                t.name().bright_cyan(),
+                                t.description().dimmed()
+                            );
                             self.registry.register(t);
                         }
                     }
@@ -139,7 +147,10 @@ impl GemmaAgent {
             self.config.ctx_size,
             Some(&backend_str),
         )?;
-        self.client = crate::client::LlamaClient::with_engine(std::sync::Arc::new(engine), self.config.system_prompt.clone());
+        self.client = crate::client::LlamaClient::with_engine(
+            std::sync::Arc::new(engine),
+            self.config.system_prompt.clone(),
+        );
         self.config.model = model_path.display().to_string();
         Ok(())
     }
@@ -158,7 +169,8 @@ impl GemmaAgent {
     pub fn switch_backend(&mut self, backend: crate::config::BackendChoice) -> Result<()> {
         self.config.backend = backend;
         let model_path = if let Some(hf_spec_str) = &self.config.hf {
-            crate::client::find_model_file(hf_spec_str).or_else(|| crate::client::find_model_file(&self.config.model))
+            crate::client::find_model_file(hf_spec_str)
+                .or_else(|| crate::client::find_model_file(&self.config.model))
         } else {
             crate::client::find_model_file(&self.config.model)
         };
@@ -166,6 +178,15 @@ impl GemmaAgent {
             self.reload_model(&path)?;
         }
         Ok(())
+    }
+
+    pub fn set_generation_settings(&mut self, temperature: Option<f32>, max_tokens: Option<u32>) {
+        if let Some(temperature) = temperature {
+            self.config.temperature = temperature.clamp(0.0, 2.0);
+        }
+        if let Some(max_tokens) = max_tokens {
+            self.config.max_tokens = max_tokens.clamp(1, 32_768);
+        }
     }
 
     pub fn estimated_tokens(&self) -> usize {
@@ -189,12 +210,36 @@ impl GemmaAgent {
 
     pub fn print_status(&self) {
         println!("\n{}", "=== GEMMA AGENT SYSTEM TELEMETRY ===".bold().cyan());
-        println!(" Mode           : {}", self.config.mode.to_string().bright_yellow().bold());
-        println!(" Speech Output  : {}", if self.is_speech_enabled() { "Enabled".green() } else { "Disabled".dimmed() });
-        println!(" Server URL     : {}", self.config.server_url.bright_green());
+        println!(
+            " Mode           : {}",
+            self.config.mode.to_string().bright_yellow().bold()
+        );
+        println!(
+            " Speech Output  : {}",
+            if self.is_speech_enabled() {
+                "Enabled".green()
+            } else {
+                "Disabled".dimmed()
+            }
+        );
+        println!(
+            " Server URL     : {}",
+            self.config.server_url.bright_green()
+        );
         println!(" Model          : {}", self.config.model.bright_white());
-        println!(" Workspace Root : {}", self.config.workspace_root.display().to_string().bright_cyan());
-        println!(" Current Tokens : ~{} (max: {})", self.estimated_tokens().to_string().bold(), self.config.max_context_tokens);
+        println!(
+            " Workspace Root : {}",
+            self.config
+                .workspace_root
+                .display()
+                .to_string()
+                .bright_cyan()
+        );
+        println!(
+            " Current Tokens : ~{} (max: {})",
+            self.estimated_tokens().to_string().bold(),
+            self.config.max_context_tokens
+        );
         println!(" History Messages: {}", self.history.len());
         println!(" Registered Tools: {}", self.registry.definitions().len());
         println!(" Loaded Rules   : {}", self.loaded_rules_count());
@@ -208,12 +253,16 @@ impl GemmaAgent {
         println!("{}", "Compacting context...".yellow());
         let current_tokens = self.estimated_tokens();
         if current_tokens < target_threshold && self.history.len() <= 4 {
-            println!("Context token count (~{}) is below threshold.", current_tokens);
+            println!(
+                "Context token count (~{}) is below threshold.",
+                current_tokens
+            );
             return Ok(());
         }
 
         let system_msg = self.history.first().cloned();
-        let recent_msgs: Vec<ChatMessage> = self.history.iter().rev().take(4).rev().cloned().collect();
+        let recent_msgs: Vec<ChatMessage> =
+            self.history.iter().rev().take(4).rev().cloned().collect();
 
         let mut summary_req_msgs = Vec::new();
         summary_req_msgs.push(ChatMessage::system(
@@ -272,7 +321,10 @@ impl GemmaAgent {
         let file_path = sessions_dir.join(format!("{}.json", name));
         let serialized = serde_json::to_string_pretty(&self.history)?;
         fs::write(&file_path, serialized)?;
-        println!("Session saved to: {}", file_path.display().to_string().cyan());
+        println!(
+            "Session saved to: {}",
+            file_path.display().to_string().cyan()
+        );
         Ok(file_path)
     }
 
@@ -284,7 +336,10 @@ impl GemmaAgent {
             .join("sessions")
             .join(format!("{}.json", name));
         if !file_path.exists() {
-            return Err(anyhow::anyhow!("Session file not found: {}", file_path.display()));
+            return Err(anyhow::anyhow!(
+                "Session file not found: {}",
+                file_path.display()
+            ));
         }
         let content = fs::read_to_string(&file_path)?;
         let history: Vec<ChatMessage> = serde_json::from_str(&content)?;
@@ -316,12 +371,17 @@ impl GemmaAgent {
         self.run_turn(user_input).await
     }
 
-    pub async fn process_user_request_stream<F>(&mut self, user_input: &str, mut event_sink: F) -> Result<(String, String)>
+    pub async fn process_user_request_stream<F>(
+        &mut self,
+        user_input: &str,
+        mut event_sink: F,
+    ) -> Result<(String, String)>
     where
         F: FnMut(StreamEvent) + Send + 'static,
     {
         if self.estimated_tokens() >= self.config.max_context_tokens {
-            self.compact_context(self.config.max_context_tokens / 2).await?;
+            self.compact_context(self.config.max_context_tokens / 2)
+                .await?;
         }
 
         self.history.push(ChatMessage::user(user_input));
@@ -358,8 +418,17 @@ impl GemmaAgent {
                 })
                 .await?;
 
-            let content = assistant_msg.get_text_content().unwrap_or_default().trim().to_string();
-            let thought = assistant_msg.reasoning_content.clone().unwrap_or_default().trim().to_string();
+            let content = assistant_msg
+                .get_text_content()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let thought = assistant_msg
+                .reasoning_content
+                .clone()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
 
             if !content.is_empty() {
                 final_content = content.clone();
@@ -370,7 +439,10 @@ impl GemmaAgent {
 
             self.history.push(assistant_msg.clone());
 
-            let tool_calls = assistant_msg.tool_calls.clone().unwrap_or(assembled_tool_calls);
+            let tool_calls = assistant_msg
+                .tool_calls
+                .clone()
+                .unwrap_or(assembled_tool_calls);
             if tool_calls.is_empty() {
                 break;
             }
@@ -383,7 +455,8 @@ impl GemmaAgent {
                     Ok(val) => val,
                     Err(e) => {
                         let err_msg = format!("Failed to parse arguments JSON: {}", e);
-                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
+                        self.history
+                            .push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
                         continue;
                     }
                 };
@@ -400,7 +473,11 @@ impl GemmaAgent {
                             name: name.clone(),
                             result: output.clone(),
                         });
-                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, output.clone()));
+                        self.history.push(ChatMessage::tool(
+                            tool_call.id.clone(),
+                            name,
+                            output.clone(),
+                        ));
                     }
                     Err(e) => {
                         let err_msg = format!("Tool execution failed: {}", e);
@@ -408,7 +485,8 @@ impl GemmaAgent {
                             name: name.clone(),
                             result: err_msg.clone(),
                         });
-                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
+                        self.history
+                            .push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
                     }
                 }
             }
@@ -419,7 +497,8 @@ impl GemmaAgent {
 
     pub async fn run_turn(&mut self, user_input: &str) -> Result<()> {
         if self.estimated_tokens() >= self.config.max_context_tokens {
-            self.compact_context(self.config.max_context_tokens / 2).await?;
+            self.compact_context(self.config.max_context_tokens / 2)
+                .await?;
         }
 
         self.history.push(ChatMessage::user(user_input));
@@ -432,7 +511,12 @@ impl GemmaAgent {
         loop {
             step_count += 1;
             if step_count > 15 {
-                println!("\n{}", "⚠️ Reached maximum autonomous step limit (15). Stopping.".yellow().bold());
+                println!(
+                    "\n{}",
+                    "⚠️ Reached maximum autonomous step limit (15). Stopping."
+                        .yellow()
+                        .bold()
+                );
                 break;
             }
 
@@ -457,7 +541,12 @@ impl GemmaAgent {
                 .stream_completion(&req, |event| match event {
                     StreamEvent::Reasoning(text) => {
                         if !reasoning_header_printed && !text.trim().is_empty() {
-                            println!("\n{}", "🧠 ──────────────── Thought Process ────────────────".bright_yellow().bold());
+                            println!(
+                                "\n{}",
+                                "🧠 ──────────────── Thought Process ────────────────"
+                                    .bright_yellow()
+                                    .bold()
+                            );
                             reasoning_header_printed = true;
                         }
                         if reasoning_header_printed {
@@ -470,7 +559,12 @@ impl GemmaAgent {
                     }
                     StreamEvent::Content(text) => {
                         if last_was_reasoning {
-                            println!("\n{}", "────────────────────────────────────────────────────".bright_yellow().dimmed());
+                            println!(
+                                "\n{}",
+                                "────────────────────────────────────────────────────"
+                                    .bright_yellow()
+                                    .dimmed()
+                            );
                             print!("\n{}: ", "🤖 Gemma".bold().green());
                             let _ = std::io::stdout().flush();
                             last_was_reasoning = false;
@@ -481,7 +575,11 @@ impl GemmaAgent {
                             content_header_printed = true;
                         }
                         print!("{}", text);
-                        if text.ends_with(' ') || text.ends_with('\n') || text.ends_with('?') || text.ends_with('.') {
+                        if text.ends_with(' ')
+                            || text.ends_with('\n')
+                            || text.ends_with('?')
+                            || text.ends_with('.')
+                        {
                             let _ = std::io::stdout().flush();
                         }
                     }
@@ -489,7 +587,11 @@ impl GemmaAgent {
                         assembled_tool_calls.push(tc);
                     }
                     StreamEvent::ToolExecuted { .. } => {}
-                    StreamEvent::Metrics { token_count, elapsed_secs, tokens_per_sec } => {
+                    StreamEvent::Metrics {
+                        token_count,
+                        elapsed_secs,
+                        tokens_per_sec,
+                    } => {
                         last_metrics = Some((token_count, elapsed_secs, tokens_per_sec));
                     }
                     StreamEvent::Finish(_) => {}
@@ -497,15 +599,23 @@ impl GemmaAgent {
                 .await;
 
             if reasoning_header_printed && last_was_reasoning {
-                println!("\n{}", "────────────────────────────────────────────────────".bright_yellow().dimmed());
+                println!(
+                    "\n{}",
+                    "────────────────────────────────────────────────────"
+                        .bright_yellow()
+                        .dimmed()
+                );
             }
 
             if let Some((tokens, elapsed, tps)) = last_metrics {
                 println!(
                     "{}",
-                    format!("⚡ [{} tokens in {:.2}s | {:.1} tk/s]", tokens, elapsed, tps)
-                        .bright_black()
-                        .italic()
+                    format!(
+                        "⚡ [{} tokens in {:.2}s | {:.1} tk/s]",
+                        tokens, elapsed, tps
+                    )
+                    .bright_black()
+                    .italic()
                 );
             }
 
@@ -517,7 +627,11 @@ impl GemmaAgent {
                 }
             };
 
-            let current_output_text = assistant_msg.get_text_content().unwrap_or_default().trim().to_string();
+            let current_output_text = assistant_msg
+                .get_text_content()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             if !current_output_text.is_empty() {
                 if let Some(ref prev) = last_model_output {
                     if prev == &current_output_text {
@@ -547,7 +661,10 @@ impl GemmaAgent {
 
             self.history.push(assistant_msg.clone());
 
-            let tool_calls = assistant_msg.tool_calls.clone().unwrap_or(assembled_tool_calls);
+            let tool_calls = assistant_msg
+                .tool_calls
+                .clone()
+                .unwrap_or(assembled_tool_calls);
             if tool_calls.is_empty() {
                 break;
             }
@@ -568,7 +685,8 @@ impl GemmaAgent {
                     Ok(val) => val,
                     Err(e) => {
                         let err_msg = format!("Failed to parse arguments JSON: {}", e);
-                        self.history.push(ChatMessage::tool(tool_call.id, name, err_msg));
+                        self.history
+                            .push(ChatMessage::tool(tool_call.id, name, err_msg));
                         continue;
                     }
                 };
@@ -585,17 +703,25 @@ impl GemmaAgent {
                 match tool_result {
                     Ok(output) => {
                         let display_output = if output.len() > 1000 {
-                            format!("{}... (truncated)", crate::markdown::truncate_utf8(&output, 1000))
+                            format!(
+                                "{}... (truncated)",
+                                crate::markdown::truncate_utf8(&output, 1000)
+                            )
                         } else {
                             output.clone()
                         };
                         println!("📥 Tool Output:\n{}", display_output.dimmed());
-                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, output.clone()));
+                        self.history.push(ChatMessage::tool(
+                            tool_call.id.clone(),
+                            name,
+                            output.clone(),
+                        ));
                     }
                     Err(e) => {
                         let err_msg = format!("Tool execution failed: {}", e);
                         println!("{}: {}", "✖".red(), err_msg);
-                        self.history.push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
+                        self.history
+                            .push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
                     }
                 }
             }

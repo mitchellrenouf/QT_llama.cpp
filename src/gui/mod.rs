@@ -305,6 +305,23 @@ async fn handle_ws_session<S>(
                     });
                 }
             }
+            "update_generation_settings" => {
+                let temperature = cmd
+                    .get("temperature")
+                    .and_then(|value| value.as_f64())
+                    .map(|value| value as f32);
+                let max_tokens = cmd
+                    .get("max_tokens")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as u32);
+                let mut agent_lock = agent.lock().await;
+                agent_lock.set_generation_settings(temperature, max_tokens);
+                let _ = out_tx.send(serde_json::json!({
+                    "type": "settings_updated",
+                    "temperature": agent_lock.get_config().temperature,
+                    "max_tokens": agent_lock.get_config().max_tokens,
+                }));
+            }
             "clear_history" => {
                 let mut agent_lock = agent.lock().await;
                 agent_lock.reset_context();
