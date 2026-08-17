@@ -168,9 +168,85 @@ pub fn quantize_f32_to_q8_0(src: &[f32], dst: &mut [u8]) {
     }
 }
 
-/// Fast dot product between Q4_0 row (weights) and Q8_0 column (activations)
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
+
+/// Fast dot product between Q4_0 row (weights) and Q8_0 column (activations) with AVX2 SIMD
 #[inline]
 pub fn vec_dot_q4_0_q8_0(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                return vec_dot_q4_0_q8_0_avx2(w_q4, a_q8, n_elements);
+            }
+        }
+    }
+
+    vec_dot_q4_0_q8_0_scalar(w_q4, a_q8, n_elements)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn vec_dot_q4_0_q8_0_avx2(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 {
+    let n_blocks = n_elements / 32;
+    let mut sum = 0.0f32;
+
+    let mask_low = _mm_set1_epi8(0x0F);
+    let offset_eight = _mm_set1_epi8(8);
+
+    for b in 0..n_blocks {
+        let w_off = b * 18;
+        let a_off = b * 34;
+
+        let d_w_raw = u16::from_le_bytes([*w_q4.get_unchecked(w_off), *w_q4.get_unchecked(w_off + 1)]);
+        let d_a_raw = u16::from_le_bytes([*a_q8.get_unchecked(a_off), *a_q8.get_unchecked(a_off + 1)]);
+
+        let d_w = f16_to_f32(d_w_raw);
+        let d_a = f16_to_f32(d_a_raw);
+
+        let w_ptr = w_q4.as_ptr().add(w_off + 2);
+        let a_ptr = a_q8.as_ptr().add(a_off + 2);
+
+        let q4_128 = _mm_loadu_si128(w_ptr as *const __m128i);
+        let q8_low_128 = _mm_loadu_si128(a_ptr as *const __m128i);
+        let q8_high_128 = _mm_loadu_si128(a_ptr.add(16) as *const __m128i);
+
+        let q4_low = _mm_sub_epi8(_mm_and_si128(q4_128, mask_low), offset_eight);
+        let q4_high = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16(q4_128, 4), mask_low), offset_eight);
+
+        // Sign-extend 8-bit to 16-bit
+        let w_low_lo = _mm_cvtepi8_epi16(q4_low);
+        let w_low_hi = _mm_cvtepi8_epi16(_mm_srli_si128(q4_low, 8));
+        let a_low_lo = _mm_cvtepi8_epi16(q8_low_128);
+        let a_low_hi = _mm_cvtepi8_epi16(_mm_srli_si128(q8_low_128, 8));
+
+        let w_high_lo = _mm_cvtepi8_epi16(q4_high);
+        let w_high_hi = _mm_cvtepi8_epi16(_mm_srli_si128(q4_high, 8));
+        let a_high_lo = _mm_cvtepi8_epi16(q8_high_128);
+        let a_high_hi = _mm_cvtepi8_epi16(_mm_srli_si128(q8_high_128, 8));
+
+        let p_low_lo = _mm_madd_epi16(w_low_lo, a_low_lo);
+        let p_low_hi = _mm_madd_epi16(w_low_hi, a_low_hi);
+        let p_high_lo = _mm_madd_epi16(w_high_lo, a_high_lo);
+        let p_high_hi = _mm_madd_epi16(w_high_hi, a_high_hi);
+
+        let sum_low = _mm_add_epi32(p_low_lo, p_low_hi);
+        let sum_high = _mm_add_epi32(p_high_lo, p_high_hi);
+        let sum_all = _mm_add_epi32(sum_low, sum_high);
+
+        let mut acc = [0i32; 4];
+        _mm_storeu_si128(acc.as_mut_ptr() as *mut __m128i, sum_all);
+        let block_sum = acc[0] + acc[1] + acc[2] + acc[3];
+
+        sum += (block_sum as f32) * (d_w * d_a);
+    }
+
+    sum
+}
+
+#[inline]
+fn vec_dot_q4_0_q8_0_scalar(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 {
     let n_blocks = n_elements / 32;
     let mut sum = 0.0f32;
 

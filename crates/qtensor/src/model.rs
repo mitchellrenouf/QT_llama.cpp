@@ -90,6 +90,7 @@ pub struct QTensorModel {
     pub layers: Vec<TransformerLayer>,
     pub data_offset: u64,
     pub token_embd_table: Vec<u8>,
+    pub mmap: Option<std::sync::Arc<memmap2::Mmap>>,
 }
 
 impl QTensorModel {
@@ -255,6 +256,11 @@ impl QTensorModel {
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cpu)).count(),
         );
 
+        let mmap = File::open(&gguf_path)
+            .ok()
+            .and_then(|f| unsafe { memmap2::Mmap::map(&f).ok() })
+            .map(std::sync::Arc::new);
+
         Ok(Self {
             config,
             device_manager,
@@ -268,6 +274,7 @@ impl QTensorModel {
             layers,
             data_offset: gguf.data_offset,
             token_embd_table,
+            mmap,
         })
     }
 
@@ -309,8 +316,6 @@ impl QTensorModel {
         for val in hidden.iter_mut() {
             *val *= scale;
         }
-
-        let mut file_opt = File::open(&self.gguf_path).ok();
 
         for (l, layer) in self.layers.iter().enumerate() {
             // Layer RMSNorm
@@ -445,10 +450,9 @@ impl QTensorModel {
             // 2. MoE Top-8 Active Experts
             let mut moe_raw = vec![0.0f32; dim];
             if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
-                if let Some(ref mut file) = file_opt {
-                    // Expert input norm
-                    let mut ffn_in_moe = vec![0.0f32; dim];
-                    ops::rms_norm(&attn_res, Some(&layer.pre_ffw_norm_2), 1e-6, &mut ffn_in_moe);
+                // Expert input norm
+                let mut ffn_in_moe = vec![0.0f32; dim];
+                ops::rms_norm(&attn_res, Some(&layer.pre_ffw_norm_2), 1e-6, &mut ffn_in_moe);
 
                     // Router logits
                     let mut router_tmp = vec![0.0f32; dim];
@@ -494,35 +498,33 @@ impl QTensorModel {
                     let gate_up_bytes_per_exp = 1408 * (dim / 32) * 18; // 2,230,272 bytes
                     let down_bytes_per_exp = 2816 * (exp_ffn_dim / 32) * 18; // 1,115,136 bytes
 
-                    let mut gate_up_buf = vec![0u8; gate_up_bytes_per_exp];
-                    let mut down_buf = vec![0u8; down_bytes_per_exp];
-
                     for (k, &(_, exp_idx)) in top8.iter().enumerate() {
                         let alpha = ex_probs[k];
                         if alpha <= 0.0001 {
                             continue;
                         }
 
-                        let gu_off = layer.ffn_gate_up_exps_offset + (exp_idx as u64) * (gate_up_bytes_per_exp as u64);
-                        let down_off = layer.ffn_down_exps_offset + (exp_idx as u64) * (down_bytes_per_exp as u64);
+                        let gu_off = (layer.ffn_gate_up_exps_offset + (exp_idx as u64) * (gate_up_bytes_per_exp as u64)) as usize;
+                        let down_off = (layer.ffn_down_exps_offset + (exp_idx as u64) * (down_bytes_per_exp as u64)) as usize;
 
-                        if file.seek(SeekFrom::Start(gu_off)).is_ok() && file.read_exact(&mut gate_up_buf).is_ok() {
-                            let half_bytes = gate_up_bytes_per_exp / 2;
-                            let gate_slice = &gate_up_buf[..half_bytes];
-                            let up_slice = &gate_up_buf[half_bytes..];
+                        if let Some(ref mm) = self.mmap {
+                            if gu_off + gate_up_bytes_per_exp <= mm.len() && down_off + down_bytes_per_exp <= mm.len() {
+                                let half_bytes = gate_up_bytes_per_exp / 2;
+                                let gate_slice = &mm[gu_off..gu_off + half_bytes];
+                                let up_slice = &mm[gu_off + half_bytes..gu_off + gate_up_bytes_per_exp];
+                                let down_slice = &mm[down_off..down_off + down_bytes_per_exp];
 
-                            let mut exp_gate = vec![0.0f32; exp_ffn_dim];
-                            let mut exp_up = vec![0.0f32; exp_ffn_dim];
+                                let mut exp_gate = vec![0.0f32; exp_ffn_dim];
+                                let mut exp_up = vec![0.0f32; exp_ffn_dim];
 
-                            ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, exp_ffn_dim, dim);
-                            ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, exp_ffn_dim, dim);
+                                ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, exp_ffn_dim, dim);
+                                ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, exp_ffn_dim, dim);
 
-                            let mut exp_act = vec![0.0f32; exp_ffn_dim];
-                            ops::geglu(&exp_gate, &exp_up, &mut exp_act);
+                                let mut exp_act = vec![0.0f32; exp_ffn_dim];
+                                ops::geglu(&exp_gate, &exp_up, &mut exp_act);
 
-                            if file.seek(SeekFrom::Start(down_off)).is_ok() && file.read_exact(&mut down_buf).is_ok() {
                                 let mut exp_down = vec![0.0f32; dim];
-                                ops::mat_vec_mul_q4_0(&down_buf, &exp_act, &mut exp_down, dim, exp_ffn_dim);
+                                ops::mat_vec_mul_q4_0(down_slice, &exp_act, &mut exp_down, dim, exp_ffn_dim);
 
                                 let scale = if exp_idx < layer.ffn_down_exps_scale.len() {
                                     layer.ffn_down_exps_scale[exp_idx]
@@ -537,7 +539,6 @@ impl QTensorModel {
                         }
                     }
                 }
-            }
 
             let mut moe_out = vec![0.0f32; dim];
             ops::rms_norm(&moe_raw, Some(&layer.post_ffw_norm_2), 1e-6, &mut moe_out);

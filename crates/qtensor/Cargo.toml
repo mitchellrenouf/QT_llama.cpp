@@ -15,6 +15,10 @@ thiserror = "2.0"
 tokio = { version = "1.43", features = ["sync", "rt"] }
 dirs = "6.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+rayon = "1.10"
+memmap2 = "0.9"
 
 [build-dependencies]
 cc = { version = "1.2", features = ["parallel"] }

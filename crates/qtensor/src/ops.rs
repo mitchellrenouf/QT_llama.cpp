@@ -113,8 +113,10 @@ pub fn softmax(logits: &mut [f32]) {
     }
 }
 
+use rayon::prelude::*;
+
 /// Quantized Matrix-Vector Multiplication: y = W * x (where W is Q4_0 and x is F32)
-/// Using Q8_0 activation quantization
+/// Using Q8_0 activation quantization with Rayon thread pool
 pub fn mat_vec_mul_q4_0(
     w_q4_bytes: &[u8],
     x_f32: &[f32],
@@ -134,25 +136,23 @@ pub fn mat_vec_mul_q4_0(
 
     let row_bytes = (n_cols_aligned / 32) * 18;
 
-    let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8).min(16);
-    let chunk_size = (n_rows + n_threads - 1) / n_threads;
-
-    std::thread::scope(|s| {
-        for (chunk_idx, y_chunk) in y_out.chunks_mut(chunk_size).enumerate() {
-            let x_q8_ref = &x_q8;
-            s.spawn(move || {
-                let start_row = chunk_idx * chunk_size;
-                for (i, y) in y_chunk.iter_mut().enumerate() {
-                    let r = start_row + i;
-                    let row_start = r * row_bytes;
-                    if row_start + row_bytes <= w_q4_bytes.len() {
-                        let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
-                        *y = vec_dot_q4_0_q8_0(row_slice, x_q8_ref, n_cols);
-                    }
-                }
-            });
+    if n_rows <= 64 {
+        for (r, y) in y_out.iter_mut().enumerate() {
+            let row_start = r * row_bytes;
+            if row_start + row_bytes <= w_q4_bytes.len() {
+                let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
+                *y = vec_dot_q4_0_q8_0(row_slice, &x_q8, n_cols);
+            }
         }
-    });
+    } else {
+        y_out.par_iter_mut().enumerate().for_each(|(r, y)| {
+            let row_start = r * row_bytes;
+            if row_start + row_bytes <= w_q4_bytes.len() {
+                let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
+                *y = vec_dot_q4_0_q8_0(row_slice, &x_q8, n_cols);
+            }
+        });
+    }
 }
 
 /// Dense F32 Matrix-Matrix Multiplication: C = A * B
