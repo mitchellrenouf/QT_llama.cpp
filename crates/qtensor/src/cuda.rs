@@ -18,6 +18,11 @@ pub enum CudaMemcpyKind {
 
 #[allow(dead_code)]
 extern "C" {
+    fn cudaSetDevice(device: i32) -> i32;
+    fn cudaGetDevice(device: *mut i32) -> i32;
+    fn cudaGetDeviceCount(count: *mut i32) -> i32;
+    fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> i32;
+
     fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32;
     fn cudaFree(dev_ptr: *mut c_void) -> i32;
     fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: CudaMemcpyKind) -> i32;
@@ -26,19 +31,34 @@ extern "C" {
     fn cudaStreamDestroy(stream: CudaStream) -> i32;
     fn cudaStreamSynchronize(stream: CudaStream) -> i32;
     fn cudaDeviceSynchronize() -> i32;
-    fn cudaGetDeviceCount(count: *mut i32) -> i32;
 
     // Exported custom kernel launches from cuda_kernels.cu
     fn cuda_op_rms_norm(d_x: *const f32, d_w: *const f32, d_out: *mut f32, dim: i32, eps: f32, stream: CudaStream);
     fn cuda_op_swiglu(d_gate: *const f32, d_up: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
-    fn cuda_op_rope(d_vec: *mut f32, pos: i32, head_dim: i32, n_heads: i32, freq_base: f32, freq_scale: f32, stream: CudaStream);
+    fn cuda_op_rope_256k(d_vec: *mut f32, pos: i32, head_dim: i32, n_heads: i32, freq_base: f32, freq_scale: f32, stream: CudaStream);
     fn cuda_op_gemv_q4_0(d_w_q4: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
+    fn cuda_op_add(d_a: *const f32, d_b: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
+    fn cuda_op_embedding(d_table: *const f32, d_out: *mut f32, token: i32, dim: i32, stream: CudaStream);
+    fn cuda_op_attention(
+        d_q: *const f32,
+        d_k_cache: *const f32,
+        d_v_cache: *const f32,
+        d_out: *mut f32,
+        n_past: i32,
+        n_heads: i32,
+        n_kv_heads: i32,
+        head_dim: i32,
+        scale: f32,
+        sliding_window: i32,
+        stream: CudaStream,
+    );
 }
 
 /// RAII wrapper for GPU Device Memory
 pub struct CudaBuffer<T> {
     ptr: *mut T,
     len: usize,
+    device_id: i32,
     _marker: PhantomData<T>,
 }
 
@@ -46,29 +66,40 @@ unsafe impl<T: Send> Send for CudaBuffer<T> {}
 unsafe impl<T: Sync> Sync for CudaBuffer<T> {}
 
 impl<T> CudaBuffer<T> {
-    pub fn alloc(len: usize) -> Result<Self> {
+    pub fn alloc_on(device_id: i32, len: usize) -> Result<Self> {
+        unsafe { cudaSetDevice(device_id) };
         let mut raw_ptr: *mut c_void = ptr::null_mut();
         let bytes = len * std::mem::size_of::<T>();
         let res = unsafe { cudaMalloc(&mut raw_ptr, bytes) };
         if res != 0 || raw_ptr.is_null() {
-            return Err(anyhow!("cudaMalloc failed with code {}", res));
+            return Err(anyhow!("cudaMalloc failed on GPU {} with code {}", device_id, res));
         }
 
         Ok(Self {
             ptr: raw_ptr as *mut T,
             len,
+            device_id,
             _marker: PhantomData,
         })
     }
 
+    pub fn alloc(len: usize) -> Result<Self> {
+        Self::alloc_on(0, len)
+    }
+
     pub fn from_host(slice: &[T]) -> Result<Self> {
-        let mut buf = Self::alloc(slice.len())?;
+        Self::from_host_on(0, slice)
+    }
+
+    pub fn from_host_on(device_id: i32, slice: &[T]) -> Result<Self> {
+        let mut buf = Self::alloc_on(device_id, slice.len())?;
         buf.copy_from_host(slice)?;
         Ok(buf)
     }
 
     pub fn copy_from_host(&mut self, slice: &[T]) -> Result<()> {
         assert_eq!(self.len, slice.len());
+        unsafe { cudaSetDevice(self.device_id) };
         let bytes = slice.len() * std::mem::size_of::<T>();
         let res = unsafe {
             cudaMemcpy(
@@ -86,6 +117,7 @@ impl<T> CudaBuffer<T> {
 
     pub fn copy_to_host(&self, slice: &mut [T]) -> Result<()> {
         assert_eq!(self.len, slice.len());
+        unsafe { cudaSetDevice(self.device_id) };
         let bytes = slice.len() * std::mem::size_of::<T>();
         let res = unsafe {
             cudaMemcpy(
@@ -120,41 +152,73 @@ impl<T> CudaBuffer<T> {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    #[inline]
+    pub fn device_id(&self) -> i32 {
+        self.device_id
+    }
 }
 
 impl<T> Drop for CudaBuffer<T> {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            unsafe { cudaFree(self.ptr as *mut c_void) };
+            unsafe {
+                cudaSetDevice(self.device_id);
+                cudaFree(self.ptr as *mut c_void);
+            };
         }
     }
 }
 
 /// CUDA Device Management and Kernel Execution
 pub struct CudaDevice {
+    device_id: i32,
     stream: CudaStream,
 }
 
 impl CudaDevice {
-    pub fn is_available() -> bool {
+    pub fn count() -> usize {
         let mut count = 0;
         let res = unsafe { cudaGetDeviceCount(&mut count) };
-        res == 0 && count > 0
+        if res == 0 && count > 0 {
+            count as usize
+        } else {
+            0
+        }
     }
 
-    pub fn new() -> Result<Self> {
+    pub fn is_available() -> bool {
+        Self::count() > 0
+    }
+
+    pub fn get_memory_info(device_id: i32) -> Result<(usize, usize)> {
+        unsafe {
+            cudaSetDevice(device_id);
+            let mut free = 0usize;
+            let mut total = 0usize;
+            let res = cudaMemGetInfo(&mut free, &mut total);
+            if res != 0 {
+                return Err(anyhow!("cudaMemGetInfo failed for GPU {}", device_id));
+            }
+            Ok((free, total))
+        }
+    }
+
+    pub fn new(device_id: i32) -> Result<Self> {
+        unsafe { cudaSetDevice(device_id) };
         let mut stream: CudaStream = ptr::null_mut();
         let res = unsafe { cudaStreamCreate(&mut stream) };
         if res != 0 {
-            return Err(anyhow!("cudaStreamCreate failed with code {}", res));
+            return Err(anyhow!("cudaStreamCreate failed on GPU {} with code {}", device_id, res));
         }
-        Ok(Self { stream })
+        Ok(Self { device_id, stream })
     }
 
     pub fn sync(&self) -> Result<()> {
+        unsafe { cudaSetDevice(self.device_id) };
         let res = unsafe { cudaStreamSynchronize(self.stream) };
         if res != 0 {
-            return Err(anyhow!("cudaStreamSynchronize failed with code {}", res));
+            return Err(anyhow!("cudaStreamSynchronize failed on GPU {} with code {}", self.device_id, res));
         }
         Ok(())
     }
@@ -166,6 +230,7 @@ impl CudaDevice {
         d_out: &mut CudaBuffer<f32>,
         eps: f32,
     ) {
+        unsafe { cudaSetDevice(self.device_id) };
         let w_ptr = d_weight.map(|w| w.as_ptr()).unwrap_or(ptr::null());
         unsafe {
             cuda_op_rms_norm(
@@ -188,6 +253,7 @@ impl CudaDevice {
         assert_eq!(d_gate.len(), d_up.len());
         assert_eq!(d_gate.len(), d_out.len());
         unsafe {
+            cudaSetDevice(self.device_id);
             cuda_op_swiglu(
                 d_gate.as_ptr(),
                 d_up.as_ptr(),
@@ -198,7 +264,7 @@ impl CudaDevice {
         }
     }
 
-    pub fn rope(
+    pub fn rope_256k(
         &self,
         d_vec: &mut CudaBuffer<f32>,
         pos: usize,
@@ -208,7 +274,8 @@ impl CudaDevice {
         freq_scale: f32,
     ) {
         unsafe {
-            cuda_op_rope(
+            cudaSetDevice(self.device_id);
+            cuda_op_rope_256k(
                 d_vec.as_mut_ptr(),
                 pos as i32,
                 head_dim as i32,
@@ -229,6 +296,7 @@ impl CudaDevice {
         n_cols: usize,
     ) {
         unsafe {
+            cudaSetDevice(self.device_id);
             cuda_op_gemv_q4_0(
                 d_w_q4.as_ptr(),
                 d_x.as_ptr(),
@@ -239,12 +307,86 @@ impl CudaDevice {
             );
         }
     }
+
+    pub fn add(
+        &self,
+        d_a: &CudaBuffer<f32>,
+        d_b: &CudaBuffer<f32>,
+        d_out: &mut CudaBuffer<f32>,
+    ) {
+        assert_eq!(d_a.len(), d_b.len());
+        assert_eq!(d_a.len(), d_out.len());
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_add(
+                d_a.as_ptr(),
+                d_b.as_ptr(),
+                d_out.as_mut_ptr(),
+                d_a.len() as i32,
+                self.stream,
+            );
+        }
+    }
+
+    pub fn embedding(
+        &self,
+        d_table: &CudaBuffer<f32>,
+        d_out: &mut CudaBuffer<f32>,
+        token: usize,
+        dim: usize,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_embedding(
+                d_table.as_ptr(),
+                d_out.as_mut_ptr(),
+                token as i32,
+                dim as i32,
+                self.stream,
+            );
+        }
+    }
+
+    pub fn attention_causal(
+        &self,
+        d_q: &CudaBuffer<f32>,
+        d_k_cache: &CudaBuffer<f32>,
+        d_v_cache: &CudaBuffer<f32>,
+        d_out: &mut CudaBuffer<f32>,
+        n_past: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        scale: f32,
+        sliding_window: Option<usize>,
+    ) {
+        let sw = sliding_window.map(|w| w as i32).unwrap_or(-1);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_attention(
+                d_q.as_ptr(),
+                d_k_cache.as_ptr(),
+                d_v_cache.as_ptr(),
+                d_out.as_mut_ptr(),
+                n_past as i32,
+                n_heads as i32,
+                n_kv_heads as i32,
+                head_dim as i32,
+                scale,
+                sw,
+                self.stream,
+            );
+        }
+    }
 }
 
 impl Drop for CudaDevice {
     fn drop(&mut self) {
         if !self.stream.is_null() {
-            unsafe { cudaStreamDestroy(self.stream) };
+            unsafe {
+                cudaSetDevice(self.device_id);
+                cudaStreamDestroy(self.stream);
+            };
         }
     }
 }

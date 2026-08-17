@@ -1623,6 +1623,7 @@ dependencies = [
  "anyhow",
  "cc",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

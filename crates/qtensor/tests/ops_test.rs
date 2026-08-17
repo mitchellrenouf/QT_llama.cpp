@@ -53,7 +53,7 @@ fn test_cuda_ops() {
         return;
     }
 
-    let dev = CudaDevice::new().expect("Failed to create CudaDevice");
+    let dev = CudaDevice::new(0).expect("Failed to create CudaDevice");
 
     let x_host = vec![2.0f32; 128];
     let d_x = CudaBuffer::from_host(&x_host).unwrap();

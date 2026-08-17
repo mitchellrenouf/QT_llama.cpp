@@ -12,6 +12,7 @@ cuda = []
 [dependencies]
 anyhow = "1.0"
 thiserror = "2.0"
+tokio = { version = "1.43", features = ["sync", "rt"] }
 
 [build-dependencies]
 cc = { version = "1.2", features = ["parallel"] }
