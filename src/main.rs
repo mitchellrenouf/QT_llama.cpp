@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     println!(" Max Context : {} tokens (auto-compact enabled)", config.max_context_tokens.to_string().yellow());
     println!(" Auto-Approve: {}", config.auto_approve.to_string().bright_white());
 
-    let mut agent = GemmaAgent::new(config);
+    let mut agent = GemmaAgent::new(config.clone());
 
     if agent.get_rules().has_rules() {
         println!(" Loaded Rules: {}", agent.loaded_rules_count().to_string().bright_green().bold());
@@ -135,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(name) = parts.get(1) {
                     let choice = match name.to_lowercase().as_str() {
                         "cuda" => crate::config::BackendChoice::Cuda,
-                        "rocm" | "hip" => crate::config::BackendChoice::Hipblas,
+                        "rocm" | "hip" => crate::config::BackendChoice::Rocm,
                         "sycl" | "oneapi" => crate::config::BackendChoice::Sycl,
                         "vulkan" => crate::config::BackendChoice::Vulkan,
                         "cpu" => crate::config::BackendChoice::Cpu,

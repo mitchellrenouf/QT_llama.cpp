@@ -26,6 +26,7 @@ impl fmt::Display for AgentMode {
 pub enum BackendChoice {
     Auto,
     Cuda,
+    Rocm,
     Vulkan,
     Sycl,
     Cpu,
@@ -36,6 +37,7 @@ impl fmt::Display for BackendChoice {
         match self {
             BackendChoice::Auto => write!(f, "auto"),
             BackendChoice::Cuda => write!(f, "cuda"),
+            BackendChoice::Rocm => write!(f, "rocm"),
             BackendChoice::Vulkan => write!(f, "vulkan"),
             BackendChoice::Sycl => write!(f, "sycl"),
             BackendChoice::Cpu => write!(f, "cpu"),
