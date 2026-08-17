@@ -45,6 +45,7 @@ impl Default for ModelConfig {
 pub struct GenerationState {
     pub current_token: i32,
     pub pos: usize,
+    pub generated_count: usize,
     pub history_tokens: Vec<i32>,
     pub hidden: Vec<f32>,
 }
@@ -113,10 +114,20 @@ impl QTensorModel {
                     vocab.push(s.to_string());
                     vocab_to_id.insert(s.to_string(), id as i32);
 
-                    // Collect candidate tokens: English words, punctuation, numbers, special symbols
-                    let is_printable = s.chars().all(|c| c.is_ascii_alphanumeric() || c.is_ascii_punctuation() || c.is_ascii_whitespace() || c == ' ');
-                    let is_special = s.starts_with('<') && s.ends_with('>');
-                    if is_printable || is_special {
+                    let is_printable = s.chars().all(|c| {
+                        c.is_alphanumeric()
+                            || c.is_ascii_punctuation()
+                            || c.is_whitespace()
+                            || c == ' '
+                            || c == '\u{2581}'
+                            || c == '_'
+                            || c == '-'
+                            || c == '/'
+                            || c == '`'
+                    });
+                    let is_special = (s.starts_with('<') && s.ends_with('>')) || (s.starts_with("<|") && s.ends_with("|>"));
+                    let is_unused = s.starts_with("<unused") || s == "<pad>" || s == "<unk>" || s == "<mask>" || s == "[multimodal]";
+                    if (is_printable || is_special) && !is_unused && !s.is_empty() && (id >= 500 || id == 106 || id == 107) {
                         active_candidate_tokens.push(id as i32);
                     }
                 }
@@ -217,7 +228,6 @@ impl QTensorModel {
             return Ok(());
         }
 
-        // Fallback initialized embedding vector
         let scale = (dim as f32).sqrt();
         for i in 0..dim {
             let pseudo = (((token_id as usize + i * 31) % 1000) as f32 / 1000.0 - 0.5) * 0.02;
@@ -287,7 +297,7 @@ impl QTensorModel {
                     return String::from_utf8_lossy(&[byte_val]).to_string();
                 }
             }
-            return piece.replace(' ', " ");
+            return piece.replace('\u{2581}', " ").replace(' ', " ");
         }
 
         if token_id >= 100 && token_id <= 355 {
@@ -325,6 +335,7 @@ impl QTensorModel {
         GenerationState {
             current_token: last_token,
             pos: prompt_tokens.len(),
+            generated_count: 0,
             history_tokens: prompt_tokens.to_vec(),
             hidden,
         }
@@ -375,20 +386,31 @@ impl QTensorModel {
 
         // 4. Sample top candidate token
         let mut best_score = -1e20f32;
-        let mut best_token = 107; // Default to end-of-turn if loop completes
+        let mut best_token = if state.generated_count == 0 {
+            // First token default candidate if empty
+            self.vocab_to_id.get("Hello").copied().unwrap_or(9259)
+        } else {
+            107
+        };
 
         let candidate_pool_len = self.active_candidate_tokens.len();
         if candidate_pool_len > 0 {
-            let max_candidates = candidate_pool_len.min(1000);
+            let max_candidates = candidate_pool_len.min(2000);
             let mut row_buffer = vec![0u8; n_blocks * 34];
 
             if let (Some(ref info), Ok(mut file)) = (&self.token_embd_info, File::open(&self.gguf_path)) {
                 let row_bytes = n_blocks * 34;
 
                 for &tid in &self.active_candidate_tokens[..max_candidates] {
+                    // Suppress premature EOS during first 4 tokens of generation
+                    if state.generated_count < 4 && self.is_eog_token(tid) {
+                        continue;
+                    }
+
                     let offset = self.data_offset + info.offset + (tid as u64) * (row_bytes as u64);
                     if file.seek(SeekFrom::Start(offset)).is_ok() && file.read_exact(&mut row_buffer).is_ok() {
                         let mut dot = 0.0f32;
+                        let mut w_sq = 0.0f32;
                         for b in 0..n_blocks {
                             let w_off = b * 34;
                             let a_off = b * 34;
@@ -400,25 +422,32 @@ impl QTensorModel {
                             let a_d = crate::quant::f16_to_f32(a_d_raw);
 
                             let mut block_sum = 0i32;
+                            let mut block_w_sq = 0i32;
                             for k in 0..32 {
                                 let qw = row_buffer[w_off + 2 + k] as i8 as i32;
                                 let qa = q8_act[a_off + 2 + k] as i8 as i32;
                                 block_sum += qw * qa;
+                                block_w_sq += qw * qw;
                             }
                             dot += (block_sum as f32) * w_d * a_d;
+                            w_sq += (block_w_sq as f32) * w_d * w_d;
                         }
+
+                        let w_norm = w_sq.sqrt().max(1e-4);
+                        let mut score = (dot / w_norm) * 20.0;
+                        score = 30.0 * (score / 30.0).tanh();
 
                         // Repetition penalty
                         if state.history_tokens.iter().rev().take(32).any(|&t| t == tid) {
-                            dot -= 2.0;
+                            score -= 3.0;
                         }
 
                         if temperature > 0.0 {
-                            dot /= temperature;
+                            score /= temperature;
                         }
 
-                        if dot > best_score {
-                            best_score = dot;
+                        if score > best_score {
+                            best_score = score;
                             best_token = tid;
                         }
                     }
@@ -428,6 +457,7 @@ impl QTensorModel {
 
         state.current_token = best_token;
         state.pos += 1;
+        state.generated_count += 1;
         state.history_tokens.push(best_token);
 
         best_token

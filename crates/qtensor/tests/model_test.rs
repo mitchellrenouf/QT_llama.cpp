@@ -23,10 +23,12 @@ fn test_inspect_gemma_gguf() {
     names.sort();
 
     let model = qtensor::model::QTensorModel::load_from_gguf(&path, 8192).expect("Load model");
-    println!("Vocab size: {}", model.vocab.len());
-    let words = ["Hello", " How", " can", " I", " help", " you", " today", "The", " workspace", "<|call>", "<call|>"];
-    for w in words {
-        let t = model.tokenize(w);
-        println!("Tokenize '{}' -> {:?}", w, t);
+    let prompt_tokens = model.tokenize("Hello!");
+    println!("Prompt tokens: {:?}", prompt_tokens);
+    let mut state = model.init_generation_state(&prompt_tokens);
+    for step in 0..10 {
+        let tok = model.step_generation(&mut state, 0.7);
+        let piece = model.token_to_piece(tok);
+        println!("Step {}: token {} -> '{}'", step, tok, piece);
     }
 }
