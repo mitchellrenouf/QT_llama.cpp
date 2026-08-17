@@ -58,6 +58,60 @@ pub fn run(port: u16) -> anyhow::Result<()> {
             .parent(&sidebar)
             .build(),
     );
+    sidebar_layout.add(Label::new("SESSION").parent(&sidebar).build());
+    let mut mode = ComboBox::new()
+        .items(&["General", "Coding", "Autonomous"])
+        .parent(&sidebar)
+        .build();
+    {
+        let tx = tx.clone();
+        mode.connect_current_index_changed(move |index| {
+            let mode = match index {
+                1 => "coder",
+                2 => "automatic",
+                _ => "general",
+            };
+            let _ = tx.send(json!({"type":"switch_mode","mode":mode}));
+        });
+    }
+    sidebar_layout.add(mode);
+    let mut backend = ComboBox::new()
+        .items(&["Auto backend", "CUDA", "Vulkan", "CPU"])
+        .parent(&sidebar)
+        .build();
+    {
+        let tx = tx.clone();
+        backend.connect_current_index_changed(move |index| {
+            let backend = match index {
+                1 => "cuda",
+                2 => "vulkan",
+                3 => "cpu",
+                _ => "auto",
+            };
+            let _ = tx.send(json!({"type":"switch_backend","backend":backend}));
+        });
+    }
+    sidebar_layout.add(backend);
+    let mut speech = CheckBox::new("Read replies aloud").parent(&sidebar).build();
+    {
+        let tx = tx.clone();
+        speech.connect_toggled(move |_| {
+            let _ = tx.send(json!({"type":"toggle_speech"}));
+        });
+    }
+    sidebar_layout.add(speech);
+    let mut local_model = PushButton::new("Open local GGUF…").parent(&sidebar).build();
+    {
+        let tx = tx.clone();
+        local_model.connect_clicked(move || {
+            if let Some(path) =
+                FileDialog::open_file(None, "Open a GGUF model", "", "GGUF model (*.gguf)")
+            {
+                let _ = tx.send(json!({"type":"load_local_model","path":path}));
+            }
+        });
+    }
+    sidebar_layout.add(local_model);
     sidebar_layout.add(Label::new("⌁  Local model · CUDA").parent(&sidebar).build());
     shell_layout.add(sidebar);
 
@@ -356,5 +410,11 @@ const SIDEBAR_STYLE: &str = r#"
     QListWidget { background:transparent; color:#d6dbe4; border:0; outline:0; padding:0; }
     QListWidget::item { padding:9px 10px; border-radius:7px; }
     QListWidget::item:selected, QListWidget::item:hover { background:#30323a; }
+    QComboBox { background:#22252d; color:#dbe4f0; border:1px solid #343945; border-radius:7px; padding:7px 9px; }
+    QComboBox:hover { border-color:#566174; }
+    QComboBox QAbstractItemView { background:#252831; color:#e5e7eb; selection-background-color:#353945; }
+    QCheckBox { color:#c6cedb; padding:4px 2px; }
+    QCheckBox::indicator { width:15px; height:15px; border:1px solid #566174; border-radius:4px; background:#22252d; }
+    QCheckBox::indicator:checked { background:#4f7cff; border-color:#4f7cff; }
     QLabel { color:#8f98a8; font-size:12px; }
 "#;

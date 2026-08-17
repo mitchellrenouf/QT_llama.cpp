@@ -1,6 +1,6 @@
+mod app;
 #[allow(dead_code)]
 pub mod bridge;
-mod app;
 
 #[allow(unused_imports, dead_code)]
 pub use bridge::*;
@@ -26,7 +26,9 @@ pub fn is_display_available() -> bool {
 
 pub async fn launch_qt_gui(config: &Config) -> Result<()> {
     if !is_display_available() {
-        return Err(anyhow!("No graphical display server found (WAYLAND_DISPLAY or DISPLAY is unset)."));
+        return Err(anyhow!(
+            "No graphical display server found (WAYLAND_DISPLAY or DISPLAY is unset)."
+        ));
     }
 
     // Bind local WebSocket server on ephemeral port
@@ -50,12 +52,17 @@ pub async fn launch_qt_gui(config: &Config) -> Result<()> {
         }
     });
 
-    println!("🎨 Launching RustLlama native Qt6 interface [WS IPC port: {}]...", port);
+    println!(
+        "🎨 Launching RustLlama native Qt6 interface [WS IPC port: {}]...",
+        port
+    );
     app::run(port)
 }
 
-async fn handle_ws_session<S>(ws_stream: tokio_tungstenite::WebSocketStream<S>, agent: Arc<Mutex<GemmaAgent>>)
-where
+async fn handle_ws_session<S>(
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+    agent: Arc<Mutex<GemmaAgent>>,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
@@ -112,44 +119,47 @@ where
                         let out_tx_stream = out_tx_clone.clone();
 
                         let res = agent_lock
-                            .process_user_request_stream(&user_text_owned, move |event| {
-                                match event {
-                                    StreamEvent::Reasoning(thought) => {
-                                        let _ = out_tx_stream.send(serde_json::json!({
-                                            "type": "stream_thought",
-                                            "thought": thought,
-                                        }));
-                                    }
-                                    StreamEvent::Content(token) => {
-                                        let _ = out_tx_stream.send(serde_json::json!({
-                                            "type": "stream_token",
-                                            "token": token,
-                                        }));
-                                    }
-                                    StreamEvent::ToolCallAssembled(tc) => {
-                                        let _ = out_tx_stream.send(serde_json::json!({
-                                            "type": "tool_started",
-                                            "name": tc.function.name,
-                                            "args": tc.function.arguments,
-                                        }));
-                                    }
-                                    StreamEvent::ToolExecuted { name, result } => {
-                                        let _ = out_tx_stream.send(serde_json::json!({
-                                            "type": "tool_finished",
-                                            "name": name,
-                                            "result": result,
-                                        }));
-                                    }
-                                    StreamEvent::Metrics { token_count, elapsed_secs, tokens_per_sec } => {
-                                        let _ = out_tx_stream.send(serde_json::json!({
-                                            "type": "metrics",
-                                            "token_count": token_count,
-                                            "elapsed_secs": elapsed_secs,
-                                            "tokens_per_sec": tokens_per_sec,
-                                        }));
-                                    }
-                                    StreamEvent::Finish(_) => {}
+                            .process_user_request_stream(&user_text_owned, move |event| match event
+                            {
+                                StreamEvent::Reasoning(thought) => {
+                                    let _ = out_tx_stream.send(serde_json::json!({
+                                        "type": "stream_thought",
+                                        "thought": thought,
+                                    }));
                                 }
+                                StreamEvent::Content(token) => {
+                                    let _ = out_tx_stream.send(serde_json::json!({
+                                        "type": "stream_token",
+                                        "token": token,
+                                    }));
+                                }
+                                StreamEvent::ToolCallAssembled(tc) => {
+                                    let _ = out_tx_stream.send(serde_json::json!({
+                                        "type": "tool_started",
+                                        "name": tc.function.name,
+                                        "args": tc.function.arguments,
+                                    }));
+                                }
+                                StreamEvent::ToolExecuted { name, result } => {
+                                    let _ = out_tx_stream.send(serde_json::json!({
+                                        "type": "tool_finished",
+                                        "name": name,
+                                        "result": result,
+                                    }));
+                                }
+                                StreamEvent::Metrics {
+                                    token_count,
+                                    elapsed_secs,
+                                    tokens_per_sec,
+                                } => {
+                                    let _ = out_tx_stream.send(serde_json::json!({
+                                        "type": "metrics",
+                                        "token_count": token_count,
+                                        "elapsed_secs": elapsed_secs,
+                                        "tokens_per_sec": tokens_per_sec,
+                                    }));
+                                }
+                                StreamEvent::Finish(_) => {}
                             })
                             .await;
 
@@ -183,20 +193,26 @@ where
                         match crate::hf::HfModelSpec::parse(&spec_str_owned) {
                             Ok(spec) => {
                                 let out_tx_prog = out_tx_clone.clone();
-                                let fetch_res = crate::hf::resolve_or_fetch_hf_model(&spec, move |msg, p, file_idx, total_files| {
-                                    let _ = out_tx_prog.send(serde_json::json!({
-                                        "type": "download_progress",
-                                        "message": msg,
-                                        "progress": p,
-                                        "file_idx": file_idx,
-                                        "total_files": total_files,
-                                    }));
-                                }).await;
+                                let fetch_res = crate::hf::resolve_or_fetch_hf_model(
+                                    &spec,
+                                    move |msg, p, file_idx, total_files| {
+                                        let _ = out_tx_prog.send(serde_json::json!({
+                                            "type": "download_progress",
+                                            "message": msg,
+                                            "progress": p,
+                                            "file_idx": file_idx,
+                                            "total_files": total_files,
+                                        }));
+                                    },
+                                )
+                                .await;
 
                                 match fetch_res {
                                     Ok(model_files) => {
                                         let mut agent_lock = agent_clone.lock().await;
-                                        if let Err(e) = agent_lock.reload_model(&model_files.primary_entry_file) {
+                                        if let Err(e) =
+                                            agent_lock.reload_model(&model_files.primary_entry_file)
+                                        {
                                             let _ = out_tx_clone.send(serde_json::json!({
                                                 "type": "error",
                                                 "message": format!("Failed to load GGUF model: {}", e),
@@ -226,12 +242,34 @@ where
                     });
                 }
             }
+            "load_local_model" => {
+                if let Some(path_str) = cmd.get("path").and_then(|v| v.as_str()) {
+                    let path = std::path::PathBuf::from(path_str);
+                    let mut agent_lock = agent.lock().await;
+                    match agent_lock.reload_model(&path) {
+                        Ok(()) => {
+                            let _ = out_tx.send(serde_json::json!({
+                                "type": "model_loaded",
+                                "model_name": path.file_name().and_then(|name| name.to_str()).unwrap_or(path_str),
+                            }));
+                        }
+                        Err(e) => {
+                            let _ = out_tx.send(serde_json::json!({
+                                "type": "error",
+                                "message": format!("Could not load local model: {e}"),
+                            }));
+                        }
+                    }
+                }
+            }
             "switch_mode" => {
                 if let Some(mode_str) = cmd.get("mode").and_then(|v| v.as_str()) {
                     let mut agent_lock = agent.lock().await;
                     match mode_str {
                         "code" | "coder" => agent_lock.set_mode(crate::config::AgentMode::Coder),
-                        "auto" | "automatic" => agent_lock.set_mode(crate::config::AgentMode::Automatic),
+                        "auto" | "automatic" => {
+                            agent_lock.set_mode(crate::config::AgentMode::Automatic)
+                        }
                         _ => agent_lock.set_mode(crate::config::AgentMode::General),
                     }
                     let _ = out_tx.send(serde_json::json!({
