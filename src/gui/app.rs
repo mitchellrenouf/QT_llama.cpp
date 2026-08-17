@@ -102,15 +102,21 @@ pub fn run(port: u16) -> anyhow::Result<()> {
     let mut send = PushButton::new("↑").parent(&composer).build();
     let mut download = PushButton::new("⌄").parent(&composer).build();
     layout.add(composer);
+    let status_box = Widget::new().parent(&workspace).build();
+    status_box.set_min_size(0, 26);
+    status_box.set_max_size(100_000, 30);
+    let mut status_layout = HBoxLayout::with_parent(&status_box);
+    status_layout.set_contents_margins(4, 0, 4, 0);
     let status = Rc::new(RefCell::new(
         Label::new("Connecting to local agent…")
-            .parent(&workspace)
+            .parent(&status_box)
             .build(),
     ));
     status.borrow_mut().set_has_parent();
     let status_area = ScrollArea::new().set_widget_resizable(true).build();
     status_area.set_widget(&*status.borrow());
-    layout.add(status_area);
+    status_layout.add(status_area);
+    layout.add(status_box);
     shell_layout.add(workspace);
     window.set_central_widget(&root);
     let transcript = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
