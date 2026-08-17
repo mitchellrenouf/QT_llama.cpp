@@ -169,6 +169,50 @@ __global__ void k_gemv_q4_0_f32(
     }
 }
 
+// 4b. CUDA Q8_0 Matrix-Vector Multiplication: y = W * x with fused logit softcapping
+__global__ void k_gemv_q8_0_f32(
+    const uint8_t* __restrict__ w_q8,
+    const float* __restrict__ x,
+    float* __restrict__ y,
+    int n_rows,
+    int n_cols
+) {
+    int row = blockIdx.x;
+    if (row >= n_rows) return;
+
+    int tid = threadIdx.x;
+    int n_blocks = n_cols / 32;
+    int row_bytes = n_blocks * 34;
+    const uint8_t* row_w = w_q8 + row * row_bytes;
+
+    float local_sum = 0.0f;
+
+    for (int b = tid; b < n_blocks; b += blockDim.x) {
+        int w_off = b * 34;
+        uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
+        
+        __half d_half;
+        memcpy(&d_half, &d_raw, sizeof(__half));
+        float d = __half2float(d_half);
+
+        const int8_t* qs = (const int8_t*)(row_w + w_off + 2);
+        int x_base = b * 32;
+
+        float block_sum = 0.0f;
+        #pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            block_sum += (float)qs[i] * x[x_base + i];
+        }
+
+        local_sum += block_sum * d;
+    }
+
+    float total_row_sum = block_reduce_sum(local_sum);
+    if (tid == 0) {
+        y[row] = 30.0f * tanhf(total_row_sum / 30.0f);
+    }
+}
+
 // 5. CUDA Elementwise Addition (Residual Connections): y = a + b
 __global__ void k_add_f32(
     const float* __restrict__ a,
@@ -329,6 +373,19 @@ void cuda_op_gemv_q4_0(
     int threads = (n_cols / 32 < 256) ? (n_cols / 32) : 256;
     if (threads < 32) threads = 32;
     k_gemv_q4_0_f32<<<n_rows, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
+}
+
+void cuda_op_gemv_q8_0(
+    const uint8_t* d_w_q8,
+    const float* d_x,
+    float* d_y,
+    int n_rows,
+    int n_cols,
+    cudaStream_t stream
+) {
+    int threads = (n_cols / 32 < 256) ? (n_cols / 32) : 256;
+    if (threads < 32) threads = 32;
+    k_gemv_q8_0_f32<<<n_rows, threads, 0, stream>>>(d_w_q8, d_x, d_y, n_rows, n_cols);
 }
 
 void cuda_op_add(

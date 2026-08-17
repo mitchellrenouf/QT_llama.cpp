@@ -38,6 +38,7 @@ extern "C" {
     fn cuda_op_geglu(d_gate: *const f32, d_up: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_rope_256k(d_vec: *mut f32, pos: i32, head_dim: i32, n_heads: i32, freq_base: f32, freq_scale: f32, stream: CudaStream);
     fn cuda_op_gemv_q4_0(d_w_q4: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
+    fn cuda_op_gemv_q8_0(d_w_q8: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
     fn cuda_op_add(d_a: *const f32, d_b: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_embedding(d_table: *const f32, d_out: *mut f32, token: i32, dim: i32, stream: CudaStream);
     fn cuda_op_attention(
@@ -320,6 +321,27 @@ impl CudaDevice {
             cudaSetDevice(self.device_id);
             cuda_op_gemv_q4_0(
                 d_w_q4.as_ptr(),
+                d_x.as_ptr(),
+                d_y.as_mut_ptr(),
+                n_rows as i32,
+                n_cols as i32,
+                self.stream,
+            );
+        }
+    }
+
+    pub fn gemv_q8_0(
+        &self,
+        d_w_q8: &CudaBuffer<u8>,
+        d_x: &CudaBuffer<f32>,
+        d_y: &mut CudaBuffer<f32>,
+        n_rows: usize,
+        n_cols: usize,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_gemv_q8_0(
+                d_w_q8.as_ptr(),
                 d_x.as_ptr(),
                 d_y.as_mut_ptr(),
                 n_rows as i32,
