@@ -80,6 +80,8 @@ pub struct TransformerLayer {
     #[cfg(feature = "cuda")]
     pub gpu_attn_k_norm: Option<crate::cuda::CudaBuffer<f32>>,
     #[cfg(feature = "cuda")]
+    pub gpu_attn_norm: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
     pub gpu_ffn_gate: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
     pub gpu_ffn_up: Option<crate::cuda::CudaBuffer<u8>>,
@@ -93,10 +95,28 @@ pub struct TransformerLayer {
     pub gpu_ffn_down_exps_scale: Option<crate::cuda::CudaBuffer<f32>>,
     #[cfg(feature = "cuda")]
     pub gpu_ffn_gate_inp: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_post_attention_norm: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_norm: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_pre_ffw_norm_2: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_post_ffw_norm: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_post_ffw_norm_1: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_post_ffw_norm_2: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_gate_inp_scale: Option<crate::cuda::CudaBuffer<f32>>,
 
     // Persistent GPU scratch/activation buffers
     #[cfg(feature = "cuda")]
     pub gpu_d_cur: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_hidden: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_attn_res: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_q: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
@@ -334,6 +354,8 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             let gpu_attn_k_norm = if cuda_dev.is_some() { crate::cuda::CudaBuffer::from_host_on(0, &attn_k_norm).ok() } else { None };
             #[cfg(feature = "cuda")]
+            let gpu_attn_norm = crate::cuda::upload_if_full(cuda_dev.as_deref(), &attn_norm, dim);
+            #[cfg(feature = "cuda")]
             let gpu_ffn_gate = if cuda_dev.is_some() && !ffn_gate.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_gate).ok() } else { None };
             #[cfg(feature = "cuda")]
             let gpu_ffn_up = if cuda_dev.is_some() && !ffn_up.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_up).ok() } else { None };
@@ -400,6 +422,20 @@ impl QTensorModel {
                 crate::cuda::CudaBuffer::from_host_on(0, &ffn_gate_inp).ok()
             } else { None };
             #[cfg(feature = "cuda")]
+            let gpu_post_attention_norm = crate::cuda::upload_if_full(cuda_dev.as_deref(), &post_attention_norm, dim);
+            #[cfg(feature = "cuda")]
+            let gpu_ffn_norm = crate::cuda::upload_if_full(cuda_dev.as_deref(), &ffn_norm, dim);
+            #[cfg(feature = "cuda")]
+            let gpu_pre_ffw_norm_2 = crate::cuda::upload_if_full(cuda_dev.as_deref(), &pre_ffw_norm_2, dim);
+            #[cfg(feature = "cuda")]
+            let gpu_post_ffw_norm = crate::cuda::upload_if_full(cuda_dev.as_deref(), &post_ffw_norm, dim);
+            #[cfg(feature = "cuda")]
+            let gpu_post_ffw_norm_1 = crate::cuda::upload_if_full(cuda_dev.as_deref(), &post_ffw_norm_1, dim);
+            #[cfg(feature = "cuda")]
+            let gpu_post_ffw_norm_2 = crate::cuda::upload_if_full(cuda_dev.as_deref(), &post_ffw_norm_2, dim);
+            #[cfg(feature = "cuda")]
+            let gpu_ffn_gate_inp_scale = crate::cuda::upload_if_full(cuda_dev.as_deref(), &ffn_gate_inp_scale, dim);
+            #[cfg(feature = "cuda")]
             let (gpu_d_router_in, gpu_d_router_logits) = if cuda_dev.is_some() {
                 (
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
@@ -408,8 +444,10 @@ impl QTensorModel {
             } else { (None, None) };
 
             #[cfg(feature = "cuda")]
-            let (gpu_d_cur, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_qkv, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
+            let (gpu_d_cur, gpu_d_hidden, gpu_d_attn_res, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_qkv, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
                 (
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, q_dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, kv_dim).ok(),
@@ -424,7 +462,7 @@ impl QTensorModel {
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                 )
             } else {
-                (None, None, None, None, None, None, None, None, None, None, None, None)
+                (None, None, None, None, None, None, None, None, None, None, None, None, None, None)
             };
 
             #[cfg(feature = "cuda")]
@@ -484,6 +522,8 @@ impl QTensorModel {
                 #[cfg(feature = "cuda")]
                 gpu_attn_k_norm,
                 #[cfg(feature = "cuda")]
+                gpu_attn_norm,
+                #[cfg(feature = "cuda")]
                 gpu_ffn_gate,
                 #[cfg(feature = "cuda")]
                 gpu_ffn_up,
@@ -498,7 +538,25 @@ impl QTensorModel {
                 #[cfg(feature = "cuda")]
                 gpu_ffn_gate_inp,
                 #[cfg(feature = "cuda")]
+                gpu_post_attention_norm,
+                #[cfg(feature = "cuda")]
+                gpu_ffn_norm,
+                #[cfg(feature = "cuda")]
+                gpu_pre_ffw_norm_2,
+                #[cfg(feature = "cuda")]
+                gpu_post_ffw_norm,
+                #[cfg(feature = "cuda")]
+                gpu_post_ffw_norm_1,
+                #[cfg(feature = "cuda")]
+                gpu_post_ffw_norm_2,
+                #[cfg(feature = "cuda")]
+                gpu_ffn_gate_inp_scale,
+                #[cfg(feature = "cuda")]
                 gpu_d_cur: parking_lot::Mutex::new(gpu_d_cur),
+                #[cfg(feature = "cuda")]
+                gpu_d_hidden: parking_lot::Mutex::new(gpu_d_hidden),
+                #[cfg(feature = "cuda")]
+                gpu_d_attn_res: parking_lot::Mutex::new(gpu_d_attn_res),
                 #[cfg(feature = "cuda")]
                 gpu_d_q: parking_lot::Mutex::new(gpu_d_q),
                 #[cfg(feature = "cuda")]
@@ -591,13 +649,23 @@ impl QTensorModel {
             (None, None, None)
         };
 
+        #[cfg(feature = "cuda")]
+        let resident_layers = layers.iter().filter(|layer|
+            layer.gpu_attn_q.is_some()
+                && layer.gpu_attn_output.is_some()
+                && layer.gpu_ffn_gate_up_exps.is_some()
+                && layer.gpu_ffn_down_exps.is_some()
+        ).count();
+        #[cfg(not(feature = "cuda"))]
+        let resident_layers = 0;
         eprintln!(
-            "[qtensor] Initialized model: {} layers, {} dim, {} max_context, {} vocab items ({} GPU layers, {} CPU layers)",
+            "[qtensor] Initialized model: {} layers, {} dim, {} max_context, {} vocab items ({} CUDA-planned, {} fully resident, {} CPU-planned)",
             n_layers,
             dim,
             config.max_context,
             vocab.len(),
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cuda(_))).count(),
+            resident_layers,
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cpu)).count(),
         );
 
@@ -679,6 +747,42 @@ impl QTensorModel {
             *val *= scale;
         }
 
+        #[cfg(feature = "cuda")]
+        let mut resident_hidden_guard = self.gpu_d_final_hidden.lock();
+        #[cfg(feature = "cuda")]
+        let resident_model = std::env::var_os("QTENSOR_DISABLE_RESIDENT").is_none()
+            && self.cuda_dev.is_some()
+            && resident_hidden_guard.is_some()
+            && self.layers.iter().all(|layer| {
+                layer.is_moe
+                    && layer.gpu_attn_norm.is_some()
+                    && layer.gpu_attn_q.is_some()
+                    && layer.gpu_attn_k.is_some()
+                    && layer.gpu_attn_v.is_some()
+                    && layer.gpu_attn_output.is_some()
+                    && layer.gpu_ffn_gate.is_some()
+                    && layer.gpu_ffn_up.is_some()
+                    && layer.gpu_ffn_down.is_some()
+                    && layer.gpu_ffn_gate_up_exps.is_some()
+                    && layer.gpu_ffn_down_exps.is_some()
+                    && layer.gpu_post_attention_norm.is_some()
+                    && layer.gpu_ffn_norm.is_some()
+                    && layer.gpu_pre_ffw_norm_2.is_some()
+                    && layer.gpu_post_ffw_norm.is_some()
+                    && layer.gpu_post_ffw_norm_1.is_some()
+                    && layer.gpu_post_ffw_norm_2.is_some()
+                    && layer.gpu_ffn_gate_inp.is_some()
+                    && layer.gpu_ffn_gate_inp_scale.is_some()
+            });
+        #[cfg(feature = "cuda")]
+        let resident_model = if resident_model {
+            self.cuda_dev.as_ref().unwrap().copy_from_host_async(
+                resident_hidden_guard.as_mut().unwrap(), &hidden,
+            ).is_ok()
+        } else { false };
+        #[cfg(not(feature = "cuda"))]
+        let resident_model = false;
+
         for (l, layer) in self.layers.iter().enumerate() {
             // Layer RMSNorm
             let mut cur = vec![0.0f32; dim];
@@ -706,7 +810,15 @@ impl QTensorModel {
                 if let (Some(ref mut d_cur), Some(ref mut d_qkv), Some(ref mut d_kc), Some(ref mut d_vc)) =
                     (cur_guard.as_mut(), qkv_guard.as_mut(), kc_guard.as_mut(), vc_guard.as_mut())
                 {
-                    if dev.copy_from_host_async(d_cur, &cur).is_ok() {
+                    let input_ready = if resident_model {
+                        if let Some(ref d_hidden) = resident_hidden_guard.as_ref() {
+                            dev.rms_norm(d_hidden, layer.gpu_attn_norm.as_ref(), d_cur, 1e-6);
+                            true
+                        } else { false }
+                    } else {
+                        dev.copy_from_host_async(d_cur, &cur).is_ok()
+                    };
+                    if input_ready {
                         dev.gemv_q4_0_qkv(g_q, g_k, g_v, d_cur, d_qkv, layer.q_dim, layer.kv_dim, dim);
                         dev.qkv_postprocess(
                             d_qkv, q_norm, k_norm, d_kc, d_vc, pos, k_cache[l].len(),
@@ -882,13 +994,33 @@ impl QTensorModel {
             let profile_start = std::time::Instant::now();
             let mut attn_proj = vec![0.0f32; dim];
             #[cfg(feature = "cuda")]
+            let resident_ffn_capable = std::env::var_os("QTENSOR_DISABLE_RESIDENT").is_none()
+                && layer.is_moe
+                && layer.gpu_post_attention_norm.is_some()
+                && layer.gpu_ffn_norm.is_some()
+                && layer.gpu_pre_ffw_norm_2.is_some()
+                && layer.gpu_post_ffw_norm.is_some()
+                && layer.gpu_post_ffw_norm_1.is_some()
+                && layer.gpu_post_ffw_norm_2.is_some()
+                && layer.gpu_ffn_gate_inp_scale.is_some()
+                && layer.gpu_ffn_gate_inp.is_some()
+                && layer.gpu_ffn_gate.is_some()
+                && layer.gpu_ffn_up.is_some()
+                && layer.gpu_ffn_down.is_some()
+                && layer.gpu_ffn_gate_up_exps.is_some()
+                && layer.gpu_ffn_down_exps.is_some();
+            #[cfg(not(feature = "cuda"))]
+            let resident_ffn_capable = false;
+            #[cfg(feature = "cuda")]
             let out_used_gpu = if let (Some(ref dev), Some(ref g_out)) = (&self.cuda_dev, &layer.gpu_attn_output) {
                 let mut in_guard = layer.gpu_d_attn_in.lock();
                 let mut out_guard = layer.gpu_d_attn_out.lock();
                 if let (Some(ref mut d_in), Some(ref mut d_out)) = (in_guard.as_mut(), out_guard.as_mut()) {
                     if attention_used_gpu || dev.copy_from_host_async(d_in, &attn_out).is_ok() {
                         dev.gemv_q4_0(g_out, d_in, d_out, dim, layer.q_dim);
-                        let _ = d_out.copy_to_host(&mut attn_proj);
+                        if !resident_ffn_capable {
+                            let _ = d_out.copy_to_host(&mut attn_proj);
+                        }
                         true
                     } else {
                         false
@@ -907,13 +1039,55 @@ impl QTensorModel {
                 ops::mat_vec_mul_q4_0(&layer.attn_output, &attn_out, &mut attn_proj, dim, layer.q_dim);
             }
 
+            #[cfg(feature = "cuda")]
+            let resident_ffn_prepared = if resident_ffn_capable && out_used_gpu {
+                if let Some(ref dev) = self.cuda_dev {
+                    let out_g = layer.gpu_d_attn_out.lock();
+                    let mut hidden_g = layer.gpu_d_hidden.lock();
+                    let mut attn_res_g = layer.gpu_d_attn_res.lock();
+                    let mut shared_g = layer.gpu_d_mlp_in.lock();
+                    let mut moe_g = layer.gpu_d_moe_in.lock();
+                    let mut router_g = layer.gpu_d_router_in.lock();
+                    if let (Some(ref d_proj), Some(ref mut d_hidden), Some(ref mut d_attn_res),
+                        Some(ref mut d_shared), Some(ref mut d_moe), Some(ref mut d_router)) = (
+                        out_g.as_ref(), hidden_g.as_mut(), attn_res_g.as_mut(), shared_g.as_mut(),
+                        moe_g.as_mut(), router_g.as_mut()
+                    ) {
+                        let hidden_ready = if resident_model {
+                            true
+                        } else {
+                            dev.copy_from_host_async(d_hidden, &hidden).is_ok()
+                        };
+                        if hidden_ready {
+                            let hidden_input = if resident_model {
+                                resident_hidden_guard.as_ref().unwrap()
+                            } else {
+                                &*d_hidden
+                            };
+                            dev.prepare_ffn(
+                                hidden_input, d_proj,
+                                layer.gpu_post_attention_norm.as_ref().unwrap(),
+                                layer.gpu_ffn_norm.as_ref().unwrap(),
+                                layer.gpu_pre_ffw_norm_2.as_ref().unwrap(),
+                                layer.gpu_ffn_gate_inp_scale.as_ref().unwrap(),
+                                d_attn_res, d_shared, d_moe, d_router, dim,
+                            );
+                            true
+                        } else { false }
+                    } else { false }
+                } else { false }
+            } else { false };
+            #[cfg(not(feature = "cuda"))]
+            let resident_ffn_prepared = false;
+
             // Post-Attention Norm & Residual
             let mut normed_attn = vec![0.0f32; dim];
-            ops::rms_norm(&attn_proj, Some(&layer.post_attention_norm), 1e-6, &mut normed_attn);
-
             let mut attn_res = vec![0.0f32; dim];
-            for i in 0..dim {
-                attn_res[i] = hidden[i] + normed_attn[i];
+            if !resident_ffn_prepared {
+                ops::rms_norm(&attn_proj, Some(&layer.post_attention_norm), 1e-6, &mut normed_attn);
+                for i in 0..dim {
+                    attn_res[i] = hidden[i] + normed_attn[i];
+                }
             }
             profile_output += profile_start.elapsed();
 
@@ -921,10 +1095,12 @@ impl QTensorModel {
             let profile_start = std::time::Instant::now();
             let ffn_dim = 2112;
             let mut ffn_in_shared = vec![0.0f32; dim];
-            ops::rms_norm(&attn_res, Some(&layer.ffn_norm), 1e-6, &mut ffn_in_shared);
+            if !resident_ffn_prepared {
+                ops::rms_norm(&attn_res, Some(&layer.ffn_norm), 1e-6, &mut ffn_in_shared);
+            }
 
             let mut ffn_in_moe = vec![0.0f32; dim];
-            if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
+            if !resident_ffn_prepared && layer.is_moe && !layer.ffn_gate_inp.is_empty() {
                 ops::rms_norm(&attn_res, Some(&layer.pre_ffw_norm_2), 1e-6, &mut ffn_in_moe);
             }
 
@@ -932,7 +1108,7 @@ impl QTensorModel {
             let mut top8_experts = Vec::new();
             let mut ex_probs = [0.0f32; 8];
             let mut router_input = None;
-            if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
+            if !resident_ffn_prepared && layer.is_moe && !layer.ffn_gate_inp.is_empty() {
                 let mut router_tmp = vec![0.0f32; dim];
                 ops::rms_norm(&attn_res, None, 1e-6, &mut router_tmp);
                 let inv_sqrt_dim = 1.0f32 / (dim as f32).sqrt();
@@ -1001,7 +1177,7 @@ impl QTensorModel {
                     if let (Some(ref mut d_in), Some(ref mut _d_gate), Some(ref mut _d_up), Some(ref mut d_act), Some(ref mut d_down)) = (
                         in_g.as_mut(), gate_g.as_mut(), up_g.as_mut(), act_g.as_mut(), down_g.as_mut()
                     ) {
-                        if dev.copy_from_host_async(d_in, &ffn_in_shared).is_ok() {
+                        if resident_ffn_prepared || dev.copy_from_host_async(d_in, &ffn_in_shared).is_ok() {
                             dev.gemv_q4_0_geglu(g_gate, g_up, d_in, d_act, ffn_dim, dim);
                             dev.gemv_q4_0(g_down, d_act, d_down, dim, ffn_dim);
                             true
@@ -1009,7 +1185,7 @@ impl QTensorModel {
                     } else { false }
                 } else { false };
 
-                let moe_q = if layer.is_moe && (router_input.is_some() || !top8_experts.is_empty()) {
+                let moe_q = if layer.is_moe && (resident_ffn_prepared || router_input.is_some() || !top8_experts.is_empty()) {
                     if let (Some(ref g_gu_exps), Some(ref g_down_exps)) = (&layer.gpu_ffn_gate_up_exps, &layer.gpu_ffn_down_exps) {
                         let mut in_g = layer.gpu_d_moe_in.lock();
                         let mut ids_g = layer.gpu_d_moe_exp_ids.lock();
@@ -1021,12 +1197,17 @@ impl QTensorModel {
                         if let (Some(ref mut d_in), Some(ref mut d_ids), Some(ref mut d_weights), Some(ref mut d_act_scratch), Some(ref mut d_out)) = (
                             in_g.as_mut(), ids_g.as_mut(), weights_g.as_mut(), act_scratch_g.as_mut(), out_g.as_mut()
                         ) {
-                            let router_ok = if let (Some(router), Some(ref g_router), Some(ref mut d_router_in), Some(ref mut d_logits)) = (
-                                router_input.as_ref(), layer.gpu_ffn_gate_inp.as_ref(), router_in_g.as_mut(), router_logits_g.as_mut()
+                            let router_ok = if let (Some(ref g_router), Some(ref mut d_router_in), Some(ref mut d_logits)) = (
+                                layer.gpu_ffn_gate_inp.as_ref(), router_in_g.as_mut(), router_logits_g.as_mut()
                             ) {
-                                if dev.copy_from_host_async(d_router_in, router).is_ok() {
+                                if resident_ffn_prepared {
                                     dev.moe_router(g_router, d_router_in, d_logits, d_ids, d_weights, dim, 128);
                                     true
+                                } else if let Some(router) = router_input.as_ref() {
+                                    if dev.copy_from_host_async(d_router_in, router).is_ok() {
+                                        dev.moe_router(g_router, d_router_in, d_logits, d_ids, d_weights, dim, 128);
+                                        true
+                                    } else { false }
                                 } else { false }
                             } else {
                                 let mut active_ids = [0i32; 8];
@@ -1034,7 +1215,7 @@ impl QTensorModel {
                                 dev.copy_from_host_async(d_ids, &active_ids).is_ok()
                                     && dev.copy_from_host_async(d_weights, &ex_probs).is_ok()
                             };
-                            if router_ok && dev.copy_from_host_async(d_in, &ffn_in_moe).is_ok() {
+                            if router_ok && (resident_ffn_prepared || dev.copy_from_host_async(d_in, &ffn_in_moe).is_ok()) {
                                 dev.moe_topk_q4_0(
                                     g_gu_exps,
                                     g_down_exps,
@@ -1054,7 +1235,7 @@ impl QTensorModel {
                     } else { false }
                 } else { false };
 
-                if mlp_q || moe_q {
+                if (mlp_q || moe_q) && !resident_ffn_prepared {
                     if mlp_q {
                         let down_g = layer.gpu_d_mlp_down.lock();
                         if let Some(ref d_down) = down_g.as_ref() {
@@ -1076,6 +1257,43 @@ impl QTensorModel {
 
             #[cfg(not(feature = "cuda"))]
             let (mlp_queued, moe_queued) = (false, false);
+
+            #[cfg(feature = "cuda")]
+            let resident_hidden = if resident_ffn_prepared && mlp_queued && moe_queued {
+                if let Some(ref dev) = self.cuda_dev {
+                    let attn_res_g = layer.gpu_d_attn_res.lock();
+                    let mut dense_g = layer.gpu_d_mlp_down.lock();
+                    let mut moe_g = layer.gpu_d_moe_out.lock();
+                    let mut hidden_g = layer.gpu_d_hidden.lock();
+                    if let (Some(ref d_attn_res), Some(ref mut d_dense), Some(ref mut d_moe), Some(ref mut d_hidden)) = (
+                        attn_res_g.as_ref(), dense_g.as_mut(), moe_g.as_mut(), hidden_g.as_mut()
+                    ) {
+                        if resident_model {
+                            dev.finish_ffn(
+                                d_attn_res, d_dense, d_moe,
+                                layer.gpu_post_ffw_norm_1.as_ref().unwrap(),
+                                layer.gpu_post_ffw_norm_2.as_ref().unwrap(),
+                                layer.gpu_post_ffw_norm.as_ref().unwrap(),
+                                resident_hidden_guard.as_mut().unwrap(),
+                                layer.layer_output_scale, dim,
+                            );
+                            Some(Vec::new())
+                        } else {
+                            dev.finish_ffn(
+                                d_attn_res, d_dense, d_moe,
+                                layer.gpu_post_ffw_norm_1.as_ref().unwrap(),
+                                layer.gpu_post_ffw_norm_2.as_ref().unwrap(),
+                                layer.gpu_post_ffw_norm.as_ref().unwrap(),
+                                d_hidden, layer.layer_output_scale, dim,
+                            );
+                            let mut result = vec![0.0f32; dim];
+                            if d_hidden.copy_to_host(&mut result).is_ok() { Some(result) } else { None }
+                        }
+                    } else { None }
+                } else { None }
+            } else { None };
+            #[cfg(not(feature = "cuda"))]
+            let resident_hidden: Option<Vec<f32>> = None;
 
             if !mlp_queued {
                 let mut gate = vec![0.0f32; ffn_dim];
@@ -1141,26 +1359,36 @@ impl QTensorModel {
                 }
             }
 
-            let mut mlp_out = vec![0.0f32; dim];
-            ops::rms_norm(&mlp_raw, Some(&layer.post_ffw_norm_1), 1e-6, &mut mlp_out);
+            if let Some(result) = resident_hidden {
+                if !result.is_empty() {
+                    hidden = result;
+                }
+            } else {
+                let mut mlp_out = vec![0.0f32; dim];
+                ops::rms_norm(&mlp_raw, Some(&layer.post_ffw_norm_1), 1e-6, &mut mlp_out);
 
-            let mut moe_out = vec![0.0f32; dim];
-            ops::rms_norm(&moe_raw, Some(&layer.post_ffw_norm_2), 1e-6, &mut moe_out);
+                let mut moe_out = vec![0.0f32; dim];
+                ops::rms_norm(&moe_raw, Some(&layer.post_ffw_norm_2), 1e-6, &mut moe_out);
 
-            // 3. Combine shared MLP and MoE
-            let mut ffn_combined = vec![0.0f32; dim];
-            for i in 0..dim {
-                ffn_combined[i] = mlp_out[i] + moe_out[i];
-            }
+                let mut ffn_combined = vec![0.0f32; dim];
+                for i in 0..dim {
+                    ffn_combined[i] = mlp_out[i] + moe_out[i];
+                }
 
-            let mut normed_ffn = vec![0.0f32; dim];
-            ops::rms_norm(&ffn_combined, Some(&layer.post_ffw_norm), 1e-6, &mut normed_ffn);
-
-            // 4. Residual 2 & Layer Output Scale
-            for i in 0..dim {
-                hidden[i] = (attn_res[i] + normed_ffn[i]) * layer.layer_output_scale;
+                let mut normed_ffn = vec![0.0f32; dim];
+                ops::rms_norm(&ffn_combined, Some(&layer.post_ffw_norm), 1e-6, &mut normed_ffn);
+                for i in 0..dim {
+                    hidden[i] = (attn_res[i] + normed_ffn[i]) * layer.layer_output_scale;
+                }
             }
             profile_ffn += profile_start.elapsed();
+        }
+
+        #[cfg(feature = "cuda")]
+        if resident_model {
+            if resident_hidden_guard.as_ref().unwrap().copy_to_host(&mut hidden).is_err() {
+                return vec![0.0; dim];
+            }
         }
 
         // Final output RMSNorm

@@ -474,6 +474,97 @@ __global__ void k_moe_router_top8_f32(
     }
 }
 
+// Keep the post-attention residual and all three FFN inputs on device.  The
+// unweighted RMS scale of attn_res is shared by the dense, MoE, and router
+// inputs, so this replaces four host-side passes and three HtoD copies.
+__global__ void k_prepare_ffn_f32(
+    const float* __restrict__ hidden,
+    const float* __restrict__ attn_proj,
+    const float* __restrict__ post_attn_norm,
+    const float* __restrict__ ffn_norm,
+    const float* __restrict__ pre_ffw_norm_2,
+    const float* __restrict__ router_scale,
+    float* __restrict__ attn_res,
+    float* __restrict__ shared_in,
+    float* __restrict__ moe_in,
+    float* __restrict__ router_in,
+    int dim
+) {
+    float sum_sq = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        float v = attn_proj[i];
+        sum_sq += v * v;
+    }
+    float total = block_reduce_sum(sum_sq);
+    __shared__ float inv_proj;
+    if (threadIdx.x == 0) inv_proj = rsqrtf(total / (float)dim + 1.0e-6f);
+    __syncthreads();
+
+    sum_sq = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        float v = hidden[i] + attn_proj[i] * inv_proj * post_attn_norm[i];
+        attn_res[i] = v;
+        sum_sq += v * v;
+    }
+    total = block_reduce_sum(sum_sq);
+    __shared__ float inv_res;
+    if (threadIdx.x == 0) inv_res = rsqrtf(total / (float)dim + 1.0e-6f);
+    __syncthreads();
+
+    float router_factor = inv_res * rsqrtf((float)dim);
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        float v = attn_res[i];
+        shared_in[i] = v * inv_res * ffn_norm[i];
+        moe_in[i] = v * inv_res * pre_ffw_norm_2[i];
+        router_in[i] = v * router_factor * router_scale[i];
+    }
+}
+
+// Normalize dense and expert outputs, combine them, apply the final FFN norm,
+// and update the layer residual without returning intermediate tensors to CPU.
+__global__ void k_finish_ffn_f32(
+    const float* __restrict__ attn_res,
+    float* __restrict__ dense,
+    float* __restrict__ moe,
+    const float* __restrict__ post_ffw_norm_1,
+    const float* __restrict__ post_ffw_norm_2,
+    const float* __restrict__ post_ffw_norm,
+    float* __restrict__ hidden_out,
+    float layer_scale,
+    int dim
+) {
+    float dense_sq = 0.0f;
+    float moe_sq = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        dense_sq += dense[i] * dense[i];
+        moe_sq += moe[i] * moe[i];
+    }
+    float dense_total = block_reduce_sum(dense_sq);
+    __shared__ float inv_dense;
+    if (threadIdx.x == 0) inv_dense = rsqrtf(dense_total / (float)dim + 1.0e-6f);
+    __syncthreads();
+    float moe_total = block_reduce_sum(moe_sq);
+    __shared__ float inv_moe;
+    if (threadIdx.x == 0) inv_moe = rsqrtf(moe_total / (float)dim + 1.0e-6f);
+    __syncthreads();
+
+    float combined_sq = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        float v = dense[i] * inv_dense * post_ffw_norm_1[i]
+                + moe[i] * inv_moe * post_ffw_norm_2[i];
+        moe[i] = v;
+        combined_sq += v * v;
+    }
+    float combined_total = block_reduce_sum(combined_sq);
+    __shared__ float inv_combined;
+    if (threadIdx.x == 0) inv_combined = rsqrtf(combined_total / (float)dim + 1.0e-6f);
+    __syncthreads();
+
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        hidden_out[i] = (attn_res[i] + moe[i] * inv_combined * post_ffw_norm[i]) * layer_scale;
+    }
+}
+
 // 7. CUDA Causal Attention with Sliding Window Attention (SWA up to 256k tokens)
 __global__ void k_attention_causal_swa_f32(
     const float* __restrict__ q,       // [n_heads, head_dim]
@@ -820,6 +911,33 @@ void cuda_op_moe_router(
     );
     k_moe_router_top8_f32<<<1, 128, 0, stream>>>(
         d_logits, d_ids, d_probabilities, n_experts
+    );
+}
+
+void cuda_op_prepare_ffn(
+    const float* d_hidden, const float* d_attn_proj,
+    const float* d_post_attn_norm, const float* d_ffn_norm,
+    const float* d_pre_ffw_norm_2, const float* d_router_scale,
+    float* d_attn_res, float* d_shared_in, float* d_moe_in,
+    float* d_router_in, int dim, cudaStream_t stream
+) {
+    k_prepare_ffn_f32<<<1, 256, 0, stream>>>(
+        d_hidden, d_attn_proj, d_post_attn_norm, d_ffn_norm,
+        d_pre_ffw_norm_2, d_router_scale, d_attn_res, d_shared_in,
+        d_moe_in, d_router_in, dim
+    );
+}
+
+void cuda_op_finish_ffn(
+    const float* d_attn_res, float* d_dense, float* d_moe,
+    const float* d_post_ffw_norm_1, const float* d_post_ffw_norm_2,
+    const float* d_post_ffw_norm, float* d_hidden_out,
+    float layer_scale, int dim, cudaStream_t stream
+) {
+    k_finish_ffn_f32<<<1, 256, 0, stream>>>(
+        d_attn_res, d_dense, d_moe, d_post_ffw_norm_1,
+        d_post_ffw_norm_2, d_post_ffw_norm, d_hidden_out,
+        layer_scale, dim
     );
 }
 

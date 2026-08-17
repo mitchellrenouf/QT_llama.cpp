@@ -67,6 +67,19 @@ extern "C" {
         d_ids: *mut i32, d_probabilities: *mut f32, dim: i32,
         n_experts: i32, stream: CudaStream,
     );
+    fn cuda_op_prepare_ffn(
+        d_hidden: *const f32, d_attn_proj: *const f32,
+        d_post_attn_norm: *const f32, d_ffn_norm: *const f32,
+        d_pre_ffw_norm_2: *const f32, d_router_scale: *const f32,
+        d_attn_res: *mut f32, d_shared_in: *mut f32, d_moe_in: *mut f32,
+        d_router_in: *mut f32, dim: i32, stream: CudaStream,
+    );
+    fn cuda_op_finish_ffn(
+        d_attn_res: *const f32, d_dense: *mut f32, d_moe: *mut f32,
+        d_post_ffw_norm_1: *const f32, d_post_ffw_norm_2: *const f32,
+        d_post_ffw_norm: *const f32, d_hidden_out: *mut f32,
+        layer_scale: f32, dim: i32, stream: CudaStream,
+    );
     fn cuda_op_attention(
         d_q: *const f32,
         d_k_cache: *const f32,
@@ -102,6 +115,18 @@ pub struct CudaBuffer<T> {
     len: usize,
     device_id: i32,
     _marker: PhantomData<T>,
+}
+
+pub fn upload_if_full<T: Copy>(
+    device: Option<&CudaDevice>,
+    data: &[T],
+    expected_len: usize,
+) -> Option<CudaBuffer<T>> {
+    if device.is_some() && data.len() == expected_len {
+        CudaBuffer::from_host_on(0, data).ok()
+    } else {
+        None
+    }
 }
 
 unsafe impl<T: Send> Send for CudaBuffer<T> {}
@@ -648,6 +673,41 @@ impl CudaDevice {
         }
     }
 
+    pub fn prepare_ffn(
+        &self, hidden: &CudaBuffer<f32>, attn_proj: &CudaBuffer<f32>,
+        post_attn_norm: &CudaBuffer<f32>, ffn_norm: &CudaBuffer<f32>,
+        pre_ffw_norm_2: &CudaBuffer<f32>, router_scale: &CudaBuffer<f32>,
+        attn_res: &mut CudaBuffer<f32>, shared_in: &mut CudaBuffer<f32>,
+        moe_in: &mut CudaBuffer<f32>, router_in: &mut CudaBuffer<f32>, dim: usize,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_prepare_ffn(
+                hidden.as_ptr(), attn_proj.as_ptr(), post_attn_norm.as_ptr(),
+                ffn_norm.as_ptr(), pre_ffw_norm_2.as_ptr(), router_scale.as_ptr(),
+                attn_res.as_mut_ptr(), shared_in.as_mut_ptr(), moe_in.as_mut_ptr(),
+                router_in.as_mut_ptr(), dim as i32, self.stream,
+            );
+        }
+    }
+
+    pub fn finish_ffn(
+        &self, attn_res: &CudaBuffer<f32>, dense: &mut CudaBuffer<f32>,
+        moe: &mut CudaBuffer<f32>, post_ffw_norm_1: &CudaBuffer<f32>,
+        post_ffw_norm_2: &CudaBuffer<f32>, post_ffw_norm: &CudaBuffer<f32>,
+        hidden_out: &mut CudaBuffer<f32>, layer_scale: f32, dim: usize,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_finish_ffn(
+                attn_res.as_ptr(), dense.as_mut_ptr(), moe.as_mut_ptr(),
+                post_ffw_norm_1.as_ptr(), post_ffw_norm_2.as_ptr(),
+                post_ffw_norm.as_ptr(), hidden_out.as_mut_ptr(), layer_scale,
+                dim as i32, self.stream,
+            );
+        }
+    }
+
     pub fn vocab_topk(
         &self,
         logits: &CudaBuffer<f32>,
@@ -740,6 +800,91 @@ mod tests {
             let probability = (expected[i].0 - max).exp() / denom;
             assert!((probs[i] - probability).abs() < 2e-5,
                 "probability {i}: GPU {} CPU {probability}", probs[i]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fused_ffn_residual_pipeline_matches_cpu() -> Result<()> {
+        if !CudaDevice::is_available() { return Ok(()); }
+        const DIM: usize = 257;
+        let values = |seed: usize| -> Vec<f32> {
+            (0..DIM).map(|i| (((i * seed + 19) % 97) as f32 - 48.0) * 0.007).collect()
+        };
+        let hidden = values(13);
+        let projection = values(29);
+        let post_attn: Vec<f32> = values(17).into_iter().map(|x| 1.0 + x * 0.1).collect();
+        let ffn_norm: Vec<f32> = values(23).into_iter().map(|x| 1.0 + x * 0.1).collect();
+        let pre_moe: Vec<f32> = values(31).into_iter().map(|x| 1.0 + x * 0.1).collect();
+        let router_scale: Vec<f32> = values(37).into_iter().map(|x| 1.0 + x * 0.1).collect();
+        let post_1: Vec<f32> = values(41).into_iter().map(|x| 1.0 + x * 0.1).collect();
+        let post_2: Vec<f32> = values(43).into_iter().map(|x| 1.0 + x * 0.1).collect();
+        let post: Vec<f32> = values(47).into_iter().map(|x| 1.0 + x * 0.1).collect();
+        let dense = values(53);
+        let moe = values(59);
+
+        let dev = CudaDevice::new(0)?;
+        let d_hidden = CudaBuffer::from_host_on(0, &hidden)?;
+        let d_projection = CudaBuffer::from_host_on(0, &projection)?;
+        let d_post_attn = CudaBuffer::from_host_on(0, &post_attn)?;
+        let d_ffn_norm = CudaBuffer::from_host_on(0, &ffn_norm)?;
+        let d_pre_moe = CudaBuffer::from_host_on(0, &pre_moe)?;
+        let d_router_scale = CudaBuffer::from_host_on(0, &router_scale)?;
+        let mut d_attn_res = CudaBuffer::alloc_on(0, DIM)?;
+        let mut d_shared = CudaBuffer::alloc_on(0, DIM)?;
+        let mut d_moe_in = CudaBuffer::alloc_on(0, DIM)?;
+        let mut d_router = CudaBuffer::alloc_on(0, DIM)?;
+        dev.prepare_ffn(
+            &d_hidden, &d_projection, &d_post_attn, &d_ffn_norm, &d_pre_moe,
+            &d_router_scale, &mut d_attn_res, &mut d_shared, &mut d_moe_in,
+            &mut d_router, DIM,
+        );
+        dev.sync()?;
+
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / DIM as f32 + 1e-6).sqrt().recip();
+        let projection_inv = rms(&projection);
+        let expected_res: Vec<f32> = (0..DIM)
+            .map(|i| hidden[i] + projection[i] * projection_inv * post_attn[i]).collect();
+        let res_inv = rms(&expected_res);
+        let mut actual_res = vec![0.0; DIM];
+        let mut actual_shared = vec![0.0; DIM];
+        let mut actual_moe_in = vec![0.0; DIM];
+        let mut actual_router = vec![0.0; DIM];
+        d_attn_res.copy_to_host(&mut actual_res)?;
+        d_shared.copy_to_host(&mut actual_shared)?;
+        d_moe_in.copy_to_host(&mut actual_moe_in)?;
+        d_router.copy_to_host(&mut actual_router)?;
+        for i in 0..DIM {
+            assert!((actual_res[i] - expected_res[i]).abs() < 2e-5);
+            assert!((actual_shared[i] - expected_res[i] * res_inv * ffn_norm[i]).abs() < 2e-5);
+            assert!((actual_moe_in[i] - expected_res[i] * res_inv * pre_moe[i]).abs() < 2e-5);
+            let expected_router = expected_res[i] * res_inv / (DIM as f32).sqrt() * router_scale[i];
+            assert!((actual_router[i] - expected_router).abs() < 2e-5);
+        }
+
+        let mut d_dense = CudaBuffer::from_host_on(0, &dense)?;
+        let mut d_moe = CudaBuffer::from_host_on(0, &moe)?;
+        let d_post_1 = CudaBuffer::from_host_on(0, &post_1)?;
+        let d_post_2 = CudaBuffer::from_host_on(0, &post_2)?;
+        let d_post = CudaBuffer::from_host_on(0, &post)?;
+        let mut d_out = CudaBuffer::alloc_on(0, DIM)?;
+        dev.finish_ffn(
+            &d_attn_res, &mut d_dense, &mut d_moe, &d_post_1, &d_post_2,
+            &d_post, &mut d_out, 0.75, DIM,
+        );
+        dev.sync()?;
+        let dense_inv = rms(&dense);
+        let moe_inv = rms(&moe);
+        let combined: Vec<f32> = (0..DIM).map(|i|
+            dense[i] * dense_inv * post_1[i] + moe[i] * moe_inv * post_2[i]
+        ).collect();
+        let combined_inv = rms(&combined);
+        let mut actual_out = vec![0.0; DIM];
+        d_out.copy_to_host(&mut actual_out)?;
+        for i in 0..DIM {
+            let expected = (expected_res[i] + combined[i] * combined_inv * post[i]) * 0.75;
+            assert!((actual_out[i] - expected).abs() < 3e-5,
+                "output {i}: GPU {} CPU {expected}", actual_out[i]);
         }
         Ok(())
     }
