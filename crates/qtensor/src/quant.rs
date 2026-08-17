@@ -223,3 +223,74 @@ pub fn dequantize_bf16_to_f32(src: &[u8], dst: &mut [f32]) {
         dst[i] = bf16_to_f32(raw);
     }
 }
+
+/// Dequantize Q4_K buffer to F32 (block size: 256 weights per 144-byte block)
+pub fn dequantize_q4_k_to_f32(src: &[u8], dst: &mut [f32]) {
+    let n_blocks = dst.len() / 256;
+    for b in 0..n_blocks {
+        let b_src = &src[b * 144..(b + 1) * 144];
+        let d_raw = u16::from_le_bytes([b_src[0], b_src[1]]);
+        let dmin_raw = u16::from_le_bytes([b_src[2], b_src[3]]);
+        let d = f16_to_f32(d_raw);
+        let dmin = f16_to_f32(dmin_raw);
+
+        let scales = &b_src[4..16];
+        let qs = &b_src[16..144];
+
+        let out = &mut dst[b * 256..(b + 1) * 256];
+        for i in 0..32 {
+            let sc = (scales[i / 4] & 0x3F) as f32;
+            let m = ((scales[i / 4] >> 6) | ((scales[i / 4 + 4] & 0x03) << 2)) as f32;
+            let dl = d * sc;
+            let ml = dmin * m;
+
+            let byte = qs[i];
+            let q0 = (byte & 0x0F) as f32;
+            let q1 = ((byte >> 4) & 0x0F) as f32;
+
+            out[i * 2] = dl * q0 - ml;
+            out[i * 2 + 1] = dl * q1 - ml;
+        }
+        for i in 32..128 {
+            let sc = (scales[i / 16] & 0x3F) as f32;
+            let m = ((scales[i / 16 + 4] >> 2) & 0x0F) as f32;
+            let dl = d * sc;
+            let ml = dmin * m;
+
+            let byte = qs[i];
+            let q0 = (byte & 0x0F) as f32;
+            let q1 = ((byte >> 4) & 0x0F) as f32;
+
+            out[i * 2] = dl * q0 - ml;
+            out[i * 2 + 1] = dl * q1 - ml;
+        }
+    }
+}
+
+/// Dequantize Q6_K buffer to F32 (block size: 256 weights per 210-byte block)
+pub fn dequantize_q6_k_to_f32(src: &[u8], dst: &mut [f32]) {
+    let n_blocks = dst.len() / 256;
+    for b in 0..n_blocks {
+        let b_src = &src[b * 210..(b + 1) * 210];
+        let ql = &b_src[0..128];
+        let qh = &b_src[128..192];
+        let scales = &b_src[192..208];
+        let d_raw = u16::from_le_bytes([b_src[208], b_src[209]]);
+        let d = f16_to_f32(d_raw);
+
+        let out = &mut dst[b * 256..(b + 1) * 256];
+        for i in 0..128 {
+            let sc = scales[i / 16] as i8 as f32;
+            let l_byte = ql[i];
+            let h_byte = qh[i / 2];
+
+            let h_val = if i % 2 == 0 { h_byte & 0x0F } else { (h_byte >> 4) & 0x0F };
+            let q0 = ((l_byte & 0x0F) | ((h_val & 0x03) << 4)) as i32 - 32;
+            let q1 = (((l_byte >> 4) & 0x0F) | (((h_val >> 2) & 0x03) << 4)) as i32 - 32;
+
+            out[i * 2] = d * sc * (q0 as f32);
+            out[i * 2 + 1] = d * sc * (q1 as f32);
+        }
+    }
+}
+

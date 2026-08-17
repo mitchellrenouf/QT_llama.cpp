@@ -208,7 +208,8 @@ mod tests {
 
     #[test]
     fn test_is_executable_in_path() {
-        let found = is_executable_in_path("sh");
+        let exe = if cfg!(windows) { "cargo" } else { "sh" };
+        let found = is_executable_in_path(exe);
         assert!(found.is_some());
     }
 }

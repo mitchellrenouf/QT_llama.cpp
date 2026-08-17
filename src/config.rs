@@ -123,6 +123,18 @@ pub struct Config {
     /// Custom path to Qt6 QML runner executable (e.g. qml.exe, qml6.exe, qmlscene.exe)
     #[arg(long = "qml-runner", env = "QT_QML_RUNNER")]
     pub qml_runner: Option<PathBuf>,
+
+    /// Run as an OpenAI-compatible HTTP & Server-Sent Events (SSE) API server
+    #[arg(long)]
+    pub serve: bool,
+
+    /// HTTP API server port (default: 8080)
+    #[arg(long, default_value_t = 8080)]
+    pub port: u16,
+
+    /// Optional external Model Context Protocol (MCP) servers to launch and connect (e.g. --mcp-server "npx -y @modelcontextprotocol/server-postgres ...")
+    #[arg(long = "mcp-server")]
+    pub mcp_servers: Vec<String>,
 }
 
 pub fn detect_os_name() -> String {

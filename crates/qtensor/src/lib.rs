@@ -6,6 +6,7 @@ pub mod ops;
 pub mod graph;
 pub mod device;
 pub mod kv_cache;
+pub mod speculative;
 pub mod model;
 pub mod engine;
 
@@ -18,6 +19,7 @@ pub use gguf::{GgufFile, GgufTensorInfo, GgufValue};
 pub use tensor::{Tensor, TensorStorage};
 pub use graph::{CGraph, Node, OpType};
 pub use device::{DeviceManager, DeviceType};
-pub use kv_cache::{KvCacheManager, LayerKvCache};
+pub use kv_cache::{KvCacheManager, LayerKvCache, PrefixCache};
+pub use speculative::SpeculativeDecoder;
 pub use model::{ModelConfig, QTensorModel};
 pub use engine::QTensorEngine;

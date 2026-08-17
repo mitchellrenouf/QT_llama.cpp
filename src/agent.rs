@@ -84,12 +84,42 @@ impl GemmaAgent {
         &self.workspace_rules
     }
 
+    pub fn get_client_arc(&self) -> std::sync::Arc<LlamaClient> {
+        std::sync::Arc::new(self.client.clone())
+    }
+
     pub fn loaded_rules_count(&self) -> usize {
         self.workspace_rules.rule_sources.len()
     }
 
     pub async fn health_check(&self) -> Result<String> {
         self.client.health_check().await
+    }
+
+    pub async fn init_mcp_servers(&mut self) -> Result<()> {
+        for server_cmd in &self.config.mcp_servers {
+            let parts: Vec<&str> = server_cmd.split_whitespace().collect();
+            if parts.is_empty() {
+                continue;
+            }
+            let program = parts[0];
+            let args = &parts[1..];
+            println!("🔌 Connecting to MCP Server: {}...", server_cmd.cyan());
+            match crate::tools::mcp::McpClient::spawn(program, args).await {
+                Ok(client) => match client.list_tools().await {
+                    Ok(tools) => {
+                        println!("   Loaded {} MCP tool(s):", tools.len().to_string().bright_green().bold());
+                        for t in tools {
+                            println!("     - {} ({})", t.name().bright_cyan(), t.description().dimmed());
+                            self.registry.register(t);
+                        }
+                    }
+                    Err(e) => eprintln!("   Failed to list MCP tools: {}", e),
+                },
+                Err(e) => eprintln!("   Failed to spawn MCP client: {}", e),
+            }
+        }
+        Ok(())
     }
 
     pub fn has_model_loaded(&self) -> bool {

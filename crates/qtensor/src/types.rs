@@ -13,12 +13,16 @@ pub enum DType {
     Q5_1 = 7,
     Q8_0 = 8,
     Q8_1 = 9,
+    Q4_K = 12,
+    Q5_K = 14,
+    Q6_K = 15,
     I8 = 16,
     I16 = 17,
     I32 = 18,
     I64 = 19,
     F64 = 20,
     IQ4_NL = 21,
+    IQ4_XS = 22,
     BF16 = 30,
 }
 
@@ -30,6 +34,7 @@ impl DType {
             DType::F32 | DType::F16 | DType::BF16 | DType::F64 => 1,
             DType::I8 | DType::I16 | DType::I32 | DType::I64 => 1,
             DType::Q4_0 | DType::Q4_1 | DType::Q5_0 | DType::Q5_1 | DType::Q8_0 | DType::Q8_1 | DType::IQ4_NL => 32,
+            DType::Q4_K | DType::Q5_K | DType::Q6_K | DType::IQ4_XS => 256,
         }
     }
 
@@ -50,7 +55,11 @@ impl DType {
             DType::Q5_1 => 24,
             DType::Q8_0 => 34,  // 2 bytes (fp16 scale) + 32 bytes (32 int8)
             DType::Q8_1 => 36,
+            DType::Q4_K => 144, // 256 weights in 144 bytes
+            DType::Q5_K => 176, // 256 weights in 176 bytes
+            DType::Q6_K => 210, // 256 weights in 210 bytes
             DType::IQ4_NL => 18,
+            DType::IQ4_XS => 136,
         }
     }
 

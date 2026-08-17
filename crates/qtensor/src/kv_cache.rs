@@ -68,8 +68,60 @@ impl LayerKvCache {
         self.cur_seq_len = 0;
     }
 
+    pub fn truncate(&mut self, len: usize) {
+        if self.cur_seq_len > len {
+            self.cur_seq_len = len;
+        }
+    }
+
     pub fn step_increment(&mut self) {
         self.cur_seq_len += 1;
+    }
+}
+
+/// Prompt Prefix Cache for 0ms initial prefill on recurring system instructions & rules
+#[derive(Default)]
+pub struct PrefixCache {
+    cached_tokens: Vec<i32>,
+    cached_len: usize,
+}
+
+impl PrefixCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Match current prompt tokens against cached prefix to find longest common prefix
+    pub fn match_prefix(&self, tokens: &[i32]) -> usize {
+        let max_match = self.cached_tokens.len().min(tokens.len());
+        let mut match_len = 0;
+        for i in 0..max_match {
+            if self.cached_tokens[i] == tokens[i] {
+                match_len += 1;
+            } else {
+                break;
+            }
+        }
+        match_len
+    }
+
+    /// Update the cached prefix with newly evaluated tokens
+    pub fn update(&mut self, tokens: &[i32], len: usize) {
+        self.cached_tokens = tokens[..len.min(tokens.len())].to_vec();
+        self.cached_len = self.cached_tokens.len();
+    }
+
+    pub fn clear(&mut self) {
+        self.cached_tokens.clear();
+        self.cached_len = 0;
+    }
+
+    pub fn len(&self) -> usize {
+        self.cached_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cached_len == 0
     }
 }
 
@@ -77,6 +129,7 @@ impl LayerKvCache {
 pub struct KvCacheManager {
     pub layers: Vec<LayerKvCache>,
     pub max_context: usize,
+    pub prefix_cache: PrefixCache,
 }
 
 impl KvCacheManager {
@@ -109,12 +162,20 @@ impl KvCacheManager {
         Ok(Self {
             layers,
             max_context,
+            prefix_cache: PrefixCache::new(),
         })
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        for l in &mut self.layers {
+            l.truncate(len);
+        }
     }
 
     pub fn clear(&mut self) {
         for l in &mut self.layers {
             l.clear();
         }
+        self.prefix_cache.clear();
     }
 }

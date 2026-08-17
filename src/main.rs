@@ -6,17 +6,25 @@ mod gui;
 pub mod hf;
 mod markdown;
 mod rules;
+mod server;
 mod tools;
 
 use agent::GemmaAgent;
 use clap::Parser;
 use config::{AgentMode, Config};
 use colored::*;
+use server::ApiServer;
 use std::io::{self, BufRead, Write};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
+
+    if config.serve {
+        let agent = GemmaAgent::new(config.clone());
+        let server = ApiServer::new(agent.get_client_arc(), config.port);
+        return server.run().await;
+    }
 
     if !config.cli {
         match gui::launch_qt_gui(&config).await {
@@ -44,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
     println!(" Auto-Approve: {}", config.auto_approve.to_string().bright_white());
 
     let mut agent = GemmaAgent::new(config.clone());
+    let _ = agent.init_mcp_servers().await;
 
     if agent.get_rules().has_rules() {
         println!(" Loaded Rules: {}", agent.loaded_rules_count().to_string().bright_green().bold());

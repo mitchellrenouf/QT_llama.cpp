@@ -3,6 +3,7 @@ pub mod desktop;
 pub mod editor;
 pub mod git;
 pub mod media;
+pub mod mcp;
 pub mod web;
 
 use anyhow::Result;
@@ -16,8 +17,8 @@ use crate::client::ToolDefinition;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
     fn parameters(&self) -> Value;
     async fn execute(&self, workspace_root: &Path, args: Value) -> Result<String>;
 
