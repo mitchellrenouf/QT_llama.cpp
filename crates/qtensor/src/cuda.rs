@@ -393,6 +393,29 @@ impl CudaDevice {
         Ok(())
     }
 
+    pub fn copy_from_host_at_async<T>(
+        &self,
+        dst: &mut CudaBuffer<T>,
+        offset: usize,
+        src: &[T],
+    ) -> Result<()> {
+        assert!(offset + src.len() <= dst.len());
+        unsafe { cudaSetDevice(self.device_id) };
+        let res = unsafe {
+            cudaMemcpyAsync(
+                dst.as_mut_ptr().add(offset) as *mut c_void,
+                src.as_ptr() as *const c_void,
+                std::mem::size_of_val(src),
+                CudaMemcpyKind::HostToDevice,
+                self.stream,
+            )
+        };
+        if res != 0 {
+            return Err(anyhow!("cudaMemcpyAsync offset HtoD failed with code {}", res));
+        }
+        Ok(())
+    }
+
     pub fn gemv_q4_0_qkv(
         &self,
         d_w_q: &CudaBuffer<u8>,

@@ -474,7 +474,7 @@ void cuda_op_gemv_q4_0(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = 256;
+    int threads = 128;
     int rows_per_block = threads / WARP_SIZE;
     int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
     k_gemv_q4_0_f32<<<blocks, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
@@ -491,7 +491,7 @@ void cuda_op_gemv_q4_0_qkv(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = 256;
+    int threads = 128;
     int rows_per_block = threads / WARP_SIZE;
     int total_rows = q_rows + 2 * kv_rows;
     int blocks = (total_rows + rows_per_block - 1) / rows_per_block;
@@ -509,7 +509,7 @@ void cuda_op_gemv_q4_0_geglu(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = 256;
+    int threads = 128;
     int rows_per_block = threads / WARP_SIZE;
     int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
     k_gemv_q4_0_geglu_f32<<<blocks, threads, 0, stream>>>(
@@ -525,7 +525,7 @@ void cuda_op_gemv_q8_0(
     int n_cols,
     cudaStream_t stream
 ) {
-    int threads = 256;
+    int threads = 128;
     int rows_per_block = threads / WARP_SIZE;
     int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
     k_gemv_q8_0_f32<<<blocks, threads, 0, stream>>>(d_w_q8, d_x, d_y, n_rows, n_cols);
@@ -710,7 +710,7 @@ void cuda_op_moe_topk_q4_0(
 ) {
     cudaMemsetAsync(d_out_moe, 0, dim * sizeof(float), stream);
 
-    const int threads = 256;
+    const int threads = 128;
     const int rows_per_block = threads / WARP_SIZE;
     dim3 grid_gu((exp_ffn_dim + rows_per_block - 1) / rows_per_block, n_active);
     k_moe_gate_up_topk_q4_0_f32<<<grid_gu, threads, 0, stream>>>(

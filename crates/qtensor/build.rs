@@ -4,6 +4,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=c_src/cuda_kernels.cu");
+    println!("cargo:rerun-if-env-changed=QTENSOR_CUDA_ARCHS");
 
     #[cfg(feature = "cuda")]
     {
@@ -59,6 +60,23 @@ fn main() {
                     "-O3",
                     "--use_fast_math",
                 ]);
+
+                // Ship native cubins for the broad NVIDIA generations we support.
+                // CUDA selects the best image at load time; the final PTX image
+                // preserves forward compatibility with later architectures.
+                let archs = env::var("QTENSOR_CUDA_ARCHS")
+                    .unwrap_or_else(|_| "75,89,120".to_string());
+                let mut parsed_archs = Vec::new();
+                for arch in archs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    if !arch.chars().all(|c| c.is_ascii_digit()) {
+                        panic!("invalid CUDA architecture in QTENSOR_CUDA_ARCHS: {arch}");
+                    }
+                    cmd.arg(format!("-gencode=arch=compute_{arch},code=sm_{arch}"));
+                    parsed_archs.push(arch.to_string());
+                }
+                if let Some(highest) = parsed_archs.last() {
+                    cmd.arg(format!("-gencode=arch=compute_{highest},code=compute_{highest}"));
+                }
 
                 if is_windows {
                     cmd.args(&["-Xcompiler", "/MD"]);

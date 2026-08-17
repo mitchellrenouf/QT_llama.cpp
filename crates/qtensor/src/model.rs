@@ -700,9 +700,9 @@ impl QTensorModel {
                         (q_guard.as_mut(), kc_guard.as_mut(), vc_guard.as_mut(), out_guard.as_mut())
                     {
                         let offset = (seq_len - 1) * layer.kv_dim;
-                        if d_q.copy_from_host(&q).is_ok()
-                            && d_kc.copy_from_host_at(offset, &k).is_ok()
-                            && d_vc.copy_from_host_at(offset, &v).is_ok()
+                        if dev.copy_from_host_async(d_q, &q).is_ok()
+                            && dev.copy_from_host_at_async(d_kc, offset, &k).is_ok()
+                            && dev.copy_from_host_at_async(d_vc, offset, &v).is_ok()
                         {
                             dev.attention_causal(
                                 d_q,
