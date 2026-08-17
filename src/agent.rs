@@ -106,7 +106,7 @@ impl GemmaAgent {
         let engine = llama_cpp_binding::LlamaEngine::new(
             model_path,
             n_layers,
-            self.config.max_context_tokens as u32,
+            self.config.ctx_size,
             Some(&backend_str),
         )?;
         self.client = crate::client::LlamaClient::with_engine(std::sync::Arc::new(engine), self.config.system_prompt.clone());

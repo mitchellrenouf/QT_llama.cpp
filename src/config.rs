@@ -80,6 +80,10 @@ pub struct Config {
     #[arg(long, default_value_t = 8192)]
     pub max_tokens: u32,
 
+    /// In-process llama.cpp engine context window size in tokens (default: 8192)
+    #[arg(long = "ctx-size", env = "LLAMA_CTX_SIZE", default_value_t = 8192)]
+    pub ctx_size: u32,
+
     /// Max context tokens before auto-compaction triggers (default 256k)
     #[arg(long, default_value_t = 256000)]
     pub max_context_tokens: usize,

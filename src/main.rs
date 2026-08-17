@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         println!(" HuggingFace : {}", hf_spec.bright_cyan().bold());
     }
     println!(" Model Path  : {}", config.model.cyan());
-    println!(" Workspace   : {}", config.workspace_root.display().to_string().green());
+    println!(" Context Size: {} tokens (GPU KV cache)", config.ctx_size.to_string().bright_yellow().bold());
     println!(" Max Context : {} tokens (auto-compact enabled)", config.max_context_tokens.to_string().yellow());
     println!(" Auto-Approve: {}", config.auto_approve.to_string().bright_white());
 

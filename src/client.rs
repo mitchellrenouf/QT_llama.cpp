@@ -220,7 +220,7 @@ impl LlamaClient {
             println!("Loading in-process GGUF model: {}", path.display());
             let n_layers = config.n_gpu_layers.unwrap_or(-1);
             let backend_str = config.backend.to_string();
-            match LlamaEngine::new(&path, n_layers, config.max_context_tokens as u32, Some(&backend_str)) {
+            match LlamaEngine::new(&path, n_layers, config.ctx_size, Some(&backend_str)) {
                 Ok(eng) => Some(Arc::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: llama.cpp engine init deferred: {}", e);

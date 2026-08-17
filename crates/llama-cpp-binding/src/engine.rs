@@ -91,12 +91,19 @@ impl LlamaEngine {
 
         let mut m_params = unsafe { llama_model_default_params() };
         let mut c_params = unsafe { llama_context_default_params() };
-        c_params.n_ctx = if n_ctx > 0 && n_ctx <= 262144 { n_ctx } else { 8192 };
+        let target_ctx = if n_ctx > 0 && n_ctx <= 32768 {
+            n_ctx
+        } else {
+            8192
+        };
+
+        c_params.n_ctx = target_ctx;
         c_params.n_batch = 2048;
         c_params.n_ubatch = 512;
         c_params.flash_attn_type = 1; // LLAMA_FLASH_ATTN_TYPE_ENABLED
         c_params.offload_kqv = true;  // Keep KV cache fully in GPU VRAM
         c_params.op_offload = true;   // Offload all tensor operations
+        c_params.swa_full = false;    // Use sliding window size, do NOT allocate full 256k buffer
         c_params.n_threads = num_threads;
         c_params.n_threads_batch = num_threads;
         c_params.no_perf = true;
@@ -116,9 +123,10 @@ impl LlamaEngine {
         }
 
         eprintln!(
-            "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
+            "[llama.cpp] Loading model '{}' (n_gpu_layers = {}, n_ctx = {})...",
             model_path.display(),
-            m_params.n_gpu_layers
+            m_params.n_gpu_layers,
+            c_params.n_ctx
         );
 
         let model_ptr = unsafe { llama_model_load_from_file(c_path.as_ptr(), m_params) };
@@ -129,9 +137,26 @@ impl LlamaEngine {
         let total_layers = unsafe { llama_model_n_layer(model_ptr) };
         let vocab_ptr = unsafe { llama_model_get_vocab(model_ptr) };
 
+        // Try initializing context in GPU VRAM with target_ctx
         let mut ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+
+        // If tight on VRAM, scale down context size while keeping KV cache 100% in GPU VRAM
+        if ctx_ptr.is_null() && c_params.n_ctx > 4096 {
+            eprintln!("[llama.cpp] Context size {} exceeded VRAM, retrying with 4096 tokens (GPU KV cache)...", c_params.n_ctx);
+            c_params.n_ctx = 4096;
+            ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+        }
+
+        if ctx_ptr.is_null() && c_params.n_ctx > 2048 {
+            eprintln!("[llama.cpp] Retrying with 2048 tokens (GPU KV cache)...");
+            c_params.n_ctx = 2048;
+            ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
+        }
+
+        // Only fall back to CPU KV cache if GPU VRAM is completely full
         if ctx_ptr.is_null() {
-            eprintln!("[llama.cpp] GPU compute/KV buffer allocation was tight, retrying with CPU KV cache...");
+            eprintln!("[llama.cpp] GPU VRAM exhausted for KV cache, falling back to CPU KV cache...");
+            c_params.n_ctx = target_ctx;
             c_params.offload_kqv = false;
             ctx_ptr = unsafe { llama_init_from_model(model_ptr, c_params) };
         }
