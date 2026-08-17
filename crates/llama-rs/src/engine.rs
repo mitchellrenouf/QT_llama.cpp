@@ -33,6 +33,11 @@ pub struct LlamaEngine {
     inner: Arc<EngineBackend>,
 }
 
+pub struct GenerationChunk {
+    pub text: String,
+    pub token_count: usize,
+}
+
 impl LlamaEngine {
     pub fn new<P: AsRef<Path>>(model_path: P, n_gpu_layers: i32, ctx_size: u32, backend: Option<&str>) -> Result<Self> {
         let model_path = model_path.as_ref();
@@ -52,10 +57,22 @@ impl LlamaEngine {
         Ok(Self { inner: Arc::new(EngineBackend::QTensor(Arc::new(inner))) })
     }
 
-    pub fn generate_stream(&self, prompt: &str, max_tokens: usize, temperature: f32) -> (mpsc::Receiver<Result<String>>, Arc<AtomicBool>) {
+    pub fn generate_stream(&self, prompt: &str, max_tokens: usize, temperature: f32) -> (mpsc::Receiver<Result<GenerationChunk>>, Arc<AtomicBool>) {
         match self.inner.as_ref() {
             EngineBackend::LlamaCpp(server) => server.generate_stream(prompt, max_tokens, temperature),
-            EngineBackend::QTensor(engine) => engine.generate_stream(prompt, max_tokens, temperature),
+            EngineBackend::QTensor(engine) => {
+                let (mut source, cancel) = engine.generate_stream(prompt, max_tokens, temperature);
+                let (tx, rx) = mpsc::channel(4096);
+                tokio::spawn(async move {
+                    while let Some(piece) = source.recv().await {
+                        let piece = piece.map(|text| GenerationChunk { text, token_count: 1 });
+                        if tx.send(piece).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                (rx, cancel)
+            }
         }
     }
 
@@ -91,6 +108,7 @@ impl LlamaCppServer {
             .args(["--n-gpu-layers", &gpu_layers.to_string()])
             .args(["--ctx-size", &ctx_size.to_string()])
             .args(["--flash-attn", "on"])
+            .args(["--parallel", "1"])
             .args(["--host", "127.0.0.1"])
             .args(["--port", &port.to_string()])
             .arg("--no-webui")
@@ -121,7 +139,7 @@ impl LlamaCppServer {
         Ok(Self { port, child: Mutex::new(child) })
     }
 
-    fn generate_stream(&self, prompt: &str, max_tokens: usize, temperature: f32) -> (mpsc::Receiver<Result<String>>, Arc<AtomicBool>) {
+    fn generate_stream(&self, prompt: &str, max_tokens: usize, temperature: f32) -> (mpsc::Receiver<Result<GenerationChunk>>, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::channel(4096);
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel = cancelled.clone();
@@ -148,7 +166,7 @@ fn server_ready(port: u16) -> bool {
     BufReader::new(stream).read_line(&mut status).is_ok() && status.contains(" 200 ")
 }
 
-fn stream_completion(port: u16, prompt: &str, max_tokens: usize, temperature: f32, cancelled: &AtomicBool, tx: &mpsc::Sender<Result<String>>) -> Result<()> {
+fn stream_completion(port: u16, prompt: &str, max_tokens: usize, temperature: f32, cancelled: &AtomicBool, tx: &mpsc::Sender<Result<GenerationChunk>>) -> Result<()> {
     let body = serde_json::json!({
         "prompt": prompt,
         "n_predict": max_tokens,
@@ -163,6 +181,8 @@ fn stream_completion(port: u16, prompt: &str, max_tokens: usize, temperature: f3
     ).as_bytes())?;
     stream.flush()?;
 
+    let mut pending_text = String::new();
+    let mut pending_tokens = 0usize;
     for line in BufReader::new(stream).lines() {
         if cancelled.load(Ordering::Relaxed) {
             break;
@@ -174,10 +194,26 @@ fn stream_completion(port: u16, prompt: &str, max_tokens: usize, temperature: f3
         }
         let event: serde_json::Value = serde_json::from_str(data)?;
         if let Some(content) = event.get("content").and_then(|value| value.as_str()) {
-            if !content.is_empty() && tx.blocking_send(Ok(content.to_owned())).is_err() {
-                break;
+            if !content.is_empty() {
+                let n_tokens = event.get("tokens")
+                    .and_then(|value| value.as_array())
+                    .map_or(1, |tokens| tokens.len().max(1));
+                pending_text.push_str(content);
+                pending_tokens += n_tokens;
+                if pending_tokens >= 16 {
+                    let chunk = GenerationChunk {
+                        text: std::mem::take(&mut pending_text),
+                        token_count: std::mem::take(&mut pending_tokens),
+                    };
+                    if tx.blocking_send(Ok(chunk)).is_err() {
+                        return Ok(());
+                    }
+                }
             }
         }
+    }
+    if pending_tokens > 0 {
+        let _ = tx.blocking_send(Ok(GenerationChunk { text: pending_text, token_count: pending_tokens }));
     }
     Ok(())
 }

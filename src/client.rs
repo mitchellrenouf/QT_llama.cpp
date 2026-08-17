@@ -360,13 +360,14 @@ impl LlamaClient {
         let mut tool_calls = Vec::new();
 
         while let Some(piece_res) = rx.recv().await {
-            let piece = match piece_res {
+            let chunk = match piece_res {
                 Ok(p) => p,
                 Err(e) => return Err(e),
             };
+            let piece = chunk.text;
 
             let start = first_token_time.get_or_insert_with(std::time::Instant::now);
-            token_count += 1;
+            token_count += chunk.token_count;
             let elapsed = start.elapsed().as_secs_f64();
             let tps = if token_count > 1 && elapsed > 0.0001 {
                 (token_count - 1) as f64 / elapsed
