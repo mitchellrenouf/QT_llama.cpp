@@ -88,13 +88,15 @@ modules:
     buildsystem: simple
     build-commands:
       - mkdir -p /var/tmp/oneapi_tmp
-      - TMPDIR=/var/tmp/oneapi_tmp sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi --tmp-dir /var/tmp/oneapi_tmp
+      - TMPDIR=/var/tmp/oneapi_tmp sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/oneapi
       - rm -rf /var/tmp/oneapi_tmp
       # Strip unneeded documentation and samples to optimize image footprint
       - rm -rf /app/oneapi/doc /app/oneapi/samples /app/oneapi/share/doc
       - mkdir -p /app/lib
-      - cp -P /app/oneapi/compiler/latest/lib/libsycl.so* /app/lib/ || true
-      - cp -P /app/oneapi/compiler/latest/lib/libOpenCL.so* /app/lib/ || true
+      - cp -P /app/oneapi/compiler/latest/lib/libsycl.so* /app/lib/ 2>/dev/null || true
+      - cp -P /app/oneapi/compiler/latest/lib/libOpenCL.so* /app/lib/ 2>/dev/null || true
+      - cp -P /app/oneapi/mkl/latest/lib/libmkl* /app/lib/ 2>/dev/null || true
+      - cp -P /app/oneapi/dnnl/latest/lib/libdnnl.so* /app/lib/ 2>/dev/null || true
     sources:
       - type: file
         url: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c9c3d3e3-ddb4-490e-bb41-6e9041ba32a7/intel-oneapi-toolkit-2026.0.1.27_offline.sh
