@@ -63,7 +63,19 @@ fn main() {
         .define("LLAMA_BUILD_APP", "OFF")
         .define("LLAMA_BUILD_COMMON", "ON")
         .define("BUILD_SHARED_LIBS", "OFF")
-        .define("CMAKE_BUILD_TYPE", "Release");
+        .define("CMAKE_BUILD_TYPE", "Release")
+        .define("GGML_NATIVE", "ON")
+        .define("GGML_AVX", "ON")
+        .define("GGML_AVX2", "ON")
+        .define("GGML_FMA", "ON")
+        .define("GGML_F16C", "ON")
+        .define("GGML_BMI2", "ON")
+        .define("GGML_CPU_REPACK", "ON");
+
+    if is_windows {
+        cfg.cflag("/O2").cflag("/Oi").cflag("/Ot");
+        cfg.cxxflag("/O2").cxxflag("/Oi").cxxflag("/Ot");
+    }
 
     let mut prefix_paths = Vec::new();
     if Path::new("/app").exists() {
@@ -75,6 +87,9 @@ fn main() {
         println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration (NVIDIA cuBLAS)...");
         cfg.define("GGML_CUDA", "ON");
         cfg.define("GGML_CUDA_NCCL", "OFF");
+        cfg.define("GGML_CUDA_FA", "ON");
+        cfg.define("GGML_CUDA_GRAPHS", "ON");
+        cfg.define("GGML_CUDA_PEER_MAX_BATCH_SIZE", "128");
 
         if let Ok(cuda_dir) = env::var("CUDA_PATH").or_else(|_| env::var("CUDA_TOOLKIT_ROOT_DIR")) {
             let p = PathBuf::from(&cuda_dir);
@@ -223,6 +238,11 @@ fn main() {
     bridge_build
         .cpp(true)
         .std("c++17")
+        .opt_level(3)
+        .flag_if_supported("/O2")
+        .flag_if_supported("/Oi")
+        .flag_if_supported("/Ot")
+        .flag_if_supported("/fp:fast")
         .file("c_src/bridge.cpp")
         .include(llama_root.join("include"))
         .include(llama_root.join("ggml/include"))

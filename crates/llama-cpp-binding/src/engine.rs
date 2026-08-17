@@ -77,48 +77,43 @@ impl LlamaEngine {
             .or_else(|| std::env::var("QT_LLAMA_BACKEND").ok())
             .or_else(|| std::env::var("LLAMA_BACKEND").ok())
             .unwrap_or_else(|| "auto".to_string());
-        let c_backend = CString::new(backend_choice.as_str())?;
+        let _c_backend = CString::new(backend_choice.as_str())?;
 
         let env_override = std::env::var("LLAMA_GPU_LAYERS")
             .ok()
             .or_else(|| std::env::var("QT_LLAMA_GPU_LAYERS").ok())
             .and_then(|s| s.parse::<i32>().ok());
 
+        let num_threads = std::thread::available_parallelism()
+            .map(|p| p.get() as i32)
+            .unwrap_or(8)
+            .min(16);
+
         let mut m_params = unsafe { llama_model_default_params() };
         let mut c_params = unsafe { llama_context_default_params() };
-        c_params.n_ctx = if n_ctx > 0 && n_ctx <= 32768 { n_ctx } else { 8192 };
+        c_params.n_ctx = if n_ctx > 0 && n_ctx <= 262144 { n_ctx } else { 8192 };
         c_params.n_batch = 2048;
         c_params.n_ubatch = 512;
         c_params.flash_attn_type = 1; // LLAMA_FLASH_ATTN_TYPE_ENABLED
-        c_params.n_threads = 4;
-        c_params.n_threads_batch = 4;
+        c_params.offload_kqv = true;  // Keep KV cache fully in GPU VRAM
+        c_params.op_offload = true;   // Offload all tensor operations
+        c_params.n_threads = num_threads;
+        c_params.n_threads_batch = num_threads;
         c_params.no_perf = true;
+        m_params.load_mode = -1;      // LLAMA_LOAD_MODE_AUTO (mmap for zero-copy memory mapping)
 
         if let Some(layers) = env_override {
             m_params.n_gpu_layers = layers;
         } else if n_gpu_layers >= 0 {
             m_params.n_gpu_layers = n_gpu_layers;
         } else {
-            // Auto mode: run common_fit_params with selected backend!
-            eprintln!("[llama.cpp] Probing device memory and fitting parameters (backend: {})...", backend_choice);
-            let fit_status = unsafe {
-                qt_llama_fit_params_backend(
-                    c_path.as_ptr(),
-                    &mut m_params,
-                    &mut c_params,
-                    4096,
-                    c_backend.as_ptr(),
-                )
-            };
-            eprintln!(
-                "[llama.cpp] Auto-fit completed (status: {}, fitted n_gpu_layers: {})",
-                fit_status,
-                m_params.n_gpu_layers
-            );
+            // Offload all layers to GPU by default for maximum token generation speed (matching llama-server -ngl 99)
+            if backend_choice != "cpu" {
+                m_params.n_gpu_layers = 999;
+            } else {
+                m_params.n_gpu_layers = 0;
+            }
         }
-
-        // Disable mmap when tensor overrides are used for maximum CPU RAM bandwidth
-        m_params.load_mode = 0; // LLAMA_LOAD_MODE_NONE
 
         eprintln!(
             "[llama.cpp] Loading model '{}' (n_gpu_layers = {})...",
@@ -292,7 +287,7 @@ impl LlamaEngine {
             };
 
             // Evaluate prompt tokens in batches
-            let n_batch = 512;
+            let n_batch = 2048;
             let mut batch = unsafe { llama_batch_init(n_batch, 0, 1) };
 
             let mut i = 0;
