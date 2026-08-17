@@ -62,7 +62,7 @@ fn main() {
         .define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
         .define("LLAMA_BUILD_APP", "OFF")
-        .define("LLAMA_BUILD_COMMON", "OFF")
+        .define("LLAMA_BUILD_COMMON", "ON")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("CMAKE_BUILD_TYPE", "Release")
         .define("GGML_NATIVE", "ON")
@@ -85,7 +85,7 @@ fn main() {
     prefix_paths.push("/usr".to_string());
 
     if has_cuda {
-        println!("cargo:warning=[llama-rs] Enabling CUDA GPU Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling CUDA GPU Acceleration for GGML & llama...");
         cfg.define("GGML_CUDA", "ON");
         cfg.define("GGML_CUDA_NCCL", "OFF");
         cfg.define("GGML_CUDA_FA", "ON");
@@ -128,7 +128,7 @@ fn main() {
     }
 
     if has_vulkan {
-        println!("cargo:warning=[llama-rs] Enabling Vulkan GPU Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling Vulkan GPU Acceleration for GGML & llama...");
         cfg.define("GGML_VULKAN", "ON");
         if let Ok(sdk) = env::var("VULKAN_SDK") {
             let p = PathBuf::from(sdk);
@@ -139,12 +139,12 @@ fn main() {
     }
 
     if has_hipblas {
-        println!("cargo:warning=[llama-rs] Enabling AMD ROCm / HIP Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling AMD ROCm / HIP Acceleration for GGML & llama...");
         cfg.define("GGML_HIPBLAS", "ON");
     }
 
     if has_sycl {
-        println!("cargo:warning=[llama-rs] Enabling Intel SYCL GPU Acceleration for pure GGML...");
+        println!("cargo:warning=[llama-rs] Enabling Intel SYCL GPU Acceleration for GGML & llama...");
         cfg.define("GGML_SYCL", "ON");
     }
 
@@ -166,35 +166,9 @@ fn main() {
         }
     }
 
-    // Compile pure GGML engine C++ bridge
-    let mut bridge_build = cc::Build::new();
-    bridge_build
-        .cpp(true)
-        .std("c++17")
-        .opt_level(3)
-        .flag_if_supported("/O2")
-        .flag_if_supported("/Oi")
-        .flag_if_supported("/Ot")
-        .flag_if_supported("/fp:fast")
-        .file("c_src/ggml_engine.cpp")
-        .include(llama_root.join("ggml/include"))
-        .include(llama_root.join("ggml/src"));
-
-    if has_cuda {
-        bridge_build.define("GGML_USE_CUDA", "1");
-    }
-    if has_vulkan {
-        bridge_build.define("GGML_USE_VULKAN", "1");
-    }
-    if has_hipblas {
-        bridge_build.define("GGML_USE_HIPBLAS", "1");
-    }
-    if has_sycl {
-        bridge_build.define("GGML_USE_SYCL", "1");
-    }
-
-    bridge_build.compile("qt_llama_ggml_engine");
-
+    println!("cargo:rustc-link-lib=static=llama-common");
+    println!("cargo:rustc-link-lib=static=llama-common-base");
+    println!("cargo:rustc-link-lib=static=llama");
     println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-base");
     println!("cargo:rustc-link-lib=static=ggml-cpu");

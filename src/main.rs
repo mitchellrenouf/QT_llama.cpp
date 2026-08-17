@@ -82,6 +82,12 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", format!("ℹ Notice: {}", e).yellow());
     }
 
+    if let Some(prompt) = &config.prompt {
+        println!("{} {}\n", "👤 User:".green().bold(), prompt.bright_white());
+        let _ = agent.process_user_request(prompt).await?;
+        return Ok(());
+    }
+
     println!("\nEnter your task or question (type {}/help{} for command menu, or {}/exit{} to quit):\n", "'".bright_cyan(), "'".bright_cyan(), "'".dimmed(), "'".dimmed());
 
     loop {

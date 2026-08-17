@@ -64,17 +64,47 @@ pub enum StreamEvent {
 }
 
 pub fn normalize_relaxed_json(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+    let mut s = raw
+        .trim()
+        .replace("<|\"|>", "\"")
+        .replace("<|\"|", "\"")
+        .replace("|\">", "\"")
+        .replace("<|'|>", "'")
+        .replace("<|'", "'")
+        .replace("|'>", "'")
+        .replace("<|", "")
+        .replace("|>", "");
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
         return v.to_string();
     }
+
     // Replace unquoted key names: {query: "foo"} -> {"query": "foo"}
-    let re = regex::Regex::new(r#"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:"#).unwrap();
-    let quoted = re.replace_all(trimmed, r#"$1"$2":"#).to_string();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&quoted) {
+    let re_keys = regex::Regex::new(r#"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:"#).unwrap();
+    s = re_keys.replace_all(&s, r#"$1"$2":"#).to_string();
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
         return v.to_string();
     }
-    trimmed.to_string()
+
+    // Quote unquoted string values: {"text": Hello world} -> {"text": "Hello world"}
+    let re_vals = regex::Regex::new(r#":\s*([a-zA-Z][^"{}[\]:,]+?)(\s*[},])"#).unwrap();
+    let s2 = re_vals
+        .replace_all(&s, |caps: &regex::Captures| {
+            let val = caps.get(1).unwrap().as_str().trim();
+            if val == "true" || val == "false" || val == "null" || val.parse::<f64>().is_ok() {
+                format!(": {}{}", val, caps.get(2).unwrap().as_str())
+            } else {
+                format!(": \"{}\"{}", val, caps.get(2).unwrap().as_str())
+            }
+        })
+        .to_string();
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s2) {
+        return v.to_string();
+    }
+
+    s
 }
 
 pub fn parse_kwargs_to_json(args: &str) -> String {
@@ -194,10 +224,12 @@ impl LlamaClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_system_prompt(&mut self, prompt: String) {
         self.system_prompt = Some(prompt);
     }
 
+    #[allow(dead_code)]
     pub fn is_loaded(&self) -> bool {
         self.engine.is_some()
     }

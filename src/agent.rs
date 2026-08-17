@@ -398,7 +398,14 @@ impl GemmaAgent {
         let mut last_model_output: Option<String> = None;
         let mut model_output_repeat_count = 0;
 
+        let mut step_count = 0;
         loop {
+            step_count += 1;
+            if step_count > 15 {
+                println!("\n{}", "⚠️ Reached maximum autonomous step limit (15). Stopping.".yellow().bold());
+                break;
+            }
+
             let req = crate::client::ChatCompletionRequest {
                 model: self.config.model.clone(),
                 messages: self.history.clone(),
@@ -522,7 +529,8 @@ impl GemmaAgent {
                     raw_args.dimmed()
                 );
 
-                let parsed_args: serde_json::Value = match serde_json::from_str(raw_args) {
+                let normalized = crate::client::normalize_relaxed_json(raw_args);
+                let parsed_args: serde_json::Value = match serde_json::from_str(&normalized) {
                     Ok(val) => val,
                     Err(e) => {
                         let err_msg = format!("Failed to parse arguments JSON: {}", e);

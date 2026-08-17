@@ -100,6 +100,10 @@ pub struct Config {
     #[arg(long)]
     pub cli: bool,
 
+    /// Execute a single prompt directly in CLI mode and exit
+    #[arg(long, short = 'p')]
+    pub prompt: Option<String>,
+
     /// Number of model layers to offload to GPU (-1 or 99 for auto-scaling, 0 for CPU only)
     #[arg(long = "gpu-layers", env = "LLAMA_GPU_LAYERS")]
     pub n_gpu_layers: Option<i32>,
