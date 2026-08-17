@@ -4,7 +4,7 @@ runtime-version: '6.11'
 sdk: org.kde.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: qt-llama-wrapper
+command: rustllama
 
 add-extensions:
   dev.mitchellrenouf.QT_llama.Extension.cuda:
@@ -98,19 +98,14 @@ modules:
       - cargo build --release --features cuda,vulkan --no-default-features
 
       # Install binaries & wrapper script
-      - install -Dm755 target/release/qt_llama /app/bin/qt_llama
-      - ln -sf /app/bin/qt_llama /app/bin/qt-llama
+      - install -Dm755 target/release/rustllama /app/bin/rustllama
+      - ln -sf /app/bin/rustllama /app/bin/qt-llama
       - install -Dm755 flatpak/qt-llama-wrapper.sh /app/bin/qt-llama-wrapper
 
       # Install AppStream metadata, desktop entry & application icon
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.desktop /app/share/applications/dev.mitchellrenouf.QT_llama.desktop
       - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml /app/share/metainfo/dev.mitchellrenouf.QT_llama.metainfo.xml
       - install -Dm644 flatpak/icons/dev.mitchellrenouf.QT_llama.svg /app/share/icons/hicolor/scalable/apps/dev.mitchellrenouf.QT_llama.svg
-
-      # Install QML resources
-      - mkdir -p /app/share/qt_llama/qml /app/share/gemma/qml
-      - cp -r qml/* /app/share/qt_llama/qml/
-      - cp -r qml/* /app/share/gemma/qml/
 
       # Create extension mount point directories
       - mkdir -p /app/extensions/cuda /app/extensions/rocm /app/extensions/oneapi

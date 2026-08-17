@@ -77,17 +77,12 @@ for bindir in \
     fi
 done
 
-# 4. Configure Qt6 QML import paths
-export QML_IMPORT_PATH="/app/share/qt_llama/qml:/app/share/gemma/qml:/usr/lib/qt6/qml:/usr/lib/x86_64-linux-gnu/qt6/qml:${QML_IMPORT_PATH}"
-export QML2_IMPORT_PATH="/app/share/qt_llama/qml:/app/share/gemma/qml:/usr/lib/qt6/qml:/usr/lib/x86_64-linux-gnu/qt6/qml:${QML2_IMPORT_PATH}"
-
-# 5. Optional Debug diagnostics when QT_LLAMA_DEBUG=1
+# 4. Optional Debug diagnostics when QT_LLAMA_DEBUG=1
 if [ "${QT_LLAMA_DEBUG:-0}" = "1" ]; then
     echo "=== QT_llama.cpp GPU Environment ==="
     echo "VK_DRIVER_FILES:  ${VK_DRIVER_FILES:-<default>}"
     echo "LD_LIBRARY_PATH:  $LD_LIBRARY_PATH"
     echo "PATH:             $PATH"
-    echo "QML_IMPORT_PATH:  $QML_IMPORT_PATH"
     echo "Available DRI devices:"
     ls -l /dev/dri 2>/dev/null || echo "  No /dev/dri devices found"
     echo "Available NVIDIA devices:"
@@ -95,5 +90,5 @@ if [ "${QT_LLAMA_DEBUG:-0}" = "1" ]; then
     echo "====================================="
 fi
 
-# 6. Exec main application
-exec /app/bin/qt_llama "$@"
+# 5. Exec main application
+exec /app/bin/rustllama "$@"

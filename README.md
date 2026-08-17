@@ -1,14 +1,14 @@
-# QT_llama.cpp: Enterprise AI Assistant & Vibe-Coder (Pure Rust qtensor Engine, Qt6 GUI, Chromiumoxide & Flatpak)
+# RustLlama: Enterprise AI Assistant & Vibe-Coder (Pure Rust qtensor Engine, Native Qt6 GUI, Chromiumoxide & Flatpak)
 
 A ultra-high-performance, autonomous AI assistant written in pure Rust with **in-process `qtensor` GGUF inference & CUDA GPU acceleration**. It runs completely local on **Linux and Windows** with zero external server dependencies, instant token streaming ($\ge 110\text{--}120+$ tk/s), and direct DevTools browser automation.
 
-Functioning like **Gemini directly on your desktop and terminal**, the application launches a modern **Qt6 QML Graphical Interface** by default (with `--cli` available for terminal mode and `--serve` for OpenAI-compatible HTTP API mode), supporting **General-Purpose AI Assistant Mode**, **Vibe-Coding Mode**, and **Autonomous Inner Monologue Mode (`/automatic`)**.
+Functioning like **Gemini directly on your desktop and terminal**, RustLlama launches a native **Qt6 Widgets** interface by default. Its UI and application logic are authored in Rust; the Qt binding layer is generated during the build. The application supports terminal (`--cli`) and OpenAI-compatible HTTP API (`--serve`) modes as well as General-Purpose, Vibe-Coding, and Autonomous Inner Monologue modes.
 
 ---
 
-## ⚡ Why QT_llama & qtensor Are So Blazing Fast
+## ⚡ Why RustLlama & qtensor Are So Blazing Fast
 
-`QT_llama` achieves industry-leading token generation throughput ($\ge 112\text{--}121+$ tokens/sec on consumer GPUs like the RTX 5070 Ti) through low-level systems optimizations engineered directly in Rust and CUDA:
+`RustLlama` achieves industry-leading token generation throughput ($\ge 112\text{--}121+$ tokens/sec on consumer GPUs like the RTX 5070 Ti) through low-level systems optimizations engineered directly in Rust and CUDA:
 
 1. **100% Compute & I/O Overlap (Asynchronous GPU Pipelining)**:
    - Traditional inference runtimes sequentially wait for the GPU to evaluate a token before formatting and transmitting it to the user.
@@ -44,8 +44,8 @@ Functioning like **Gemini directly on your desktop and terminal**, the applicati
 - **OpenAI-Compatible HTTP / SSE API Server**: Embedded `/v1/models` and `/v1/chat/completions` API server (`--serve --port 8080`) supporting streaming Server-Sent Events (SSE).
 - **Model Context Protocol (MCP) Client**: Connects to external stdio MCP tool servers (`--mcp-server "<command>"`) to dynamically discover and execute remote tools.
 - **Pure Chromiumoxide Web Engine**: 100% headless Chromium DevTools Protocol (CDP) for all browser automation, searches (`web_search`), and live web extractions (`web_fetch`). Completely eliminates `reqwest` and HTTP client dependencies.
-- **Modern Qt6 QML Desktop Interface (Default)**: Sleek dark-mode GUI (`qml/Main.qml`) with real-time token streaming, formatted markdown bubbles, thinking animation blocks, tool call inspection cards, and speech synthesis toggles.
-- **Flatpak Packaging (KDE Platform 6.11)**: Bundled under application ID `dev.mitchellrenouf.QT_llama` targeting `org.kde.Platform//6.11` and `org.kde.Sdk//6.11` with Rust stable extension, Qt6 QML declarative runner, Vulkan stack, and AppStream metadata.
+- **Native Qt6 Widgets Desktop Interface (Default)**: A polished, platform-adaptive desktop workspace with real-time token streaming, chat history, mode and backend controls, model downloads, and speech toggles. It has no QML runtime or `qml` executable dependency.
+- **Flatpak Packaging (KDE Platform 6.11)**: Bundled with the Rust stable extension, Qt 6 Widgets runtime, Vulkan stack, and AppStream metadata.
 - **Autonomous Inner Monologue Mode (`/automatic` | `--mode automatic`)**: Gemma 4 26B maintains a continuous internal monologue (`🧠 Inner Monologue...`), reflecting step-by-step on goals, context, tool choices, error recovery, and self-correction before taking action.
 - **22 Built-in Tools**: Full workspace file management, diff editing, shell commands, Git checkpoints, web search, browser automation, and desktop controls.
 
@@ -53,14 +53,62 @@ Functioning like **Gemini directly on your desktop and terminal**, the applicati
 
 ## 🚀 Quick Start
 
-### 1. Build from Source
+### 1. Install build dependencies
+
+RustLlama uses native Qt 6 Widgets from Rust. It needs Qt's development headers, `qmake`, and a C++ compiler in addition to Rust. QML is not used or required.
+
+#### Windows: Visual Studio 2026, Qt 6, Rust, and CUDA
+
+Install Visual Studio 2026 Build Tools with **Desktop development with C++**, the MSVC x64/x86 toolset, and a Windows SDK. Install Qt 6's `msvc2022_64` kit and QtUiTools using the Qt Online Installer. MSVC v145 (VS 2026) is ABI-compatible with the prebuilt MSVC 2022 Qt kit.
+
+Install Rust with `rustup` and select the MSVC target:
+
+```powershell
+rustup toolchain install stable-x86_64-pc-windows-msvc
+rustup default stable-x86_64-pc-windows-msvc
+```
+
+For NVIDIA acceleration, install the NVIDIA driver and CUDA Toolkit. Add the selected Qt kit's `bin` directory to your user `PATH` once (this lets Cargo find `qmake` while compiling and lets Windows find the Qt DLLs when running). RustLlama's Cargo configuration discovers and initializes the installed Visual Studio C++ tools automatically, so an ordinary PowerShell window is sufficient:
+
+```powershell
+# Once per PowerShell session, or add this directory in Windows Environment Variables
+$env:Path = "C:\Qt\6.11.1\msvc2022_64\bin;$env:Path"
+qmake -query QT_VERSION
+nvcc --version                 # optional, required for CUDA
+cargo run --release
+```
+
+Use the installed Qt version in place of `6.11.1`. Cargo supplies the required MSVC C++17 compatibility options for the Rust Qt binding; do not set `CXXFLAGS` manually. `nvcc` enables CUDA autodetection; omit CUDA if you want a CPU-only build. The build script checks Qt, the compiler, and CUDA availability before the application itself is built, and reports a direct setup error if Qt or the C++ tools are absent.
+
+#### Arch Linux: Qt 6, Rust, and CUDA
+
+Install the native build tools, Qt Widgets/UiTools, Rust, and Vulkan headers:
+
+```bash
+sudo pacman -S --needed base-devel rustup qt6-base qt6-tools vulkan-headers
+rustup default stable
+qmake6 -query QT_VERSION
+```
+
+For NVIDIA CUDA acceleration, also install the proprietary NVIDIA driver and CUDA toolkit:
+
+```bash
+sudo pacman -S --needed nvidia nvidia-utils cuda
+export PATH=/opt/cuda/bin:$PATH
+export CUDA_PATH=/opt/cuda
+nvcc --version
+```
+
+Then launch with `cargo run --release`. For a CPU-only build, use `cargo run --release --no-default-features`. Install the driver package appropriate to your kernel (for example, `linux-lts-nvidia` on an LTS kernel) rather than blindly mixing kernel modules.
+
+### 2. Build from Source
 ```bash
 # Clone repository with submodules
 git clone --recurse-submodules https://github.com/mitchellrenouf/QT_llama.cpp.git
 cd QT_llama.cpp
 
-# Build optimized release binary (auto-detects CUDA/Vulkan)
-cargo build --release
+# Build and launch the optimized native application (auto-detects CUDA/Vulkan)
+cargo run --release
 ```
 
 ### GPU Acceleration
@@ -100,14 +148,14 @@ LLAMA_VULKAN=1 cargo build --release  # Enable Vulkan
 | SYCL (oneAPI) | Intel | `--features sycl` | ❌ Explicit only |
 | CPU only | Any | `--no-default-features` | — |
 
-### 2. Launch GUI Interface (Default)
+### 3. Launch GUI Interface (Default)
 ```bash
-./target/release/qt_llama --model /path/to/gemma-4-26b-it-q4_0.gguf
+cargo run --release -- --model /path/to/gemma-4-26b-it-q4_0.gguf
 ```
 
-### 3. Launch Terminal CLI Interface
+### 4. Launch Terminal CLI Interface
 ```bash
-./target/release/qt_llama --cli --model /path/to/gemma-4-26b-it-q4_0.gguf
+cargo run --release -- --cli --model /path/to/gemma-4-26b-it-q4_0.gguf
 ```
 
 ---

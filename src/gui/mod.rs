@@ -1,12 +1,12 @@
 #[allow(dead_code)]
 pub mod bridge;
+mod app;
 
 #[allow(unused_imports, dead_code)]
 pub use bridge::*;
 
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -15,117 +15,6 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::agent::GemmaAgent;
 use crate::client::StreamEvent;
 use crate::config::Config;
-
-pub fn find_qml_entrypoint(workspace_root: &Path) -> Option<PathBuf> {
-    let candidates = [
-        workspace_root.join("qml").join("Main.qml"),
-        PathBuf::from("qml/Main.qml"),
-        PathBuf::from("qml\\Main.qml"),
-        PathBuf::from("/app/share/qt_llama/qml/Main.qml"),
-        PathBuf::from("/app/share/gemma/qml/Main.qml"),
-        PathBuf::from("/app/share/qt_llama/Main.qml"),
-        PathBuf::from("/usr/share/qt_llama/qml/Main.qml"),
-        PathBuf::from("/usr/share/gemma/qml/Main.qml"),
-    ];
-
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-pub fn find_qml_runner() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        if let Ok(qtdir) = std::env::var("QTDIR") {
-            let p = PathBuf::from(&qtdir).join("bin").join("qml.exe");
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        if let Ok(qt_root) = std::env::var("QT_ROOT") {
-            let p = PathBuf::from(&qt_root).join("bin").join("qml.exe");
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        if let Ok(qt6_dir) = std::env::var("QT6_DIR") {
-            let p = PathBuf::from(&qt6_dir).join("bin").join("qml.exe");
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        let win_candidates = [
-            r"C:\Qt\6.8.2\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.8.1\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.8.0\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.7.3\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.7.2\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.7.1\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.7.0\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.6.3\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.6.2\msvc2022_64\bin\qml.exe",
-            r"C:\Qt\6.5.3\msvc2022_64\bin\qml.exe",
-            r"C:\Qt6\bin\qml.exe",
-            r"C:\vcpkg\installed\x64-windows\tools\qt6\qml.exe",
-            r"C:\tools\Qt\bin\qml.exe",
-        ];
-        for path_str in win_candidates {
-            let p = PathBuf::from(path_str);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-
-        // Scan Python site-packages and Scripts for PySide6 QML runner
-        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-            let py_dir = PathBuf::from(local_appdata).join("Programs").join("Python");
-            if py_dir.is_dir() {
-                for entry in walkdir::WalkDir::new(&py_dir).max_depth(4).into_iter().flatten() {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    if name == "pyside6-qml.exe" || name == "qml.exe" {
-                        let p = entry.into_path();
-                        if p.is_file() {
-                            return Some(p);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let candidate_names = [
-        "qml6",
-        "qml",
-        "qml6.exe",
-        "qml.exe",
-        "pyside6-qml",
-        "pyside6-qml.exe",
-        "/usr/bin/qml6",
-        "/usr/bin/qml",
-        "/usr/lib/qt6/bin/qml",
-        "/usr/lib/qt6/bin/qml6",
-        "/app/bin/qml6",
-        "/app/bin/qml",
-        "qmlscene",
-        "qmlscene.exe",
-        "/usr/bin/qmlscene",
-        "/usr/lib/qt6/bin/qmlscene",
-    ];
-
-    for name in candidate_names {
-        if let Some(p) = crate::tools::desktop::is_executable_in_path(name) {
-            return Some(p);
-        }
-        let p = PathBuf::from(name);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
-}
 
 pub fn is_display_available() -> bool {
     if cfg!(windows) {
@@ -139,29 +28,6 @@ pub async fn launch_qt_gui(config: &Config) -> Result<()> {
     if !is_display_available() {
         return Err(anyhow!("No graphical display server found (WAYLAND_DISPLAY or DISPLAY is unset)."));
     }
-
-    let qml_file = find_qml_entrypoint(&config.workspace_root)
-        .ok_or_else(|| anyhow!("Could not find qml/Main.qml application file."))?;
-
-    let qml_runner = if let Some(ref runner_path) = config.qml_runner {
-        if runner_path.is_file() {
-            runner_path.clone()
-        } else {
-            return Err(anyhow!("Specified --qml-runner path '{}' does not exist or is not a file.", runner_path.display()));
-        }
-    } else {
-        find_qml_runner().ok_or_else(|| {
-            if cfg!(windows) {
-                anyhow!(
-                    "Could not locate Qt6 QML runner (qml.exe, qml6.exe, qmlscene.exe, pyside6-qml.exe).\n\
-                     To run the GUI on Windows, please install Qt6 or pass '--qml-runner <path-to-qml.exe>'.\n\
-                     Tip: You can install PySide6 via 'pip install PySide6' which provides the QML runtime."
-                )
-            } else {
-                anyhow!("Could not locate Qt6 QML runner (checked: qml6, qml, /usr/lib/qt6/bin/qml, qmlscene).")
-            }
-        })?
-    };
 
     // Bind local WebSocket server on ephemeral port
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -184,24 +50,8 @@ pub async fn launch_qt_gui(config: &Config) -> Result<()> {
         }
     });
 
-    println!("🎨 Launching QT_llama.cpp Interface ({}) via {} [WS IPC port: {}]...", qml_file.display(), qml_runner.display(), port);
-
-    let mut child = tokio::process::Command::new(qml_runner)
-        .arg(&qml_file)
-        .arg("--")
-        .arg(format!("{}", port))
-        .env("QT_QUICK_CONTROLS_STYLE", "Basic")
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .map_err(|e| anyhow!("Failed to spawn Qt6 QML application: {}", e))?;
-
-    let status = child.wait().await?;
-    if !status.success() {
-        return Err(anyhow!("Qt6 QML application exited with code: {:?}", status.code()));
-    }
-
-    Ok(())
+    println!("🎨 Launching RustLlama native Qt6 interface [WS IPC port: {}]...", port);
+    app::run(port)
 }
 
 async fn handle_ws_session<S>(ws_stream: tokio_tungstenite::WebSocketStream<S>, agent: Arc<Mutex<GemmaAgent>>)
@@ -221,7 +71,7 @@ where
         }
     });
 
-    // Send initial status to QML
+    // Send initial status to the native GUI.
     {
         let agent_guard = agent.lock().await;
         let init_evt = serde_json::json!({
@@ -236,7 +86,7 @@ where
         let _ = out_tx.send(init_evt);
     }
 
-    // Process inbound messages from QML
+    // Process inbound messages from the native GUI.
     while let Some(msg_res) = ws_rx.next().await {
         let msg = match msg_res {
             Ok(Message::Text(txt)) => txt,

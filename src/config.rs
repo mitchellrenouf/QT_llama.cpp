@@ -120,9 +120,6 @@ pub struct Config {
     #[arg(long, env = "BROWSER_PROFILE")]
     pub browser_profile: Option<String>,
 
-    /// Custom path to Qt6 QML runner executable (e.g. qml.exe, qml6.exe, qmlscene.exe)
-    #[arg(long = "qml-runner", env = "QT_QML_RUNNER")]
-    pub qml_runner: Option<PathBuf>,
 
     /// Run as an OpenAI-compatible HTTP & Server-Sent Events (SSE) API server
     #[arg(long)]

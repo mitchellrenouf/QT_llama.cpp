@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=QT_llama.cpp
+Name=RustLlama
 GenericName=AI Agent & Vibe-Coder
 Comment=Multimodal Vision, Desktop Control, Browser Automation & General AI Agent for llama.cpp
-Exec=qt-llama-wrapper
+Exec=rustllama
 Icon=dev.mitchellrenouf.QT_llama
 Terminal=false
 Type=Application
