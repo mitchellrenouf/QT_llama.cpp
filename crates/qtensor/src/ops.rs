@@ -14,9 +14,12 @@ pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32, out: &mut [f32]) {
     let scale = 1.0f32 / (mean_sq + eps).sqrt();
 
     if let Some(w) = weight {
-        assert_eq!(w.len(), dim);
-        for i in 0..dim {
-            out[i] = x[i] * scale * w[i];
+        let w_slice = if w.len() >= dim { &w[..dim] } else { w };
+        for i in 0..dim.min(w_slice.len()) {
+            out[i] = x[i] * scale * w_slice[i];
+        }
+        for i in w_slice.len()..dim {
+            out[i] = x[i] * scale;
         }
     } else {
         for i in 0..dim {
@@ -102,21 +105,37 @@ pub fn mat_vec_mul_q4_0(
     n_rows: usize,
     n_cols: usize,
 ) {
+    if w_q4_bytes.is_empty() {
+        return;
+    }
     assert_eq!(x_f32.len(), n_cols);
     assert_eq!(y_out.len(), n_rows);
-    assert_eq!(n_cols % 32, 0);
 
-    // Quantize input activations x to Q8_0 once
-    let mut x_q8 = vec![0u8; (n_cols / 32) * 34];
+    let n_cols_aligned = ((n_cols + 31) / 32) * 32;
+    let mut x_q8 = vec![0u8; (n_cols_aligned / 32) * 34];
     quantize_f32_to_q8_0(x_f32, &mut x_q8);
 
-    let row_bytes = (n_cols / 32) * 18;
+    let row_bytes = (n_cols_aligned / 32) * 18;
 
-    for r in 0..n_rows {
-        let row_start = r * row_bytes;
-        let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
-        y_out[r] = vec_dot_q4_0_q8_0(row_slice, &x_q8, n_cols);
-    }
+    let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8).min(16);
+    let chunk_size = (n_rows + n_threads - 1) / n_threads;
+
+    std::thread::scope(|s| {
+        for (chunk_idx, y_chunk) in y_out.chunks_mut(chunk_size).enumerate() {
+            let x_q8_ref = &x_q8;
+            s.spawn(move || {
+                let start_row = chunk_idx * chunk_size;
+                for (i, y) in y_chunk.iter_mut().enumerate() {
+                    let r = start_row + i;
+                    let row_start = r * row_bytes;
+                    if row_start + row_bytes <= w_q4_bytes.len() {
+                        let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
+                        *y = vec_dot_q4_0_q8_0(row_slice, x_q8_ref, n_cols);
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// Dense F32 Matrix-Matrix Multiplication: C = A * B
