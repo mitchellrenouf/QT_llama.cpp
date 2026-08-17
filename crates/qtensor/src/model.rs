@@ -148,6 +148,7 @@ pub struct QTensorModel {
     pub layer_devices: Vec<DeviceType>,
     pub vocab: Vec<String>,
     pub vocab_to_id: HashMap<String, i32>,
+    pub valid_vocab_token: Vec<bool>,
     pub gguf_path: PathBuf,
     pub token_embd_info: Option<GgufTensorInfo>,
     pub output_norm_weights: Vec<f32>,
@@ -196,6 +197,17 @@ impl QTensorModel {
         }
 
         let vocab_size = if !vocab.is_empty() { vocab.len() } else { 262144 };
+        let valid_vocab_token = (0..vocab_size)
+            .map(|tid| {
+                vocab.get(tid).map_or(true, |piece| {
+                    !piece.starts_with("<unused")
+                        && piece != "<pad>"
+                        && piece != "<unk>"
+                        && piece != "<mask>"
+                        && piece != "[multimodal]"
+                })
+            })
+            .collect();
 
         let config = ModelConfig {
             dim,
@@ -522,6 +534,7 @@ impl QTensorModel {
             layer_devices,
             vocab,
             vocab_to_id,
+            valid_vocab_token,
             gguf_path,
             token_embd_info,
             output_norm_weights,
@@ -1145,26 +1158,22 @@ impl QTensorModel {
                     dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
                     let mut logits = vec![0.0f32; self.config.vocab_size];
                     if d_log.copy_to_host(&mut logits).is_ok() {
+                        for &token in &recent_tokens {
+                            if let Some(logit) = logits.get_mut(token.max(0) as usize) {
+                                *logit -= 1.8;
+                            }
+                        }
                         let mut scored = Vec::with_capacity(self.config.vocab_size);
                         for tid in 0..self.config.vocab_size {
-                            if tid < self.vocab.len() {
-                                let piece = &self.vocab[tid];
-                                if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
-                                    continue;
-                                }
+                            if !self.valid_vocab_token[tid] {
+                                continue;
                             }
 
                             if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
                                 continue;
                             }
 
-                            let mut score = logits[tid];
-
-                            if recent_tokens.contains(&(tid as i32)) {
-                                score -= 1.8;
-                            }
-
-                            scored.push((score, tid as i32));
+                            scored.push((logits[tid], tid as i32));
                         }
                         Some(scored)
                     } else {
@@ -1194,11 +1203,8 @@ impl QTensorModel {
                 .enumerate()
                 .take(self.config.vocab_size)
                 .filter_map(|(tid, row)| {
-                    if tid < self.vocab.len() {
-                        let piece = &self.vocab[tid];
-                        if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
-                            return None;
-                        }
+                    if !self.valid_vocab_token[tid] {
+                        return None;
                     }
                     if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
                         return None;
