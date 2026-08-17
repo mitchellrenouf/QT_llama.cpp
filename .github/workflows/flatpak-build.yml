@@ -73,3 +73,46 @@ jobs:
           files: dev.mitchellrenouf.QT_llama.flatpak
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    name: "Windows MSVC Builder"
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Release Binary
+        shell: pwsh
+        run: cargo build --release --locked --no-default-features
+
+      - name: Run Release Tests
+        shell: pwsh
+        run: cargo test --workspace --release --locked --no-default-features
+
+      - name: Bundle Qt Runtime
+        shell: pwsh
+        run: |
+          $packageDir = Join-Path $PWD 'dist\QT_llama-windows-x86_64'
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item -LiteralPath 'target\release\rustllama.exe' -Destination $packageDir
+          & windeployqt.exe --release --no-translations --no-system-d3d-compiler `
+            (Join-Path $packageDir 'rustllama.exe')
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QT_llama-windows-x86_64
+          path: dist/QT_llama-windows-x86_64
