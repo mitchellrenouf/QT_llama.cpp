@@ -80,6 +80,30 @@ pub struct TransformerLayer {
     pub gpu_ffn_up: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
     pub gpu_ffn_down: Option<crate::cuda::CudaBuffer<u8>>,
+
+    // Persistent GPU scratch/activation buffers
+    #[cfg(feature = "cuda")]
+    pub gpu_d_cur: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_q: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_k: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_v: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_attn_in: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_attn_out: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_mlp_in: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_mlp_gate: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_mlp_up: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_mlp_act: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_mlp_down: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
 }
 
 pub struct GenerationState {
@@ -237,6 +261,25 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             let gpu_ffn_down = if cuda_dev.is_some() && !ffn_down.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_down).ok() } else { None };
 
+            #[cfg(feature = "cuda")]
+            let (gpu_d_cur, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
+                (
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, q_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, kv_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, kv_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, q_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, 2112).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, 2112).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, 2112).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                )
+            } else {
+                (None, None, None, None, None, None, None, None, None, None, None)
+            };
+
             layers.push(TransformerLayer {
                 is_swa,
                 head_dim,
@@ -283,6 +326,28 @@ impl QTensorModel {
                 gpu_ffn_up,
                 #[cfg(feature = "cuda")]
                 gpu_ffn_down,
+                #[cfg(feature = "cuda")]
+                gpu_d_cur: parking_lot::Mutex::new(gpu_d_cur),
+                #[cfg(feature = "cuda")]
+                gpu_d_q: parking_lot::Mutex::new(gpu_d_q),
+                #[cfg(feature = "cuda")]
+                gpu_d_k: parking_lot::Mutex::new(gpu_d_k),
+                #[cfg(feature = "cuda")]
+                gpu_d_v: parking_lot::Mutex::new(gpu_d_v),
+                #[cfg(feature = "cuda")]
+                gpu_d_attn_in: parking_lot::Mutex::new(gpu_d_attn_in),
+                #[cfg(feature = "cuda")]
+                gpu_d_attn_out: parking_lot::Mutex::new(gpu_d_attn_out),
+                #[cfg(feature = "cuda")]
+                gpu_d_mlp_in: parking_lot::Mutex::new(gpu_d_mlp_in),
+                #[cfg(feature = "cuda")]
+                gpu_d_mlp_gate: parking_lot::Mutex::new(gpu_d_mlp_gate),
+                #[cfg(feature = "cuda")]
+                gpu_d_mlp_up: parking_lot::Mutex::new(gpu_d_mlp_up),
+                #[cfg(feature = "cuda")]
+                gpu_d_mlp_act: parking_lot::Mutex::new(gpu_d_mlp_act),
+                #[cfg(feature = "cuda")]
+                gpu_d_mlp_down: parking_lot::Mutex::new(gpu_d_mlp_down),
             });
         }
 
@@ -391,20 +456,23 @@ impl QTensorModel {
 
             #[cfg(feature = "cuda")]
             let used_gpu = if let (Some(ref dev), Some(ref g_q), Some(ref g_k), Some(ref g_v)) = (&self.cuda_dev, &layer.gpu_attn_q, &layer.gpu_attn_k, &layer.gpu_attn_v) {
-                if let (Ok(d_cur), Ok(mut d_q), Ok(mut d_k), Ok(mut d_v)) = (
-                    crate::cuda::CudaBuffer::from_host_on(0, &cur),
-                    crate::cuda::CudaBuffer::alloc_on(0, layer.q_dim),
-                    crate::cuda::CudaBuffer::alloc_on(0, layer.kv_dim),
-                    crate::cuda::CudaBuffer::alloc_on(0, layer.kv_dim),
-                ) {
-                    dev.gemv_q4_0(g_q, &d_cur, &mut d_q, layer.q_dim, dim);
-                    dev.gemv_q4_0(g_k, &d_cur, &mut d_k, layer.kv_dim, dim);
-                    dev.gemv_q4_0(g_v, &d_cur, &mut d_v, layer.kv_dim, dim);
-                    let _ = dev.sync();
-                    let _ = d_q.copy_to_host(&mut q);
-                    let _ = d_k.copy_to_host(&mut k);
-                    let _ = d_v.copy_to_host(&mut v);
-                    true
+                let mut cur_guard = layer.gpu_d_cur.lock();
+                let mut q_guard = layer.gpu_d_q.lock();
+                let mut k_guard = layer.gpu_d_k.lock();
+                let mut v_guard = layer.gpu_d_v.lock();
+                if let (Some(ref mut d_cur), Some(ref mut d_q), Some(ref mut d_k), Some(ref mut d_v)) = (cur_guard.as_mut(), q_guard.as_mut(), k_guard.as_mut(), v_guard.as_mut()) {
+                    if d_cur.copy_from_host(&cur).is_ok() {
+                        dev.gemv_q4_0(g_q, d_cur, d_q, layer.q_dim, dim);
+                        dev.gemv_q4_0(g_k, d_cur, d_k, layer.kv_dim, dim);
+                        dev.gemv_q4_0(g_v, d_cur, d_v, layer.kv_dim, dim);
+                        let _ = dev.sync();
+                        let _ = d_q.copy_to_host(&mut q);
+                        let _ = d_k.copy_to_host(&mut k);
+                        let _ = d_v.copy_to_host(&mut v);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -500,14 +568,17 @@ impl QTensorModel {
             let mut attn_proj = vec![0.0f32; dim];
             #[cfg(feature = "cuda")]
             let out_used_gpu = if let (Some(ref dev), Some(ref g_out)) = (&self.cuda_dev, &layer.gpu_attn_output) {
-                if let (Ok(d_ctx), Ok(mut d_out)) = (
-                    crate::cuda::CudaBuffer::from_host_on(0, &attn_out),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim),
-                ) {
-                    dev.gemv_q4_0(g_out, &d_ctx, &mut d_out, dim, layer.q_dim);
-                    let _ = dev.sync();
-                    let _ = d_out.copy_to_host(&mut attn_proj);
-                    true
+                let mut in_guard = layer.gpu_d_attn_in.lock();
+                let mut out_guard = layer.gpu_d_attn_out.lock();
+                if let (Some(ref mut d_in), Some(ref mut d_out)) = (in_guard.as_mut(), out_guard.as_mut()) {
+                    if d_in.copy_from_host(&attn_out).is_ok() {
+                        dev.gemv_q4_0(g_out, d_in, d_out, dim, layer.q_dim);
+                        let _ = dev.sync();
+                        let _ = d_out.copy_to_host(&mut attn_proj);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -540,20 +611,25 @@ impl QTensorModel {
 
             #[cfg(feature = "cuda")]
             let mlp_used_gpu = if let (Some(ref dev), Some(ref g_gate), Some(ref g_up), Some(ref g_down)) = (&self.cuda_dev, &layer.gpu_ffn_gate, &layer.gpu_ffn_up, &layer.gpu_ffn_down) {
-                if let (Ok(d_in), Ok(mut d_gate), Ok(mut d_up), Ok(mut d_act), Ok(mut d_raw)) = (
-                    crate::cuda::CudaBuffer::from_host_on(0, &ffn_in_shared),
-                    crate::cuda::CudaBuffer::alloc_on(0, ffn_dim),
-                    crate::cuda::CudaBuffer::alloc_on(0, ffn_dim),
-                    crate::cuda::CudaBuffer::alloc_on(0, ffn_dim),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim),
+                let mut in_guard = layer.gpu_d_mlp_in.lock();
+                let mut gate_guard = layer.gpu_d_mlp_gate.lock();
+                let mut up_guard = layer.gpu_d_mlp_up.lock();
+                let mut act_guard = layer.gpu_d_mlp_act.lock();
+                let mut down_guard = layer.gpu_d_mlp_down.lock();
+                if let (Some(ref mut d_in), Some(ref mut d_gate), Some(ref mut d_up), Some(ref mut d_act), Some(ref mut d_down)) = (
+                    in_guard.as_mut(), gate_guard.as_mut(), up_guard.as_mut(), act_guard.as_mut(), down_guard.as_mut()
                 ) {
-                    dev.gemv_q4_0(g_gate, &d_in, &mut d_gate, ffn_dim, dim);
-                    dev.gemv_q4_0(g_up, &d_in, &mut d_up, ffn_dim, dim);
-                    dev.geglu(&d_gate, &d_up, &mut d_act);
-                    dev.gemv_q4_0(g_down, &d_act, &mut d_raw, dim, ffn_dim);
-                    let _ = dev.sync();
-                    let _ = d_raw.copy_to_host(&mut mlp_raw);
-                    true
+                    if d_in.copy_from_host(&ffn_in_shared).is_ok() {
+                        dev.gemv_q4_0(g_gate, d_in, d_gate, ffn_dim, dim);
+                        dev.gemv_q4_0(g_up, d_in, d_up, ffn_dim, dim);
+                        dev.geglu(d_gate, d_up, d_act);
+                        dev.gemv_q4_0(g_down, d_act, d_down, dim, ffn_dim);
+                        let _ = dev.sync();
+                        let _ = d_down.copy_to_host(&mut mlp_raw);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
