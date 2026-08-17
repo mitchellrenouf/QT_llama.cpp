@@ -98,6 +98,14 @@ pub struct TransformerLayer {
     #[cfg(feature = "cuda")]
     pub gpu_d_v: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
+    pub gpu_d_qkv: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_k_cache: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_v_cache: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_kv_capacity: usize,
+    #[cfg(feature = "cuda")]
     pub gpu_d_attn_in: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_attn_out: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
@@ -343,12 +351,13 @@ impl QTensorModel {
             };
 
             #[cfg(feature = "cuda")]
-            let (gpu_d_cur, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
+            let (gpu_d_cur, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_qkv, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
                 (
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, q_dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, kv_dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, kv_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, q_dim + 2 * kv_dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, q_dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
@@ -358,7 +367,19 @@ impl QTensorModel {
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                 )
             } else {
-                (None, None, None, None, None, None, None, None, None, None, None)
+                (None, None, None, None, None, None, None, None, None, None, None, None)
+            };
+
+            #[cfg(feature = "cuda")]
+            let gpu_kv_capacity = max_context.min(1024);
+            #[cfg(feature = "cuda")]
+            let (gpu_d_k_cache, gpu_d_v_cache) = if cuda_dev.is_some() {
+                (
+                    crate::cuda::CudaBuffer::alloc_on(0, gpu_kv_capacity * kv_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, gpu_kv_capacity * kv_dim).ok(),
+                )
+            } else {
+                (None, None)
             };
 
             layers.push(TransformerLayer {
@@ -421,6 +442,14 @@ impl QTensorModel {
                 gpu_d_k: parking_lot::Mutex::new(gpu_d_k),
                 #[cfg(feature = "cuda")]
                 gpu_d_v: parking_lot::Mutex::new(gpu_d_v),
+                #[cfg(feature = "cuda")]
+                gpu_d_qkv: parking_lot::Mutex::new(gpu_d_qkv),
+                #[cfg(feature = "cuda")]
+                gpu_d_k_cache: parking_lot::Mutex::new(gpu_d_k_cache),
+                #[cfg(feature = "cuda")]
+                gpu_d_v_cache: parking_lot::Mutex::new(gpu_d_v_cache),
+                #[cfg(feature = "cuda")]
+                gpu_kv_capacity,
                 #[cfg(feature = "cuda")]
                 gpu_d_attn_in: parking_lot::Mutex::new(gpu_d_attn_in),
                 #[cfg(feature = "cuda")]
@@ -569,21 +598,17 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             let used_gpu = if let (Some(ref dev), Some(ref g_q), Some(ref g_k), Some(ref g_v)) = (&self.cuda_dev, &layer.gpu_attn_q, &layer.gpu_attn_k, &layer.gpu_attn_v) {
                 let mut cur_guard = layer.gpu_d_cur.lock();
-                let mut q_guard = layer.gpu_d_q.lock();
-                let mut k_guard = layer.gpu_d_k.lock();
-                let mut v_guard = layer.gpu_d_v.lock();
-                if let (Some(ref mut d_cur), Some(ref mut d_q), Some(ref mut d_k), Some(ref mut d_v)) = (cur_guard.as_mut(), q_guard.as_mut(), k_guard.as_mut(), v_guard.as_mut()) {
-                    if d_cur.copy_from_host(&cur).is_ok() {
-                        dev.gemv_q4_0(g_q, d_cur, d_q, layer.q_dim, dim);
-                        dev.gemv_q4_0(g_k, d_cur, d_k, layer.kv_dim, dim);
-                        dev.gemv_q4_0(g_v, d_cur, d_v, layer.kv_dim, dim);
-                        // Synchronous D2H copies below wait for this stream's queued
-                        // kernels, so a separate stream synchronization only adds a
-                        // full-device round trip to every transformer layer.
-                        let _ = d_q.copy_to_host(&mut q);
-                        let _ = d_k.copy_to_host(&mut k);
-                        let _ = d_v.copy_to_host(&mut v);
-                        true
+                let mut qkv_guard = layer.gpu_d_qkv.lock();
+                if let (Some(ref mut d_cur), Some(ref mut d_qkv)) = (cur_guard.as_mut(), qkv_guard.as_mut()) {
+                    if dev.copy_from_host_async(d_cur, &cur).is_ok() {
+                        dev.gemv_q4_0_qkv(g_q, g_k, g_v, d_cur, d_qkv, layer.q_dim, layer.kv_dim, dim);
+                        let mut qkv = vec![0.0f32; layer.q_dim + 2 * layer.kv_dim];
+                        if d_qkv.copy_to_host(&mut qkv).is_ok() {
+                            q.copy_from_slice(&qkv[..layer.q_dim]);
+                            k.copy_from_slice(&qkv[layer.q_dim..layer.q_dim + layer.kv_dim]);
+                            v.copy_from_slice(&qkv[layer.q_dim + layer.kv_dim..]);
+                            true
+                        } else { false }
                     } else {
                         false
                     }
@@ -651,7 +676,51 @@ impl QTensorModel {
             let attn_window_len = seq_len - start_t;
             let mut scores = vec![0.0f32; attn_window_len];
 
-            for h in 0..layer.n_heads {
+            #[cfg(feature = "cuda")]
+            let attention_used_gpu = if seq_len <= layer.gpu_kv_capacity {
+                if let Some(ref dev) = self.cuda_dev {
+                    let mut q_guard = layer.gpu_d_q.lock();
+                    let mut kc_guard = layer.gpu_d_k_cache.lock();
+                    let mut vc_guard = layer.gpu_d_v_cache.lock();
+                    let mut out_guard = layer.gpu_d_attn_in.lock();
+                    if let (Some(ref mut d_q), Some(ref mut d_kc), Some(ref mut d_vc), Some(ref mut d_out)) =
+                        (q_guard.as_mut(), kc_guard.as_mut(), vc_guard.as_mut(), out_guard.as_mut())
+                    {
+                        let offset = (seq_len - 1) * layer.kv_dim;
+                        if d_q.copy_from_host(&q).is_ok()
+                            && d_kc.copy_from_host_at(offset, &k).is_ok()
+                            && d_vc.copy_from_host_at(offset, &v).is_ok()
+                        {
+                            dev.attention_causal(
+                                d_q,
+                                d_kc,
+                                d_vc,
+                                d_out,
+                                seq_len - 1,
+                                layer.n_heads,
+                                layer.n_kv_heads,
+                                layer.head_dim,
+                                1.0,
+                                if layer.is_swa { Some(layer.sliding_window) } else { None },
+                            );
+                            d_out.copy_to_host(&mut attn_out).is_ok()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            #[cfg(not(feature = "cuda"))]
+            let attention_used_gpu = false;
+
+            if !attention_used_gpu { for h in 0..layer.n_heads {
                 let kv_h = h / (layer.n_heads / layer.n_kv_heads);
                 let q_head = &q[h * layer.head_dim..(h + 1) * layer.head_dim];
 
@@ -674,7 +743,7 @@ impl QTensorModel {
                         out_head[d] += s * v_t[d];
                     }
                 }
-            }
+            } }
             profile_attention += profile_start.elapsed();
 
             // Attention Output Projection
@@ -685,7 +754,7 @@ impl QTensorModel {
                 let mut in_guard = layer.gpu_d_attn_in.lock();
                 let mut out_guard = layer.gpu_d_attn_out.lock();
                 if let (Some(ref mut d_in), Some(ref mut d_out)) = (in_guard.as_mut(), out_guard.as_mut()) {
-                    if d_in.copy_from_host(&attn_out).is_ok() {
+                    if attention_used_gpu || dev.copy_from_host_async(d_in, &attn_out).is_ok() {
                         dev.gemv_q4_0(g_out, d_in, d_out, dim, layer.q_dim);
                         let _ = d_out.copy_to_host(&mut attn_proj);
                         true
@@ -777,13 +846,11 @@ impl QTensorModel {
                     let mut up_g = layer.gpu_d_mlp_up.lock();
                     let mut act_g = layer.gpu_d_mlp_act.lock();
                     let mut down_g = layer.gpu_d_mlp_down.lock();
-                    if let (Some(ref mut d_in), Some(ref mut d_gate), Some(ref mut d_up), Some(ref mut d_act), Some(ref mut d_down)) = (
+                    if let (Some(ref mut d_in), Some(ref mut _d_gate), Some(ref mut _d_up), Some(ref mut d_act), Some(ref mut d_down)) = (
                         in_g.as_mut(), gate_g.as_mut(), up_g.as_mut(), act_g.as_mut(), down_g.as_mut()
                     ) {
-                        if d_in.copy_from_host(&ffn_in_shared).is_ok() {
-                            dev.gemv_q4_0(g_gate, d_in, d_gate, ffn_dim, dim);
-                            dev.gemv_q4_0(g_up, d_in, d_up, ffn_dim, dim);
-                            dev.geglu(d_gate, d_up, d_act);
+                        if dev.copy_from_host_async(d_in, &ffn_in_shared).is_ok() {
+                            dev.gemv_q4_0_geglu(g_gate, g_up, d_in, d_act, ffn_dim, dim);
                             dev.gemv_q4_0(g_down, d_act, d_down, dim, ffn_dim);
                             true
                         } else { false }
@@ -802,9 +869,9 @@ impl QTensorModel {
                         ) {
                             let mut active_ids = [0i32; 8];
                             for i in 0..8 { active_ids[i] = top8_experts[i] as i32; }
-                            if d_in.copy_from_host(&ffn_in_moe).is_ok()
-                                && d_ids.copy_from_host(&active_ids).is_ok()
-                                && d_weights.copy_from_host(&ex_probs).is_ok()
+                            if dev.copy_from_host_async(d_in, &ffn_in_moe).is_ok()
+                                && dev.copy_from_host_async(d_ids, &active_ids).is_ok()
+                                && dev.copy_from_host_async(d_weights, &ex_probs).is_ok()
                             {
                                 dev.moe_topk_q4_0(
                                     g_gu_exps,
@@ -1061,6 +1128,8 @@ impl QTensorModel {
 
     /// Execute real multi-layer transformer forward pass on single token and sample next token ID
     pub fn step_generation(&self, state: &mut GenerationState, temperature: f32) -> i32 {
+        let profile = std::env::var_os("QTENSOR_PROFILE").is_some();
+        let sample_start = std::time::Instant::now();
         let dim = self.config.dim;
         let row_bytes = (dim / 32) * 34;
 
@@ -1072,7 +1141,7 @@ impl QTensorModel {
             let mut hid_guard = self.gpu_d_final_hidden.lock();
             let mut log_guard = self.gpu_d_vocab_logits.lock();
             if let (Some(ref mut d_hid), Some(ref mut d_log)) = (hid_guard.as_mut(), log_guard.as_mut()) {
-                if d_hid.copy_from_host(&state.hidden).is_ok() {
+                if dev.copy_from_host_async(d_hid, &state.hidden).is_ok() {
                     dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
                     let mut logits = vec![0.0f32; self.config.vocab_size];
                     if d_log.copy_to_host(&mut logits).is_ok() {
@@ -1183,6 +1252,14 @@ impl QTensorModel {
         } else {
             all_scored.first().map(|x| x.1).unwrap_or(506)
         };
+
+        if profile {
+            eprintln!(
+                "[profile pos={}] vocab+sample={:.2}ms",
+                state.pos,
+                sample_start.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
 
         // Advance state with the newly sampled token
         state.hidden = self.forward_token(best_token, state.pos, &mut state.k_cache, &mut state.v_cache);

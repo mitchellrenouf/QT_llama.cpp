@@ -31,8 +31,35 @@ __inline__ __device__ float block_reduce_sum(float val) {
     val = (lane < n_warps) ? shared[lane] : 0.0f;
     if (wid == 0) {
         val = warp_reduce_sum(val);
+        if (lane == 0) shared[0] = val;
+    }
+    __syncthreads();
+    return shared[0];
+}
+
+__inline__ __device__ float warp_reduce_max(float val) {
+    #pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+        val = fmaxf(val, __shfl_down_sync(0xffffffff, val, offset));
     }
     return val;
+}
+
+__inline__ __device__ float block_reduce_max(float val) {
+    __shared__ float shared_max[32];
+    int lane = threadIdx.x & 31;
+    int wid = threadIdx.x >> 5;
+    val = warp_reduce_max(val);
+    if (lane == 0) shared_max[wid] = val;
+    __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5;
+    val = (lane < n_warps) ? shared_max[lane] : -3.402823466e+38F;
+    if (wid == 0) {
+        val = warp_reduce_max(val);
+        if (lane == 0) shared_max[0] = val;
+    }
+    __syncthreads();
+    return shared_max[0];
 }
 
 // 1. CUDA RMSNorm Kernel
@@ -164,6 +191,96 @@ __global__ void k_gemv_q4_0_f32(
     }
 }
 
+// Fused Q/K/V projection. A single launch writes a contiguous result so the
+// host needs one synchronization/copy instead of three per transformer layer.
+__global__ void k_gemv_q4_0_qkv_f32(
+    const uint8_t* __restrict__ w_q,
+    const uint8_t* __restrict__ w_k,
+    const uint8_t* __restrict__ w_v,
+    const float* __restrict__ x,
+    float* __restrict__ y,
+    int q_rows,
+    int kv_rows,
+    int n_cols
+) {
+    int lane = threadIdx.x & 31;
+    int warp = threadIdx.x >> 5;
+    int out_row = blockIdx.x * (blockDim.x / WARP_SIZE) + warp;
+    int total_rows = q_rows + 2 * kv_rows;
+    if (out_row >= total_rows) return;
+
+    const uint8_t* matrix;
+    int row;
+    if (out_row < q_rows) {
+        matrix = w_q;
+        row = out_row;
+    } else if (out_row < q_rows + kv_rows) {
+        matrix = w_k;
+        row = out_row - q_rows;
+    } else {
+        matrix = w_v;
+        row = out_row - q_rows - kv_rows;
+    }
+
+    int n_blocks = n_cols / 32;
+    int row_bytes = n_blocks * 18;
+    const uint8_t* row_w = matrix + (size_t)row * row_bytes;
+    float local_sum = 0.0f;
+    for (int b = 0; b < n_blocks; ++b) {
+        int w_off = b * 18;
+        uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
+        float d = __half2float(__ushort_as_half(d_raw));
+        const uint8_t* qs = row_w + w_off + 2;
+        int packed_lane = lane & 15;
+        uint8_t byte = qs[packed_lane];
+        int q = lane < 16 ? ((byte & 0x0F) - 8) : (((byte >> 4) & 0x0F) - 8);
+        local_sum += (float)q * x[b * 32 + lane] * d;
+    }
+    float total = warp_reduce_sum(local_sum);
+    if (lane == 0) y[out_row] = total;
+}
+
+__global__ void k_gemv_q4_0_geglu_f32(
+    const uint8_t* __restrict__ w_gate,
+    const uint8_t* __restrict__ w_up,
+    const float* __restrict__ x,
+    float* __restrict__ act,
+    int n_rows,
+    int n_cols
+) {
+    int lane = threadIdx.x & 31;
+    int warp = threadIdx.x >> 5;
+    int row = blockIdx.x * (blockDim.x / WARP_SIZE) + warp;
+    if (row >= n_rows) return;
+    int n_blocks = n_cols / 32;
+    int row_bytes = n_blocks * 18;
+    const uint8_t* gate_row = w_gate + (size_t)row * row_bytes;
+    const uint8_t* up_row = w_up + (size_t)row * row_bytes;
+    float gate_sum = 0.0f;
+    float up_sum = 0.0f;
+    for (int b = 0; b < n_blocks; ++b) {
+        int off = b * 18;
+        uint16_t dg_raw = (uint16_t)gate_row[off] | ((uint16_t)gate_row[off + 1] << 8);
+        uint16_t du_raw = (uint16_t)up_row[off] | ((uint16_t)up_row[off + 1] << 8);
+        float dg = __half2float(__ushort_as_half(dg_raw));
+        float du = __half2float(__ushort_as_half(du_raw));
+        int packed_lane = lane & 15;
+        uint8_t bg = gate_row[off + 2 + packed_lane];
+        uint8_t bu = up_row[off + 2 + packed_lane];
+        int qg = lane < 16 ? ((bg & 0x0F) - 8) : (((bg >> 4) & 0x0F) - 8);
+        int qu = lane < 16 ? ((bu & 0x0F) - 8) : (((bu >> 4) & 0x0F) - 8);
+        float xv = x[b * 32 + lane];
+        gate_sum += dg * (float)qg * xv;
+        up_sum += du * (float)qu * xv;
+    }
+    float gate = warp_reduce_sum(gate_sum);
+    float up = warp_reduce_sum(up_sum);
+    if (lane == 0) {
+        float gelu = 0.5f * gate * (1.0f + tanhf(0.7978845608f * gate * (1.0f + 0.044715f * gate * gate)));
+        act[row] = gelu * up;
+    }
+}
+
 // 4b. CUDA Q8_0 Matrix-Vector Multiplication: y = W * x with fused logit softcapping
 __global__ void k_gemv_q8_0_f32(
     const uint8_t* __restrict__ w_q8,
@@ -270,7 +387,7 @@ __global__ void k_attention_causal_swa_f32(
     for (int p = tid; p < total_keys - start_pos; p += blockDim.x) {
         if (s_scores[p] > local_max) local_max = s_scores[p];
     }
-    float max_score = block_reduce_sum(local_max); // reduction placeholder
+    float max_score = block_reduce_max(local_max);
     __syncthreads();
 
     // Exp and sum
@@ -361,6 +478,43 @@ void cuda_op_gemv_q4_0(
     int rows_per_block = threads / WARP_SIZE;
     int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
     k_gemv_q4_0_f32<<<blocks, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
+}
+
+void cuda_op_gemv_q4_0_qkv(
+    const uint8_t* d_w_q,
+    const uint8_t* d_w_k,
+    const uint8_t* d_w_v,
+    const float* d_x,
+    float* d_y,
+    int q_rows,
+    int kv_rows,
+    int n_cols,
+    cudaStream_t stream
+) {
+    int threads = 256;
+    int rows_per_block = threads / WARP_SIZE;
+    int total_rows = q_rows + 2 * kv_rows;
+    int blocks = (total_rows + rows_per_block - 1) / rows_per_block;
+    k_gemv_q4_0_qkv_f32<<<blocks, threads, 0, stream>>>(
+        d_w_q, d_w_k, d_w_v, d_x, d_y, q_rows, kv_rows, n_cols
+    );
+}
+
+void cuda_op_gemv_q4_0_geglu(
+    const uint8_t* d_w_gate,
+    const uint8_t* d_w_up,
+    const float* d_x,
+    float* d_act,
+    int n_rows,
+    int n_cols,
+    cudaStream_t stream
+) {
+    int threads = 256;
+    int rows_per_block = threads / WARP_SIZE;
+    int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
+    k_gemv_q4_0_geglu_f32<<<blocks, threads, 0, stream>>>(
+        d_w_gate, d_w_up, d_x, d_act, n_rows, n_cols
+    );
 }
 
 void cuda_op_gemv_q8_0(

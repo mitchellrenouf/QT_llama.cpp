@@ -38,6 +38,15 @@ extern "C" {
     fn cuda_op_geglu(d_gate: *const f32, d_up: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_rope_256k(d_vec: *mut f32, pos: i32, head_dim: i32, n_heads: i32, freq_base: f32, freq_scale: f32, stream: CudaStream);
     fn cuda_op_gemv_q4_0(d_w_q4: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
+    fn cuda_op_gemv_q4_0_qkv(
+        d_w_q: *const u8, d_w_k: *const u8, d_w_v: *const u8,
+        d_x: *const f32, d_y: *mut f32, q_rows: i32, kv_rows: i32,
+        n_cols: i32, stream: CudaStream,
+    );
+    fn cuda_op_gemv_q4_0_geglu(
+        d_w_gate: *const u8, d_w_up: *const u8, d_x: *const f32,
+        d_act: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream,
+    );
     fn cuda_op_gemv_q8_0(d_w_q8: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
     fn cuda_op_add(d_a: *const f32, d_b: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_embedding(d_table: *const f32, d_out: *mut f32, token: i32, dim: i32, stream: CudaStream);
@@ -127,6 +136,25 @@ impl<T> CudaBuffer<T> {
         };
         if res != 0 {
             return Err(anyhow!("cudaMemcpy (HtoD) failed with code {}", res));
+        }
+        Ok(())
+    }
+
+    pub fn copy_from_host_at(&mut self, offset: usize, slice: &[T]) -> Result<()> {
+        assert!(offset + slice.len() <= self.len);
+        unsafe { cudaSetDevice(self.device_id) };
+        let bytes = std::mem::size_of_val(slice);
+        let dst = unsafe { self.ptr.add(offset) };
+        let res = unsafe {
+            cudaMemcpy(
+                dst as *mut c_void,
+                slice.as_ptr() as *const c_void,
+                bytes,
+                CudaMemcpyKind::HostToDevice,
+            )
+        };
+        if res != 0 {
+            return Err(anyhow!("cudaMemcpy offset HtoD failed with code {}", res));
         }
         Ok(())
     }
@@ -343,6 +371,63 @@ impl CudaDevice {
                 n_rows as i32,
                 n_cols as i32,
                 self.stream,
+            );
+        }
+    }
+
+    pub fn copy_from_host_async<T>(&self, dst: &mut CudaBuffer<T>, src: &[T]) -> Result<()> {
+        assert_eq!(dst.len(), src.len());
+        unsafe { cudaSetDevice(self.device_id) };
+        let res = unsafe {
+            cudaMemcpyAsync(
+                dst.as_mut_ptr() as *mut c_void,
+                src.as_ptr() as *const c_void,
+                std::mem::size_of_val(src),
+                CudaMemcpyKind::HostToDevice,
+                self.stream,
+            )
+        };
+        if res != 0 {
+            return Err(anyhow!("cudaMemcpyAsync HtoD failed with code {}", res));
+        }
+        Ok(())
+    }
+
+    pub fn gemv_q4_0_qkv(
+        &self,
+        d_w_q: &CudaBuffer<u8>,
+        d_w_k: &CudaBuffer<u8>,
+        d_w_v: &CudaBuffer<u8>,
+        d_x: &CudaBuffer<f32>,
+        d_y: &mut CudaBuffer<f32>,
+        q_rows: usize,
+        kv_rows: usize,
+        n_cols: usize,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_gemv_q4_0_qkv(
+                d_w_q.as_ptr(), d_w_k.as_ptr(), d_w_v.as_ptr(), d_x.as_ptr(),
+                d_y.as_mut_ptr(), q_rows as i32, kv_rows as i32, n_cols as i32,
+                self.stream,
+            );
+        }
+    }
+
+    pub fn gemv_q4_0_geglu(
+        &self,
+        d_w_gate: &CudaBuffer<u8>,
+        d_w_up: &CudaBuffer<u8>,
+        d_x: &CudaBuffer<f32>,
+        d_act: &mut CudaBuffer<f32>,
+        n_rows: usize,
+        n_cols: usize,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_gemv_q4_0_geglu(
+                d_w_gate.as_ptr(), d_w_up.as_ptr(), d_x.as_ptr(), d_act.as_mut_ptr(),
+                n_rows as i32, n_cols as i32, self.stream,
             );
         }
     }
