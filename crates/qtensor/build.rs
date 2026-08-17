@@ -32,8 +32,16 @@ fn main() {
             if nvcc_path.exists() {
                 println!("cargo:warning=[qtensor] Compiling CUDA acceleration kernels with NVCC: {}", nvcc_path.display());
 
-                let obj_out = out_dir.join("cuda_kernels.obj");
-                let lib_out = out_dir.join("qtensor_cuda_kernels.lib");
+                let obj_out = if is_windows {
+                    out_dir.join("cuda_kernels.obj")
+                } else {
+                    out_dir.join("cuda_kernels.o")
+                };
+                let lib_out = if is_windows {
+                    out_dir.join("qtensor_cuda_kernels.lib")
+                } else {
+                    out_dir.join("libqtensor_cuda_kernels.a")
+                };
 
                 let mut cmd = Command::new(&nvcc_path);
                 
@@ -50,8 +58,13 @@ fn main() {
                     "-o", obj_out.to_str().unwrap(),
                     "-O3",
                     "--use_fast_math",
-                    "-Xcompiler", "/MD",
                 ]);
+
+                if is_windows {
+                    cmd.args(&["-Xcompiler", "/MD"]);
+                } else {
+                    cmd.args(&["-Xcompiler", "-fPIC"]);
+                }
 
                 let status = cmd.status().expect("Failed to execute nvcc");
                 if !status.success() {
