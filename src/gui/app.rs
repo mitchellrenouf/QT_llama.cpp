@@ -17,31 +17,76 @@ pub fn run(port: u16) -> anyhow::Result<()> {
     let window = Rc::new(
         MainWindow::new()
             .window_title("RustLlama")
-            .size(1240, 820)
+            .size(1360, 860)
             .build(),
     );
     let root = Widget::new().parent(&*window).build();
     root.set_style_sheet(APP_STYLE);
-    let mut layout = VBoxLayout::with_parent(&root);
-    layout.set_contents_margins(28, 22, 28, 22);
-    layout.set_spacing(14);
+    let mut shell_layout = HBoxLayout::with_parent(&root);
+    shell_layout.set_contents_margins(0, 0, 0, 0);
+    shell_layout.set_spacing(0);
+
+    let sidebar = Widget::new().parent(&root).build();
+    sidebar.set_min_size(248, 0);
+    sidebar.set_max_size(280, 100_000);
+    sidebar.set_style_sheet(SIDEBAR_STYLE);
+    let mut sidebar_layout = VBoxLayout::with_parent(&sidebar);
+    sidebar_layout.set_contents_margins(16, 18, 16, 16);
+    sidebar_layout.set_spacing(12);
+    sidebar_layout.add(
+        Label::new(
+            "<div style='font-size:20px;font-weight:650;color:#f8fafc'>RustLlama</div>\
+             <div style='font-size:12px;color:#8b95a7;margin-top:3px'>Local AI workspace</div>",
+        )
+        .parent(&sidebar)
+        .build(),
+    );
+    let mut new_chat = PushButton::new("＋  New conversation")
+        .parent(&sidebar)
+        .build();
+    {
+        let tx = tx.clone();
+        new_chat.connect_clicked(move || {
+            let _ = tx.send(json!({"type":"clear_history"}));
+        });
+    }
+    sidebar_layout.add(new_chat);
+    sidebar_layout.add(Label::new("CONVERSATIONS").parent(&sidebar).build());
+    sidebar_layout.add(
+        ListWidget::new()
+            .items(&["Current conversation"])
+            .parent(&sidebar)
+            .build(),
+    );
+    sidebar_layout.add(Label::new("⌁  Local model · CUDA").parent(&sidebar).build());
+    shell_layout.add(sidebar);
+
+    let workspace = Widget::new().parent(&root).build();
+    let mut layout = VBoxLayout::with_parent(&workspace);
+    layout.set_contents_margins(32, 24, 32, 18);
+    layout.set_spacing(12);
     layout.add(
         Label::new(
-            "<div style='font-size:22px;font-weight:600;color:#f8fafc'>RustLlama</div>\
-             <div style='font-size:13px;color:#94a3b8;margin-top:3px'>Your private AI workspace</div>",
+            "<div style='font-size:14px;font-weight:600;color:#f8fafc'>New conversation</div>\
+             <div style='font-size:12px;color:#8b95a7;margin-top:3px'>General · Local execution</div>",
         )
-        .parent(&root)
+        .parent(&workspace)
         .build(),
     );
     let chat = Rc::new(RefCell::new(
-        TextBrowser::new().html(welcome()).parent(&root).build(),
+        TextBrowser::new()
+            .html(welcome())
+            .parent(&workspace)
+            .build(),
     ));
     chat.borrow().set_open_external_links(true);
     chat.borrow_mut().set_has_parent();
     let chat_area = ScrollArea::new().set_widget_resizable(true).build();
     chat_area.set_widget(&*chat.borrow());
     layout.add(chat_area);
-    let composer = Widget::new().parent(&root).build();
+    let composer = Widget::new().parent(&workspace).build();
+    composer.set_min_size(0, 106);
+    composer.set_max_size(100_000, 132);
     composer.set_style_sheet(
         "QWidget { background: #17191f; border: 1px solid #303744; border-radius: 14px; }",
     );
@@ -54,18 +99,19 @@ pub fn run(port: u16) -> anyhow::Result<()> {
     let input_area = ScrollArea::new().set_widget_resizable(true).build();
     input_area.set_widget(&*input.borrow());
     composer_layout.add(input_area);
-    let mut send = PushButton::new("Send").parent(&composer).build();
-    let mut download = PushButton::new("Load model").parent(&composer).build();
+    let mut send = PushButton::new("↑").parent(&composer).build();
+    let mut download = PushButton::new("⌄").parent(&composer).build();
     layout.add(composer);
     let status = Rc::new(RefCell::new(
         Label::new("Connecting to local agent…")
-            .parent(&root)
+            .parent(&workspace)
             .build(),
     ));
     status.borrow_mut().set_has_parent();
     let status_area = ScrollArea::new().set_widget_resizable(true).build();
     status_area.set_widget(&*status.borrow());
     layout.add(status_area);
+    shell_layout.add(workspace);
     window.set_central_widget(&root);
     let transcript = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
     let streaming = Rc::new(RefCell::new(String::new()));
@@ -282,17 +328,27 @@ fn render(items: &[(String, String)], live: &str) -> String {
 }
 
 const APP_STYLE: &str = r#"
-    QWidget { background: #101217; color: #e5e7eb; font-family: "Segoe UI", "SF Pro Text", sans-serif; }
+    QWidget { background: #111318; color: #e5e7eb; font-family: "Segoe UI", "SF Pro Text", sans-serif; }
     QScrollArea { border: 0; background: transparent; }
-    QTextBrowser { background: #17191f; border: 1px solid #2a2f3a; border-radius: 14px; padding: 14px; color: #e5e7eb; selection-background-color: #355ca8; }
+    QTextBrowser { background: #111318; border: 0; padding: 14px 54px; color: #e5e7eb; selection-background-color: #355ca8; }
     QPlainTextEdit { background: transparent; border: 0; color: #f3f4f6; padding: 7px; font-size: 14px; }
-    QPushButton { background:#262b35; color:#dbe4f0; border:1px solid #3a4352; border-radius:8px; padding:9px 13px; }
-    QPushButton:hover { background:#303846; }
+    QPushButton { background:#242934; color:#dbe4f0; border:1px solid #3a4352; border-radius:9px; padding:9px 13px; }
+    QPushButton:hover { background:#303846; border-color:#566174; }
     QPushButton:disabled { background:#334155; color:#94a3b8; }
     QScrollBar:vertical { background:#17191f; width:10px; margin:4px; }
     QScrollBar::handle:vertical { background:#3a4352; border-radius:5px; min-height:28px; }
-    QMenuBar { background:#101217; color:#e5e7eb; padding:4px 8px; }
+    QMenuBar { background:#17191f; color:#e5e7eb; padding:4px 8px; }
     QMenuBar::item:selected, QMenu::item:selected { background:#252b36; border-radius:5px; }
     QMenu { background:#17191f; color:#e5e7eb; border:1px solid #303744; }
     QLabel { color:#cbd5e1; }
+"#;
+
+const SIDEBAR_STYLE: &str = r#"
+    QWidget { background:#1b1d23; color:#e5e7eb; }
+    QPushButton { text-align:left; background:#252831; color:#f1f5f9; border:1px solid #353a46; border-radius:8px; padding:10px 12px; font-weight:600; }
+    QPushButton:hover { background:#30343e; }
+    QListWidget { background:transparent; color:#d6dbe4; border:0; outline:0; padding:0; }
+    QListWidget::item { padding:9px 10px; border-radius:7px; }
+    QListWidget::item:selected, QListWidget::item:hover { background:#30323a; }
+    QLabel { color:#8f98a8; font-size:12px; }
 "#;
