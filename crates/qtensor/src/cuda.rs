@@ -54,6 +54,20 @@ extern "C" {
         sliding_window: i32,
         stream: CudaStream,
     );
+    fn cuda_op_moe_topk_q4_0(
+        d_gate_up_exps: *const u8,
+        d_down_exps: *const u8,
+        d_active_exp_ids: *const i32,
+        d_active_exp_weights: *const f32,
+        d_down_exps_scale: *const f32,
+        d_x_in: *const f32,
+        d_act_scratch: *mut f32,
+        d_out_moe: *mut f32,
+        dim: i32,
+        exp_ffn_dim: i32,
+        n_active: i32,
+        stream: CudaStream,
+    );
 }
 
 /// RAII wrapper for GPU Device Memory
@@ -420,6 +434,40 @@ impl CudaDevice {
                 head_dim as i32,
                 scale,
                 sw,
+                self.stream,
+            );
+        }
+    }
+
+    pub fn moe_topk_q4_0(
+        &self,
+        d_gate_up_exps: &CudaBuffer<u8>,
+        d_down_exps: &CudaBuffer<u8>,
+        d_active_exp_ids: &CudaBuffer<i32>,
+        d_active_exp_weights: &CudaBuffer<f32>,
+        d_down_exps_scale: Option<&CudaBuffer<f32>>,
+        d_x_in: &CudaBuffer<f32>,
+        d_act_scratch: &mut CudaBuffer<f32>,
+        d_out_moe: &mut CudaBuffer<f32>,
+        dim: usize,
+        exp_ffn_dim: usize,
+        n_active: usize,
+    ) {
+        let scale_ptr = d_down_exps_scale.map(|b| b.as_ptr()).unwrap_or(ptr::null());
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_moe_topk_q4_0(
+                d_gate_up_exps.as_ptr(),
+                d_down_exps.as_ptr(),
+                d_active_exp_ids.as_ptr(),
+                d_active_exp_weights.as_ptr(),
+                scale_ptr,
+                d_x_in.as_ptr(),
+                d_act_scratch.as_mut_ptr(),
+                d_out_moe.as_mut_ptr(),
+                dim as i32,
+                exp_ffn_dim as i32,
+                n_active as i32,
                 self.stream,
             );
         }

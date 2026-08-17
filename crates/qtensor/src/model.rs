@@ -80,6 +80,12 @@ pub struct TransformerLayer {
     pub gpu_ffn_up: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
     pub gpu_ffn_down: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_gate_up_exps: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_down_exps: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_down_exps_scale: Option<crate::cuda::CudaBuffer<f32>>,
 
     // Persistent GPU scratch/activation buffers
     #[cfg(feature = "cuda")]
@@ -104,6 +110,16 @@ pub struct TransformerLayer {
     pub gpu_d_mlp_act: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_mlp_down: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_moe_in: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_moe_exp_ids: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<i32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_moe_exp_weights: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_moe_act_scratch: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_moe_out: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
 }
 
 pub struct GenerationState {
@@ -203,6 +219,11 @@ impl QTensorModel {
         #[cfg(feature = "cuda")]
         let cuda_dev = crate::cuda::CudaDevice::new(0).ok().map(std::sync::Arc::new);
 
+        let mmap = File::open(&gguf_path)
+            .ok()
+            .and_then(|file| unsafe { memmap2::Mmap::map(&file).ok() })
+            .map(std::sync::Arc::new);
+
         // Load layer weights
         let mut layers = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
@@ -260,6 +281,61 @@ impl QTensorModel {
             let gpu_ffn_up = if cuda_dev.is_some() && !ffn_up.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_up).ok() } else { None };
             #[cfg(feature = "cuda")]
             let gpu_ffn_down = if cuda_dev.is_some() && !ffn_down.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_down).ok() } else { None };
+
+            let exp_ffn_dim = 704;
+            let n_exps = 128;
+            let gate_up_bytes = n_exps * (2 * exp_ffn_dim) * (dim / 32) * 18;
+            let down_bytes = n_exps * dim * (exp_ffn_dim / 32) * 18;
+
+            #[cfg(feature = "cuda")]
+            let (gpu_ffn_gate_up_exps, gpu_ffn_down_exps, gpu_ffn_down_exps_scale) = if cuda_dev.is_some() && is_moe {
+                let should_offload = if let Ok((free_mem, _)) = crate::cuda::CudaDevice::get_memory_info(0) {
+                    free_mem >= (gate_up_bytes + down_bytes + 400 * 1024 * 1024)
+                } else {
+                    false
+                };
+
+                if should_offload {
+                    let gu_gpu = if let Some(ref m) = mmap {
+                        let slice = &m[ffn_gate_up_exps_offset as usize..(ffn_gate_up_exps_offset as usize + gate_up_bytes)];
+                        crate::cuda::CudaBuffer::from_host_on(0, slice).ok()
+                    } else {
+                        None
+                    };
+
+                    let down_gpu = if let Some(ref m) = mmap {
+                        let slice = &m[ffn_down_exps_offset as usize..(ffn_down_exps_offset as usize + down_bytes)];
+                        crate::cuda::CudaBuffer::from_host_on(0, slice).ok()
+                    } else {
+                        None
+                    };
+
+                    let scale_gpu = if !ffn_down_exps_scale.is_empty() {
+                        crate::cuda::CudaBuffer::from_host_on(0, &ffn_down_exps_scale).ok()
+                    } else {
+                        None
+                    };
+
+                    (gu_gpu, down_gpu, scale_gpu)
+                } else {
+                    (None, None, None)
+                }
+            } else {
+                (None, None, None)
+            };
+
+            #[cfg(feature = "cuda")]
+            let (gpu_d_moe_in, gpu_d_moe_exp_ids, gpu_d_moe_exp_weights, gpu_d_moe_act_scratch, gpu_d_moe_out) = if cuda_dev.is_some() {
+                (
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, 8).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, 8).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, 8 * exp_ffn_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                )
+            } else {
+                (None, None, None, None, None)
+            };
 
             #[cfg(feature = "cuda")]
             let (gpu_d_cur, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
@@ -327,6 +403,12 @@ impl QTensorModel {
                 #[cfg(feature = "cuda")]
                 gpu_ffn_down,
                 #[cfg(feature = "cuda")]
+                gpu_ffn_gate_up_exps,
+                #[cfg(feature = "cuda")]
+                gpu_ffn_down_exps,
+                #[cfg(feature = "cuda")]
+                gpu_ffn_down_exps_scale,
+                #[cfg(feature = "cuda")]
                 gpu_d_cur: parking_lot::Mutex::new(gpu_d_cur),
                 #[cfg(feature = "cuda")]
                 gpu_d_q: parking_lot::Mutex::new(gpu_d_q),
@@ -348,6 +430,16 @@ impl QTensorModel {
                 gpu_d_mlp_act: parking_lot::Mutex::new(gpu_d_mlp_act),
                 #[cfg(feature = "cuda")]
                 gpu_d_mlp_down: parking_lot::Mutex::new(gpu_d_mlp_down),
+                #[cfg(feature = "cuda")]
+                gpu_d_moe_in: parking_lot::Mutex::new(gpu_d_moe_in),
+                #[cfg(feature = "cuda")]
+                gpu_d_moe_exp_ids: parking_lot::Mutex::new(gpu_d_moe_exp_ids),
+                #[cfg(feature = "cuda")]
+                gpu_d_moe_exp_weights: parking_lot::Mutex::new(gpu_d_moe_exp_weights),
+                #[cfg(feature = "cuda")]
+                gpu_d_moe_act_scratch: parking_lot::Mutex::new(gpu_d_moe_act_scratch),
+                #[cfg(feature = "cuda")]
+                gpu_d_moe_out: parking_lot::Mutex::new(gpu_d_moe_out),
             });
         }
 
@@ -379,10 +471,6 @@ impl QTensorModel {
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cpu)).count(),
         );
 
-        let mmap = File::open(&gguf_path)
-            .ok()
-            .and_then(|f| unsafe { memmap2::Mmap::map(&f).ok() })
-            .map(std::sync::Arc::new);
 
         Ok(Self {
             config,
@@ -707,45 +795,117 @@ impl QTensorModel {
 
                     // Evaluate active experts
                     let exp_ffn_dim = 704;
-                    let gate_up_bytes_per_exp = 1408 * (dim / 32) * 18; // 2,230,272 bytes
-                    let down_bytes_per_exp = 2816 * (exp_ffn_dim / 32) * 18; // 1,115,136 bytes
 
-                    for (k, &(_, exp_idx)) in top8.iter().enumerate() {
-                        let alpha = ex_probs[k];
-                        if alpha <= 0.0001 {
-                            continue;
+                    #[cfg(feature = "cuda")]
+                    let moe_used_gpu = if let (
+                        Some(ref dev),
+                        Some(ref g_gu_exps),
+                        Some(ref g_down_exps),
+                    ) = (
+                        &self.cuda_dev,
+                        &layer.gpu_ffn_gate_up_exps,
+                        &layer.gpu_ffn_down_exps,
+                    ) {
+                        let mut in_guard = layer.gpu_d_moe_in.lock();
+                        let mut exp_ids_guard = layer.gpu_d_moe_exp_ids.lock();
+                        let mut exp_weights_guard = layer.gpu_d_moe_exp_weights.lock();
+                        let mut act_scratch_guard = layer.gpu_d_moe_act_scratch.lock();
+                        let mut out_guard = layer.gpu_d_moe_out.lock();
+
+                        if let (
+                            Some(ref mut d_in),
+                            Some(ref mut d_exp_ids),
+                            Some(ref mut d_exp_weights),
+                            Some(ref mut d_act_scratch),
+                            Some(ref mut d_out),
+                        ) = (
+                            in_guard.as_mut(),
+                            exp_ids_guard.as_mut(),
+                            exp_weights_guard.as_mut(),
+                            act_scratch_guard.as_mut(),
+                            out_guard.as_mut(),
+                        ) {
+                            let mut active_ids = [0i32; 8];
+                            let mut active_alphas = [0.0f32; 8];
+                            for i in 0..8 {
+                                active_ids[i] = top8[i].1 as i32;
+                                active_alphas[i] = ex_probs[i];
+                            }
+
+                            if d_in.copy_from_host(&ffn_in_moe).is_ok()
+                                && d_exp_ids.copy_from_host(&active_ids).is_ok()
+                                && d_exp_weights.copy_from_host(&active_alphas).is_ok()
+                            {
+                                dev.moe_topk_q4_0(
+                                    g_gu_exps,
+                                    g_down_exps,
+                                    d_exp_ids,
+                                    d_exp_weights,
+                                    layer.gpu_ffn_down_exps_scale.as_ref(),
+                                    d_in,
+                                    d_act_scratch,
+                                    d_out,
+                                    dim,
+                                    exp_ffn_dim,
+                                    8,
+                                );
+                                let _ = dev.sync();
+                                let _ = d_out.copy_to_host(&mut moe_raw);
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
                         }
+                    } else {
+                        false
+                    };
 
-                        let gu_off = (layer.ffn_gate_up_exps_offset + (exp_idx as u64) * (gate_up_bytes_per_exp as u64)) as usize;
-                        let down_off = (layer.ffn_down_exps_offset + (exp_idx as u64) * (down_bytes_per_exp as u64)) as usize;
+                    #[cfg(not(feature = "cuda"))]
+                    let moe_used_gpu = false;
 
-                        if let Some(ref mm) = self.mmap {
-                            if gu_off + gate_up_bytes_per_exp <= mm.len() && down_off + down_bytes_per_exp <= mm.len() {
-                                let half_bytes = gate_up_bytes_per_exp / 2;
-                                let gate_slice = &mm[gu_off..gu_off + half_bytes];
-                                let up_slice = &mm[gu_off + half_bytes..gu_off + gate_up_bytes_per_exp];
-                                let down_slice = &mm[down_off..down_off + down_bytes_per_exp];
+                    if !moe_used_gpu {
+                        let gate_up_bytes_per_exp = 1408 * (dim / 32) * 18; // 2,230,272 bytes
+                        let down_bytes_per_exp = 2816 * (exp_ffn_dim / 32) * 18; // 1,115,136 bytes
 
-                                let mut exp_gate = vec![0.0f32; exp_ffn_dim];
-                                let mut exp_up = vec![0.0f32; exp_ffn_dim];
+                        for (k, &(_, exp_idx)) in top8.iter().enumerate() {
+                            let alpha = ex_probs[k];
+                            if alpha <= 0.0001 {
+                                continue;
+                            }
 
-                                ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, exp_ffn_dim, dim);
-                                ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, exp_ffn_dim, dim);
+                            let gu_off = (layer.ffn_gate_up_exps_offset + (exp_idx as u64) * (gate_up_bytes_per_exp as u64)) as usize;
+                            let down_off = (layer.ffn_down_exps_offset + (exp_idx as u64) * (down_bytes_per_exp as u64)) as usize;
 
-                                let mut exp_act = vec![0.0f32; exp_ffn_dim];
-                                ops::geglu(&exp_gate, &exp_up, &mut exp_act);
+                            if let Some(ref mm) = self.mmap {
+                                if gu_off + gate_up_bytes_per_exp <= mm.len() && down_off + down_bytes_per_exp <= mm.len() {
+                                    let half_bytes = gate_up_bytes_per_exp / 2;
+                                    let gate_slice = &mm[gu_off..gu_off + half_bytes];
+                                    let up_slice = &mm[gu_off + half_bytes..gu_off + gate_up_bytes_per_exp];
+                                    let down_slice = &mm[down_off..down_off + down_bytes_per_exp];
 
-                                let mut exp_down = vec![0.0f32; dim];
-                                ops::mat_vec_mul_q4_0(down_slice, &exp_act, &mut exp_down, dim, exp_ffn_dim);
+                                    let mut exp_gate = vec![0.0f32; exp_ffn_dim];
+                                    let mut exp_up = vec![0.0f32; exp_ffn_dim];
 
-                                let scale = if exp_idx < layer.ffn_down_exps_scale.len() {
-                                    layer.ffn_down_exps_scale[exp_idx]
-                                } else {
-                                    1.0
-                                };
+                                    ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, exp_ffn_dim, dim);
+                                    ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, exp_ffn_dim, dim);
 
-                                for i in 0..dim {
-                                    moe_raw[i] += alpha * exp_down[i] * scale;
+                                    let mut exp_act = vec![0.0f32; exp_ffn_dim];
+                                    ops::geglu(&exp_gate, &exp_up, &mut exp_act);
+
+                                    let mut exp_down = vec![0.0f32; dim];
+                                    ops::mat_vec_mul_q4_0(down_slice, &exp_act, &mut exp_down, dim, exp_ffn_dim);
+
+                                    let scale = if exp_idx < layer.ffn_down_exps_scale.len() {
+                                        layer.ffn_down_exps_scale[exp_idx]
+                                    } else {
+                                        1.0
+                                    };
+
+                                    for i in 0..dim {
+                                        moe_raw[i] += alpha * exp_down[i] * scale;
+                                    }
                                 }
                             }
                         }

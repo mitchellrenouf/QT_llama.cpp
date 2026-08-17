@@ -39,13 +39,35 @@ finish-args:
   - --talk-name=org.freedesktop.Notifications
 
 build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin
+  append-path: /usr/lib/sdk/rust-stable/bin:/app/cuda/bin
+  append-ld-library-path: /app/cuda/lib64:/app/lib
   env:
     CARGO_HOME: /run/build/qt-llama/cargo
+    CUDA_PATH: /app/cuda
+    CUDA_TOOLKIT_ROOT_DIR: /app/cuda
+    LLAMA_CUDA: "1"
     LLAMA_VULKAN: "1"
 
 modules:
-  # 1. SPIRV-Headers required for ggml-vulkan shader compilation
+  # 1. NVIDIA CUDA 13.3 Toolkit (Install via /var/tmp to prevent tmpfs exhaustion)
+  - name: cuda-toolkit
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /var/tmp/cuda_tmp
+      - TMPDIR=/var/tmp/cuda_tmp sh cuda_13.3.1_610.43.02_linux.run --silent --toolkit --toolkitpath=/app/cuda --tmpdir=/var/tmp/cuda_tmp --override --no-man-page
+      - rm -rf /var/tmp/cuda_tmp
+      # Strip unneeded samples, documentation, and graphical tools to optimize image footprint
+      - rm -rf /app/cuda/doc /app/cuda/samples /app/cuda/extras /app/cuda/nsight* /app/cuda/nvvp*
+      - mkdir -p /app/lib
+      - cp -P /app/cuda/lib64/libcudart.so* /app/lib/ || true
+      - cp -P /app/cuda/lib64/libcublas.so* /app/lib/ || true
+      - cp -P /app/cuda/lib64/libcublasLt.so* /app/lib/ || true
+    sources:
+      - type: file
+        url: https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_610.43.02_linux.run
+        sha256: 9f98ec1f6c950401041d3f1308e221f0d5db8771a8e10569001b64caaee31a92
+
+  # 2. SPIRV-Headers required for ggml-vulkan shader compilation
   - name: spirv-headers
     buildsystem: cmake-ninja
     config-opts:
@@ -56,7 +78,7 @@ modules:
         url: https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.321.0.tar.gz
         sha256: 5bbea925663d4cd2bab23efad53874f2718248a73dcaf9dd21dff8cb48e602fc
 
-  # 2. Main QT_llama application (Vulkan built-in + GPU extension hooks)
+  # 3. Main QT_llama application (Built with CUDA & Vulkan GPU acceleration)
   - name: qt-llama
     buildsystem: simple
     build-commands:
@@ -72,8 +94,8 @@ modules:
         directory = "vendor"
         EOF
 
-      # Build release binary with Vulkan GPU acceleration
-      - cargo build --release --features vulkan --no-default-features
+      # Build release binary with full CUDA and Vulkan acceleration
+      - cargo build --release --features cuda,vulkan --no-default-features
 
       # Install binaries & wrapper script
       - install -Dm755 target/release/qt_llama /app/bin/qt_llama

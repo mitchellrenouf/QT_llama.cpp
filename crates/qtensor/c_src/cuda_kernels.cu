@@ -429,4 +429,164 @@ void cuda_op_attention(
     );
 }
 
+// Fused MoE Top-K Gate+Up GEMV + GeGLU Kernel
+// gridDim = (exp_ffn_dim, n_active), blockDim = 128
+__global__ void k_moe_gate_up_topk_q4_0_f32(
+    const uint8_t* __restrict__ gate_up_exps,
+    const int32_t* __restrict__ active_exp_ids,
+    const float* __restrict__ x_in,
+    float* __restrict__ act_out,
+    int exp_ffn_dim,
+    int dim,
+    int n_active
+) {
+    int row = blockIdx.x;       // row in 0..exp_ffn_dim
+    int slot = blockIdx.y;      // slot in 0..n_active
+    if (row >= exp_ffn_dim || slot >= n_active) return;
+
+    int exp_idx = active_exp_ids[slot];
+    int n_blocks = dim / 32;
+    int row_bytes = n_blocks * 18;
+    int exp_bytes = (2 * exp_ffn_dim) * row_bytes;
+
+    const uint8_t* exp_base = gate_up_exps + (size_t)exp_idx * exp_bytes;
+    const uint8_t* gate_row_w = exp_base + row * row_bytes;
+    const uint8_t* up_row_w = exp_base + (exp_ffn_dim + row) * row_bytes;
+
+    int tid = threadIdx.x;
+    float local_gate = 0.0f;
+    float local_up = 0.0f;
+
+    for (int b = tid; b < n_blocks; b += blockDim.x) {
+        int w_off = b * 18;
+        int x_base = b * 32;
+
+        // Gate dot
+        uint16_t d_raw_g = (uint16_t)gate_row_w[w_off] | ((uint16_t)gate_row_w[w_off + 1] << 8);
+        float d_g = __half2float(__ushort_as_half(d_raw_g));
+        const uint8_t* qs_g = gate_row_w + w_off + 2;
+
+        // Up dot
+        uint16_t d_raw_u = (uint16_t)up_row_w[w_off] | ((uint16_t)up_row_w[w_off + 1] << 8);
+        float d_u = __half2float(__ushort_as_half(d_raw_u));
+        const uint8_t* qs_u = up_row_w + w_off + 2;
+
+        float block_gate = 0.0f;
+        float block_up = 0.0f;
+
+        #pragma unroll
+        for (int i = 0; i < 16; ++i) {
+            uint8_t byte_g = qs_g[i];
+            int q0_g = (byte_g & 0x0F) - 8;
+            int q1_g = ((byte_g >> 4) & 0x0F) - 8;
+            block_gate += (float)q0_g * x_in[x_base + i] + (float)q1_g * x_in[x_base + i + 16];
+
+            uint8_t byte_u = qs_u[i];
+            int q0_u = (byte_u & 0x0F) - 8;
+            int q1_u = ((byte_u >> 4) & 0x0F) - 8;
+            block_up += (float)q0_u * x_in[x_base + i] + (float)q1_u * x_in[x_base + i + 16];
+        }
+        local_gate += d_g * block_gate;
+        local_up += d_u * block_up;
+    }
+
+    float total_gate = block_reduce_sum(local_gate);
+    float total_up = block_reduce_sum(local_up);
+
+    if (tid == 0) {
+        // Fused approximate GeGLU: GELU(gate) * up
+        float x = total_gate;
+        float gelu_x = 0.5f * x * (1.0f + tanhf(0.7978845608f * x * (1.0f + 0.044715f * x * x)));
+        act_out[slot * exp_ffn_dim + row] = gelu_x * total_up;
+    }
 }
+
+// Fused MoE Top-K Down GEMV + Scale + Accumulate Kernel
+// gridDim = (dim, n_active), blockDim = 128
+__global__ void k_moe_down_topk_q4_0_f32(
+    const uint8_t* __restrict__ down_exps,
+    const int32_t* __restrict__ active_exp_ids,
+    const float* __restrict__ active_exp_weights,
+    const float* __restrict__ down_exps_scale,
+    const float* __restrict__ act_in,
+    float* __restrict__ out_moe,
+    int dim,
+    int exp_ffn_dim,
+    int n_active
+) {
+    int row = blockIdx.x;       // row in 0..dim
+    int slot = blockIdx.y;      // slot in 0..n_active
+    if (row >= dim || slot >= n_active) return;
+
+    int exp_idx = active_exp_ids[slot];
+    float weight = active_exp_weights[slot];
+    float scale = (down_exps_scale != nullptr) ? down_exps_scale[exp_idx] : 1.0f;
+    float alpha = weight * scale;
+
+    int n_blocks = exp_ffn_dim / 32;
+    int row_bytes = n_blocks * 18;
+    int exp_bytes = dim * row_bytes;
+
+    const uint8_t* exp_base = down_exps + (size_t)exp_idx * exp_bytes;
+    const uint8_t* row_w = exp_base + row * row_bytes;
+    const float* act_slot = act_in + slot * exp_ffn_dim;
+
+    int tid = threadIdx.x;
+    float local_sum = 0.0f;
+
+    for (int b = tid; b < n_blocks; b += blockDim.x) {
+        int w_off = b * 18;
+        uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
+        float d = __half2float(__ushort_as_half(d_raw));
+
+        const uint8_t* qs = row_w + w_off + 2;
+        int x_base = b * 32;
+
+        float block_sum = 0.0f;
+        #pragma unroll
+        for (int i = 0; i < 16; ++i) {
+            uint8_t byte = qs[i];
+            int q0 = (byte & 0x0F) - 8;
+            int q1 = ((byte >> 4) & 0x0F) - 8;
+            block_sum += (float)q0 * act_slot[x_base + i] + (float)q1 * act_slot[x_base + i + 16];
+        }
+        local_sum += d * block_sum;
+    }
+
+    float total_down = block_reduce_sum(local_sum);
+
+    if (tid == 0) {
+        atomicAdd(&out_moe[row], total_down * alpha);
+    }
+}
+
+void cuda_op_moe_topk_q4_0(
+    const uint8_t* d_gate_up_exps,
+    const uint8_t* d_down_exps,
+    const int32_t* d_active_exp_ids,
+    const float* d_active_exp_weights,
+    const float* d_down_exps_scale,
+    const float* d_x_in,
+    float* d_act_scratch,
+    float* d_out_moe,
+    int dim,
+    int exp_ffn_dim,
+    int n_active,
+    cudaStream_t stream
+) {
+    cudaMemsetAsync(d_out_moe, 0, dim * sizeof(float), stream);
+
+    dim3 grid_gu(exp_ffn_dim, n_active);
+    k_moe_gate_up_topk_q4_0_f32<<<grid_gu, 128, 0, stream>>>(
+        d_gate_up_exps, d_active_exp_ids, d_x_in, d_act_scratch, exp_ffn_dim, dim, n_active
+    );
+
+    dim3 grid_down(dim, n_active);
+    k_moe_down_topk_q4_0_f32<<<grid_down, 128, 0, stream>>>(
+        d_down_exps, d_active_exp_ids, d_active_exp_weights, d_down_exps_scale,
+        d_act_scratch, d_out_moe, dim, exp_ffn_dim, n_active
+    );
+}
+
+}
+
