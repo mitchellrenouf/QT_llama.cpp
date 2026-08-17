@@ -56,6 +56,12 @@ fn main() {
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("CMAKE_BUILD_TYPE", "Release");
 
+    let mut prefix_paths = Vec::new();
+    if Path::new("/app").exists() {
+        prefix_paths.push("/app".to_string());
+    }
+    prefix_paths.push("/usr".to_string());
+
     if has_cuda {
         println!("cargo:warning=[llama-cpp-binding] Enabling CUDA GPU Acceleration (NVIDIA cuBLAS)...");
         cfg.define("GGML_CUDA", "ON");
@@ -67,26 +73,30 @@ fn main() {
             if nvcc.exists() {
                 cfg.define("CMAKE_CUDA_COMPILER", nvcc);
             }
+            prefix_paths.push(p.display().to_string());
         } else if Path::new("/usr/lib/sdk/cuda").exists() {
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/usr/lib/sdk/cuda");
             cfg.define("CMAKE_CUDA_COMPILER", "/usr/lib/sdk/cuda/bin/nvcc");
+            prefix_paths.push("/usr/lib/sdk/cuda".to_string());
         } else if Path::new("/app/cuda").exists() {
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/app/cuda");
             cfg.define("CMAKE_CUDA_COMPILER", "/app/cuda/bin/nvcc");
+            prefix_paths.push("/app/cuda".to_string());
         } else if Path::new("/opt/cuda").exists() {
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/opt/cuda");
             cfg.define("CMAKE_CUDA_COMPILER", "/opt/cuda/bin/nvcc");
+            prefix_paths.push("/opt/cuda".to_string());
         } else if Path::new("/usr/local/cuda").exists() {
             cfg.define("CUDA_TOOLKIT_ROOT_DIR", "/usr/local/cuda");
             cfg.define("CMAKE_CUDA_COMPILER", "/usr/local/cuda/bin/nvcc");
+            prefix_paths.push("/usr/local/cuda".to_string());
         }
     }
 
     if has_vulkan {
         println!("cargo:warning=[llama-cpp-binding] Enabling Vulkan GPU Acceleration...");
         cfg.define("GGML_VULKAN", "ON");
-        if Path::new("/app").exists() {
-            cfg.define("CMAKE_PREFIX_PATH", "/app;/usr");
+        if Path::new("/app/share/cmake/SPIRV-Headers").exists() {
             cfg.define("SPIRV-Headers_DIR", "/app/share/cmake/SPIRV-Headers");
         }
     }
@@ -101,38 +111,56 @@ fn main() {
             if hipcc.exists() {
                 cfg.define("CMAKE_CXX_COMPILER", hipcc);
             }
+            prefix_paths.push(p.display().to_string());
         } else if Path::new("/usr/lib/sdk/rocm").exists() {
             cfg.define("ROCM_PATH", "/usr/lib/sdk/rocm");
             cfg.define("CMAKE_CXX_COMPILER", "/usr/lib/sdk/rocm/bin/hipcc");
+            prefix_paths.push("/usr/lib/sdk/rocm".to_string());
         } else if Path::new("/app/rocm").exists() {
             cfg.define("ROCM_PATH", "/app/rocm");
             cfg.define("CMAKE_CXX_COMPILER", "/app/rocm/bin/hipcc");
+            prefix_paths.push("/app/rocm".to_string());
         } else if Path::new("/opt/rocm").exists() {
             cfg.define("ROCM_PATH", "/opt/rocm");
             cfg.define("CMAKE_CXX_COMPILER", "/opt/rocm/bin/hipcc");
+            prefix_paths.push("/opt/rocm".to_string());
         }
     }
 
     if has_sycl {
         println!("cargo:warning=[llama-cpp-binding] Enabling Intel SYCL GPU Acceleration...");
         cfg.define("GGML_SYCL", "ON");
-        if let Ok(oneapi_dir) = env::var("ONEAPI_ROOT").or_else(|_| env::var("MKLROOT")) {
-            let p = PathBuf::from(oneapi_dir);
-            let icpx = p.join("compiler/latest/bin/icpx");
-            if icpx.exists() {
-                cfg.define("CMAKE_CXX_COMPILER", icpx);
-            }
-        } else if Path::new("/usr/lib/sdk/oneapi/compiler/latest/bin/icpx").exists() {
-            cfg.define("CMAKE_CXX_COMPILER", "/usr/lib/sdk/oneapi/compiler/latest/bin/icpx");
-            cfg.define("ONEAPI_ROOT", "/usr/lib/sdk/oneapi");
-        } else if Path::new("/app/oneapi/compiler/latest/bin/icpx").exists() {
-            cfg.define("CMAKE_CXX_COMPILER", "/app/oneapi/compiler/latest/bin/icpx");
-            cfg.define("ONEAPI_ROOT", "/app/oneapi");
-        } else if Path::new("/opt/intel/oneapi/compiler/latest/bin/icpx").exists() {
-            cfg.define("CMAKE_CXX_COMPILER", "/opt/intel/oneapi/compiler/latest/bin/icpx");
-            cfg.define("ONEAPI_ROOT", "/opt/intel/oneapi");
+        let oneapi_root = if let Ok(oneapi_dir) = env::var("ONEAPI_ROOT").or_else(|_| env::var("MKLROOT")) {
+            PathBuf::from(oneapi_dir)
+        } else if Path::new("/usr/lib/sdk/oneapi").exists() {
+            PathBuf::from("/usr/lib/sdk/oneapi")
+        } else if Path::new("/app/oneapi").exists() {
+            PathBuf::from("/app/oneapi")
+        } else if Path::new("/opt/intel/oneapi").exists() {
+            PathBuf::from("/opt/intel/oneapi")
+        } else {
+            PathBuf::from("/app/oneapi")
+        };
+
+        cfg.define("ONEAPI_ROOT", &oneapi_root);
+        let icpx = oneapi_root.join("compiler/latest/bin/icpx");
+        if icpx.exists() {
+            cfg.define("CMAKE_CXX_COMPILER", icpx);
         }
+        let mkl_dir = oneapi_root.join("mkl/latest");
+        if mkl_dir.exists() {
+            cfg.define("MKLROOT", &mkl_dir);
+            cfg.define("MKL_ROOT", &mkl_dir);
+            cfg.define("MKL_DIR", mkl_dir.join("lib/cmake/mkl"));
+            prefix_paths.push(mkl_dir.display().to_string());
+            prefix_paths.push(mkl_dir.join("lib/cmake/mkl").display().to_string());
+        }
+        prefix_paths.push(oneapi_root.display().to_string());
+        prefix_paths.push(oneapi_root.join("compiler/latest").display().to_string());
     }
+
+    let joined_prefix = prefix_paths.join(";");
+    cfg.define("CMAKE_PREFIX_PATH", &joined_prefix);
 
     let dst = cfg.build();
 

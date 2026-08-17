@@ -29,6 +29,8 @@ build-options:
     ROCM_PATH: /app/rocm
     HIP_PATH: /app/rocm
     ONEAPI_ROOT: /app/oneapi
+    MKLROOT: /app/oneapi/mkl/latest
+    MKL_DIR: /app/oneapi/mkl/latest/lib/cmake/mkl
     LLAMA_CUDA: "1"
     LLAMA_HIPBLAS: "1"
     LLAMA_SYCL: "1"
