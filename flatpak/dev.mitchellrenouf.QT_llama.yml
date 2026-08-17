@@ -31,6 +31,8 @@ build-options:
     ONEAPI_ROOT: /app/oneapi
     MKLROOT: /app/oneapi/mkl/latest
     MKL_DIR: /app/oneapi/mkl/latest/lib/cmake/mkl
+    TBB_DIR: /app/oneapi/tbb/latest/lib/cmake/tbb
+    TBB_ROOT: /app/oneapi/tbb/latest
     LLAMA_CUDA: "1"
     LLAMA_HIPBLAS: "1"
     LLAMA_SYCL: "1"
@@ -97,6 +99,7 @@ modules:
       - mkdir -p /app/lib
       - cp -P /app/oneapi/compiler/latest/lib/libsycl.so* /app/lib/ 2>/dev/null || true
       - cp -P /app/oneapi/compiler/latest/lib/libOpenCL.so* /app/lib/ 2>/dev/null || true
+      - cp -P /app/oneapi/tbb/latest/lib/libtbb* /app/lib/ 2>/dev/null || true
       - cp -P /app/oneapi/mkl/latest/lib/libmkl* /app/lib/ 2>/dev/null || true
       - cp -P /app/oneapi/dnnl/latest/lib/libdnnl.so* /app/lib/ 2>/dev/null || true
     sources:

@@ -155,6 +155,27 @@ fn main() {
             prefix_paths.push(mkl_dir.display().to_string());
             prefix_paths.push(mkl_dir.join("lib/cmake/mkl").display().to_string());
         }
+
+        let tbb_dir = oneapi_root.join("tbb/latest");
+        if tbb_dir.exists() {
+            cfg.define("TBB_DIR", tbb_dir.join("lib/cmake/tbb"));
+            cfg.define("TBB_ROOT", &tbb_dir);
+            prefix_paths.push(tbb_dir.display().to_string());
+            prefix_paths.push(tbb_dir.join("lib/cmake/tbb").display().to_string());
+            prefix_paths.push(tbb_dir.join("lib/cmake/TBB").display().to_string());
+            prefix_paths.push(tbb_dir.join("lib64/cmake/tbb").display().to_string());
+            prefix_paths.push(tbb_dir.join("lib64/cmake/TBB").display().to_string());
+        }
+
+        let dnnl_dir = oneapi_root.join("dnnl/latest");
+        if dnnl_dir.exists() {
+            cfg.define("DNNL_DIR", dnnl_dir.join("lib/cmake/dnnl"));
+            cfg.define("DNNL_ROOT", &dnnl_dir);
+            prefix_paths.push(dnnl_dir.display().to_string());
+            prefix_paths.push(dnnl_dir.join("lib/cmake/dnnl").display().to_string());
+            prefix_paths.push(dnnl_dir.join("lib64/cmake/dnnl").display().to_string());
+        }
+
         prefix_paths.push(oneapi_root.display().to_string());
         prefix_paths.push(oneapi_root.join("compiler/latest").display().to_string());
     }
