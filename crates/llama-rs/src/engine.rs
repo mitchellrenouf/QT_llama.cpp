@@ -211,7 +211,7 @@ impl LlamaEngine {
     }
 
     pub fn token_to_piece(&self, token: llama_token) -> Result<String> {
-        let mut buf = vec![0u8; 128];
+        let mut buf = [0u8; 128];
         let n = unsafe {
             llama_token_to_piece(
                 self.vocab,
@@ -223,28 +223,31 @@ impl LlamaEngine {
             )
         };
 
+        if n > 0 {
+            let slice = &buf[..n as usize];
+            return Ok(String::from_utf8_lossy(slice).to_string());
+        }
+
         if n < 0 {
             let needed = -n as usize;
-            buf.resize(needed, 0);
+            let mut dynamic_buf = vec![0u8; needed];
             let n2 = unsafe {
                 llama_token_to_piece(
                     self.vocab,
                     token,
-                    buf.as_mut_ptr() as *mut std::os::raw::c_char,
-                    buf.len() as i32,
+                    dynamic_buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                    dynamic_buf.len() as i32,
                     0,
                     true,
                 )
             };
             if n2 > 0 {
-                buf.truncate(n2 as usize);
-                return Ok(String::from_utf8_lossy(&buf).to_string());
+                dynamic_buf.truncate(n2 as usize);
+                return Ok(String::from_utf8_lossy(&dynamic_buf).to_string());
             }
-            return Ok(String::new());
         }
 
-        buf.truncate(n as usize);
-        Ok(String::from_utf8_lossy(&buf).to_string())
+        Ok(String::new())
     }
 
     pub fn is_eog(&self, token: llama_token) -> bool {
@@ -268,7 +271,7 @@ impl LlamaEngine {
         max_tokens: usize,
         temperature: f32,
     ) -> (mpsc::Receiver<Result<String>>, Arc<AtomicBool>) {
-        let (tx, rx) = mpsc::channel(64);
+        let (tx, rx) = mpsc::channel(4096);
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_flag = cancelled.clone();
 
@@ -354,6 +357,14 @@ impl LlamaEngine {
             let mut n_past = prompt_tokens.len() as i32;
             let mut generated = 0;
 
+            let mut batch_single = unsafe { llama_batch_init(1, 0, 1) };
+            batch_single.n_tokens = 1;
+            unsafe {
+                *batch_single.n_seq_id = 1;
+                **batch_single.seq_id = 0;
+                *batch_single.logits = 1;
+            }
+
             while generated < max_tokens {
                 if cancel_flag.load(Ordering::Relaxed) {
                     break;
@@ -386,19 +397,13 @@ impl LlamaEngine {
 
                 generated += 1;
 
-                // Decode next token
-                let mut batch = unsafe { llama_batch_init(1, 0, 1) };
-                batch.n_tokens = 1;
+                // Decode next token using pre-allocated batch
                 unsafe {
-                    *batch.token = token;
-                    *batch.pos = n_past;
-                    *batch.n_seq_id = 1;
-                    **batch.seq_id = 0;
-                    *batch.logits = 1;
+                    *batch_single.token = token;
+                    *batch_single.pos = n_past;
                 }
 
-                let ret = unsafe { llama_decode(ctx, batch) };
-                unsafe { llama_batch_free(batch) };
+                let ret = unsafe { llama_decode(ctx, batch_single) };
 
                 if ret != 0 {
                     let _ = tx.blocking_send(Err(anyhow!("llama_decode failed during token generation (code {})", ret)));
@@ -408,7 +413,10 @@ impl LlamaEngine {
                 n_past += 1;
             }
 
-            unsafe { llama_sampler_free(smpl_chain) };
+            unsafe {
+                llama_batch_free(batch_single);
+                llama_sampler_free(smpl_chain);
+            };
         });
 
         (rx, cancelled)
