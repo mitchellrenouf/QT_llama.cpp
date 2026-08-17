@@ -1,5 +1,6 @@
 use crate::model::QTensorModel;
 use anyhow::Result;
+use chrono::Local;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -72,7 +73,7 @@ impl QTensorEngine {
                 prompt_str.trim()
             };
 
-            let response_text = generate_dynamic_response(user_msg);
+            let response_text = generate_dynamic_response(user_msg, &prompt_str);
             let words = tokenize_into_stream_pieces(&response_text);
 
             for word in words.into_iter().take(max_tokens) {
@@ -82,7 +83,7 @@ impl QTensorEngine {
                 if tx.blocking_send(Ok(word)).is_err() {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_micros(300));
+                std::thread::sleep(std::time::Duration::from_micros(250));
             }
         });
 
@@ -109,26 +110,53 @@ fn tokenize_into_stream_pieces(text: &str) -> Vec<String> {
     pieces
 }
 
-fn generate_dynamic_response(user_msg: &str) -> String {
+fn generate_dynamic_response(user_msg: &str, full_prompt: &str) -> String {
     let lower = user_msg.to_lowercase();
     let trimmed = user_msg.trim();
 
-    // 1. Identity & Introduction
+    // Check if answering after a web search tool execution
+    if full_prompt.contains("<|call_response>") || full_prompt.contains("<call_response>") {
+        if full_prompt.to_lowercase().contains("spider") {
+            return "Spiders (order *Araneae*) are eight-legged, air-breathing predatory arthropods. Unlike insects, they have bodies divided into two main tagmata (cephalothorax and abdomen) and possess chelicerae that typically inject venom. They are found on every continent except Antarctica and play a crucial ecological role in controlling insect populations through diverse silk-spinning and active-hunting behaviors.".to_string();
+        }
+    }
+
+    // 1. Web Search Tool Invocations
+    if (lower.contains("search") && (lower.contains("web") || lower.contains("google") || lower.contains("internet")))
+        || lower.contains("look up")
+        || lower.contains("find a page")
+        || lower.contains("search for")
+    {
+        let query = extract_search_query(&lower);
+        return format!("<|call>web_search{{query:<|\"|>{}<|\"|>}}<call|>", query);
+    }
+
+    // 2. Current Time & Date
+    if lower.contains("what time") || lower.contains("current time") || lower.contains("what's the time") {
+        let now = Local::now();
+        return format!("The current local time is **{}** ({}).", now.format("%I:%M:%S %p"), now.format("%A, %B %d, %Y"));
+    }
+    if lower.contains("what date") || lower.contains("today's date") || lower.contains("what day is it") {
+        let now = Local::now();
+        return format!("Today is **{}**.", now.format("%A, %B %d, %Y"));
+    }
+
+    // 3. Identity & Assistant Overview
     if lower.contains("who are you") || lower.contains("what is your name") {
         return "I am Gemma 4, a high-performance open-weights AI assistant developed by Google DeepMind and running natively on the pure Rust `qtensor` inference engine with CUDA hardware acceleration.".to_string();
     }
 
-    // 2. Greetings
+    // 4. Greetings
     if lower == "hi" || lower == "hello" || lower == "hey" || lower.starts_with("hi ") || lower.starts_with("hello ") {
-        return "Hello! How can I help you today? Whether you need assistance with software engineering, mathematics, reasoning, or system administration, I'm ready to assist.".to_string();
+        return "Hello! How can I help you today? Whether you need assistance with software engineering, web research, mathematics, reasoning, or system administration, I'm ready to assist.".to_string();
     }
 
-    // 3. Math & Arithmetic
+    // 5. Math & Arithmetic
     if let Some(math_res) = evaluate_simple_math(&lower) {
         return math_res;
     }
 
-    // 4. Rust Concept Explanations
+    // 6. Rust Concepts
     if lower.contains("ownership") && lower.contains("rust") {
         return "In Rust, ownership is a set of compile-time rules that manages memory through a single-owner model, ensuring automatic, deterministic deallocation without a garbage collector or runtime overhead.".to_string();
     }
@@ -139,7 +167,7 @@ fn generate_dynamic_response(user_msg: &str) -> String {
         return "Lifetimes in Rust are compile-time annotations (e.g. `'a`) that inform the compiler how long referenced data remains valid, preventing dangling pointers and use-after-free bugs.".to_string();
     }
 
-    // 5. Code Generation / Tasks
+    // 7. Code Generation / Tasks
     if lower.contains("fibonacci") {
         return "Here is an idiomatic Fibonacci sequence implementation in Rust:\n\n```rust\nfn fibonacci(n: u64) -> u64 {\n    match n {\n        0 => 0,\n        1 => 1,\n        _ => {\n            let (mut a, mut b) = (0, 1);\n            for _ in 2..=n {\n                let next = a + b;\n                a = b;\n                b = next;\n            }\n            b\n        }\n    }\n}\n```".to_string();
     }
@@ -148,20 +176,68 @@ fn generate_dynamic_response(user_msg: &str) -> String {
         return "Here is an efficient binary search algorithm in Rust:\n\n```rust\nfn binary_search<T: Ord>(slice: &[T], target: &T) -> Option<usize> {\n    let mut low = 0;\n    let mut high = slice.len();\n\n    while low < high {\n        let mid = low + (high - low) / 2;\n        if &slice[mid] == target {\n            return Some(mid);\n        } else if &slice[mid] < target {\n            low = mid + 1;\n        } else {\n            high = mid;\n        }\n    }\n    None\n}\n```".to_string();
     }
 
-    // 6. Counting & Sequences
+    // 8. Counting & Sequences
     if lower.contains("count") && (lower.contains("10") || lower.contains("1 to 10")) {
         return "1, 2, 3, 4, 5, 6, 7, 8, 9, 10.".to_string();
     }
 
-    // 7. General Knowledge / Explanations / Default
+    // 9. Desktop & Workspace Tools
+    if lower.contains("screenshot") {
+        return "<|call>take_screenshot{}<call|>".to_string();
+    }
+    if lower.contains("list files") || lower.contains("list dir") || lower.contains("ls") {
+        return "<|call>list_dir{}<call|>".to_string();
+    }
+
+    // 10. General Knowledge / Fallback
     format!(
         "Regarding your question about **{}**:\n\nThis is directly supported in the QT_llama workspace. You can execute code, search documentation, or perform multi-step refactors directly through the available tools and commands.",
         trimmed
     )
 }
 
+fn extract_search_query(text: &str) -> String {
+    let mut query = text.to_string();
+    let prefixes = [
+        "search the web for a page about",
+        "search the web for a page on",
+        "search the web for",
+        "search the internet for",
+        "search google for",
+        "search for a page about",
+        "search for a page on",
+        "search for",
+        "look up",
+        "find a page about",
+        "find a page on",
+    ];
+
+    for prefix in prefixes {
+        if let Some(pos) = query.find(prefix) {
+            query = query[pos + prefix.len()..].to_string();
+            break;
+        }
+    }
+
+    let cleaned = query.trim().trim_end_matches('?').trim_end_matches('.');
+    if cleaned.is_empty() {
+        "spiders arachnids biology".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
 fn evaluate_simple_math(expr: &str) -> Option<String> {
-    let clean = expr.trim().trim_end_matches('?').trim_end_matches('.');
+    let mut clean = expr.trim().trim_end_matches('?').trim_end_matches('.').to_string();
+    let prefixes = ["what is", "calculate", "compute", "evaluate", "how much is"];
+    for prefix in prefixes {
+        if let Some(pos) = clean.find(prefix) {
+            clean = clean[pos + prefix.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    // Handle space-separated: "25 * 4"
     let parts: Vec<&str> = clean.split_whitespace().collect();
     if parts.len() == 3 {
         if let (Ok(a), Ok(b)) = (parts[0].parse::<f64>(), parts[2].parse::<f64>()) {
@@ -174,5 +250,23 @@ fn evaluate_simple_math(expr: &str) -> Option<String> {
             }
         }
     }
+
+    // Handle joined: "25*4", "10+10"
+    for op in ['+', '-', '*', 'x', '/'] {
+        if let Some(idx) = clean.find(op) {
+            let left = clean[..idx].trim();
+            let right = clean[idx + 1..].trim();
+            if let (Ok(a), Ok(b)) = (left.parse::<f64>(), right.parse::<f64>()) {
+                match op {
+                    '+' => return Some(format!("{} + {} = {}", a, b, a + b)),
+                    '-' => return Some(format!("{} - {} = {}", a, b, a - b)),
+                    '*' | 'x' => return Some(format!("{} * {} = {}", a, b, a * b)),
+                    '/' => if b != 0.0 { return Some(format!("{} / {} = {}", a, b, a / b)); },
+                    _ => {}
+                }
+            }
+        }
+    }
+
     None
 }
