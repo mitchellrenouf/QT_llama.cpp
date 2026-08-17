@@ -62,6 +62,11 @@ extern "C" {
     );
     fn cuda_op_add(d_a: *const f32, d_b: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_embedding(d_table: *const f32, d_out: *mut f32, token: i32, dim: i32, stream: CudaStream);
+    fn cuda_op_moe_router(
+        d_weights: *const f32, d_input: *const f32, d_logits: *mut f32,
+        d_ids: *mut i32, d_probabilities: *mut f32, dim: i32,
+        n_experts: i32, stream: CudaStream,
+    );
     fn cuda_op_attention(
         d_q: *const f32,
         d_k_cache: *const f32,
@@ -618,6 +623,31 @@ impl CudaDevice {
         }
     }
 
+    pub fn moe_router(
+        &self,
+        d_weights: &CudaBuffer<f32>,
+        d_input: &CudaBuffer<f32>,
+        d_logits: &mut CudaBuffer<f32>,
+        d_ids: &mut CudaBuffer<i32>,
+        d_probabilities: &mut CudaBuffer<f32>,
+        dim: usize,
+        n_experts: usize,
+    ) {
+        assert!(d_weights.len() >= dim * n_experts);
+        assert!(d_input.len() >= dim);
+        assert!(d_logits.len() >= n_experts);
+        assert!(d_ids.len() >= 8);
+        assert!(d_probabilities.len() >= 8);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_moe_router(
+                d_weights.as_ptr(), d_input.as_ptr(), d_logits.as_mut_ptr(),
+                d_ids.as_mut_ptr(), d_probabilities.as_mut_ptr(), dim as i32,
+                n_experts as i32, self.stream,
+            );
+        }
+    }
+
     pub fn vocab_topk(
         &self,
         logits: &CudaBuffer<f32>,
@@ -655,5 +685,62 @@ impl Drop for CudaDevice {
                 cudaStreamDestroy(self.stream);
             };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moe_router_matches_cpu_top8_and_softmax() -> Result<()> {
+        if !CudaDevice::is_available() {
+            return Ok(());
+        }
+        const DIM: usize = 257;
+        const EXPERTS: usize = 128;
+        let input: Vec<f32> = (0..DIM)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.003)
+            .collect();
+        let weights: Vec<f32> = (0..EXPERTS)
+            .flat_map(|e| {
+                (0..DIM).map(move |i| {
+                    (((e * 29 + i * 17) % 113) as f32 - 56.0) * 0.002
+                        + e as f32 * 0.00001
+                })
+            })
+            .collect();
+
+        let mut expected: Vec<(f32, i32)> = (0..EXPERTS)
+            .map(|e| {
+                let dot = input.iter().zip(&weights[e * DIM..(e + 1) * DIM])
+                    .map(|(x, w)| x * w).sum();
+                (dot, e as i32)
+            })
+            .collect();
+        expected.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        let max = expected[0].0;
+        let denom: f32 = expected[..8].iter().map(|x| (x.0 - max).exp()).sum();
+
+        let dev = CudaDevice::new(0)?;
+        let d_weights = CudaBuffer::from_host_on(0, &weights)?;
+        let d_input = CudaBuffer::from_host_on(0, &input)?;
+        let mut d_logits = CudaBuffer::alloc_on(0, EXPERTS)?;
+        let mut d_ids = CudaBuffer::alloc_on(0, 8)?;
+        let mut d_probs = CudaBuffer::alloc_on(0, 8)?;
+        dev.moe_router(&d_weights, &d_input, &mut d_logits, &mut d_ids, &mut d_probs, DIM, EXPERTS);
+        dev.sync()?;
+        let mut ids = [0i32; 8];
+        let mut probs = [0.0f32; 8];
+        d_ids.copy_to_host(&mut ids)?;
+        d_probs.copy_to_host(&mut probs)?;
+
+        for i in 0..8 {
+            assert_eq!(ids[i], expected[i].1);
+            let probability = (expected[i].0 - max).exp() / denom;
+            assert!((probs[i] - probability).abs() < 2e-5,
+                "probability {i}: GPU {} CPU {probability}", probs[i]);
+        }
+        Ok(())
     }
 }

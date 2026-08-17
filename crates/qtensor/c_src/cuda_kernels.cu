@@ -423,6 +423,57 @@ __global__ void k_embedding_f32(
     }
 }
 
+__global__ void k_moe_router_logits_f32(
+    const float* __restrict__ weights,
+    const float* __restrict__ input,
+    float* __restrict__ logits,
+    int dim,
+    int n_experts
+) {
+    int expert = blockIdx.x;
+    if (expert >= n_experts) return;
+    const float* row = weights + (size_t)expert * dim;
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += row[i] * input[i];
+    sum = block_reduce_sum(sum);
+    if (threadIdx.x == 0) logits[expert] = sum;
+}
+
+__global__ void k_moe_router_top8_f32(
+    const float* __restrict__ logits,
+    int32_t* __restrict__ ids,
+    float* __restrict__ probabilities,
+    int n_experts
+) {
+    __shared__ float scores[128];
+    __shared__ int32_t indices[128];
+    int tid = threadIdx.x;
+    if (tid < n_experts) {
+        scores[tid] = logits[tid];
+        indices[tid] = tid;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        for (int i = 0; i < 8; ++i) {
+            int best = i;
+            for (int j = i + 1; j < n_experts; ++j) {
+                if (scores[j] > scores[best]) best = j;
+            }
+            float score = scores[i]; scores[i] = scores[best]; scores[best] = score;
+            int32_t id = indices[i]; indices[i] = indices[best]; indices[best] = id;
+        }
+        float max_score = scores[0];
+        float total = 0.0f;
+        for (int i = 0; i < 8; ++i) {
+            ids[i] = indices[i];
+            probabilities[i] = expf(scores[i] - max_score);
+            total += probabilities[i];
+        }
+        float inv = total > 0.0f ? 1.0f / total : 0.0f;
+        for (int i = 0; i < 8; ++i) probabilities[i] *= inv;
+    }
+}
+
 // 7. CUDA Causal Attention with Sliding Window Attention (SWA up to 256k tokens)
 __global__ void k_attention_causal_swa_f32(
     const float* __restrict__ q,       // [n_heads, head_dim]
@@ -754,6 +805,24 @@ void cuda_op_embedding(
     k_embedding_f32<<<blocks, threads, 0, stream>>>(d_table, d_out, token, dim);
 }
 
+void cuda_op_moe_router(
+    const float* d_weights,
+    const float* d_input,
+    float* d_logits,
+    int32_t* d_ids,
+    float* d_probabilities,
+    int dim,
+    int n_experts,
+    cudaStream_t stream
+) {
+    k_moe_router_logits_f32<<<n_experts, 256, 0, stream>>>(
+        d_weights, d_input, d_logits, dim, n_experts
+    );
+    k_moe_router_top8_f32<<<1, 128, 0, stream>>>(
+        d_logits, d_ids, d_probabilities, n_experts
+    );
+}
+
 void cuda_op_attention(
     const float* d_q,
     const float* d_k_cache,
@@ -925,4 +994,3 @@ void cuda_op_moe_topk_q4_0(
 }
 
 }
-

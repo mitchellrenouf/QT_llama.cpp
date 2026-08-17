@@ -91,6 +91,8 @@ pub struct TransformerLayer {
     pub gpu_ffn_down_exps: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
     pub gpu_ffn_down_exps_scale: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_gate_inp: Option<crate::cuda::CudaBuffer<f32>>,
 
     // Persistent GPU scratch/activation buffers
     #[cfg(feature = "cuda")]
@@ -125,6 +127,10 @@ pub struct TransformerLayer {
     pub gpu_d_mlp_down: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_moe_in: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_router_in: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_router_logits: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_moe_exp_ids: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<i32>>>,
     #[cfg(feature = "cuda")]
@@ -390,6 +396,18 @@ impl QTensorModel {
             };
 
             #[cfg(feature = "cuda")]
+            let gpu_ffn_gate_inp = if cuda_dev.is_some() && !ffn_gate_inp.is_empty() {
+                crate::cuda::CudaBuffer::from_host_on(0, &ffn_gate_inp).ok()
+            } else { None };
+            #[cfg(feature = "cuda")]
+            let (gpu_d_router_in, gpu_d_router_logits) = if cuda_dev.is_some() {
+                (
+                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0, 128).ok(),
+                )
+            } else { (None, None) };
+
+            #[cfg(feature = "cuda")]
             let (gpu_d_cur, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_qkv, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
                 (
                     crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
@@ -478,6 +496,8 @@ impl QTensorModel {
                 #[cfg(feature = "cuda")]
                 gpu_ffn_down_exps_scale,
                 #[cfg(feature = "cuda")]
+                gpu_ffn_gate_inp,
+                #[cfg(feature = "cuda")]
                 gpu_d_cur: parking_lot::Mutex::new(gpu_d_cur),
                 #[cfg(feature = "cuda")]
                 gpu_d_q: parking_lot::Mutex::new(gpu_d_q),
@@ -509,6 +529,10 @@ impl QTensorModel {
                 gpu_d_mlp_down: parking_lot::Mutex::new(gpu_d_mlp_down),
                 #[cfg(feature = "cuda")]
                 gpu_d_moe_in: parking_lot::Mutex::new(gpu_d_moe_in),
+                #[cfg(feature = "cuda")]
+                gpu_d_router_in: parking_lot::Mutex::new(gpu_d_router_in),
+                #[cfg(feature = "cuda")]
+                gpu_d_router_logits: parking_lot::Mutex::new(gpu_d_router_logits),
                 #[cfg(feature = "cuda")]
                 gpu_d_moe_exp_ids: parking_lot::Mutex::new(gpu_d_moe_exp_ids),
                 #[cfg(feature = "cuda")]
@@ -907,6 +931,7 @@ impl QTensorModel {
             // Router logits & Top-8 selection
             let mut top8_experts = Vec::new();
             let mut ex_probs = [0.0f32; 8];
+            let mut router_input = None;
             if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
                 let mut router_tmp = vec![0.0f32; dim];
                 ops::rms_norm(&attn_res, None, 1e-6, &mut router_tmp);
@@ -916,29 +941,48 @@ impl QTensorModel {
                     router_tmp[i] = router_tmp[i] * inv_sqrt_dim * scale;
                 }
 
-                let mut expert_logits = vec![(0.0f32, 0usize); 128];
-                for e in 0..128 {
-                    let mut dot = 0.0f32;
-                    let col_offset = e * dim;
-                    if col_offset + dim <= layer.ffn_gate_inp.len() {
-                        for i in 0..dim {
-                            dot += router_tmp[i] * layer.ffn_gate_inp[col_offset + i];
-                        }
-                    }
-                    expert_logits[e] = (dot, e);
-                }
+                #[cfg(feature = "cuda")]
+                let gpu_router_available = self.cuda_dev.is_some()
+                    && layer.gpu_ffn_gate_inp.is_some()
+                    && layer.gpu_ffn_gate_up_exps.is_some()
+                    && layer.gpu_ffn_down_exps.is_some()
+                    && layer.gpu_d_router_in.lock().is_some()
+                    && layer.gpu_d_router_logits.lock().is_some()
+                    && layer.gpu_d_moe_in.lock().is_some()
+                    && layer.gpu_d_moe_exp_ids.lock().is_some()
+                    && layer.gpu_d_moe_exp_weights.lock().is_some()
+                    && layer.gpu_d_moe_act_scratch.lock().is_some()
+                    && layer.gpu_d_moe_out.lock().is_some();
+                #[cfg(not(feature = "cuda"))]
+                let gpu_router_available = false;
 
-                expert_logits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                let max_l = expert_logits[0].0;
-                let mut sum_exp = 0.0f32;
-                for i in 0..8 {
-                    top8_experts.push(expert_logits[i].1);
-                    let p = (expert_logits[i].0 - max_l).exp();
-                    ex_probs[i] = p;
-                    sum_exp += p;
-                }
-                for i in 0..8 {
-                    ex_probs[i] /= sum_exp.max(1e-6);
+                if gpu_router_available {
+                    router_input = Some(router_tmp);
+                } else {
+                    let mut expert_logits = vec![(0.0f32, 0usize); 128];
+                    for e in 0..128 {
+                        let mut dot = 0.0f32;
+                        let col_offset = e * dim;
+                        if col_offset + dim <= layer.ffn_gate_inp.len() {
+                            for i in 0..dim {
+                                dot += router_tmp[i] * layer.ffn_gate_inp[col_offset + i];
+                            }
+                        }
+                        expert_logits[e] = (dot, e);
+                    }
+
+                    expert_logits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                    let max_l = expert_logits[0].0;
+                    let mut sum_exp = 0.0f32;
+                    for i in 0..8 {
+                        top8_experts.push(expert_logits[i].1);
+                        let p = (expert_logits[i].0 - max_l).exp();
+                        ex_probs[i] = p;
+                        sum_exp += p;
+                    }
+                    for i in 0..8 {
+                        ex_probs[i] /= sum_exp.max(1e-6);
+                    }
                 }
             }
 
@@ -965,22 +1009,32 @@ impl QTensorModel {
                     } else { false }
                 } else { false };
 
-                let moe_q = if layer.is_moe && !top8_experts.is_empty() {
+                let moe_q = if layer.is_moe && (router_input.is_some() || !top8_experts.is_empty()) {
                     if let (Some(ref g_gu_exps), Some(ref g_down_exps)) = (&layer.gpu_ffn_gate_up_exps, &layer.gpu_ffn_down_exps) {
                         let mut in_g = layer.gpu_d_moe_in.lock();
                         let mut ids_g = layer.gpu_d_moe_exp_ids.lock();
                         let mut weights_g = layer.gpu_d_moe_exp_weights.lock();
                         let mut act_scratch_g = layer.gpu_d_moe_act_scratch.lock();
                         let mut out_g = layer.gpu_d_moe_out.lock();
+                        let mut router_in_g = layer.gpu_d_router_in.lock();
+                        let mut router_logits_g = layer.gpu_d_router_logits.lock();
                         if let (Some(ref mut d_in), Some(ref mut d_ids), Some(ref mut d_weights), Some(ref mut d_act_scratch), Some(ref mut d_out)) = (
                             in_g.as_mut(), ids_g.as_mut(), weights_g.as_mut(), act_scratch_g.as_mut(), out_g.as_mut()
                         ) {
-                            let mut active_ids = [0i32; 8];
-                            for i in 0..8 { active_ids[i] = top8_experts[i] as i32; }
-                            if dev.copy_from_host_async(d_in, &ffn_in_moe).is_ok()
-                                && dev.copy_from_host_async(d_ids, &active_ids).is_ok()
-                                && dev.copy_from_host_async(d_weights, &ex_probs).is_ok()
-                            {
+                            let router_ok = if let (Some(router), Some(ref g_router), Some(ref mut d_router_in), Some(ref mut d_logits)) = (
+                                router_input.as_ref(), layer.gpu_ffn_gate_inp.as_ref(), router_in_g.as_mut(), router_logits_g.as_mut()
+                            ) {
+                                if dev.copy_from_host_async(d_router_in, router).is_ok() {
+                                    dev.moe_router(g_router, d_router_in, d_logits, d_ids, d_weights, dim, 128);
+                                    true
+                                } else { false }
+                            } else {
+                                let mut active_ids = [0i32; 8];
+                                for i in 0..8 { active_ids[i] = top8_experts[i] as i32; }
+                                dev.copy_from_host_async(d_ids, &active_ids).is_ok()
+                                    && dev.copy_from_host_async(d_weights, &ex_probs).is_ok()
+                            };
+                            if router_ok && dev.copy_from_host_async(d_in, &ffn_in_moe).is_ok() {
                                 dev.moe_topk_q4_0(
                                     g_gu_exps,
                                     g_down_exps,
