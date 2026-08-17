@@ -28,6 +28,36 @@ pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32, out: &mut [f32]) {
     }
 }
 
+/// In-place RMS Normalization: x = x / sqrt(mean(x^2) + eps) * weight
+pub fn rms_norm_inplace(x: &mut [f32], weight: Option<&[f32]>, eps: f32) {
+    let dim = x.len();
+    if dim == 0 {
+        return;
+    }
+
+    let mut sum_sq = 0.0f32;
+    for &val in x.iter() {
+        sum_sq += val * val;
+    }
+
+    let mean_sq = sum_sq / (dim as f32);
+    let scale = 1.0f32 / (mean_sq + eps).sqrt();
+
+    if let Some(w) = weight {
+        let w_slice = if w.len() >= dim { &w[..dim] } else { w };
+        for i in 0..dim.min(w_slice.len()) {
+            x[i] = x[i] * scale * w_slice[i];
+        }
+        for i in w_slice.len()..dim {
+            x[i] = x[i] * scale;
+        }
+    } else {
+        for i in 0..dim {
+            x[i] = x[i] * scale;
+        }
+    }
+}
+
 /// Rotary Positional Embedding (RoPE) for query/key vectors
 pub fn rope_1d(
     vec: &mut [f32],

@@ -150,6 +150,10 @@ pub struct QTensorModel {
     pub cuda_dev: Option<std::sync::Arc<crate::cuda::CudaDevice>>,
     #[cfg(feature = "cuda")]
     pub gpu_token_embd_table: Option<crate::cuda::CudaBuffer<u8>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_final_hidden: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_vocab_logits: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
 }
 
 impl QTensorModel {
@@ -461,6 +465,16 @@ impl QTensorModel {
             None
         };
 
+        #[cfg(feature = "cuda")]
+        let (gpu_d_final_hidden, gpu_d_vocab_logits) = if cuda_dev.is_some() {
+            (
+                crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                crate::cuda::CudaBuffer::alloc_on(0, vocab_size).ok(),
+            )
+        } else {
+            (None, None)
+        };
+
         eprintln!(
             "[qtensor] Initialized model: {} layers, {} dim, {} max_context, {} vocab items ({} GPU layers, {} CPU layers)",
             n_layers,
@@ -470,7 +484,6 @@ impl QTensorModel {
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cuda(_))).count(),
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cpu)).count(),
         );
-
 
         Ok(Self {
             config,
@@ -490,6 +503,10 @@ impl QTensorModel {
             cuda_dev,
             #[cfg(feature = "cuda")]
             gpu_token_embd_table,
+            #[cfg(feature = "cuda")]
+            gpu_d_final_hidden: parking_lot::Mutex::new(gpu_d_final_hidden),
+            #[cfg(feature = "cuda")]
+            gpu_d_vocab_logits: parking_lot::Mutex::new(gpu_d_vocab_logits),
         })
     }
 
@@ -589,9 +606,7 @@ impl QTensorModel {
             for h in 0..layer.n_heads {
                 let q_head = &mut q[h * layer.head_dim..(h + 1) * layer.head_dim];
                 if !layer.attn_q_norm.is_empty() {
-                    let mut normed_q = vec![0.0f32; layer.head_dim];
-                    ops::rms_norm(q_head, Some(&layer.attn_q_norm), 1e-6, &mut normed_q);
-                    q_head.copy_from_slice(&normed_q);
+                    ops::rms_norm_inplace(q_head, Some(&layer.attn_q_norm), 1e-6);
                 }
                 ops::rope_1d(q_head, pos, layer.head_dim, layer.rope_freq_base, 1.0);
             }
@@ -600,16 +615,12 @@ impl QTensorModel {
             for h in 0..layer.n_kv_heads {
                 let k_head = &mut k[h * layer.head_dim..(h + 1) * layer.head_dim];
                 if !layer.attn_k_norm.is_empty() {
-                    let mut normed_k = vec![0.0f32; layer.head_dim];
-                    ops::rms_norm(k_head, Some(&layer.attn_k_norm), 1e-6, &mut normed_k);
-                    k_head.copy_from_slice(&normed_k);
+                    ops::rms_norm_inplace(k_head, Some(&layer.attn_k_norm), 1e-6);
                 }
                 ops::rope_1d(k_head, pos, layer.head_dim, layer.rope_freq_base, 1.0);
 
                 let v_head = &mut v[h * layer.head_dim..(h + 1) * layer.head_dim];
-                let mut normed_v = vec![0.0f32; layer.head_dim];
-                ops::rms_norm(v_head, None, 1e-6, &mut normed_v);
-                v_head.copy_from_slice(&normed_v);
+                ops::rms_norm_inplace(v_head, None, 1e-6);
             }
 
             // Store into KV cache
@@ -625,12 +636,12 @@ impl QTensorModel {
                 0
             };
             let attn_window_len = seq_len - start_t;
+            let mut scores = vec![0.0f32; attn_window_len];
 
             for h in 0..layer.n_heads {
                 let kv_h = h / (layer.n_heads / layer.n_kv_heads);
                 let q_head = &q[h * layer.head_dim..(h + 1) * layer.head_dim];
 
-                let mut scores = vec![0.0f32; attn_window_len];
                 for (idx, t) in (start_t..seq_len).enumerate() {
                     let k_t = &k_cache[l][t][kv_h * layer.head_dim..(kv_h + 1) * layer.head_dim];
                     let mut dot = 0.0f32;
@@ -690,45 +701,139 @@ impl QTensorModel {
                 attn_res[i] = hidden[i] + normed_attn[i];
             }
 
-            // 1. Shared Dense MLP
+            // 1. Prepare Shared Dense MLP & MoE inputs
             let ffn_dim = 2112;
             let mut ffn_in_shared = vec![0.0f32; dim];
             ops::rms_norm(&attn_res, Some(&layer.ffn_norm), 1e-6, &mut ffn_in_shared);
 
+            let mut ffn_in_moe = vec![0.0f32; dim];
+            if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
+                ops::rms_norm(&attn_res, Some(&layer.pre_ffw_norm_2), 1e-6, &mut ffn_in_moe);
+            }
+
+            // Router logits & Top-8 selection
+            let mut top8_experts = Vec::new();
+            let mut ex_probs = [0.0f32; 8];
+            if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
+                let mut router_tmp = vec![0.0f32; dim];
+                ops::rms_norm(&attn_res, None, 1e-6, &mut router_tmp);
+                let inv_sqrt_dim = 1.0f32 / (dim as f32).sqrt();
+                for i in 0..dim {
+                    let scale = if i < layer.ffn_gate_inp_scale.len() { layer.ffn_gate_inp_scale[i] } else { 1.0 };
+                    router_tmp[i] = router_tmp[i] * inv_sqrt_dim * scale;
+                }
+
+                let mut expert_logits = vec![(0.0f32, 0usize); 128];
+                for e in 0..128 {
+                    let mut dot = 0.0f32;
+                    let col_offset = e * dim;
+                    if col_offset + dim <= layer.ffn_gate_inp.len() {
+                        for i in 0..dim {
+                            dot += router_tmp[i] * layer.ffn_gate_inp[col_offset + i];
+                        }
+                    }
+                    expert_logits[e] = (dot, e);
+                }
+
+                expert_logits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                let max_l = expert_logits[0].0;
+                let mut sum_exp = 0.0f32;
+                for i in 0..8 {
+                    top8_experts.push(expert_logits[i].1);
+                    let p = (expert_logits[i].0 - max_l).exp();
+                    ex_probs[i] = p;
+                    sum_exp += p;
+                }
+                for i in 0..8 {
+                    ex_probs[i] /= sum_exp.max(1e-6);
+                }
+            }
+
+            // Queue GPU kernels for both Dense MLP & MoE simultaneously
             let mut mlp_raw = vec![0.0f32; dim];
+            let mut moe_raw = vec![0.0f32; dim];
 
             #[cfg(feature = "cuda")]
-            let mlp_used_gpu = if let (Some(ref dev), Some(ref g_gate), Some(ref g_up), Some(ref g_down)) = (&self.cuda_dev, &layer.gpu_ffn_gate, &layer.gpu_ffn_up, &layer.gpu_ffn_down) {
-                let mut in_guard = layer.gpu_d_mlp_in.lock();
-                let mut gate_guard = layer.gpu_d_mlp_gate.lock();
-                let mut up_guard = layer.gpu_d_mlp_up.lock();
-                let mut act_guard = layer.gpu_d_mlp_act.lock();
-                let mut down_guard = layer.gpu_d_mlp_down.lock();
-                if let (Some(ref mut d_in), Some(ref mut d_gate), Some(ref mut d_up), Some(ref mut d_act), Some(ref mut d_down)) = (
-                    in_guard.as_mut(), gate_guard.as_mut(), up_guard.as_mut(), act_guard.as_mut(), down_guard.as_mut()
-                ) {
-                    if d_in.copy_from_host(&ffn_in_shared).is_ok() {
-                        dev.gemv_q4_0(g_gate, d_in, d_gate, ffn_dim, dim);
-                        dev.gemv_q4_0(g_up, d_in, d_up, ffn_dim, dim);
-                        dev.geglu(d_gate, d_up, d_act);
-                        dev.gemv_q4_0(g_down, d_act, d_down, dim, ffn_dim);
-                        let _ = dev.sync();
-                        let _ = d_down.copy_to_host(&mut mlp_raw);
-                        true
-                    } else {
-                        false
+            let (mlp_queued, moe_queued) = if let Some(ref dev) = self.cuda_dev {
+                let mlp_q = if let (Some(ref g_gate), Some(ref g_up), Some(ref g_down)) = (&layer.gpu_ffn_gate, &layer.gpu_ffn_up, &layer.gpu_ffn_down) {
+                    let mut in_g = layer.gpu_d_mlp_in.lock();
+                    let mut gate_g = layer.gpu_d_mlp_gate.lock();
+                    let mut up_g = layer.gpu_d_mlp_up.lock();
+                    let mut act_g = layer.gpu_d_mlp_act.lock();
+                    let mut down_g = layer.gpu_d_mlp_down.lock();
+                    if let (Some(ref mut d_in), Some(ref mut d_gate), Some(ref mut d_up), Some(ref mut d_act), Some(ref mut d_down)) = (
+                        in_g.as_mut(), gate_g.as_mut(), up_g.as_mut(), act_g.as_mut(), down_g.as_mut()
+                    ) {
+                        if d_in.copy_from_host(&ffn_in_shared).is_ok() {
+                            dev.gemv_q4_0(g_gate, d_in, d_gate, ffn_dim, dim);
+                            dev.gemv_q4_0(g_up, d_in, d_up, ffn_dim, dim);
+                            dev.geglu(d_gate, d_up, d_act);
+                            dev.gemv_q4_0(g_down, d_act, d_down, dim, ffn_dim);
+                            true
+                        } else { false }
+                    } else { false }
+                } else { false };
+
+                let moe_q = if layer.is_moe && !top8_experts.is_empty() {
+                    if let (Some(ref g_gu_exps), Some(ref g_down_exps)) = (&layer.gpu_ffn_gate_up_exps, &layer.gpu_ffn_down_exps) {
+                        let mut in_g = layer.gpu_d_moe_in.lock();
+                        let mut ids_g = layer.gpu_d_moe_exp_ids.lock();
+                        let mut weights_g = layer.gpu_d_moe_exp_weights.lock();
+                        let mut act_scratch_g = layer.gpu_d_moe_act_scratch.lock();
+                        let mut out_g = layer.gpu_d_moe_out.lock();
+                        if let (Some(ref mut d_in), Some(ref mut d_ids), Some(ref mut d_weights), Some(ref mut d_act_scratch), Some(ref mut d_out)) = (
+                            in_g.as_mut(), ids_g.as_mut(), weights_g.as_mut(), act_scratch_g.as_mut(), out_g.as_mut()
+                        ) {
+                            let mut active_ids = [0i32; 8];
+                            for i in 0..8 { active_ids[i] = top8_experts[i] as i32; }
+                            if d_in.copy_from_host(&ffn_in_moe).is_ok()
+                                && d_ids.copy_from_host(&active_ids).is_ok()
+                                && d_weights.copy_from_host(&ex_probs).is_ok()
+                            {
+                                dev.moe_topk_q4_0(
+                                    g_gu_exps,
+                                    g_down_exps,
+                                    d_ids,
+                                    d_weights,
+                                    layer.gpu_ffn_down_exps_scale.as_ref(),
+                                    d_in,
+                                    d_act_scratch,
+                                    d_out,
+                                    dim,
+                                    704,
+                                    8,
+                                );
+                                true
+                            } else { false }
+                        } else { false }
+                    } else { false }
+                } else { false };
+
+                if mlp_q || moe_q {
+                    let _ = dev.sync();
+                    if mlp_q {
+                        let down_g = layer.gpu_d_mlp_down.lock();
+                        if let Some(ref d_down) = down_g.as_ref() {
+                            let _ = d_down.copy_to_host(&mut mlp_raw);
+                        }
                     }
-                } else {
-                    false
+                    if moe_q {
+                        let out_g = layer.gpu_d_moe_out.lock();
+                        if let Some(ref d_out) = out_g.as_ref() {
+                            let _ = d_out.copy_to_host(&mut moe_raw);
+                        }
+                    }
                 }
+
+                (mlp_q, moe_q)
             } else {
-                false
+                (false, false)
             };
 
             #[cfg(not(feature = "cuda"))]
-            let mlp_used_gpu = false;
+            let (mlp_queued, moe_queued) = (false, false);
 
-            if !mlp_used_gpu {
+            if !mlp_queued {
                 let mut gate = vec![0.0f32; ffn_dim];
                 let mut up = vec![0.0f32; ffn_dim];
                 if !layer.ffn_gate.is_empty() {
@@ -744,173 +849,52 @@ impl QTensorModel {
                 }
             }
 
-            let mut mlp_out = vec![0.0f32; dim];
-            ops::rms_norm(&mlp_raw, Some(&layer.post_ffw_norm_1), 1e-6, &mut mlp_out);
+            if !moe_queued && layer.is_moe && !top8_experts.is_empty() {
+                let gate_up_bytes_per_exp = 1408 * (dim / 32) * 18;
+                let down_bytes_per_exp = 2816 * (704 / 32) * 18;
 
-            // 2. MoE Top-8 Active Experts
-            let mut moe_raw = vec![0.0f32; dim];
-            if layer.is_moe && !layer.ffn_gate_inp.is_empty() {
-                // Expert input norm
-                let mut ffn_in_moe = vec![0.0f32; dim];
-                ops::rms_norm(&attn_res, Some(&layer.pre_ffw_norm_2), 1e-6, &mut ffn_in_moe);
+                for (k, &exp_idx) in top8_experts.iter().enumerate() {
+                    let alpha = ex_probs[k];
+                    if alpha <= 0.0001 { continue; }
 
-                    // Router logits
-                    let mut router_tmp = vec![0.0f32; dim];
-                    ops::rms_norm(&attn_res, None, 1e-6, &mut router_tmp);
-                    let inv_sqrt_dim = 1.0f32 / (dim as f32).sqrt();
-                    for i in 0..dim {
-                        let scale = if i < layer.ffn_gate_inp_scale.len() { layer.ffn_gate_inp_scale[i] } else { 1.0 };
-                        router_tmp[i] = router_tmp[i] * inv_sqrt_dim * scale;
-                    }
+                    let gu_off = (layer.ffn_gate_up_exps_offset + (exp_idx as u64) * (gate_up_bytes_per_exp as u64)) as usize;
+                    let down_off = (layer.ffn_down_exps_offset + (exp_idx as u64) * (down_bytes_per_exp as u64)) as usize;
 
-                    // Compute 128 expert logits
-                    let mut expert_logits = vec![(0.0f32, 0usize); 128];
-                    for e in 0..128 {
-                        let mut dot = 0.0f32;
-                        let col_offset = e * dim;
-                        if col_offset + dim <= layer.ffn_gate_inp.len() {
-                            for i in 0..dim {
-                                dot += router_tmp[i] * layer.ffn_gate_inp[col_offset + i];
-                            }
-                        }
-                        expert_logits[e] = (dot, e);
-                    }
+                    if let Some(ref mm) = self.mmap {
+                        if gu_off + gate_up_bytes_per_exp <= mm.len() && down_off + down_bytes_per_exp <= mm.len() {
+                            let half_bytes = gate_up_bytes_per_exp / 2;
+                            let gate_slice = &mm[gu_off..gu_off + half_bytes];
+                            let up_slice = &mm[gu_off + half_bytes..gu_off + gate_up_bytes_per_exp];
+                            let down_slice = &mm[down_off..down_off + down_bytes_per_exp];
 
-                    // Pick Top-8 experts
-                    expert_logits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                    let top8 = &expert_logits[..8];
+                            let mut exp_gate = vec![0.0f32; 704];
+                            let mut exp_up = vec![0.0f32; 704];
 
-                    // Softmax over Top-8
-                    let max_l = top8[0].0;
-                    let mut ex_probs = [0.0f32; 8];
-                    let mut sum_exp = 0.0f32;
-                    for i in 0..8 {
-                        let p = (top8[i].0 - max_l).exp();
-                        ex_probs[i] = p;
-                        sum_exp += p;
-                    }
-                    for i in 0..8 {
-                        ex_probs[i] /= sum_exp.max(1e-6);
-                    }
+                            ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, 704, dim);
+                            ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, 704, dim);
 
-                    // Evaluate active experts
-                    let exp_ffn_dim = 704;
+                            let mut exp_act = vec![0.0f32; 704];
+                            ops::geglu(&exp_gate, &exp_up, &mut exp_act);
 
-                    #[cfg(feature = "cuda")]
-                    let moe_used_gpu = if let (
-                        Some(ref dev),
-                        Some(ref g_gu_exps),
-                        Some(ref g_down_exps),
-                    ) = (
-                        &self.cuda_dev,
-                        &layer.gpu_ffn_gate_up_exps,
-                        &layer.gpu_ffn_down_exps,
-                    ) {
-                        let mut in_guard = layer.gpu_d_moe_in.lock();
-                        let mut exp_ids_guard = layer.gpu_d_moe_exp_ids.lock();
-                        let mut exp_weights_guard = layer.gpu_d_moe_exp_weights.lock();
-                        let mut act_scratch_guard = layer.gpu_d_moe_act_scratch.lock();
-                        let mut out_guard = layer.gpu_d_moe_out.lock();
+                            let mut exp_down = vec![0.0f32; dim];
+                            ops::mat_vec_mul_q4_0(down_slice, &exp_act, &mut exp_down, dim, 704);
 
-                        if let (
-                            Some(ref mut d_in),
-                            Some(ref mut d_exp_ids),
-                            Some(ref mut d_exp_weights),
-                            Some(ref mut d_act_scratch),
-                            Some(ref mut d_out),
-                        ) = (
-                            in_guard.as_mut(),
-                            exp_ids_guard.as_mut(),
-                            exp_weights_guard.as_mut(),
-                            act_scratch_guard.as_mut(),
-                            out_guard.as_mut(),
-                        ) {
-                            let mut active_ids = [0i32; 8];
-                            let mut active_alphas = [0.0f32; 8];
-                            for i in 0..8 {
-                                active_ids[i] = top8[i].1 as i32;
-                                active_alphas[i] = ex_probs[i];
-                            }
-
-                            if d_in.copy_from_host(&ffn_in_moe).is_ok()
-                                && d_exp_ids.copy_from_host(&active_ids).is_ok()
-                                && d_exp_weights.copy_from_host(&active_alphas).is_ok()
-                            {
-                                dev.moe_topk_q4_0(
-                                    g_gu_exps,
-                                    g_down_exps,
-                                    d_exp_ids,
-                                    d_exp_weights,
-                                    layer.gpu_ffn_down_exps_scale.as_ref(),
-                                    d_in,
-                                    d_act_scratch,
-                                    d_out,
-                                    dim,
-                                    exp_ffn_dim,
-                                    8,
-                                );
-                                let _ = dev.sync();
-                                let _ = d_out.copy_to_host(&mut moe_raw);
-                                true
+                            let scale = if exp_idx < layer.ffn_down_exps_scale.len() {
+                                layer.ffn_down_exps_scale[exp_idx]
                             } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
+                                1.0
+                            };
 
-                    #[cfg(not(feature = "cuda"))]
-                    let moe_used_gpu = false;
-
-                    if !moe_used_gpu {
-                        let gate_up_bytes_per_exp = 1408 * (dim / 32) * 18; // 2,230,272 bytes
-                        let down_bytes_per_exp = 2816 * (exp_ffn_dim / 32) * 18; // 1,115,136 bytes
-
-                        for (k, &(_, exp_idx)) in top8.iter().enumerate() {
-                            let alpha = ex_probs[k];
-                            if alpha <= 0.0001 {
-                                continue;
-                            }
-
-                            let gu_off = (layer.ffn_gate_up_exps_offset + (exp_idx as u64) * (gate_up_bytes_per_exp as u64)) as usize;
-                            let down_off = (layer.ffn_down_exps_offset + (exp_idx as u64) * (down_bytes_per_exp as u64)) as usize;
-
-                            if let Some(ref mm) = self.mmap {
-                                if gu_off + gate_up_bytes_per_exp <= mm.len() && down_off + down_bytes_per_exp <= mm.len() {
-                                    let half_bytes = gate_up_bytes_per_exp / 2;
-                                    let gate_slice = &mm[gu_off..gu_off + half_bytes];
-                                    let up_slice = &mm[gu_off + half_bytes..gu_off + gate_up_bytes_per_exp];
-                                    let down_slice = &mm[down_off..down_off + down_bytes_per_exp];
-
-                                    let mut exp_gate = vec![0.0f32; exp_ffn_dim];
-                                    let mut exp_up = vec![0.0f32; exp_ffn_dim];
-
-                                    ops::mat_vec_mul_q4_0(gate_slice, &ffn_in_moe, &mut exp_gate, exp_ffn_dim, dim);
-                                    ops::mat_vec_mul_q4_0(up_slice, &ffn_in_moe, &mut exp_up, exp_ffn_dim, dim);
-
-                                    let mut exp_act = vec![0.0f32; exp_ffn_dim];
-                                    ops::geglu(&exp_gate, &exp_up, &mut exp_act);
-
-                                    let mut exp_down = vec![0.0f32; dim];
-                                    ops::mat_vec_mul_q4_0(down_slice, &exp_act, &mut exp_down, dim, exp_ffn_dim);
-
-                                    let scale = if exp_idx < layer.ffn_down_exps_scale.len() {
-                                        layer.ffn_down_exps_scale[exp_idx]
-                                    } else {
-                                        1.0
-                                    };
-
-                                    for i in 0..dim {
-                                        moe_raw[i] += alpha * exp_down[i] * scale;
-                                    }
-                                }
+                            for i in 0..dim {
+                                moe_raw[i] += alpha * exp_down[i] * scale;
                             }
                         }
                     }
                 }
+            }
+
+            let mut mlp_out = vec![0.0f32; dim];
+            ops::rms_norm(&mlp_raw, Some(&layer.post_ffw_norm_1), 1e-6, &mut mlp_out);
 
             let mut moe_out = vec![0.0f32; dim];
             ops::rms_norm(&moe_raw, Some(&layer.post_ffw_norm_2), 1e-6, &mut moe_out);
@@ -1055,7 +1039,49 @@ impl QTensorModel {
         let generated_count = state.generated_count;
 
         #[cfg(feature = "cuda")]
-        let gpu_scored: Option<Vec<(f32, i32)>> = None;
+        let gpu_scored: Option<Vec<(f32, i32)>> = if let (Some(ref dev), Some(ref g_table)) = (&self.cuda_dev, &self.gpu_token_embd_table) {
+            let mut hid_guard = self.gpu_d_final_hidden.lock();
+            let mut log_guard = self.gpu_d_vocab_logits.lock();
+            if let (Some(ref mut d_hid), Some(ref mut d_log)) = (hid_guard.as_mut(), log_guard.as_mut()) {
+                if d_hid.copy_from_host(&state.hidden).is_ok() {
+                    dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
+                    let _ = dev.sync();
+                    let mut logits = vec![0.0f32; self.config.vocab_size];
+                    if d_log.copy_to_host(&mut logits).is_ok() {
+                        let mut scored = Vec::with_capacity(self.config.vocab_size);
+                        for tid in 0..self.config.vocab_size {
+                            if tid < self.vocab.len() {
+                                let piece = &self.vocab[tid];
+                                if piece.starts_with("<unused") || piece == "<pad>" || piece == "<unk>" || piece == "<mask>" || piece == "[multimodal]" {
+                                    continue;
+                                }
+                            }
+
+                            if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
+                                continue;
+                            }
+
+                            let mut score = logits[tid];
+
+                            if recent_tokens.contains(&(tid as i32)) {
+                                score -= 1.8;
+                            }
+
+                            scored.push((score, tid as i32));
+                        }
+                        Some(scored)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         #[cfg(not(feature = "cuda"))]
         let gpu_scored: Option<Vec<(f32, i32)>> = None;
