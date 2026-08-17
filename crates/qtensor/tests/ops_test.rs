@@ -212,3 +212,52 @@ fn test_cuda_vocab_topk_contains_exact_global_topk() {
     expected.truncate(K);
     assert_eq!(actual, expected);
 }
+
+#[cfg(feature = "cuda")]
+#[test]
+fn test_cuda_qkv_postprocess_matches_cpu() {
+    use qtensor::cuda::{CudaBuffer, CudaDevice};
+    use qtensor::ops::{rms_norm_inplace, rope_1d_batched};
+
+    if !CudaDevice::is_available() { return; }
+    let (n_heads, n_kv_heads, head_dim) = (4, 2, 64);
+    let q_dim = n_heads * head_dim;
+    let kv_dim = n_kv_heads * head_dim;
+    let mut expected: Vec<f32> = (0..q_dim + 2 * kv_dim)
+        .map(|i| (i as f32 * 0.017).sin()).collect();
+    let q_norm: Vec<f32> = (0..head_dim).map(|i| 0.8 + i as f32 * 0.001).collect();
+    let k_norm: Vec<f32> = (0..head_dim).map(|i| 1.1 - i as f32 * 0.001).collect();
+    for head in expected[..q_dim].chunks_exact_mut(head_dim) {
+        rms_norm_inplace(head, Some(&q_norm), 1e-6);
+    }
+    rope_1d_batched(&mut expected[..q_dim], 37, n_heads, head_dim, 10_000.0, 1.0);
+    for head in expected[q_dim..q_dim + kv_dim].chunks_exact_mut(head_dim) {
+        rms_norm_inplace(head, Some(&k_norm), 1e-6);
+    }
+    rope_1d_batched(&mut expected[q_dim..q_dim + kv_dim], 37, n_kv_heads, head_dim, 10_000.0, 1.0);
+    for head in expected[q_dim + kv_dim..].chunks_exact_mut(head_dim) {
+        rms_norm_inplace(head, None, 1e-6);
+    }
+
+    let original: Vec<f32> = (0..q_dim + 2 * kv_dim)
+        .map(|i| (i as f32 * 0.017).sin()).collect();
+    let dev = CudaDevice::new(0).unwrap();
+    let mut d_qkv = CudaBuffer::from_host(&original).unwrap();
+    let d_q_norm = CudaBuffer::from_host(&q_norm).unwrap();
+    let d_k_norm = CudaBuffer::from_host(&k_norm).unwrap();
+    let mut d_k_cache = CudaBuffer::alloc(3 * kv_dim).unwrap();
+    let mut d_v_cache = CudaBuffer::alloc(3 * kv_dim).unwrap();
+    dev.qkv_postprocess(&mut d_qkv, &d_q_norm, &d_k_norm, &mut d_k_cache, &mut d_v_cache,
+        37, 1, n_heads, n_kv_heads, head_dim, 10_000.0);
+    let mut actual = vec![0.0; expected.len()];
+    d_qkv.copy_to_host(&mut actual).unwrap();
+    for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
+        assert!((a - e).abs() < 2e-4, "index {i}: {a} != {e}");
+    }
+    let mut k_cache = vec![0.0; 3 * kv_dim];
+    let mut v_cache = vec![0.0; 3 * kv_dim];
+    d_k_cache.copy_to_host(&mut k_cache).unwrap();
+    d_v_cache.copy_to_host(&mut v_cache).unwrap();
+    assert_eq!(&k_cache[kv_dim..2 * kv_dim], &actual[q_dim..q_dim + kv_dim]);
+    assert_eq!(&v_cache[kv_dim..2 * kv_dim], &actual[q_dim + kv_dim..]);
+}

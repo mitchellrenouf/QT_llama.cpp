@@ -43,6 +43,12 @@ extern "C" {
         d_x: *const f32, d_y: *mut f32, q_rows: i32, kv_rows: i32,
         n_cols: i32, stream: CudaStream,
     );
+    fn cuda_op_qkv_postprocess(
+        d_qkv: *mut f32, d_q_norm: *const f32, d_k_norm: *const f32,
+        d_k_cache: *mut f32, d_v_cache: *mut f32, pos: i32, cache_pos: i32,
+        n_heads: i32, n_kv_heads: i32, head_dim: i32, freq_base: f32,
+        stream: CudaStream,
+    );
     fn cuda_op_gemv_q4_0_geglu(
         d_w_gate: *const u8, d_w_up: *const u8, d_x: *const f32,
         d_act: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream,
@@ -439,6 +445,31 @@ impl CudaDevice {
                 d_w_q.as_ptr(), d_w_k.as_ptr(), d_w_v.as_ptr(), d_x.as_ptr(),
                 d_y.as_mut_ptr(), q_rows as i32, kv_rows as i32, n_cols as i32,
                 self.stream,
+            );
+        }
+    }
+
+    pub fn qkv_postprocess(
+        &self,
+        qkv: &mut CudaBuffer<f32>,
+        q_norm: &CudaBuffer<f32>,
+        k_norm: &CudaBuffer<f32>,
+        k_cache: &mut CudaBuffer<f32>,
+        v_cache: &mut CudaBuffer<f32>,
+        pos: usize,
+        cache_pos: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        freq_base: f32,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_qkv_postprocess(
+                qkv.as_mut_ptr(), q_norm.as_ptr(), k_norm.as_ptr(),
+                k_cache.as_mut_ptr(), v_cache.as_mut_ptr(), pos as i32,
+                cache_pos as i32, n_heads as i32, n_kv_heads as i32,
+                head_dim as i32, freq_base, self.stream,
             );
         }
     }

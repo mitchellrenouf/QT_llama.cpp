@@ -76,6 +76,10 @@ pub struct TransformerLayer {
     #[cfg(feature = "cuda")]
     pub gpu_attn_output: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
+    pub gpu_attn_q_norm: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_attn_k_norm: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
     pub gpu_ffn_gate: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
     pub gpu_ffn_up: Option<crate::cuda::CudaBuffer<u8>>,
@@ -320,6 +324,10 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             let gpu_attn_output = if cuda_dev.is_some() && !attn_output.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &attn_output).ok() } else { None };
             #[cfg(feature = "cuda")]
+            let gpu_attn_q_norm = if cuda_dev.is_some() { crate::cuda::CudaBuffer::from_host_on(0, &attn_q_norm).ok() } else { None };
+            #[cfg(feature = "cuda")]
+            let gpu_attn_k_norm = if cuda_dev.is_some() { crate::cuda::CudaBuffer::from_host_on(0, &attn_k_norm).ok() } else { None };
+            #[cfg(feature = "cuda")]
             let gpu_ffn_gate = if cuda_dev.is_some() && !ffn_gate.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_gate).ok() } else { None };
             #[cfg(feature = "cuda")]
             let gpu_ffn_up = if cuda_dev.is_some() && !ffn_up.is_empty() { crate::cuda::CudaBuffer::from_host_on(0, &ffn_up).ok() } else { None };
@@ -453,6 +461,10 @@ impl QTensorModel {
                 gpu_attn_v,
                 #[cfg(feature = "cuda")]
                 gpu_attn_output,
+                #[cfg(feature = "cuda")]
+                gpu_attn_q_norm,
+                #[cfg(feature = "cuda")]
+                gpu_attn_k_norm,
                 #[cfg(feature = "cuda")]
                 gpu_ffn_gate,
                 #[cfg(feature = "cuda")]
@@ -655,22 +667,34 @@ impl QTensorModel {
             let profile_start = std::time::Instant::now();
 
             #[cfg(feature = "cuda")]
-            let used_gpu = if let (Some(ref dev), Some(ref g_q), Some(ref g_k), Some(ref g_v)) = (&self.cuda_dev, &layer.gpu_attn_q, &layer.gpu_attn_k, &layer.gpu_attn_v) {
+            let gpu_qkv_pipeline = if k_cache[l].len() < layer.gpu_kv_capacity {
+                if let (
+                    Some(ref dev), Some(ref g_q), Some(ref g_k), Some(ref g_v),
+                    Some(ref q_norm), Some(ref k_norm),
+                ) = (
+                    &self.cuda_dev, &layer.gpu_attn_q, &layer.gpu_attn_k, &layer.gpu_attn_v,
+                    &layer.gpu_attn_q_norm, &layer.gpu_attn_k_norm,
+                ) {
                 let mut cur_guard = layer.gpu_d_cur.lock();
                 let mut qkv_guard = layer.gpu_d_qkv.lock();
-                if let (Some(ref mut d_cur), Some(ref mut d_qkv)) = (cur_guard.as_mut(), qkv_guard.as_mut()) {
+                let mut kc_guard = layer.gpu_d_k_cache.lock();
+                let mut vc_guard = layer.gpu_d_v_cache.lock();
+                if let (Some(ref mut d_cur), Some(ref mut d_qkv), Some(ref mut d_kc), Some(ref mut d_vc)) =
+                    (cur_guard.as_mut(), qkv_guard.as_mut(), kc_guard.as_mut(), vc_guard.as_mut())
+                {
                     if dev.copy_from_host_async(d_cur, &cur).is_ok() {
                         dev.gemv_q4_0_qkv(g_q, g_k, g_v, d_cur, d_qkv, layer.q_dim, layer.kv_dim, dim);
-                        let mut qkv = vec![0.0f32; layer.q_dim + 2 * layer.kv_dim];
-                        if d_qkv.copy_to_host(&mut qkv).is_ok() {
-                            q.copy_from_slice(&qkv[..layer.q_dim]);
-                            k.copy_from_slice(&qkv[layer.q_dim..layer.q_dim + layer.kv_dim]);
-                            v.copy_from_slice(&qkv[layer.q_dim + layer.kv_dim..]);
-                            true
-                        } else { false }
+                        dev.qkv_postprocess(
+                            d_qkv, q_norm, k_norm, d_kc, d_vc, pos, k_cache[l].len(),
+                            layer.n_heads, layer.n_kv_heads, layer.head_dim, layer.rope_freq_base,
+                        );
+                        true
                     } else {
                         false
                     }
+                } else {
+                    false
+                }
                 } else {
                     false
                 }
@@ -679,9 +703,9 @@ impl QTensorModel {
             };
 
             #[cfg(not(feature = "cuda"))]
-            let used_gpu = false;
+            let gpu_qkv_pipeline = false;
 
-            if !used_gpu {
+            if !gpu_qkv_pipeline {
                 let mut cur_q8 = vec![0u8; ops::q8_0_size(dim)];
                 crate::quant::quantize_f32_to_q8_0(&cur, &mut cur_q8);
                 if !layer.attn_q.is_empty() {
@@ -697,18 +721,20 @@ impl QTensorModel {
                 }
             }
 
-            // Head RMSNorm & RoPE for Q
-            for h in 0..layer.n_heads {
+            // CPU fallback head normalization and RoPE.
+            if !gpu_qkv_pipeline { for h in 0..layer.n_heads {
                 let q_head = &mut q[h * layer.head_dim..(h + 1) * layer.head_dim];
                 if !layer.attn_q_norm.is_empty() {
                     ops::rms_norm_inplace(q_head, Some(&layer.attn_q_norm), 1e-6);
                 }
-            }
+            } }
             profile_qkv += profile_start.elapsed();
-            ops::rope_1d_batched(&mut q, pos, layer.n_heads, layer.head_dim, layer.rope_freq_base, 1.0);
+            if !gpu_qkv_pipeline {
+                ops::rope_1d_batched(&mut q, pos, layer.n_heads, layer.head_dim, layer.rope_freq_base, 1.0);
+            }
 
             // Head RMSNorm & RoPE for K, and RMSNorm for V
-            for h in 0..layer.n_kv_heads {
+            if !gpu_qkv_pipeline { for h in 0..layer.n_kv_heads {
                 let k_head = &mut k[h * layer.head_dim..(h + 1) * layer.head_dim];
                 if !layer.attn_k_norm.is_empty() {
                     ops::rms_norm_inplace(k_head, Some(&layer.attn_k_norm), 1e-6);
@@ -716,12 +742,19 @@ impl QTensorModel {
 
                 let v_head = &mut v[h * layer.head_dim..(h + 1) * layer.head_dim];
                 ops::rms_norm_inplace(v_head, None, 1e-6);
+            } }
+            if !gpu_qkv_pipeline {
+                ops::rope_1d_batched(&mut k, pos, layer.n_kv_heads, layer.head_dim, layer.rope_freq_base, 1.0);
             }
-            ops::rope_1d_batched(&mut k, pos, layer.n_kv_heads, layer.head_dim, layer.rope_freq_base, 1.0);
 
             // Store into KV cache
-            k_cache[l].push(k.clone());
-            v_cache[l].push(v.clone());
+            if gpu_qkv_pipeline {
+                k_cache[l].push(Vec::new());
+                v_cache[l].push(Vec::new());
+            } else {
+                k_cache[l].push(k.clone());
+                v_cache[l].push(v.clone());
+            }
 
             // Multi-head Attention
             let profile_start = std::time::Instant::now();
@@ -738,18 +771,30 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             let attention_used_gpu = if seq_len <= layer.gpu_kv_capacity {
                 if let Some(ref dev) = self.cuda_dev {
-                    let mut q_guard = layer.gpu_d_q.lock();
                     let mut kc_guard = layer.gpu_d_k_cache.lock();
                     let mut vc_guard = layer.gpu_d_v_cache.lock();
                     let mut out_guard = layer.gpu_d_attn_in.lock();
-                    if let (Some(ref mut d_q), Some(ref mut d_kc), Some(ref mut d_vc), Some(ref mut d_out)) =
-                        (q_guard.as_mut(), kc_guard.as_mut(), vc_guard.as_mut(), out_guard.as_mut())
-                    {
-                        let offset = (seq_len - 1) * layer.kv_dim;
-                        if dev.copy_from_host_async(d_q, &q).is_ok()
-                            && dev.copy_from_host_at_async(d_kc, offset, &k).is_ok()
-                            && dev.copy_from_host_at_async(d_vc, offset, &v).is_ok()
-                        {
+                    if let (Some(ref mut d_kc), Some(ref mut d_vc), Some(ref mut d_out)) =
+                        (kc_guard.as_mut(), vc_guard.as_mut(), out_guard.as_mut()) {
+                        if gpu_qkv_pipeline {
+                            let qkv_guard = layer.gpu_d_qkv.lock();
+                            if let Some(ref d_qkv) = qkv_guard.as_ref() {
+                                dev.attention_causal(
+                                    d_qkv, d_kc, d_vc, d_out, seq_len - 1,
+                                    layer.n_heads, layer.n_kv_heads, layer.head_dim, 1.0,
+                                    if layer.is_swa { Some(layer.sliding_window) } else { None },
+                                );
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            let mut q_guard = layer.gpu_d_q.lock();
+                            if let Some(ref mut d_q) = q_guard.as_mut() {
+                                let offset = (seq_len - 1) * layer.kv_dim;
+                                if dev.copy_from_host_async(d_q, &q).is_ok()
+                                    && dev.copy_from_host_at_async(d_kc, offset, &k).is_ok()
+                                    && dev.copy_from_host_at_async(d_vc, offset, &v).is_ok() {
                             dev.attention_causal(
                                 d_q,
                                 d_kc,
@@ -763,8 +808,12 @@ impl QTensorModel {
                                 if layer.is_swa { Some(layer.sliding_window) } else { None },
                             );
                             d_out.copy_to_host(&mut attn_out).is_ok()
-                        } else {
-                            false
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
                         }
                     } else {
                         false
