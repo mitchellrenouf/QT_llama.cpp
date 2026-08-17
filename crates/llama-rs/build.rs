@@ -101,6 +101,9 @@ fn main() {
         cfg.define("GGML_CUDA_FA", "ON");
         cfg.define("GGML_CUDA_GRAPHS", "ON");
         cfg.define("GGML_CUDA_PEER_MAX_BATCH_SIZE", "128");
+        cfg.define("GGML_CUDA_DMMV_X", "32");
+        cfg.define("GGML_CUDA_MMV_Y", "1");
+        cfg.define("GGML_CUDA_KQUANTS_ITER", "1");
         cfg.define("CMAKE_CUDA_ARCHITECTURES", "native");
 
         if let Ok(cuda_dir) = env::var("CUDA_PATH").or_else(|_| env::var("CUDA_TOOLKIT_ROOT_DIR")) {

@@ -432,7 +432,9 @@ impl GemmaAgent {
                         }
                         if reasoning_header_printed {
                             print!("{}", text.yellow().dimmed());
-                            let _ = std::io::stdout().flush();
+                            if text.ends_with(' ') || text.ends_with('\n') {
+                                let _ = std::io::stdout().flush();
+                            }
                             last_was_reasoning = true;
                         }
                     }
@@ -449,7 +451,9 @@ impl GemmaAgent {
                             content_header_printed = true;
                         }
                         print!("{}", text);
-                        let _ = std::io::stdout().flush();
+                        if text.ends_with(' ') || text.ends_with('\n') || text.ends_with('?') || text.ends_with('.') {
+                            let _ = std::io::stdout().flush();
+                        }
                     }
                     StreamEvent::ToolCallAssembled(tc) => {
                         assembled_tool_calls.push(tc);

@@ -1346,6 +1346,7 @@ dependencies = [
  "cc",
  "cmake",
  "futures-util",
+ "qtensor",
  "regex",
  "serde",
  "serde_json",

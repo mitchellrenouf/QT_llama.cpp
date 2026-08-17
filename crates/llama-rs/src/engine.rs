@@ -79,16 +79,26 @@ impl LlamaEngine {
             .ok_or_else(|| anyhow!("Invalid model path UTF-8"))?;
         let c_path = CString::new(path_str)?;
 
+        // Inspect GGUF structure using pure Rust qtensor engine
+        if let Ok(gguf) = qtensor::gguf::GgufFile::open(model_path) {
+            eprintln!(
+                "[llama-rs + qtensor] Model Arch: '{}', Tensors: {}, Key-Values: {}",
+                gguf.architecture(),
+                gguf.tensors.len(),
+                gguf.metadata.len()
+            );
+        }
+
         let backend_choice = backend
             .map(|s| s.to_string())
             .or_else(|| std::env::var("QT_LLAMA_BACKEND").ok())
             .or_else(|| std::env::var("LLAMA_BACKEND").ok())
             .unwrap_or_else(|| "auto".to_string());
 
-        let num_threads = std::thread::available_parallelism()
+        let _num_threads = std::thread::available_parallelism()
             .map(|p| p.get() as i32)
-            .unwrap_or(8)
-            .min(16);
+            .unwrap_or(4)
+            .min(8);
 
         let mut m_params = unsafe { llama_model_default_params() };
         let mut c_params = unsafe { llama_context_default_params() };
@@ -103,11 +113,13 @@ impl LlamaEngine {
         c_params.n_batch = 2048;
         c_params.n_ubatch = 512;
         c_params.flash_attn_type = 1;
+        c_params.type_k = 8; // GGML_TYPE_Q8_0
+        c_params.type_v = 8; // GGML_TYPE_Q8_0
         c_params.offload_kqv = true;
         c_params.op_offload = true;
         c_params.swa_full = false;
-        c_params.n_threads = num_threads;
-        c_params.n_threads_batch = num_threads;
+        c_params.n_threads = 2;
+        c_params.n_threads_batch = 2;
         c_params.no_perf = true;
         m_params.load_mode = -1; // mmap
 
@@ -391,13 +403,9 @@ impl LlamaEngine {
                     break;
                 }
 
-                if tx.blocking_send(Ok(piece)).is_err() {
-                    break;
-                }
-
                 generated += 1;
 
-                // Decode next token using pre-allocated batch
+                // 1. Launch GPU forward pass asynchronously on CUDA stream for next token
                 unsafe {
                     *batch_single.token = token;
                     *batch_single.pos = n_past;
@@ -411,6 +419,11 @@ impl LlamaEngine {
                 }
 
                 n_past += 1;
+
+                // 2. Dispatch current token piece to Tokio stream while GPU is computing
+                if tx.blocking_send(Ok(piece)).is_err() {
+                    break;
+                }
             }
 
             unsafe {
