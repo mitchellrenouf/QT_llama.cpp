@@ -6,7 +6,7 @@ authors = ["Mitchell <mitchell@localhost>"]
 description = "QTensor: High-performance pure Rust tensor compute engine with quantized math (Q4_0, Q8_0), GGUF parsing, and CUDA GPU acceleration"
 
 [features]
-default = ["cuda"]
+default = []
 cuda = []
 
 [dependencies]

@@ -88,8 +88,8 @@ modules:
       # qtrs 0.5.7 stops searching when qmake6 is absent, even when the KDE
       # SDK provides Qt's qmake under another standard name/location.
       - |
-        if ! command -v qmake6 >/dev/null 2>&1; then
-          QMAKE_BIN="$(command -v qmake 2>/dev/null || command -v qmake-qt6 2>/dev/null || true)"
+        QMAKE_BIN="$(command -v qmake6 2>/dev/null || command -v qmake 2>/dev/null || command -v qmake-qt6 2>/dev/null || true)"
+        if [ -z "$QMAKE_BIN" ]; then
           for candidate in \
             /usr/bin/qmake6 \
             /usr/bin/qmake \
@@ -111,9 +111,10 @@ modules:
             find /usr -type f -name 'qmake*' -print 2>/dev/null || true
             exit 1
           fi
-          ln -sf "$QMAKE_BIN" /app/bin/qmake6
         fi
-        qmake6 -query QT_VERSION
+        mkdir -p /app/bin
+        ln -sf "$QMAKE_BIN" /app/bin/qmake6
+        /app/bin/qmake6 -query QT_VERSION
       - |
         cat > .cargo/config.toml << 'EOF'
         [source.crates-io]
