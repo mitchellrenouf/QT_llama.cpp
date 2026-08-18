@@ -87,11 +87,21 @@ extern "C" {
         d_attn_res: *mut f32, d_shared_in: *mut f32, d_moe_in: *mut f32,
         d_router_in: *mut f32, dim: i32, stream: CudaStream,
     );
+    fn cuda_op_prepare_ffn_batch(
+        h: *const f32, a: *const f32, pan: *const f32, ffn: *const f32,
+        pfn: *const f32, rs: *const f32, ar: *mut f32, si: *mut f32,
+        mi: *mut f32, ri: *mut f32, dim: i32, batch: i32, stream: CudaStream,
+    );
     fn cuda_op_finish_ffn(
         d_attn_res: *const f32, d_dense: *mut f32, d_moe: *mut f32,
         d_post_ffw_norm_1: *const f32, d_post_ffw_norm_2: *const f32,
         d_post_ffw_norm: *const f32, d_hidden_out: *mut f32,
         layer_scale: f32, dim: i32, stream: CudaStream,
+    );
+    fn cuda_op_finish_ffn_batch(
+        ar: *const f32, dense: *mut f32, moe: *mut f32, p1: *const f32,
+        p2: *const f32, pf: *const f32, out: *mut f32, scale: f32,
+        dim: i32, batch: i32, stream: CudaStream,
     );
     fn cuda_op_attention(
         d_q: *const f32,
@@ -887,6 +897,26 @@ impl CudaDevice {
         }
     }
 
+    pub fn prepare_ffn_batch(
+        &self, hidden: &CudaBuffer<f32>, attn: &CudaBuffer<f32>,
+        pan: &CudaBuffer<f32>, ffn: &CudaBuffer<f32>, pfn: &CudaBuffer<f32>,
+        router_scale: &CudaBuffer<f32>, attn_res: &mut CudaBuffer<f32>,
+        shared: &mut CudaBuffer<f32>, moe: &mut CudaBuffer<f32>,
+        router: &mut CudaBuffer<f32>, dim: usize, batch: usize,
+    ) {
+        assert_eq!(hidden.len(), dim * batch);
+        assert_eq!(attn.len(), dim * batch);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_prepare_ffn_batch(
+                hidden.as_ptr(), attn.as_ptr(), pan.as_ptr(), ffn.as_ptr(),
+                pfn.as_ptr(), router_scale.as_ptr(), attn_res.as_mut_ptr(),
+                shared.as_mut_ptr(), moe.as_mut_ptr(), router.as_mut_ptr(),
+                dim as i32, batch as i32, self.stream,
+            );
+        }
+    }
+
     pub fn finish_ffn(
         &self, attn_res: &CudaBuffer<f32>, dense: &mut CudaBuffer<f32>,
         moe: &mut CudaBuffer<f32>, post_ffw_norm_1: &CudaBuffer<f32>,
@@ -900,6 +930,24 @@ impl CudaDevice {
                 post_ffw_norm_1.as_ptr(), post_ffw_norm_2.as_ptr(),
                 post_ffw_norm.as_ptr(), hidden_out.as_mut_ptr(), layer_scale,
                 dim as i32, self.stream,
+            );
+        }
+    }
+
+    pub fn finish_ffn_batch(
+        &self, attn_res: &CudaBuffer<f32>, dense: &mut CudaBuffer<f32>,
+        moe: &mut CudaBuffer<f32>, p1: &CudaBuffer<f32>, p2: &CudaBuffer<f32>,
+        pf: &CudaBuffer<f32>, output: &mut CudaBuffer<f32>, scale: f32,
+        dim: usize, batch: usize,
+    ) {
+        assert_eq!(attn_res.len(), dim * batch);
+        assert_eq!(output.len(), dim * batch);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_finish_ffn_batch(
+                attn_res.as_ptr(), dense.as_mut_ptr(), moe.as_mut_ptr(),
+                p1.as_ptr(), p2.as_ptr(), pf.as_ptr(), output.as_mut_ptr(),
+                scale, dim as i32, batch as i32, self.stream,
             );
         }
     }

@@ -626,6 +626,10 @@ __global__ void k_prepare_ffn_f32(
     float* __restrict__ router_in,
     int dim
 ) {
+    size_t token_offset = (size_t)blockIdx.x * dim;
+    hidden += token_offset; attn_proj += token_offset;
+    attn_res += token_offset; shared_in += token_offset;
+    moe_in += token_offset; router_in += token_offset;
     float sum_sq = 0.0f;
     for (int i = threadIdx.x; i < dim; i += blockDim.x) {
         float v = attn_proj[i];
@@ -669,6 +673,9 @@ __global__ void k_finish_ffn_f32(
     float layer_scale,
     int dim
 ) {
+    size_t token_offset = (size_t)blockIdx.x * dim;
+    attn_res += token_offset; dense += token_offset; moe += token_offset;
+    hidden_out += token_offset;
     float dense_sq = 0.0f;
     float moe_sq = 0.0f;
     for (int i = threadIdx.x; i < dim; i += blockDim.x) {
@@ -1229,6 +1236,14 @@ void cuda_op_prepare_ffn(
     );
 }
 
+void cuda_op_prepare_ffn_batch(
+    const float* h, const float* a, const float* pan, const float* fn,
+    const float* pfn, const float* rs, float* ar, float* si, float* mi,
+    float* ri, int dim, int batch, cudaStream_t stream
+) {
+    k_prepare_ffn_f32<<<batch, 256, 0, stream>>>(h, a, pan, fn, pfn, rs, ar, si, mi, ri, dim);
+}
+
 void cuda_op_finish_ffn(
     const float* d_attn_res, float* d_dense, float* d_moe,
     const float* d_post_ffw_norm_1, const float* d_post_ffw_norm_2,
@@ -1240,6 +1255,14 @@ void cuda_op_finish_ffn(
         d_post_ffw_norm_2, d_post_ffw_norm, d_hidden_out,
         layer_scale, dim
     );
+}
+
+void cuda_op_finish_ffn_batch(
+    const float* ar, float* dense, float* moe, const float* p1,
+    const float* p2, const float* pf, float* out, float scale,
+    int dim, int batch, cudaStream_t stream
+) {
+    k_finish_ffn_f32<<<batch, 256, 0, stream>>>(ar, dense, moe, p1, p2, pf, out, scale, dim);
 }
 
 void cuda_op_attention(
