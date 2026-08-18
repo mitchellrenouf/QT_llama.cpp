@@ -106,6 +106,11 @@ extern "C" {
         sliding_window: i32,
         stream: CudaStream,
     );
+    fn cuda_op_moe_router_batch(
+        d_weights: *const f32, d_input: *const f32, d_logits: *mut f32,
+        d_ids: *mut i32, d_probabilities: *mut f32, dim: i32,
+        n_experts: i32, batch: i32, stream: CudaStream,
+    );
     fn cuda_op_gemm_q4_0_geglu(
         d_w_gate: *const u8, d_w_up: *const u8, d_x: *const f32,
         d_act: *mut f32, n_rows: i32, n_cols: i32, batch: i32,
@@ -130,6 +135,13 @@ extern "C" {
         exp_ffn_dim: i32,
         n_active: i32,
         stream: CudaStream,
+    );
+    fn cuda_op_moe_topk_batch_q4_0(
+        d_gate_up_exps: *const u8, d_down_exps: *const u8,
+        d_active_exp_ids: *const i32, d_active_exp_weights: *const f32,
+        d_down_exps_scale: *const f32, d_x_in: *const f32,
+        d_act_scratch: *mut f32, d_out_moe: *mut f32, dim: i32,
+        exp_ffn_dim: i32, n_active: i32, batch: i32, stream: CudaStream,
     );
 }
 
@@ -809,6 +821,50 @@ impl CudaDevice {
                 d_weights.as_ptr(), d_input.as_ptr(), d_logits.as_mut_ptr(),
                 d_ids.as_mut_ptr(), d_probabilities.as_mut_ptr(), dim as i32,
                 n_experts as i32, self.stream,
+            );
+        }
+    }
+
+    pub fn moe_topk_batch_q4_0(
+        &self, gate_up: &CudaBuffer<u8>, down: &CudaBuffer<u8>,
+        ids: &CudaBuffer<i32>, weights: &CudaBuffer<f32>,
+        scales: Option<&CudaBuffer<f32>>, input: &CudaBuffer<f32>,
+        act: &mut CudaBuffer<f32>, output: &mut CudaBuffer<f32>,
+        dim: usize, exp_dim: usize, n_active: usize, batch: usize,
+    ) {
+        assert_eq!(ids.len(), batch * n_active);
+        assert_eq!(weights.len(), batch * n_active);
+        assert_eq!(input.len(), batch * dim);
+        assert_eq!(act.len(), batch * n_active * exp_dim);
+        assert_eq!(output.len(), batch * dim);
+        let scale_ptr = scales.map(|value| value.as_ptr()).unwrap_or(ptr::null());
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_moe_topk_batch_q4_0(
+                gate_up.as_ptr(), down.as_ptr(), ids.as_ptr(), weights.as_ptr(),
+                scale_ptr, input.as_ptr(), act.as_mut_ptr(), output.as_mut_ptr(),
+                dim as i32, exp_dim as i32, n_active as i32, batch as i32,
+                self.stream,
+            );
+        }
+    }
+
+    pub fn moe_router_batch(
+        &self, weights: &CudaBuffer<f32>, input: &CudaBuffer<f32>,
+        logits: &mut CudaBuffer<f32>, ids: &mut CudaBuffer<i32>,
+        probabilities: &mut CudaBuffer<f32>, dim: usize,
+        n_experts: usize, batch: usize,
+    ) {
+        assert_eq!(input.len(), dim * batch);
+        assert_eq!(logits.len(), n_experts * batch);
+        assert_eq!(ids.len(), 8 * batch);
+        assert_eq!(probabilities.len(), 8 * batch);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_moe_router_batch(
+                weights.as_ptr(), input.as_ptr(), logits.as_mut_ptr(),
+                ids.as_mut_ptr(), probabilities.as_mut_ptr(), dim as i32,
+                n_experts as i32, batch as i32, self.stream,
             );
         }
     }

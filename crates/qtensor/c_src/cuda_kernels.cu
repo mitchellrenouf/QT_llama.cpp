@@ -787,6 +787,51 @@ void cuda_op_rms_norm(
     k_rms_norm_f32<<<1, threads, 0, stream>>>(d_x, d_w, d_out, dim, eps);
 }
 
+__global__ void k_moe_router_logits_batch_f32(
+    const float* weights, const float* input, float* logits,
+    int dim, int n_experts, int batch
+) {
+    int expert = blockIdx.x, token = blockIdx.y;
+    if (expert >= n_experts || token >= batch) return;
+    const float* row = weights + (size_t)expert * dim;
+    const float* token_input = input + (size_t)token * dim;
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += row[i] * token_input[i];
+    sum = block_reduce_sum(sum);
+    if (threadIdx.x == 0) logits[(size_t)token * n_experts + expert] = sum;
+}
+
+__global__ void k_moe_router_top8_batch_f32(
+    const float* logits, int32_t* ids, float* probabilities,
+    int n_experts, int batch
+) {
+    int token = blockIdx.x, tid = threadIdx.x;
+    if (token >= batch) return;
+    __shared__ float scores[128];
+    __shared__ int32_t indices[128];
+    if (tid < n_experts) {
+        scores[tid] = logits[(size_t)token * n_experts + tid];
+        indices[tid] = tid;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        for (int i = 0; i < 8; ++i) {
+            int best = i;
+            for (int j = i + 1; j < n_experts; ++j) if (scores[j] > scores[best]) best = j;
+            float score = scores[i]; scores[i] = scores[best]; scores[best] = score;
+            int32_t id = indices[i]; indices[i] = indices[best]; indices[best] = id;
+        }
+        float max_score = scores[0], total = 0.0f;
+        for (int i = 0; i < 8; ++i) {
+            ids[(size_t)token * 8 + i] = indices[i];
+            float value = expf(scores[i] - max_score);
+            probabilities[(size_t)token * 8 + i] = value; total += value;
+        }
+        float inv = total > 0.0f ? 1.0f / total : 0.0f;
+        for (int i = 0; i < 8; ++i) probabilities[(size_t)token * 8 + i] *= inv;
+    }
+}
+
 __global__ void k_gemm_q4_0_geglu_f32(
     const uint8_t* w_gate, const uint8_t* w_up, const float* x, float* act,
     int n_rows, int n_cols, int batch
@@ -1217,6 +1262,18 @@ void cuda_op_attention(
     );
 }
 
+void cuda_op_moe_router_batch(
+    const float* d_weights, const float* d_input, float* d_logits,
+    int32_t* d_ids, float* d_probabilities, int dim, int n_experts,
+    int batch, cudaStream_t stream
+) {
+    dim3 grid(n_experts, batch);
+    k_moe_router_logits_batch_f32<<<grid, 256, 0, stream>>>(
+        d_weights, d_input, d_logits, dim, n_experts, batch);
+    k_moe_router_top8_batch_f32<<<batch, 128, 0, stream>>>(
+        d_logits, d_ids, d_probabilities, n_experts, batch);
+}
+
 void cuda_op_gemm_q4_0_geglu(
     const uint8_t* d_w_gate, const uint8_t* d_w_up, const float* d_x,
     float* d_act, int n_rows, int n_cols, int batch, cudaStream_t stream
@@ -1387,6 +1444,81 @@ void cuda_op_moe_topk_q4_0(
         d_down_exps, d_active_exp_ids, d_active_exp_weights, d_down_exps_scale,
         d_act_scratch, d_out_moe, dim, exp_ffn_dim, n_active
     );
+}
+
+__global__ void k_moe_gate_up_topk_batch_q4_0_f32(
+    const uint8_t* gate_up, const int32_t* ids, const float* x,
+    float* act, int exp_dim, int dim, int n_active, int batch
+) {
+    int lane = threadIdx.x & 31, sublane = lane & 15, warp = threadIdx.x >> 5;
+    int row = blockIdx.x * (2 * blockDim.x / WARP_SIZE) + warp * 2 + (lane >> 4);
+    int slot = blockIdx.y, token = blockIdx.z;
+    bool active = row < exp_dim && slot < n_active && token < batch;
+    int expert = active ? ids[(size_t)token * n_active + slot] : 0;
+    int blocks = dim / 32, row_bytes = blocks * 18, exp_bytes = 2 * exp_dim * row_bytes;
+    const uint8_t* base = gate_up + (size_t)expert * exp_bytes;
+    const uint8_t* gate_row = base + (active ? row : 0) * row_bytes;
+    const uint8_t* up_row = base + (exp_dim + (active ? row : 0)) * row_bytes;
+    const float* token_x = x + (size_t)token * dim;
+    float gate_sum = 0.0f, up_sum = 0.0f;
+    for (int b = 0; b < blocks; ++b) {
+        int off = b * 18;
+        uint16_t gd = (uint16_t)gate_row[off] | ((uint16_t)gate_row[off + 1] << 8);
+        uint16_t ud = (uint16_t)up_row[off] | ((uint16_t)up_row[off + 1] << 8);
+        uint8_t g = active ? gate_row[off + 2 + sublane] : 0;
+        uint8_t u = active ? up_row[off + 2 + sublane] : 0;
+        float x0 = token_x[b * 32 + sublane], x1 = token_x[b * 32 + sublane + 16];
+        gate_sum += active ? __half2float(__ushort_as_half(gd)) * ((float)((g & 15)-8)*x0 + (float)((g>>4)-8)*x1) : 0.0f;
+        up_sum += active ? __half2float(__ushort_as_half(ud)) * ((float)((u & 15)-8)*x0 + (float)((u>>4)-8)*x1) : 0.0f;
+    }
+    float gate = half_warp_reduce_sum(gate_sum), up = half_warp_reduce_sum(up_sum);
+    if (active && sublane == 0) {
+        float gelu = 0.5f * gate * (1.0f + tanhf(0.7978845608f * gate * (1.0f + 0.044715f * gate * gate)));
+        act[((size_t)token * n_active + slot) * exp_dim + row] = gelu * up;
+    }
+}
+
+__global__ void k_moe_down_topk_batch_q4_0_f32(
+    const uint8_t* down, const int32_t* ids, const float* weights,
+    const float* scales, const float* act, float* out,
+    int dim, int exp_dim, int n_active, int batch
+) {
+    int lane = threadIdx.x & 31, sublane = lane & 15, warp = threadIdx.x >> 5;
+    int row = blockIdx.x * (2 * blockDim.x / WARP_SIZE) + warp * 2 + (lane >> 4);
+    int slot = blockIdx.y, token = blockIdx.z;
+    bool active = row < dim && slot < n_active && token < batch;
+    int expert = active ? ids[(size_t)token * n_active + slot] : 0;
+    float alpha = active ? weights[(size_t)token * n_active + slot] : 0.0f;
+    if (scales) alpha *= scales[expert];
+    int blocks = exp_dim / 32, row_bytes = blocks * 18, exp_bytes = dim * row_bytes;
+    const uint8_t* row_w = down + (size_t)expert * exp_bytes + (active ? row : 0) * row_bytes;
+    const float* token_act = act + ((size_t)token * n_active + slot) * exp_dim;
+    float sum = 0.0f;
+    for (int b = 0; b < blocks; ++b) {
+        int off = b * 18;
+        uint16_t raw = (uint16_t)row_w[off] | ((uint16_t)row_w[off + 1] << 8);
+        uint8_t q = active ? row_w[off + 2 + sublane] : 0;
+        sum += active ? __half2float(__ushort_as_half(raw)) *
+            ((float)((q&15)-8)*token_act[b*32+sublane] + (float)((q>>4)-8)*token_act[b*32+sublane+16]) : 0.0f;
+    }
+    float value = half_warp_reduce_sum(sum);
+    if (active && sublane == 0) atomicAdd(&out[(size_t)token * dim + row], value * alpha);
+}
+
+void cuda_op_moe_topk_batch_q4_0(
+    const uint8_t* gate_up, const uint8_t* down, const int32_t* ids,
+    const float* weights, const float* scales, const float* x,
+    float* act, float* out, int dim, int exp_dim, int n_active,
+    int batch, cudaStream_t stream
+) {
+    cudaMemsetAsync(out, 0, (size_t)batch * dim * sizeof(float), stream);
+    int threads = 128, rows = 2 * threads / WARP_SIZE;
+    dim3 gate_grid((exp_dim + rows - 1) / rows, n_active, batch);
+    k_moe_gate_up_topk_batch_q4_0_f32<<<gate_grid, threads, 0, stream>>>(
+        gate_up, ids, x, act, exp_dim, dim, n_active, batch);
+    dim3 down_grid((dim + rows - 1) / rows, n_active, batch);
+    k_moe_down_topk_batch_q4_0_f32<<<down_grid, threads, 0, stream>>>(
+        down, ids, weights, scales, act, out, dim, exp_dim, n_active, batch);
 }
 
 }

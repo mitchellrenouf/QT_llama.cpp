@@ -87,6 +87,77 @@ fn main() -> anyhow::Result<()> {
     d_attention.copy_to_host(&mut attention)?;
     assert!(attention.iter().all(|value| value.is_finite()));
 
+    let router_weights: Vec<f32> = (0..128 * COLS)
+        .map(|index| ((index % 19) as f32 - 9.0) / 19.0)
+        .collect();
+    let d_router_weights = CudaBuffer::from_host(&router_weights)?;
+    let mut d_router_logits = CudaBuffer::alloc(BATCH * 128)?;
+    let mut d_router_ids = CudaBuffer::alloc(BATCH * 8)?;
+    let mut d_router_probs = CudaBuffer::alloc(BATCH * 8)?;
+    device.moe_router_batch(
+        &d_router_weights, &d_input, &mut d_router_logits, &mut d_router_ids,
+        &mut d_router_probs, COLS, 128, BATCH,
+    );
+    device.sync()?;
+    let mut router_ids = vec![0i32; BATCH * 8];
+    let mut router_probs = vec![0.0f32; BATCH * 8];
+    d_router_ids.copy_to_host(&mut router_ids)?;
+    d_router_probs.copy_to_host(&mut router_probs)?;
+    let mut d_single_logits = CudaBuffer::alloc(128)?;
+    let mut d_single_ids = CudaBuffer::alloc(8)?;
+    let mut d_single_probs = CudaBuffer::alloc(8)?;
+    for token in 0..BATCH {
+        device.copy_from_host_async(&mut d_single_in, &input[token * COLS..(token + 1) * COLS])?;
+        device.moe_router(
+            &d_router_weights, &d_single_in, &mut d_single_logits,
+            &mut d_single_ids, &mut d_single_probs, COLS, 128,
+        );
+        device.sync()?;
+        let mut expected_ids = vec![0i32; 8];
+        let mut expected_probs = vec![0.0f32; 8];
+        d_single_ids.copy_to_host(&mut expected_ids)?;
+        d_single_probs.copy_to_host(&mut expected_probs)?;
+        assert_eq!(&router_ids[token * 8..(token + 1) * 8], expected_ids);
+        assert!(router_probs[token * 8..(token + 1) * 8]
+            .iter().zip(&expected_probs).all(|(a, b)| (a - b).abs() < 1e-5));
+    }
+
+    let mut expert_gate_up = vec![0u8; 128 * 2 * COLS * 18];
+    let mut expert_down = vec![0u8; 128 * COLS * 18];
+    for block in expert_gate_up.chunks_exact_mut(18).chain(expert_down.chunks_exact_mut(18)) {
+        block[..2].copy_from_slice(&f32_to_f16(0.125).to_le_bytes());
+        block[2..].fill(0x98);
+    }
+    let d_expert_gate_up = CudaBuffer::from_host(&expert_gate_up)?;
+    let d_expert_down = CudaBuffer::from_host(&expert_down)?;
+    let mut d_expert_act = CudaBuffer::alloc(BATCH * 8 * COLS)?;
+    let mut d_expert_out = CudaBuffer::alloc(BATCH * COLS)?;
+    device.moe_topk_batch_q4_0(
+        &d_expert_gate_up, &d_expert_down, &d_router_ids, &d_router_probs,
+        None, &d_input, &mut d_expert_act, &mut d_expert_out,
+        COLS, COLS, 8, BATCH,
+    );
+    device.sync()?;
+    let mut expert_out = vec![0.0f32; BATCH * COLS];
+    d_expert_out.copy_to_host(&mut expert_out)?;
+    let mut d_single_act = CudaBuffer::alloc(8 * COLS)?;
+    let mut d_single_moe = CudaBuffer::alloc(COLS)?;
+    for token in 0..BATCH {
+        device.copy_from_host_async(&mut d_single_in, &input[token * COLS..(token + 1) * COLS])?;
+        let token_ids = CudaBuffer::from_host(&router_ids[token * 8..(token + 1) * 8])?;
+        let token_probs = CudaBuffer::from_host(&router_probs[token * 8..(token + 1) * 8])?;
+        device.moe_topk_q4_0(
+            &d_expert_gate_up, &d_expert_down, &token_ids, &token_probs,
+            None, &d_single_in, &mut d_single_act, &mut d_single_moe,
+            COLS, COLS, 8,
+        );
+        device.sync()?;
+        let mut expected = vec![0.0f32; COLS];
+        d_single_moe.copy_to_host(&mut expected)?;
+        assert!(expert_out[token * COLS..(token + 1) * COLS]
+            .iter().zip(&expected).all(|(a, b)| (a - b).abs() < 1e-4));
+    }
+
     let mut d_geglu = CudaBuffer::alloc(BATCH * ROWS)?;
     device.gemm_q4_0_geglu(
         &d_weights, &d_weights, &d_input, &mut d_geglu, ROWS, COLS, BATCH,
