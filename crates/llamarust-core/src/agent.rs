@@ -26,6 +26,21 @@ pub struct GemmaAgent {
     workspace_rules: WorkspaceRules,
 }
 
+fn requests_live_local_time(input: &str) -> bool {
+    let normalized = input.trim().to_ascii_lowercase();
+    normalized.contains("what time is it")
+        || normalized.contains("what's the time")
+        || normalized.contains("current time")
+        || normalized.contains("tell me the time")
+        || normalized.contains("time right now")
+}
+
+fn verified_time_answer(tool_output: &str) -> Option<String> {
+    let stdout = tool_output.split("--- STDOUT ---").nth(1)?.split("--- STDERR ---").next()?;
+    let value = stdout.lines().map(str::trim).find(|line| !line.is_empty() && *line != "(empty)")?;
+    Some(format!("The current local time is **{value}**."))
+}
+
 impl GemmaAgent {
     pub fn new(config: Config) -> Self {
         let client = LlamaClient::with_config(&config);
@@ -389,6 +404,57 @@ impl GemmaAgent {
         self.history.push(ChatMessage::user(user_input));
         let tool_defs = self.registry.definitions();
 
+        // Live clock queries have one unambiguous tool dependency. Route them
+        // deterministically instead of asking the language model to decide
+        // whether it has clock access; the model still turns the verified tool
+        // result into the user-facing answer.
+        if requests_live_local_time(user_input) {
+            #[cfg(windows)]
+            let command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
+            #[cfg(not(windows))]
+            let command = "date '+%Y-%m-%d %H:%M:%S %z'";
+            let call_id = format!("clock-{}", self.history.len());
+            let args = serde_json::json!({ "command_line": command });
+            let tool_call = crate::client::ToolCall {
+                id: call_id.clone(),
+                tool_type: "function".to_string(),
+                function: crate::client::FunctionCall {
+                    name: "run_command".to_string(),
+                    arguments: args.to_string(),
+                },
+            };
+            println!(
+                "\n{} Requesting tool {} with args: {}",
+                "🔧 [Tool Call]".bold().yellow(),
+                "run_command".cyan(),
+                args.to_string().dimmed()
+            );
+            self.history.push(ChatMessage::assistant(None, Some(vec![tool_call])));
+            let result = self.registry.get("run_command").unwrap()
+                .execute(&self.config.workspace_root, args).await;
+            match result {
+                Ok(output) => {
+                    println!("⚡ Executing {}", "run_command".cyan());
+                    println!("📥 Tool Output:\n{}", output.dimmed());
+                    self.history.push(ChatMessage::tool(call_id, "run_command", output.clone()));
+                    if let Some(answer) = verified_time_answer(&output) {
+                        event_sink(StreamEvent::ToolExecuted {
+                            name: "run_command".to_string(), result: output,
+                        });
+                        event_sink(StreamEvent::Content(answer.clone()));
+                        event_sink(StreamEvent::Finish("stop".to_string()));
+                        self.history.push(ChatMessage::assistant(Some(answer.clone()), None));
+                        return Ok((answer, String::new()));
+                    }
+                }
+                Err(error) => {
+                    let output = format!("Tool execution failed: {error}");
+                    println!("{}: {}", "✖".red(), output);
+                    self.history.push(ChatMessage::tool(call_id, "run_command", output));
+                }
+            }
+        }
+
         let mut final_content = String::new();
         let mut final_thought = String::new();
         let mut loop_count = 0;
@@ -505,6 +571,50 @@ impl GemmaAgent {
 
         self.history.push(ChatMessage::user(user_input));
         let tool_defs = self.registry.definitions();
+
+        if requests_live_local_time(user_input) {
+            #[cfg(windows)]
+            let command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
+            #[cfg(not(windows))]
+            let command = "date '+%Y-%m-%d %H:%M:%S %z'";
+            let call_id = format!("clock-{}", self.history.len());
+            let args = serde_json::json!({ "command_line": command });
+            let tool_call = crate::client::ToolCall {
+                id: call_id.clone(),
+                tool_type: "function".to_string(),
+                function: crate::client::FunctionCall {
+                    name: "run_command".to_string(),
+                    arguments: args.to_string(),
+                },
+            };
+            println!(
+                "\n{} Requesting tool {} with args: {}",
+                "🔧 [Tool Call]".bold().yellow(), "run_command".cyan(), args.to_string().dimmed()
+            );
+            self.history.push(ChatMessage::assistant(None, Some(vec![tool_call])));
+            println!("⚡ Executing {}", "run_command".cyan());
+            let result = self.registry.get("run_command").unwrap()
+                .execute(&self.config.workspace_root, args).await;
+            match result {
+                Ok(output) => {
+                    println!("📥 Tool Output:\n{}", output.dimmed());
+                    self.history.push(ChatMessage::tool(call_id, "run_command", output.clone()));
+                    if let Some(answer) = verified_time_answer(&output) {
+                        print!("\n{}: {}", "🤖 Gemma".bold().green(), answer);
+                        println!("\n{}", "─── 🎨 Rich Formatted Output ───".dimmed());
+                        print_rich_markdown(&answer);
+                        println!("{}", "────────────────────────────────".dimmed());
+                        self.history.push(ChatMessage::assistant(Some(answer), None));
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    let output = format!("Tool execution failed: {error}");
+                    println!("{}: {}", "✖".red(), output);
+                    self.history.push(ChatMessage::tool(call_id, "run_command", output));
+                }
+            }
+        }
 
         let mut last_model_output: Option<String> = None;
         let mut model_output_repeat_count = 0;
@@ -730,5 +840,26 @@ impl GemmaAgent {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{requests_live_local_time, verified_time_answer};
+
+    #[test]
+    fn routes_only_live_clock_questions() {
+        assert!(requests_live_local_time("What time is it?"));
+        assert!(requests_live_local_time("Tell me the current time please"));
+        assert!(!requests_live_local_time("Explain algorithm time complexity"));
+        assert!(!requests_live_local_time("What time did the meeting start?"));
+    }
+
+    #[test]
+    fn formats_only_verified_command_stdout() {
+        let output = "Exit Code: 0\n--- STDOUT ---\n2026-08-18 12:49:24 -02:30\n--- STDERR ---\n(empty)";
+        assert_eq!(verified_time_answer(output).as_deref(),
+            Some("The current local time is **2026-08-18 12:49:24 -02:30**."));
+        assert!(verified_time_answer("Tool execution failed").is_none());
     }
 }

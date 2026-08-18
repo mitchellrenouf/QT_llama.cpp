@@ -1,51 +1,28 @@
-[package]
-name = "rustllama"
-version = "0.4.0"
-edition = "2021"
-build = "build.rs"
-authors = ["Mitchell <mitchell@localhost>"]
-description = "RustLlama local AI assistant with native GGUF inference, Qt 6, and CUDA acceleration"
-default-run = "rustllama"
-
-[[bin]]
-name = "rustllama"
-path = "src/main.rs"
-
-[features]
-default = ["auto"]
-auto = ["llama-rs/auto"]
-cuda = ["llama-rs/cuda"]
-vulkan = ["llama-rs/vulkan"]
-hipblas = ["llama-rs/hipblas"]
-sycl = ["llama-rs/sycl"]
-
 [workspace]
+resolver = "2"
 members = [
-    ".",
     "crates/llama-rs",
     "crates/qtensor",
+    "crates/llamarust-core",
+    "crates/llamarust-cli",
+    "crates/llamarust-server",
+    "crates/llamarust-qt",
 ]
 
-[dependencies]
-llama-rs = { path = "crates/llama-rs" }
-tokio = { version = "1.43", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-clap = { version = "4.6", features = ["derive", "env"] }
-futures-util = "0.3"
-colored = "3.1"
-walkdir = "2.5"
-regex = "1.11"
+[workspace.package]
+version = "0.4.0"
+edition = "2021"
+authors = ["Mitchell <mitchell@localhost>"]
+
+[workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-urlencoding = "2.1"
-chrono = "0.4"
-similar = "3.1"
-scraper = "0.27"
-termimad = "0.35"
 base64 = "0.23"
-dirs = "6.0"
-chromiumoxide = { version = "0.9.1", features = ["fetcher", "rustls", "zip8"] }
-tokio-tungstenite = "0.26"
-qtrs = "0.5.7"
-tungstenite = "0.26"
+chrono = "0.4"
+clap = { version = "4.6", features = ["derive", "env"] }
+colored = "3.1"
+futures-util = "0.3"
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.43", features = ["full"] }

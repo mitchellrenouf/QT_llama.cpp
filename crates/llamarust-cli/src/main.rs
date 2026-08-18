@@ -1,42 +1,12 @@
-mod agent;
-mod client;
-mod config;
-mod diff;
-mod gui;
-pub mod hf;
-mod markdown;
-mod rules;
-mod server;
-mod tools;
-
-use agent::GemmaAgent;
+pub use llamarust_core::config;
+use llamarust_core::{AgentMode, Config, GemmaAgent};
 use clap::Parser;
-use config::{AgentMode, Config};
 use colored::*;
-use server::ApiServer;
 use std::io::{self, BufRead, Write};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
-
-    if config.serve {
-        let agent = GemmaAgent::new(config.clone());
-        let server = ApiServer::new(agent.get_client_arc(), config.port);
-        return server.run().await;
-    }
-
-    if !config.cli {
-        match gui::launch_qt_gui(&config).await {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                println!(
-                    "{} (Falling back to CLI mode. Use '--cli' to suppress this warning.)",
-                    format!("ℹ Qt6 GUI launch unavailable: {}", e).yellow()
-                );
-            }
-        }
-    }
 
     println!("{}", "==================================================".magenta());
     println!("{}", "   🚀 RUSTLLAMA GENERAL-PURPOSE & VIBE-CODING CLI   ".bright_cyan().bold());

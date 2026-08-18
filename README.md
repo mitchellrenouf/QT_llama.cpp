@@ -21,7 +21,7 @@ Performance depends heavily on the model, quantization, GPU, available VRAM, pro
 ### Known limitations
 
 - CUDA is the only implemented native GPU backend. The Vulkan, ROCm, and SYCL feature flags are placeholders.
-- The native CUDA KV cache currently stores `f32` values and caps its resident capacity at 1,024 tokens. The cache-type CLI options are accepted for configuration/display but are not yet implemented as alternate native storage formats.
+- The native CUDA KV cache supports F16, Q8_0, and Q4_0 storage. Gemma 4 sliding-window layers use a circular GPU cache; global-layer capacity depends on available VRAM.
 - The engine currently evaluates only the most recent prompt tail during initialization. A configured 256K maximum therefore does not mean that 256K tokens are resident or evaluated.
 - The speculative-decoding module contains n-gram proposal logic, but generation does not yet perform MTP/draft-model loading or batched speculative verification.
 - GPU allocation is best-effort. Insufficient VRAM can leave a layer without its full resident CUDA path and reduce performance considerably.
@@ -42,7 +42,7 @@ $env:Path = "C:\Qt\6.8.3\msvc2022_64\bin;$env:Path"
 $env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3"
 qmake -query QT_VERSION
 nvcc --version
-cargo build --release --locked --no-default-features --features cuda
+cargo build -p llamarust-qt --release --locked --no-default-features --features cuda
 ```
 
 The Windows GitHub Actions runner installs Qt and CUDA and uses that same explicit CUDA feature selection.
@@ -56,13 +56,13 @@ export CUDA_PATH=/opt/cuda
 export PATH="$CUDA_PATH/bin:$PATH"
 qmake6 -query QT_VERSION
 nvcc --version
-cargo build --release --locked --no-default-features --features cuda
+cargo build -p llamarust-qt --release --locked --no-default-features --features cuda
 ```
 
 For a CPU-only build:
 
 ```bash
-cargo build --release --locked --no-default-features
+cargo build -p llamarust-cli --release --locked --no-default-features
 ```
 
 ## Running
@@ -71,16 +71,16 @@ The default model setting downloads/resolves `ggml-org/gemma-4-26B-A4B-it-GGUF:Q
 
 ```bash
 # Desktop GUI
-cargo run --release --no-default-features --features cuda -- --model /path/to/model.gguf
+cargo run -p llamarust-qt --release --no-default-features --features cuda -- --model /path/to/model.gguf
 
 # Interactive terminal
-cargo run --release --no-default-features --features cuda -- --cli --model /path/to/model.gguf
+cargo run -p llamarust-cli --release --no-default-features --features cuda -- --model /path/to/model.gguf
 
 # One-shot CLI prompt with an 8K configured context
-cargo run --release --no-default-features --features cuda -- --cli --prompt "Hello" --ctx-size 8192 --model /path/to/model.gguf
+cargo run -p llamarust-cli --release --no-default-features --features cuda -- --prompt "Hello" --ctx-size 8192 --model /path/to/model.gguf
 
 # HTTP/SSE server
-cargo run --release --no-default-features --features cuda -- --serve --port 8080 --model /path/to/model.gguf
+cargo run -p llamarust-server --release --no-default-features --features cuda -- --port 8080 --model /path/to/model.gguf
 ```
 
 Useful options include `--max-tokens`, `--temperature`, `--gpu-layers`, `--workspace-root`, `--mode`, and `--mcp-server`. Run `rustllama --help` for the complete current list.
@@ -98,7 +98,10 @@ The Flatpak requests broad host filesystem and device access because the applica
 
 ## Repository layout
 
-- `src/`: application, GUI, CLI, server, and tools
+- `crates/llamarust-core/`: shared agent, configuration, model client, tools, and Hugging Face integration
+- `crates/llamarust-cli/`: terminal application
+- `crates/llamarust-server/`: OpenAI-compatible HTTP/SSE server
+- `crates/llamarust-qt/`: native Qt desktop application and Qt-only build checks
 - `crates/qtensor/`: GGUF reader, tensor operations, model execution, and CUDA kernels
 - `crates/llama-rs/`: application-facing inference wrapper (despite its historical name, it does not link llama.cpp)
 - `flatpak/`: Flatpak manifests and desktop metadata

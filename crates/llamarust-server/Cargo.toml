@@ -1,0 +1,29 @@
+[package]
+name = "llamarust-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+autobins = false
+
+[[bin]]
+name = "rustllama"
+path = "src/main.rs"
+
+[features]
+default = ["auto"]
+auto = ["llamarust-core/auto"]
+cuda = ["llamarust-core/cuda"]
+vulkan = ["llamarust-core/vulkan"]
+
+[dependencies]
+llamarust-core = { path = "../llamarust-core", default-features = false }
+anyhow.workspace = true
+clap.workspace = true
+colored.workspace = true
+futures-util.workspace = true
+llama-rs = { path = "../llama-rs" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite = "0.26"
+tungstenite = "0.26"

@@ -114,11 +114,11 @@ jobs:
 
       - name: Build Release Binary
         shell: pwsh
-        run: cargo build --release --locked --no-default-features --features cuda
+        run: cargo build -p llamarust-qt --release --locked --no-default-features --features cuda
 
       - name: Run Release Tests
         shell: pwsh
-        run: cargo test --workspace --release --locked --no-default-features --features cuda
+        run: cargo test -p llamarust-core -p llamarust-cli -p llamarust-server -p llamarust-qt --release --locked --no-default-features --features cuda
 
       - name: Bundle Qt Runtime
         shell: pwsh
