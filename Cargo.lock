@@ -1533,9 +1533,6 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "cc",
- "chrono",
- "crossbeam-channel",
- "dirs",
  "memmap2",
  "parking_lot",
  "rayon",

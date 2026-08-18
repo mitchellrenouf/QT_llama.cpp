@@ -1,8 +1,24 @@
 use std::path::PathBuf;
 
+fn local_data_dir() -> PathBuf {
+    if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
+        PathBuf::from(path)
+    } else {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".local")
+            .join("share")
+    }
+}
+
 #[test]
 fn test_generation_outputs() {
-    let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    let mut path = local_data_dir();
     path.push("huggingface");
     path.push("hub");
     path.push("models--ggml-org--gemma-4-26B-A4B-it-GGUF");
