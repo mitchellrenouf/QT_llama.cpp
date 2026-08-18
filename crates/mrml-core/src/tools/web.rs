@@ -104,7 +104,7 @@ impl Tool for WebSearchTool {
 
         let wiki_url = format!(
             "https://en.wikipedia.org/wiki/Special:Search?search={}&go=Go",
-            urlencoding::encode(&clean_query)
+            crate::encoding::percent_encode(&clean_query)
         );
 
         if let Ok(html) = fetch_http_text(&wiki_url).await {
@@ -161,7 +161,7 @@ impl Tool for WebSearchTool {
         }
 
         // 2. Search DuckDuckGo HTML
-        let ddg_url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding::encode(query));
+        let ddg_url = format!("https://html.duckduckgo.com/html/?q={}", crate::encoding::percent_encode(query));
         if let Ok(html) = fetch_http_text(&ddg_url).await {
             let document = scraper::Html::parse_document(&html);
             let result_block_sel = scraper::Selector::parse(".result").unwrap();
@@ -190,9 +190,8 @@ impl Tool for WebSearchTool {
                 let clean_url = if let Some(pos) = raw_href.find("uddg=") {
                     let after = &raw_href[pos + 5..];
                     let raw_encoded = after.split('&').next().unwrap_or(after);
-                    urlencoding::decode(raw_encoded)
-                        .unwrap_or(std::borrow::Cow::Borrowed(raw_encoded))
-                        .to_string()
+                    crate::encoding::percent_decode(raw_encoded)
+                        .unwrap_or_else(|| raw_encoded.to_string())
                 } else if raw_href.starts_with("http") {
                     raw_href.to_string()
                 } else {

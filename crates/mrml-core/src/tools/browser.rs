@@ -1,7 +1,6 @@
 use crate::tools::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use base64::Engine;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchMouseEventParams, DispatchMouseEventType, InsertTextParams, MouseButton,
@@ -400,7 +399,7 @@ impl Tool for BrowserScreenshotTool {
         let file_path = shot_dir.join(format!("browser_screenshot_{}.jpg", timestamp));
         fs::write(&file_path, &img_bytes)?;
 
-        let base64_str = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
+        let base64_str = crate::encoding::base64_encode(&img_bytes);
         let data_uri = format!("data:image/jpeg;base64,{}", base64_str);
 
         Ok(format!(
