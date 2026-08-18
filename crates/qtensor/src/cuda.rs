@@ -69,13 +69,13 @@ extern "C" {
         d_qkv: *mut f32, d_q_norm: *const f32, d_k_norm: *const f32,
         d_k_cache: *mut u16, d_v_cache: *mut u16, pos: i32, cache_pos: i32,
         n_heads: i32, n_kv_heads: i32, head_dim: i32, freq_base: f32,
-        stream: CudaStream,
+        k_format: i32, v_format: i32, stream: CudaStream,
     );
     fn cuda_op_qkv_postprocess_batch(
         d_qkv: *mut f32, d_q_norm: *const f32, d_k_norm: *const f32,
         d_k_cache: *mut u16, d_v_cache: *mut u16, start_pos: i32,
         cache_start: i32, n_heads: i32, n_kv_heads: i32, head_dim: i32,
-        freq_base: f32, batch: i32, stream: CudaStream,
+        freq_base: f32, batch: i32, k_format: i32, v_format: i32, stream: CudaStream,
     );
     fn cuda_op_gemv_q4_0_geglu(
         d_w_gate: *const u8, d_w_up: *const u8, d_x: *const f32,
@@ -128,7 +128,7 @@ extern "C" {
         n_kv_heads: i32,
         head_dim: i32,
         scale: f32,
-        sliding_window: i32,
+        sliding_window: i32, k_format: i32, v_format: i32,
         stream: CudaStream,
     );
     fn cuda_op_moe_router_batch(
@@ -145,7 +145,7 @@ extern "C" {
         d_q: *const f32, d_k_cache: *const u16, d_v_cache: *const u16,
         d_out: *mut f32, cache_start: i32, batch: i32, n_heads: i32,
         n_kv_heads: i32, head_dim: i32, q_stride: i32, scale: f32, sliding_window: i32,
-        stream: CudaStream,
+        k_format: i32, v_format: i32, stream: CudaStream,
     );
     fn cuda_op_moe_topk_q4_0(
         d_gate_up_exps: *const u8,
@@ -844,6 +844,8 @@ impl CudaDevice {
         n_kv_heads: usize,
         head_dim: usize,
         freq_base: f32,
+        k_format: i32,
+        v_format: i32,
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
@@ -851,7 +853,7 @@ impl CudaDevice {
                 qkv.as_mut_ptr(), q_norm.as_ptr(), k_norm.as_ptr(),
                 k_cache.as_mut_ptr(), v_cache.as_mut_ptr(), pos as i32,
                 cache_pos as i32, n_heads as i32, n_kv_heads as i32,
-                head_dim as i32, freq_base, self.stream,
+                head_dim as i32, freq_base, k_format, v_format, self.stream,
             );
         }
     }
@@ -861,7 +863,7 @@ impl CudaDevice {
         k_norm: &CudaBuffer<f32>, k_cache: &mut CudaBuffer<u16>,
         v_cache: &mut CudaBuffer<u16>, start_pos: usize, cache_start: usize,
         n_heads: usize, n_kv_heads: usize, head_dim: usize, freq_base: f32,
-        batch: usize,
+        batch: usize, k_format: i32, v_format: i32,
     ) {
         assert_eq!(qkv.len(), batch * (n_heads + 2 * n_kv_heads) * head_dim);
         unsafe {
@@ -870,7 +872,7 @@ impl CudaDevice {
                 qkv.as_mut_ptr(), q_norm.as_ptr(), k_norm.as_ptr(),
                 k_cache.as_mut_ptr(), v_cache.as_mut_ptr(), start_pos as i32,
                 cache_start as i32, n_heads as i32, n_kv_heads as i32,
-                head_dim as i32, freq_base, batch as i32, self.stream,
+                head_dim as i32, freq_base, batch as i32, k_format, v_format, self.stream,
             );
         }
     }
@@ -965,6 +967,8 @@ impl CudaDevice {
         head_dim: usize,
         scale: f32,
         sliding_window: Option<usize>,
+        k_format: i32,
+        v_format: i32,
     ) {
         let sw = sliding_window.map(|w| w as i32).unwrap_or(-1);
         unsafe {
@@ -979,7 +983,7 @@ impl CudaDevice {
                 n_kv_heads as i32,
                 head_dim as i32,
                 scale,
-                sw,
+                sw, k_format, v_format,
                 self.stream,
             );
         }
@@ -1007,6 +1011,7 @@ impl CudaDevice {
         d_v_cache: &CudaBuffer<u16>, d_out: &mut CudaBuffer<f32>,
         cache_start: usize, batch: usize, n_heads: usize, n_kv_heads: usize,
         head_dim: usize, scale: f32, sliding_window: Option<usize>,
+        k_format: i32, v_format: i32,
     ) {
         let q_stride = d_q.len() / batch;
         assert!(q_stride >= n_heads * head_dim);
@@ -1018,7 +1023,7 @@ impl CudaDevice {
                 d_q.as_ptr(), d_k_cache.as_ptr(), d_v_cache.as_ptr(),
                 d_out.as_mut_ptr(), cache_start as i32, batch as i32,
                 n_heads as i32, n_kv_heads as i32, head_dim as i32, q_stride as i32,
-                scale, window, self.stream,
+                scale, window, k_format, v_format, self.stream,
             );
         }
     }

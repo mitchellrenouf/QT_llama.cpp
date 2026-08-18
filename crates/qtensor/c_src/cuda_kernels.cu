@@ -347,18 +347,55 @@ __global__ void k_gemm_q4_0_qkv_f32(
     if (active && sublane == 0) y[(size_t)token * total_rows + out_row] = total;
 }
 
+__device__ void store_quantized_cache_head(
+    const float* src, uint8_t* cache, int cache_pos, int local_head,
+    int n_kv_heads, int head_dim, int format
+) {
+    if (format == 0) {
+        __half* dst = reinterpret_cast<__half*>(cache)
+            + (size_t)cache_pos * n_kv_heads * head_dim + (size_t)local_head * head_dim;
+        for (int i = threadIdx.x; i < head_dim; i += blockDim.x) dst[i] = __float2half(src[i]);
+        return;
+    }
+    int block_bytes = format == 1 ? 34 : 18;
+    int blocks_per_head = head_dim / 32;
+    uint8_t* head = cache + ((size_t)cache_pos * n_kv_heads + local_head) * blocks_per_head * block_bytes;
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, warps = blockDim.x >> 5;
+    for (int block = warp; block < blocks_per_head; block += warps) {
+        float value = src[block * 32 + lane];
+        float max_abs = fabsf(value);
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1)
+            max_abs = fmaxf(max_abs, __shfl_down_sync(0xffffffff, max_abs, offset));
+        max_abs = __shfl_sync(0xffffffff, max_abs, 0);
+        float scale = max_abs / (format == 1 ? 127.0f : 7.0f);
+        if (scale == 0.0f) scale = 1.0f;
+        uint8_t* dst = head + block * block_bytes;
+        if (lane == 0) *reinterpret_cast<__half*>(dst) = __float2half(scale);
+        int quant = max(format == 1 ? -127 : -8,
+            min(format == 1 ? 127 : 7, __float2int_rn(value / scale)));
+        if (format == 1) {
+            dst[2 + lane] = (uint8_t)(int8_t)quant;
+        } else if (lane < 16) {
+            float upper = src[block * 32 + lane + 16];
+            int q1 = max(-8, min(7, __float2int_rn(upper / scale)));
+            dst[2 + lane] = (uint8_t)((quant + 8) | ((q1 + 8) << 4));
+        }
+    }
+}
+
 __global__ void k_qkv_postprocess_f32(
     float* __restrict__ qkv,
     const float* __restrict__ q_norm,
     const float* __restrict__ k_norm,
-    __half* __restrict__ k_cache,
-    __half* __restrict__ v_cache,
+    uint8_t* __restrict__ k_cache,
+    uint8_t* __restrict__ v_cache,
     int pos,
     int cache_pos,
     int n_heads,
     int n_kv_heads,
     int head_dim,
-    float freq_base
+    float freq_base, int k_format, int v_format
 ) {
     int head = blockIdx.x;
     int tid = threadIdx.x;
@@ -393,11 +430,6 @@ __global__ void k_qkv_postprocess_f32(
             float r1 = a * s + b * c;
             src[i] = r0;
             src[i + head_dim / 2] = r1;
-            if (is_k) {
-                size_t dst = (size_t)cache_pos * kv_dim + (size_t)local_head * head_dim;
-                k_cache[dst + i] = __float2half(r0);
-                k_cache[dst + i + head_dim / 2] = __float2half(r1);
-            }
         }
     } else {
         int v_head = head - n_heads - n_kv_heads;
@@ -405,15 +437,20 @@ __global__ void k_qkv_postprocess_f32(
         for (int i = tid; i < head_dim; i += blockDim.x) {
             float value = src[i] * norm_scale;
             src[i] = value;
-            v_cache[dst + i] = __float2half(value);
         }
     }
+    __syncthreads();
+    if (is_k) store_quantized_cache_head(src, k_cache, cache_pos, local_head,
+        n_kv_heads, head_dim, k_format);
+    else if (!is_q) store_quantized_cache_head(src, v_cache, cache_pos,
+        head - n_heads - n_kv_heads, n_kv_heads, head_dim, v_format);
 }
 
 __global__ void k_qkv_postprocess_batch_f32(
     float* qkv, const float* q_norm, const float* k_norm,
-    __half* k_cache, __half* v_cache, int start_pos, int cache_start,
-    int n_heads, int n_kv_heads, int head_dim, float freq_base, int batch
+    uint8_t* k_cache, uint8_t* v_cache, int start_pos, int cache_start,
+    int n_heads, int n_kv_heads, int head_dim, float freq_base, int batch,
+    int k_format, int v_format
 ) {
     int head = blockIdx.x, token = blockIdx.y, tid = threadIdx.x;
     if (token >= batch) return;
@@ -444,7 +481,6 @@ __global__ void k_qkv_postprocess_batch_f32(
             src[i] = r0; src[i + head_dim / 2] = r1;
             if (is_k) {
                 size_t dst = (size_t)cache_pos * kv_dim + (size_t)local_head * head_dim;
-                k_cache[dst + i] = __float2half(r0); k_cache[dst + i + head_dim / 2] = __float2half(r1);
             }
         }
     } else {
@@ -452,9 +488,14 @@ __global__ void k_qkv_postprocess_batch_f32(
         size_t dst = (size_t)cache_pos * kv_dim + (size_t)v_head * head_dim;
         for (int i = tid; i < head_dim; i += blockDim.x) {
             float value = src[i] * norm_scale;
-            src[i] = value; v_cache[dst + i] = __float2half(value);
+            src[i] = value;
         }
     }
+    __syncthreads();
+    if (is_k) store_quantized_cache_head(src, k_cache, cache_pos, local_head,
+        n_kv_heads, head_dim, k_format);
+    else if (!is_q) store_quantized_cache_head(src, v_cache, cache_pos,
+        head - n_heads - n_kv_heads, n_kv_heads, head_dim, v_format);
 }
 
 __global__ void k_gemv_q4_0_geglu_f32(
@@ -712,17 +753,38 @@ __global__ void k_finish_ffn_f32(
 }
 
 // 7. CUDA Causal Attention with Sliding Window Attention (SWA up to 256k tokens)
+__device__ __forceinline__ float load_cache_value(
+    const uint8_t* cache, int token, int head, int index,
+    int n_kv_heads, int head_dim, int format
+) {
+    if (format == 0) {
+        const __half* values = reinterpret_cast<const __half*>(cache);
+        return __half2float(values[(size_t)token * n_kv_heads * head_dim
+            + (size_t)head * head_dim + index]);
+    }
+    int block_bytes = format == 1 ? 34 : 18;
+    int blocks_per_head = head_dim / 32;
+    const uint8_t* block = cache + ((size_t)token * n_kv_heads + head)
+        * blocks_per_head * block_bytes + (index / 32) * block_bytes;
+    float scale = __half2float(*reinterpret_cast<const __half*>(block));
+    int lane = index & 31;
+    if (format == 1) return scale * (float)(int8_t)block[2 + lane];
+    uint8_t packed = block[2 + (lane & 15)];
+    int q = lane < 16 ? (packed & 15) - 8 : (packed >> 4) - 8;
+    return scale * (float)q;
+}
+
 __global__ void k_attention_causal_swa_f32(
     const float* __restrict__ q,       // [n_heads, head_dim]
-    const __half* __restrict__ k_cache, // [n_past + 1, n_kv_heads, head_dim]
-    const __half* __restrict__ v_cache, // [n_past + 1, n_kv_heads, head_dim]
+    const uint8_t* __restrict__ k_cache,
+    const uint8_t* __restrict__ v_cache,
     float* __restrict__ out,           // [n_heads, head_dim]
     int n_past,
     int n_heads,
     int n_kv_heads,
     int head_dim,
     float scale,
-    int sliding_window                 // e.g. 4096 (or -1 for full global attention)
+    int sliding_window, int k_format, int v_format
 ) {
     int head = blockIdx.x;
     if (head >= n_heads) return;
@@ -741,10 +803,10 @@ __global__ void k_attention_causal_swa_f32(
 
     // Compute Q * K^T
     for (int p = start_pos + tid; p < total_keys; p += blockDim.x) {
-        const __half* k_h = k_cache + p * (n_kv_heads * head_dim) + kv_head * head_dim;
         float dot = 0.0f;
         for (int d = 0; d < head_dim; ++d) {
-            dot += q_h[d] * __half2float(k_h[d]);
+            dot += q_h[d] * load_cache_value(k_cache, p, kv_head, d,
+                n_kv_heads, head_dim, k_format);
         }
         s_scores[p - start_pos] = dot * scale;
     }
@@ -775,8 +837,8 @@ __global__ void k_attention_causal_swa_f32(
     for (int d = tid; d < head_dim; d += blockDim.x) {
         float val = 0.0f;
         for (int p = start_pos; p < total_keys; ++p) {
-            const __half* v_h = v_cache + p * (n_kv_heads * head_dim) + kv_head * head_dim;
-            val += (s_scores[p - start_pos] * inv_sum) * __half2float(v_h[d]);
+            val += (s_scores[p - start_pos] * inv_sum) * load_cache_value(
+                v_cache, p, kv_head, d, n_kv_heads, head_dim, v_format);
         }
         out_h[d] = val;
     }
@@ -895,9 +957,9 @@ __global__ void k_gemm_q4_0_geglu_f32(
 }
 
 __global__ void k_attention_prefill_f32(
-    const float* q, const __half* k_cache, const __half* v_cache, float* out,
+    const float* q, const uint8_t* k_cache, const uint8_t* v_cache, float* out,
     int cache_start, int batch, int n_heads, int n_kv_heads, int head_dim, int q_stride,
-    float scale, int sliding_window
+    float scale, int sliding_window, int k_format, int v_format
 ) {
     int head = blockIdx.x, token = blockIdx.y;
     if (head >= n_heads || token >= batch) return;
@@ -910,9 +972,9 @@ __global__ void k_attention_prefill_f32(
     const float* q_h = q + (size_t)token * q_stride + head * head_dim;
     extern __shared__ float scores[];
     for (int p = start + tid; p < keys; p += blockDim.x) {
-        const __half* k_h = k_cache + (size_t)p * kv_dim + kv_head * head_dim;
         float dot = 0.0f;
-        for (int d = 0; d < head_dim; ++d) dot += q_h[d] * __half2float(k_h[d]);
+        for (int d = 0; d < head_dim; ++d) dot += q_h[d] * load_cache_value(
+            k_cache, p, kv_head, d, n_kv_heads, head_dim, k_format);
         scores[p - start] = dot * scale;
     }
     __syncthreads();
@@ -931,8 +993,8 @@ __global__ void k_attention_prefill_f32(
     for (int d = tid; d < head_dim; d += blockDim.x) {
         float value = 0.0f;
         for (int p = start; p < keys; ++p) {
-            const __half* v_h = v_cache + (size_t)p * kv_dim + kv_head * head_dim;
-            value += scores[p - start] * inv * __half2float(v_h[d]);
+            value += scores[p - start] * inv * load_cache_value(
+                v_cache, p, kv_head, d, n_kv_heads, head_dim, v_format);
         }
         out_h[d] = value;
     }
@@ -1120,35 +1182,36 @@ void cuda_op_qkv_postprocess(
     float* d_qkv,
     const float* d_q_norm,
     const float* d_k_norm,
-    __half* d_k_cache,
-    __half* d_v_cache,
+    uint8_t* d_k_cache,
+    uint8_t* d_v_cache,
     int pos,
     int cache_pos,
     int n_heads,
     int n_kv_heads,
     int head_dim,
-    float freq_base,
+    float freq_base, int k_format, int v_format,
     cudaStream_t stream
 ) {
     int blocks = n_heads + 2 * n_kv_heads;
     int threads = head_dim >= 512 ? 256 : 128;
     k_qkv_postprocess_f32<<<blocks, threads, 0, stream>>>(
         d_qkv, d_q_norm, d_k_norm, d_k_cache, d_v_cache,
-        pos, cache_pos, n_heads, n_kv_heads, head_dim, freq_base
+        pos, cache_pos, n_heads, n_kv_heads, head_dim, freq_base, k_format, v_format
     );
 }
 
 void cuda_op_qkv_postprocess_batch(
     float* d_qkv, const float* d_q_norm, const float* d_k_norm,
-    __half* d_k_cache, __half* d_v_cache, int start_pos, int cache_start,
+    uint8_t* d_k_cache, uint8_t* d_v_cache, int start_pos, int cache_start,
     int n_heads, int n_kv_heads, int head_dim, float freq_base,
-    int batch, cudaStream_t stream
+    int batch, int k_format, int v_format, cudaStream_t stream
 ) {
     dim3 grid(n_heads + 2 * n_kv_heads, batch);
     int threads = head_dim >= 512 ? 256 : 128;
     k_qkv_postprocess_batch_f32<<<grid, threads, 0, stream>>>(
         d_qkv, d_q_norm, d_k_norm, d_k_cache, d_v_cache,
-        start_pos, cache_start, n_heads, n_kv_heads, head_dim, freq_base, batch);
+        start_pos, cache_start, n_heads, n_kv_heads, head_dim, freq_base, batch,
+        k_format, v_format);
 }
 
 void cuda_op_gemv_q4_0_geglu(
@@ -1290,21 +1353,22 @@ void cuda_op_finish_ffn_batch(
 
 void cuda_op_attention(
     const float* d_q,
-    const __half* d_k_cache,
-    const __half* d_v_cache,
+    const uint8_t* d_k_cache,
+    const uint8_t* d_v_cache,
     float* d_out,
     int n_past,
     int n_heads,
     int n_kv_heads,
     int head_dim,
     float scale,
-    int sliding_window,
+    int sliding_window, int k_format, int v_format,
     cudaStream_t stream
 ) {
     int shared_mem = (n_past + 1) * sizeof(float);
     k_attention_causal_swa_f32<<<n_heads, 128, shared_mem, stream>>>(
         d_q, d_k_cache, d_v_cache, d_out,
-        n_past, n_heads, n_kv_heads, head_dim, scale, sliding_window
+        n_past, n_heads, n_kv_heads, head_dim, scale, sliding_window,
+        k_format, v_format
     );
 }
 
@@ -1331,15 +1395,17 @@ void cuda_op_gemm_q4_0_geglu(
 }
 
 void cuda_op_attention_prefill(
-    const float* d_q, const __half* d_k_cache, const __half* d_v_cache,
+    const float* d_q, const uint8_t* d_k_cache, const uint8_t* d_v_cache,
     float* d_out, int cache_start, int batch, int n_heads, int n_kv_heads,
-    int head_dim, int q_stride, float scale, int sliding_window, cudaStream_t stream
+    int head_dim, int q_stride, float scale, int sliding_window,
+    int k_format, int v_format, cudaStream_t stream
 ) {
     dim3 grid(n_heads, batch);
     int max_keys = cache_start + batch;
     k_attention_prefill_f32<<<grid, 128, max_keys * sizeof(float), stream>>>(
         d_q, d_k_cache, d_v_cache, d_out, cache_start, batch,
-        n_heads, n_kv_heads, head_dim, q_stride, scale, sliding_window);
+        n_heads, n_kv_heads, head_dim, q_stride, scale, sliding_window,
+        k_format, v_format);
 }
 
 // Fused MoE Top-K Gate+Up GEMV + GeGLU Kernel

@@ -133,6 +133,10 @@ pub struct TransformerLayer {
     #[cfg(feature = "cuda")]
     pub gpu_kv_capacity: usize,
     #[cfg(feature = "cuda")]
+    pub gpu_k_format: i32,
+    #[cfg(feature = "cuda")]
+    pub gpu_v_format: i32,
+    #[cfg(feature = "cuda")]
     pub gpu_d_attn_in: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_attn_out: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
@@ -535,12 +539,18 @@ impl QTensorModel {
             // Cover the complete rendered system/tool prompt for batched
             // prefill. Longer contexts will use a compact f16 cache path once
             // available rather than silently truncating model-visible input.
-            let gpu_kv_capacity = max_context.min(2560);
+            let fp16_budget = 2560usize * kv_dim * 4; // K + V, two bytes each.
+            let selected_bytes = cache_type_k.cuda_bytes_per_token(kv_dim)
+                + cache_type_v.cuda_bytes_per_token(kv_dim);
+            let format_capacity = (fp16_budget / selected_bytes / 128) * 128;
+            let gpu_kv_capacity = max_context.min(format_capacity.max(128));
             #[cfg(feature = "cuda")]
             let (gpu_d_k_cache, gpu_d_v_cache) = if cuda_dev.is_some() {
                 (
-                    crate::cuda::CudaBuffer::alloc_on(0, gpu_kv_capacity * kv_dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, gpu_kv_capacity * kv_dim).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0,
+                        gpu_kv_capacity * cache_type_k.cuda_bytes_per_token(kv_dim) / 2).ok(),
+                    crate::cuda::CudaBuffer::alloc_on(0,
+                        gpu_kv_capacity * cache_type_v.cuda_bytes_per_token(kv_dim) / 2).ok(),
                 )
             } else {
                 (None, None)
@@ -640,6 +650,10 @@ impl QTensorModel {
                 gpu_d_v_cache: parking_lot::Mutex::new(gpu_d_v_cache),
                 #[cfg(feature = "cuda")]
                 gpu_kv_capacity,
+                #[cfg(feature = "cuda")]
+                gpu_k_format: cache_type_k.cuda_code(),
+                #[cfg(feature = "cuda")]
+                gpu_v_format: cache_type_v.cuda_code(),
                 #[cfg(feature = "cuda")]
                 gpu_d_attn_in: parking_lot::Mutex::new(gpu_d_attn_in),
                 #[cfg(feature = "cuda")]
@@ -921,6 +935,7 @@ impl QTensorModel {
                         dev.qkv_postprocess(
                             d_qkv, q_norm, k_norm, d_kc, d_vc, pos, k_cache[l].len(),
                             layer.n_heads, layer.n_kv_heads, layer.head_dim, layer.rope_freq_base,
+                            layer.gpu_k_format, layer.gpu_v_format,
                         );
                         true
                     } else {
@@ -1017,12 +1032,13 @@ impl QTensorModel {
                                     d_qkv, d_kc, d_vc, d_out, seq_len - 1,
                                     layer.n_heads, layer.n_kv_heads, layer.head_dim, 1.0,
                                     if layer.is_swa { Some(layer.sliding_window) } else { None },
+                                    layer.gpu_k_format, layer.gpu_v_format,
                                 );
                                 true
                             } else {
                                 false
                             }
-                        } else {
+                        } else if layer.gpu_k_format == 0 && layer.gpu_v_format == 0 {
                             let mut q_guard = layer.gpu_d_q.lock();
                             if let Some(ref mut d_q) = q_guard.as_mut() {
                                 let offset = (seq_len - 1) * layer.kv_dim;
@@ -1042,6 +1058,7 @@ impl QTensorModel {
                                 layer.head_dim,
                                 1.0,
                                 if layer.is_swa { Some(layer.sliding_window) } else { None },
+                                layer.gpu_k_format, layer.gpu_v_format,
                             );
                             d_out.copy_to_host(&mut attn_out).is_ok()
                                 } else {
@@ -1050,7 +1067,7 @@ impl QTensorModel {
                             } else {
                                 false
                             }
-                        }
+                        } else { false }
                     } else {
                         false
                     }
@@ -1650,7 +1667,7 @@ impl QTensorModel {
                     &mut qkv, layer.gpu_attn_q_norm.as_ref()?, layer.gpu_attn_k_norm.as_ref()?,
                     k_cache, v_cache, cache_start, cache_start,
                     layer.n_heads, layer.n_kv_heads, layer.head_dim,
-                    layer.rope_freq_base, batch,
+                    layer.rope_freq_base, batch, layer.gpu_k_format, layer.gpu_v_format,
                 );
                 let mut attention = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * q_dim).ok()?;
                 device.attention_prefill(
@@ -1658,6 +1675,7 @@ impl QTensorModel {
                     layer.n_heads, layer.n_kv_heads, layer.head_dim,
                     1.0,
                     if layer.is_swa { Some(layer.sliding_window) } else { None },
+                    layer.gpu_k_format, layer.gpu_v_format,
                 );
                 drop(k_guard);
                 drop(v_guard);

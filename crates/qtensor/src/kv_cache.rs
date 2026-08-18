@@ -11,6 +11,17 @@ pub enum KvCacheFormat {
 }
 
 impl KvCacheFormat {
+    pub fn cuda_code(self) -> i32 {
+        match self { Self::F32 => 0, Self::Q8 => 1, Self::Q4 => 2 }
+    }
+
+    pub fn cuda_bytes_per_token(self, elements: usize) -> usize {
+        match self {
+            Self::F32 => elements * 2,
+            Self::Q8 => elements / 32 * 34,
+            Self::Q4 => elements / 32 * 18,
+        }
+    }
     pub fn parse(value: &str) -> Result<Self> {
         match value.to_ascii_lowercase().as_str() {
             "q4" | "q4_0" => Ok(Self::Q4),
@@ -116,6 +127,13 @@ mod tests {
                 .map(|(a, b)| (a - b * 0.37).abs()).fold(0.0f32, f32::max);
             assert!(max_error < tolerance, "{format:?} max error: {max_error}");
         }
+    }
+
+    #[test]
+    fn cuda_layout_sizes_match_block_formats() {
+        assert_eq!(KvCacheFormat::F32.cuda_bytes_per_token(2048), 4096);
+        assert_eq!(KvCacheFormat::Q8.cuda_bytes_per_token(2048), 2176);
+        assert_eq!(KvCacheFormat::Q4.cuda_bytes_per_token(2048), 1152);
     }
 }
 
