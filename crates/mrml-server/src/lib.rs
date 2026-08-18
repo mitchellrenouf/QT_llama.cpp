@@ -1,6 +1,6 @@
 use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use anyhow::Result;
-use colored::Colorize;
+use mrml_terminal_style::Colorize;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

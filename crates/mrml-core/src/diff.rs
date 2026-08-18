@@ -1,4 +1,4 @@
-use colored::*;
+use mrml_terminal_style::Colorize;
 use similar::{ChangeTag, TextDiff};
 
 pub fn format_colorized_diff(file_path: &str, old_text: &str, new_text: &str) -> String {

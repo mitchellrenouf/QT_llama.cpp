@@ -1,7 +1,7 @@
 pub use mrml_core::config;
 use mrml_core::{AgentMode, Config, MrmlAgent};
 use clap::Parser;
-use colored::*;
+use mrml_terminal_style::Colorize;
 use std::io::{self, BufRead, Write};
 
 #[tokio::main]

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use colored::*;
+use mrml_terminal_style::Colorize;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;

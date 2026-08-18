@@ -15,10 +15,10 @@ sycl = ["mrml-model/sycl"]
 
 [dependencies]
 mrml-model = { path = "../mrml-model" }
+mrml-terminal-style = { path = "../mrml-terminal-style" }
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
-colored.workspace = true
 futures-util.workspace = true
 regex.workspace = true
 serde.workspace = true

@@ -350,15 +350,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "colored"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1373,8 +1364,8 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
- "colored",
  "mrml-core",
+ "mrml-terminal-style",
  "tokio",
 ]
 
@@ -1386,9 +1377,9 @@ dependencies = [
  "async-trait",
  "chromiumoxide",
  "clap",
- "colored",
  "futures-util",
  "mrml-model",
+ "mrml-terminal-style",
  "mrml-urlencoding",
  "regex",
  "scraper",
@@ -1430,10 +1421,10 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
- "colored",
  "futures-util",
  "mrml-core",
  "mrml-model",
+ "mrml-terminal-style",
  "serde",
  "serde_json",
  "tokio",
@@ -1443,6 +1434,10 @@ dependencies = [
 
 [[package]]
 name = "mrml-tensor"
+version = "0.4.0"
+
+[[package]]
+name = "mrml-terminal-style"
 version = "0.4.0"
 
 [[package]]
