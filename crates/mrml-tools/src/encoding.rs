@@ -1,3 +1,4 @@
+//! Encoding primitives used by media and browser tools.
 #[cold]
 #[inline(never)]
 pub fn base64_encode(input: &[u8]) -> String {

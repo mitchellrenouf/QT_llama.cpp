@@ -1,3 +1,4 @@
+//! Dependency-free workspace traversal for search and browser discovery.
 use std::fs;
 use std::path::{Path, PathBuf};
 

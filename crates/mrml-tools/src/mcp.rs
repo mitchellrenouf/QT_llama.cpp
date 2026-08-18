@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-use crate::tools::Tool;
+use crate::Tool;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcRequest {

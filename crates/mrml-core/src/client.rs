@@ -5,23 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::Config;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FunctionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
+pub use mrml_tools::{FunctionDefinition, ToolDefinition};
 
 #[allow(dead_code)]
 pub type ToolFunction = FunctionDefinition;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ToolDefinition {
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    pub function: FunctionDefinition,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionRequest {

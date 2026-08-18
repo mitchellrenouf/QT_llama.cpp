@@ -1,5 +1,5 @@
 use crate::diff::format_colorized_diff;
-use crate::tools::Tool;
+use crate::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::json;

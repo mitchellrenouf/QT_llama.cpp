@@ -1,3 +1,4 @@
+//! Native platform paths and timestamps shared by tools and the agent.
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 

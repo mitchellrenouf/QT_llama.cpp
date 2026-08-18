@@ -6,6 +6,12 @@ pub mod media;
 pub mod mcp;
 pub mod web;
 
+pub mod diff;
+pub mod encoding;
+pub mod fs_walk;
+pub mod markdown;
+pub mod platform;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -13,7 +19,21 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::client::ToolDefinition;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FunctionDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolDefinition {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: FunctionDefinition,
+}
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -25,7 +45,7 @@ pub trait Tool: Send + Sync {
     fn to_tool_definition(&self) -> ToolDefinition {
         ToolDefinition {
             tool_type: "function".to_string(),
-            function: crate::client::FunctionDefinition {
+            function: FunctionDefinition {
                 name: self.name().to_string(),
                 description: self.description().to_string(),
                 parameters: self.parameters(),

@@ -1,4 +1,4 @@
-use crate::tools::Tool;
+use crate::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -17,7 +17,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::sleep;
 
-use crate::tools::web::WebFetchTool;
+use crate::web::WebFetchTool;
 
 static BROWSER_INSTANCE: OnceCell<Arc<Mutex<ChromiumController>>> = OnceCell::const_new();
 

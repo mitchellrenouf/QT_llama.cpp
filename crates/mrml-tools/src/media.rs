@@ -1,4 +1,4 @@
-use crate::tools::Tool;
+use crate::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::json;
@@ -48,15 +48,15 @@ impl Tool for SpeakTextTool {
             return Ok(format!("Text-to-Speech synthesis is currently disabled. (Type '/speech' in CLI to enable audio output).\nText provided: '{}'", text));
         }
 
-        if crate::tools::desktop::is_executable_in_path("spd-say").is_some() {
+        if crate::desktop::is_executable_in_path("spd-say").is_some() {
             let _ = Command::new("spd-say").arg(text).output();
             return Ok(format!("Spoke text aloud via spd-say: '{}'", text));
         }
-        if crate::tools::desktop::is_executable_in_path("espeak-ng").is_some() {
+        if crate::desktop::is_executable_in_path("espeak-ng").is_some() {
             let _ = Command::new("espeak-ng").arg(text).output();
             return Ok(format!("Spoke text aloud via espeak-ng: '{}'", text));
         }
-        if crate::tools::desktop::is_executable_in_path("espeak").is_some() {
+        if crate::desktop::is_executable_in_path("espeak").is_some() {
             let _ = Command::new("espeak").arg(text).output();
             return Ok(format!("Spoke text aloud via espeak: '{}'", text));
         }
@@ -97,7 +97,7 @@ impl Tool for RecordAudioTool {
         let path_str = file_path.to_string_lossy().to_string();
 
         let mut recorded = false;
-        if crate::tools::desktop::is_executable_in_path("ffmpeg").is_some() {
+        if crate::desktop::is_executable_in_path("ffmpeg").is_some() {
             let out = Command::new("ffmpeg")
                 .args([
                     "-y",
@@ -121,7 +121,7 @@ impl Tool for RecordAudioTool {
             }
         }
 
-        if !recorded && crate::tools::desktop::is_executable_in_path("arecord").is_some() {
+        if !recorded && crate::desktop::is_executable_in_path("arecord").is_some() {
             let out = Command::new("arecord")
                 .args(["-d", &duration.to_string(), "-f", "cd", &path_str])
                 .output();
@@ -174,7 +174,7 @@ impl Tool for CaptureWebcamTool {
     }
 
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let desk_tool = crate::tools::desktop::TakeScreenshotTool;
+        let desk_tool = crate::desktop::TakeScreenshotTool;
         let result = desk_tool.execute(workspace_root, args).await?;
         Ok(format!("Captured video frame for visual analysis.\n{}", result))
     }
@@ -205,7 +205,7 @@ impl Tool for RecordScreenVideoTool {
 
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
         let duration = args["duration_secs"].as_i64().unwrap_or(3);
-        let desk_tool = crate::tools::desktop::TakeScreenshotTool;
+        let desk_tool = crate::desktop::TakeScreenshotTool;
 
         let mut frames_out = Vec::new();
         for i in 0..duration {

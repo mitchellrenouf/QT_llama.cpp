@@ -1,4 +1,4 @@
-use crate::tools::Tool;
+use crate::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::json;
@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub async fn fetch_http_text(url: &str) -> Result<String> {
     // 1. Try headless Chromium if browser controller is available
-    if let Ok(browser_ctrl) = crate::tools::browser::get_browser_controller().await {
+    if let Ok(browser_ctrl) = crate::browser::get_browser_controller().await {
         let mut guard = browser_ctrl.lock().await;
         if let Ok(page) = guard.get_or_create_page(Some(url)).await {
             tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;

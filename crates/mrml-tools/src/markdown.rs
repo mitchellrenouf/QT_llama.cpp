@@ -1,3 +1,4 @@
+//! Low-latency terminal Markdown presentation.
 use std::io::IsTerminal;
 
 const RESET: &str = "\x1b[0m";

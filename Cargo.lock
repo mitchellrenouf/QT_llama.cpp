@@ -1182,19 +1182,14 @@ name = "mrml-core"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "chromiumoxide",
  "clap",
- "futures-util",
  "mrml-model",
  "mrml-terminal-style",
- "mrml-urlencoding",
+ "mrml-tools",
  "regex",
- "scraper",
  "serde",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]
@@ -1245,6 +1240,24 @@ version = "0.4.0"
 [[package]]
 name = "mrml-terminal-style"
 version = "0.4.0"
+
+[[package]]
+name = "mrml-tools"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chromiumoxide",
+ "futures-util",
+ "mrml-terminal-style",
+ "mrml-urlencoding",
+ "regex",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
 
 [[package]]
 name = "mrml-urlencoding"

@@ -1,3 +1,4 @@
+//! Line-oriented diff rendering used by editing tools.
 use mrml_terminal_style::Colorize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
