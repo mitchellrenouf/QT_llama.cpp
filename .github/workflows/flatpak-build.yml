@@ -128,11 +128,18 @@ jobs:
           Copy-Item -LiteralPath 'target\release\rustllama.exe' -Destination $packageDir
           & windeployqt.exe --release --no-translations --no-system-d3d-compiler `
             (Join-Path $packageDir 'rustllama.exe')
-          $cudaRuntime = Get-ChildItem -LiteralPath (Join-Path $env:CUDA_PATH 'bin') `
-            -Filter 'cudart64_*.dll' | Select-Object -First 1
+          # CUDA 13 places the runtime in bin\x64, while older toolkit
+          # installers placed it directly in bin. Search the toolkit tree so
+          # packaging remains compatible with both layouts.
+          $cudaRuntime = Get-ChildItem -LiteralPath $env:CUDA_PATH `
+            -Filter 'cudart64_*.dll' -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '[\\/]bin([\\/]x64)?[\\/]' } |
+            Sort-Object FullName |
+            Select-Object -First 1
           if (-not $cudaRuntime) {
-            throw "CUDA runtime DLL was not found under $env:CUDA_PATH\bin"
+            throw "CUDA runtime DLL was not found under $env:CUDA_PATH"
           }
+          Write-Host "Bundling CUDA runtime: $($cudaRuntime.FullName)"
           Copy-Item -LiteralPath $cudaRuntime.FullName -Destination $packageDir
 
       - name: Upload Windows Artifact
