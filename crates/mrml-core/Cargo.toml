@@ -17,7 +17,6 @@ sycl = ["mrml-model/sycl"]
 mrml-model = { path = "../mrml-model" }
 anyhow.workspace = true
 async-trait.workspace = true
-base64.workspace = true
 clap.workspace = true
 colored.workspace = true
 futures-util.workspace = true
