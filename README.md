@@ -83,7 +83,7 @@ cargo run -p rustllama-cli --release --no-default-features --features cuda -- --
 cargo run -p rustllama-server --release --no-default-features --features cuda -- --port 8080 --model /path/to/model.gguf
 ```
 
-Useful options include `--max-tokens`, `--temperature`, `--gpu-layers`, `--workspace-root`, `--mode`, and `--mcp-server`. Run `rustllama --help` for the complete current list.
+Useful options include `--max-tokens`, `--temperature`, `--gpu-layers`, `--workspace-root`, `--mode`, and `--mcp-server`. Run `rustllama-cli --help` for the complete current list.
 
 ## Flatpak
 

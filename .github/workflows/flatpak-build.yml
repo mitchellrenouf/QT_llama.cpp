@@ -125,7 +125,8 @@ jobs:
         run: |
           $packageDir = Join-Path $PWD 'dist\rustllama-windows-x86_64'
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-          Copy-Item -LiteralPath 'target\release\rustllama.exe' -Destination $packageDir
+          Copy-Item -LiteralPath 'target\release\rustllama-qt.exe' `
+            -Destination (Join-Path $packageDir 'rustllama.exe')
           & windeployqt.exe --release --no-translations --no-system-d3d-compiler `
             (Join-Path $packageDir 'rustllama.exe')
           # CUDA 13 places the runtime in bin\x64, while older toolkit

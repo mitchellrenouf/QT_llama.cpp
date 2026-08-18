@@ -7,7 +7,7 @@ license.workspace = true
 autobins = false
 
 [[bin]]
-name = "rustllama"
+name = "rustllama-cli"
 path = "src/main.rs"
 
 [features]

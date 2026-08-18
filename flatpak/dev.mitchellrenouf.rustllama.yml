@@ -120,7 +120,7 @@ modules:
       - rm -rf /app/cuda
 
       # Install binaries & wrapper script
-      - install -Dm755 target/release/rustllama /app/bin/rustllama
+      - install -Dm755 target/release/rustllama-qt /app/bin/rustllama
       - ln -sf /app/bin/rustllama /app/bin/qt-llama
       - install -Dm755 flatpak/qt-llama-wrapper.sh /app/bin/qt-llama-wrapper
 
