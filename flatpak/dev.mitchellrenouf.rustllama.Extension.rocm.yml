@@ -1,6 +1,6 @@
-id: dev.mitchellrenouf.QT_llama.Extension.rocm
+id: dev.mitchellrenouf.rustllama.Extension.rocm
 branch: '6.11'
-runtime: dev.mitchellrenouf.QT_llama
+runtime: dev.mitchellrenouf.rustllama
 runtime-version: '6.11'
 sdk: org.kde.Sdk
 build-extension: true
@@ -17,13 +17,13 @@ modules:
       - rm -rf /app/extensions/rocm/doc /app/extensions/rocm/samples /app/extensions/rocm/share/doc /app/extensions/rocm/share/man
       - mkdir -p /app/extensions/rocm/share/metainfo
       - |
-        cat > /app/extensions/rocm/share/metainfo/dev.mitchellrenouf.QT_llama.Extension.rocm.metainfo.xml << 'EOF'
+        cat > /app/extensions/rocm/share/metainfo/dev.mitchellrenouf.rustllama.Extension.rocm.metainfo.xml << 'EOF'
         <?xml version="1.0" encoding="UTF-8"?>
         <component type="runtime">
-          <id>dev.mitchellrenouf.QT_llama.Extension.rocm</id>
+          <id>dev.mitchellrenouf.rustllama.Extension.rocm</id>
           <metadata_license>CC0-1.0</metadata_license>
-          <name>AMD ROCm 7.14 Acceleration Extension for QT_llama.cpp</name>
-          <summary>Provides AMD ROCm and hipBLAS GPU acceleration libraries for QT_llama.cpp</summary>
+          <name>AMD ROCm 7.14 Extension for RustLlama</name>
+          <summary>Reserved runtime libraries for future RustLlama ROCm support</summary>
         </component>
         EOF
     sources:

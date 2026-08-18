@@ -1,6 +1,6 @@
-id: dev.mitchellrenouf.QT_llama.Extension.oneapi
+id: dev.mitchellrenouf.rustllama.Extension.oneapi
 branch: '6.11'
-runtime: dev.mitchellrenouf.QT_llama
+runtime: dev.mitchellrenouf.rustllama
 runtime-version: '6.11'
 sdk: org.kde.Sdk
 build-extension: true
@@ -17,13 +17,13 @@ modules:
       - rm -rf /app/extensions/oneapi/doc /app/extensions/oneapi/samples /app/extensions/oneapi/share/doc
       - mkdir -p /app/extensions/oneapi/share/metainfo
       - |
-        cat > /app/extensions/oneapi/share/metainfo/dev.mitchellrenouf.QT_llama.Extension.oneapi.metainfo.xml << 'EOF'
+        cat > /app/extensions/oneapi/share/metainfo/dev.mitchellrenouf.rustllama.Extension.oneapi.metainfo.xml << 'EOF'
         <?xml version="1.0" encoding="UTF-8"?>
         <component type="runtime">
-          <id>dev.mitchellrenouf.QT_llama.Extension.oneapi</id>
+          <id>dev.mitchellrenouf.rustllama.Extension.oneapi</id>
           <metadata_license>CC0-1.0</metadata_license>
-          <name>Intel oneAPI SYCL Acceleration Extension for QT_llama.cpp</name>
-          <summary>Provides Intel oneAPI SYCL GPU acceleration libraries for QT_llama.cpp</summary>
+          <name>Intel oneAPI SYCL Extension for RustLlama</name>
+          <summary>Reserved runtime libraries for future RustLlama SYCL support</summary>
         </component>
         EOF
     sources:

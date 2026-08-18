@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-APP_ID="dev.mitchellrenouf.QT_llama"
+APP_ID="dev.mitchellrenouf.rustllama"
 
 echo "=== Checking updates for $APP_ID ==="
 

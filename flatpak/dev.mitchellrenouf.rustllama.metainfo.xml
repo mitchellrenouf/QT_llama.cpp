@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>dev.mitchellrenouf.QT_llama</id>
+  <id>dev.mitchellrenouf.rustllama</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
-  <name>QT_llama.cpp</name>
-  <summary>Multimodal Vision, Desktop Control, Browser Automation &amp; General AI Agent for llama.cpp</summary>
+  <name>RustLlama</name>
+  <summary>Local AI assistant with native GGUF inference and workspace automation</summary>
 
   <description>
     <p>
-      QT_llama.cpp is an autonomous, general-purpose AI agent and vibe-coding assistant powered by in-process llama.cpp and Gemma 4 models.
+      RustLlama is a local AI assistant and coding agent powered by its native qtensor GGUF engine and Gemma 4 models.
       It features rich multimodal understanding, headless browser automation with Chrome DevTools Protocol, desktop screenshot analysis,
       media processing, and automated workspace tools.
     </p>
     <ul>
       <li>Autonomous tool orchestration and multi-step turn planning</li>
-      <li>Multi-GPU acceleration via Vulkan, CUDA, ROCm, and SYCL compute backends</li>
+      <li>NVIDIA GPU acceleration through native CUDA kernels</li>
       <li>Full headless Chromium browser automation (Brave/Chromium/Chrome) and web search</li>
       <li>Desktop visual perception and GUI control</li>
       <li>Speech synthesis (TTS) and microphone audio recording</li>
@@ -22,10 +22,10 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">dev.mitchellrenouf.QT_llama.desktop</launchable>
+  <launchable type="desktop-id">dev.mitchellrenouf.rustllama.desktop</launchable>
 
   <provides>
-    <binary>qt_llama</binary>
+    <binary>rustllama</binary>
     <binary>qt-llama</binary>
     <binary>qt-llama-wrapper</binary>
   </provides>
@@ -34,9 +34,9 @@
     <name>Mitchell Renouf</name>
   </developer>
 
-  <url type="homepage">https://github.com/mitchellrenouf/QT_llama.cpp</url>
-  <url type="bugtracker">https://github.com/mitchellrenouf/QT_llama.cpp/issues</url>
-  <url type="vcs-browser">https://github.com/mitchellrenouf/QT_llama.cpp</url>
+  <url type="homepage">https://github.com/mitchellrenouf/rustllama</url>
+  <url type="bugtracker">https://github.com/mitchellrenouf/rustllama/issues</url>
+  <url type="vcs-browser">https://github.com/mitchellrenouf/rustllama</url>
 
   <categories>
     <category>Utility</category>
@@ -53,7 +53,7 @@
   <releases>
     <release version="0.4.0" date="2026-08-16">
       <description>
-        <p>Pure Linux release with Qt6 support, multi-vendor GPU acceleration (Vulkan, CUDA, ROCm), headless Chromium CDP automation, Flatpak packaging on Freedesktop SDK 25.08, and automated updates.</p>
+        <p>Qt 6 desktop and CLI release with native CUDA inference, Chromium CDP automation, and Flatpak packaging.</p>
       </description>
     </release>
   </releases>

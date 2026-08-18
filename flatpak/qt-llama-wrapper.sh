@@ -79,7 +79,7 @@ done
 
 # 4. Optional Debug diagnostics when QT_LLAMA_DEBUG=1
 if [ "${QT_LLAMA_DEBUG:-0}" = "1" ]; then
-    echo "=== QT_llama.cpp GPU Environment ==="
+    echo "=== RustLlama GPU Environment ==="
     echo "VK_DRIVER_FILES:  ${VK_DRIVER_FILES:-<default>}"
     echo "LD_LIBRARY_PATH:  $LD_LIBRARY_PATH"
     echo "PATH:             $PATH"

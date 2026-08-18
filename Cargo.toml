@@ -4,7 +4,7 @@ version = "0.4.0"
 edition = "2021"
 build = "build.rs"
 authors = ["Mitchell <mitchell@localhost>"]
-description = "RustLlama: Multimodal Vision, Desktop Control, Browser Automation & General AI Agent for llama.cpp"
+description = "RustLlama local AI assistant with native GGUF inference, Qt 6, and CUDA acceleration"
 default-run = "rustllama"
 
 [[bin]]

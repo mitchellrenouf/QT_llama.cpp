@@ -1,4 +1,4 @@
-app-id: dev.mitchellrenouf.QT_llama
+app-id: dev.mitchellrenouf.rustllama
 runtime: org.kde.Platform
 runtime-version: '6.11'
 sdk: org.kde.Sdk
@@ -7,19 +7,19 @@ sdk-extensions:
 command: rustllama
 
 add-extensions:
-  dev.mitchellrenouf.QT_llama.Extension.cuda:
+  dev.mitchellrenouf.rustllama.Extension.cuda:
     directory: extensions/cuda
     version: '6.11'
     add-ld-path: lib64:lib
     no-autodownload: true
 
-  dev.mitchellrenouf.QT_llama.Extension.rocm:
+  dev.mitchellrenouf.rustllama.Extension.rocm:
     directory: extensions/rocm
     version: '6.11'
     add-ld-path: lib:lib64
     no-autodownload: true
 
-  dev.mitchellrenouf.QT_llama.Extension.oneapi:
+  dev.mitchellrenouf.rustllama.Extension.oneapi:
     directory: extensions/oneapi
     version: '6.11'
     add-ld-path: compiler/latest/lib:lib
@@ -42,11 +42,10 @@ build-options:
   append-path: /app/bin:/usr/lib/sdk/qt6/bin:/usr/lib/qt6/bin:/usr/lib/sdk/rust-stable/bin:/app/cuda/bin
   append-ld-library-path: /app/cuda/lib64:/app/lib
   env:
-    CARGO_HOME: /run/build/qt-llama/cargo
+    CARGO_HOME: /run/build/rustllama/cargo
     CUDA_PATH: /app/cuda
     CUDA_TOOLKIT_ROOT_DIR: /app/cuda
     LLAMA_CUDA: "1"
-    LLAMA_VULKAN: "1"
 
 modules:
   # 1. NVIDIA CUDA 13.3 Toolkit (Install via /var/tmp to prevent tmpfs exhaustion)
@@ -59,27 +58,16 @@ modules:
       # Strip unneeded samples, documentation, and graphical tools to optimize image footprint
       - rm -rf /app/cuda/doc /app/cuda/samples /app/cuda/extras /app/cuda/nsight* /app/cuda/nvvp*
       - mkdir -p /app/lib
+      # qtensor's custom kernels use the CUDA Runtime API directly. cuBLAS is
+      # not linked, so only libcudart needs to survive in the final package.
       - cp -P /app/cuda/lib64/libcudart.so* /app/lib/ || true
-      - cp -P /app/cuda/lib64/libcublas.so* /app/lib/ || true
-      - cp -P /app/cuda/lib64/libcublasLt.so* /app/lib/ || true
     sources:
       - type: file
         url: https://developer.download.nvidia.com/compute/cuda/13.3.1/local_installers/cuda_13.3.1_610.43.02_linux.run
         sha256: 9f98ec1f6c950401041d3f1308e221f0d5db8771a8e10569001b64caaee31a92
 
-  # 2. SPIRV-Headers required for ggml-vulkan shader compilation
-  - name: spirv-headers
-    buildsystem: cmake-ninja
-    config-opts:
-      - -DSPIRV_HEADERS_ENABLE_TESTS=OFF
-      - -DSPIRV_HEADERS_ENABLE_INSTALL=ON
-    sources:
-      - type: archive
-        url: https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.321.0.tar.gz
-        sha256: 5bbea925663d4cd2bab23efad53874f2718248a73dcaf9dd21dff8cb48e602fc
-
-  # 3. Main QT_llama application (Built with CUDA & Vulkan GPU acceleration)
-  - name: qt-llama
+  # 2. Main RustLlama application (built with native CUDA acceleration)
+  - name: rustllama
     buildsystem: simple
     build-commands:
       # Setup offline vendored cargo configuration
@@ -124,8 +112,12 @@ modules:
         directory = "vendor"
         EOF
 
-      # Build release binary with full CUDA and Vulkan acceleration
-      - cargo build --release --features cuda,vulkan --no-default-features
+      # CUDA is explicit so the packaged Linux binary cannot silently become CPU-only.
+      - cargo build --release --locked --no-default-features --features cuda
+
+      # NVCC and the CUDA headers/static libraries are build-only. libcudart
+      # was copied to /app/lib above; the host NVIDIA runtime provides libcuda.
+      - rm -rf /app/cuda
 
       # Install binaries & wrapper script
       - install -Dm755 target/release/rustllama /app/bin/rustllama
@@ -133,9 +125,9 @@ modules:
       - install -Dm755 flatpak/qt-llama-wrapper.sh /app/bin/qt-llama-wrapper
 
       # Install AppStream metadata, desktop entry & application icon
-      - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.desktop /app/share/applications/dev.mitchellrenouf.QT_llama.desktop
-      - install -Dm644 flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml /app/share/metainfo/dev.mitchellrenouf.QT_llama.metainfo.xml
-      - install -Dm644 flatpak/icons/dev.mitchellrenouf.QT_llama.svg /app/share/icons/hicolor/scalable/apps/dev.mitchellrenouf.QT_llama.svg
+      - install -Dm644 flatpak/dev.mitchellrenouf.rustllama.desktop /app/share/applications/dev.mitchellrenouf.rustllama.desktop
+      - install -Dm644 flatpak/dev.mitchellrenouf.rustllama.metainfo.xml /app/share/metainfo/dev.mitchellrenouf.rustllama.metainfo.xml
+      - install -Dm644 flatpak/icons/dev.mitchellrenouf.rustllama.svg /app/share/icons/hicolor/scalable/apps/dev.mitchellrenouf.rustllama.svg
 
       # Create extension mount point directories
       - mkdir -p /app/extensions/cuda /app/extensions/rocm /app/extensions/oneapi

@@ -40,9 +40,9 @@ jobs:
       - name: Validate AppStream Metadata
         run: |
           if command -v appstreamcli >/dev/null 2>&1; then
-            appstreamcli validate --no-net flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml || true
+            appstreamcli validate --no-net flatpak/dev.mitchellrenouf.rustllama.metainfo.xml || true
           elif command -v appstream-util >/dev/null 2>&1; then
-            appstream-util validate-relax flatpak/dev.mitchellrenouf.QT_llama.metainfo.xml || true
+            appstream-util validate-relax flatpak/dev.mitchellrenouf.rustllama.metainfo.xml || true
           else
             echo "AppStream validator not available, skipping."
           fi
@@ -50,27 +50,27 @@ jobs:
       - name: Lint Flatpak Manifest
         run: |
           if command -v flatpak-builder-lint >/dev/null 2>&1; then
-            flatpak-builder-lint manifest flatpak/dev.mitchellrenouf.QT_llama.yml || true
+            flatpak-builder-lint manifest flatpak/dev.mitchellrenouf.rustllama.yml || true
           fi
 
       - name: Build Flatpak Package
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: dev.mitchellrenouf.QT_llama.flatpak
-          manifest-path: flatpak/dev.mitchellrenouf.QT_llama.yml
+          bundle: dev.mitchellrenouf.rustllama.flatpak
+          manifest-path: flatpak/dev.mitchellrenouf.rustllama.yml
           run-tests: false
 
       - name: Upload Flatpak Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QT_llama-flatpak-x86_64
-          path: dev.mitchellrenouf.QT_llama.flatpak
+          name: rustllama-flatpak-x86_64
+          path: dev.mitchellrenouf.rustllama.flatpak
 
       - name: Publish Release Bundle
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dev.mitchellrenouf.QT_llama.flatpak
+          files: dev.mitchellrenouf.rustllama.flatpak
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -123,14 +123,20 @@ jobs:
       - name: Bundle Qt Runtime
         shell: pwsh
         run: |
-          $packageDir = Join-Path $PWD 'dist\QT_llama-windows-x86_64'
+          $packageDir = Join-Path $PWD 'dist\rustllama-windows-x86_64'
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
           Copy-Item -LiteralPath 'target\release\rustllama.exe' -Destination $packageDir
           & windeployqt.exe --release --no-translations --no-system-d3d-compiler `
             (Join-Path $packageDir 'rustllama.exe')
+          $cudaRuntime = Get-ChildItem -LiteralPath (Join-Path $env:CUDA_PATH 'bin') `
+            -Filter 'cudart64_*.dll' | Select-Object -First 1
+          if (-not $cudaRuntime) {
+            throw "CUDA runtime DLL was not found under $env:CUDA_PATH\bin"
+          }
+          Copy-Item -LiteralPath $cudaRuntime.FullName -Destination $packageDir
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QT_llama-windows-x86_64
-          path: dist/QT_llama-windows-x86_64
+          name: rustllama-windows-x86_64
+          path: dist/rustllama-windows-x86_64

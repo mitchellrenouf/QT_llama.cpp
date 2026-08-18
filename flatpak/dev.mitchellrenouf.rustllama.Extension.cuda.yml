@@ -1,6 +1,6 @@
-id: dev.mitchellrenouf.QT_llama.Extension.cuda
+id: dev.mitchellrenouf.rustllama.Extension.cuda
 branch: '6.11'
-runtime: dev.mitchellrenouf.QT_llama
+runtime: dev.mitchellrenouf.rustllama
 runtime-version: '6.11'
 sdk: org.kde.Sdk
 build-extension: true
@@ -23,13 +23,13 @@ modules:
       # Create extension metadata
       - mkdir -p /app/extensions/cuda/share/metainfo
       - |
-        cat > /app/extensions/cuda/share/metainfo/dev.mitchellrenouf.QT_llama.Extension.cuda.metainfo.xml << 'EOF'
+        cat > /app/extensions/cuda/share/metainfo/dev.mitchellrenouf.rustllama.Extension.cuda.metainfo.xml << 'EOF'
         <?xml version="1.0" encoding="UTF-8"?>
         <component type="runtime">
-          <id>dev.mitchellrenouf.QT_llama.Extension.cuda</id>
+          <id>dev.mitchellrenouf.rustllama.Extension.cuda</id>
           <metadata_license>CC0-1.0</metadata_license>
-          <name>NVIDIA CUDA 13.3 Acceleration Extension for QT_llama.cpp</name>
-          <summary>Provides NVIDIA CUDA and cuBLAS GPU acceleration libraries for QT_llama.cpp</summary>
+          <name>NVIDIA CUDA 13.3 Acceleration Extension for RustLlama</name>
+          <summary>Provides NVIDIA CUDA GPU acceleration libraries for RustLlama</summary>
         </component>
         EOF
     sources:
