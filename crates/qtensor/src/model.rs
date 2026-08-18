@@ -370,7 +370,11 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             let (gpu_ffn_gate_up_exps, gpu_ffn_down_exps, gpu_ffn_down_exps_scale) = if cuda_dev.is_some() && is_moe {
                 let should_offload = if let Ok((free_mem, _)) = crate::cuda::CudaDevice::get_memory_info(0) {
-                    free_mem >= (gate_up_bytes + down_bytes + 400 * 1024 * 1024)
+                    // Prioritize a complete transformer over the optional GPU
+                    // vocabulary table allocated after the layers. One missing
+                    // MoE layer disables the cross-layer resident decode path;
+                    // vocabulary scoring has a parallel CPU fallback.
+                    free_mem >= (gate_up_bytes + down_bytes + 32 * 1024 * 1024)
                 } else {
                     false
                 };
@@ -782,16 +786,23 @@ impl QTensorModel {
         } else { false };
         #[cfg(not(feature = "cuda"))]
         let resident_model = false;
+        #[cfg(feature = "cuda")]
+        let resident_fast_path = resident_model
+            && self.layers.iter().all(|layer| pos < layer.gpu_kv_capacity);
+        #[cfg(not(feature = "cuda"))]
+        let resident_fast_path = false;
 
         for (l, layer) in self.layers.iter().enumerate() {
             // Layer RMSNorm
-            let mut cur = vec![0.0f32; dim];
-            ops::rms_norm(&hidden, Some(&layer.attn_norm), 1e-6, &mut cur);
+            let mut cur = if resident_fast_path { Vec::new() } else { vec![0.0f32; dim] };
+            if !resident_fast_path {
+                ops::rms_norm(&hidden, Some(&layer.attn_norm), 1e-6, &mut cur);
+            }
 
             // Q, K, V Projections
-            let mut q = vec![0.0f32; layer.q_dim];
-            let mut k = vec![0.0f32; layer.kv_dim];
-            let mut v = vec![0.0f32; layer.kv_dim];
+            let mut q = if resident_fast_path { Vec::new() } else { vec![0.0f32; layer.q_dim] };
+            let mut k = if resident_fast_path { Vec::new() } else { vec![0.0f32; layer.kv_dim] };
+            let mut v = if resident_fast_path { Vec::new() } else { vec![0.0f32; layer.kv_dim] };
             let profile_start = std::time::Instant::now();
 
             #[cfg(feature = "cuda")]
@@ -895,14 +906,14 @@ impl QTensorModel {
             // Multi-head Attention
             let profile_start = std::time::Instant::now();
             let seq_len = k_cache[l].len();
-            let mut attn_out = vec![0.0f32; layer.q_dim];
+            let mut attn_out = if resident_fast_path { Vec::new() } else { vec![0.0f32; layer.q_dim] };
             let start_t = if layer.is_swa && layer.sliding_window > 0 {
                 seq_len.saturating_sub(layer.sliding_window)
             } else {
                 0
             };
             let attn_window_len = seq_len - start_t;
-            let mut scores = vec![0.0f32; attn_window_len];
+            let mut scores = if resident_fast_path { Vec::new() } else { vec![0.0f32; attn_window_len] };
 
             #[cfg(feature = "cuda")]
             let attention_used_gpu = if seq_len <= layer.gpu_kv_capacity {
@@ -992,7 +1003,7 @@ impl QTensorModel {
 
             // Attention Output Projection
             let profile_start = std::time::Instant::now();
-            let mut attn_proj = vec![0.0f32; dim];
+            let mut attn_proj = if resident_fast_path { Vec::new() } else { vec![0.0f32; dim] };
             #[cfg(feature = "cuda")]
             let resident_ffn_capable = std::env::var_os("QTENSOR_DISABLE_RESIDENT").is_none()
                 && layer.is_moe
@@ -1081,8 +1092,8 @@ impl QTensorModel {
             let resident_ffn_prepared = false;
 
             // Post-Attention Norm & Residual
-            let mut normed_attn = vec![0.0f32; dim];
-            let mut attn_res = vec![0.0f32; dim];
+            let mut normed_attn = if resident_ffn_prepared { Vec::new() } else { vec![0.0f32; dim] };
+            let mut attn_res = if resident_ffn_prepared { Vec::new() } else { vec![0.0f32; dim] };
             if !resident_ffn_prepared {
                 ops::rms_norm(&attn_proj, Some(&layer.post_attention_norm), 1e-6, &mut normed_attn);
                 for i in 0..dim {
@@ -1094,12 +1105,12 @@ impl QTensorModel {
             // 1. Prepare Shared Dense MLP & MoE inputs
             let profile_start = std::time::Instant::now();
             let ffn_dim = 2112;
-            let mut ffn_in_shared = vec![0.0f32; dim];
+            let mut ffn_in_shared = if resident_ffn_prepared { Vec::new() } else { vec![0.0f32; dim] };
             if !resident_ffn_prepared {
                 ops::rms_norm(&attn_res, Some(&layer.ffn_norm), 1e-6, &mut ffn_in_shared);
             }
 
-            let mut ffn_in_moe = vec![0.0f32; dim];
+            let mut ffn_in_moe = if resident_ffn_prepared { Vec::new() } else { vec![0.0f32; dim] };
             if !resident_ffn_prepared && layer.is_moe && !layer.ffn_gate_inp.is_empty() {
                 ops::rms_norm(&attn_res, Some(&layer.pre_ffw_norm_2), 1e-6, &mut ffn_in_moe);
             }
@@ -1163,8 +1174,8 @@ impl QTensorModel {
             }
 
             // Queue GPU kernels for both Dense MLP & MoE simultaneously
-            let mut mlp_raw = vec![0.0f32; dim];
-            let mut moe_raw = vec![0.0f32; dim];
+            let mut mlp_raw = if resident_ffn_prepared { Vec::new() } else { vec![0.0f32; dim] };
+            let mut moe_raw = if resident_ffn_prepared { Vec::new() } else { vec![0.0f32; dim] };
 
             #[cfg(feature = "cuda")]
             let (mlp_queued, moe_queued) = if let Some(ref dev) = self.cuda_dev {

@@ -16,7 +16,7 @@ The native engine currently targets Gemma 4 GGUF models and supports CPU inferen
 - Optional external tools through stdio Model Context Protocol servers.
 - Context selection through `--ctx-size` and automatic conversation compaction through `--max-context-tokens`.
 
-Performance depends heavily on the model, quantization, GPU, available VRAM, prompt length, and whether every required layer remains GPU-resident. No fixed token-rate claim is made. As a reference, Gemma 4 26B A4B Q4_0 currently decodes at approximately 57 tokens/second on an RTX 5070 Ti in the tested short-context CLI workload.
+Performance depends heavily on the model, quantization, GPU, available VRAM, prompt length, and whether every required layer remains GPU-resident. No fixed token-rate claim is made. As a reference, Gemma 4 26B A4B Q4_0 currently decodes at approximately 69 tokens/second on an RTX 5070 Ti after warm-up in the tested short-context CLI workload.
 
 ### Known limitations
 
