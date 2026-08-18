@@ -160,6 +160,8 @@ pub struct TransformerLayer {
     pub gpu_d_moe_act_scratch: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_moe_out: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_ffn_graph: parking_lot::Mutex<Option<crate::cuda::CudaGraphExec>>,
 }
 
 #[derive(Clone)]
@@ -209,6 +211,47 @@ pub struct QTensorModel {
     pub gpu_d_topk_scores: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_topk_ids: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<i32>>>,
+}
+
+#[cfg(feature = "cuda")]
+fn capture_layer_ffn_graph(
+    dev: &crate::cuda::CudaDevice,
+    layer: &TransformerLayer,
+    dim: usize,
+) -> Option<crate::cuda::CudaGraphExec> {
+    let mut shared = layer.gpu_d_mlp_in.lock();
+    let mut dense_act = layer.gpu_d_mlp_act.lock();
+    let mut dense_out = layer.gpu_d_mlp_down.lock();
+    let mut router_in = layer.gpu_d_router_in.lock();
+    let mut router_logits = layer.gpu_d_router_logits.lock();
+    let mut ids = layer.gpu_d_moe_exp_ids.lock();
+    let mut weights = layer.gpu_d_moe_exp_weights.lock();
+    let mut moe_in = layer.gpu_d_moe_in.lock();
+    let mut moe_act = layer.gpu_d_moe_act_scratch.lock();
+    let mut moe_out = layer.gpu_d_moe_out.lock();
+    dev.capture(|| {
+        dev.enqueue_ffn_compute_for_capture(
+            layer.gpu_ffn_gate.as_ref().ok_or_else(|| anyhow::anyhow!("missing gate"))?,
+            layer.gpu_ffn_up.as_ref().ok_or_else(|| anyhow::anyhow!("missing up"))?,
+            layer.gpu_ffn_down.as_ref().ok_or_else(|| anyhow::anyhow!("missing down"))?,
+            shared.as_mut().ok_or_else(|| anyhow::anyhow!("missing shared input"))?,
+            dense_act.as_mut().ok_or_else(|| anyhow::anyhow!("missing dense activation"))?,
+            dense_out.as_mut().ok_or_else(|| anyhow::anyhow!("missing dense output"))?,
+            layer.gpu_ffn_gate_inp.as_ref().ok_or_else(|| anyhow::anyhow!("missing router"))?,
+            router_in.as_mut().ok_or_else(|| anyhow::anyhow!("missing router input"))?,
+            router_logits.as_mut().ok_or_else(|| anyhow::anyhow!("missing router logits"))?,
+            ids.as_mut().ok_or_else(|| anyhow::anyhow!("missing expert ids"))?,
+            weights.as_mut().ok_or_else(|| anyhow::anyhow!("missing expert weights"))?,
+            layer.gpu_ffn_gate_up_exps.as_ref().ok_or_else(|| anyhow::anyhow!("missing experts"))?,
+            layer.gpu_ffn_down_exps.as_ref().ok_or_else(|| anyhow::anyhow!("missing expert down"))?,
+            layer.gpu_ffn_down_exps_scale.as_ref(),
+            moe_in.as_mut().ok_or_else(|| anyhow::anyhow!("missing MoE input"))?,
+            moe_act.as_mut().ok_or_else(|| anyhow::anyhow!("missing MoE activation"))?,
+            moe_out.as_mut().ok_or_else(|| anyhow::anyhow!("missing MoE output"))?,
+            dim, 2112, 704,
+        );
+        Ok(())
+    }).ok()
 }
 
 impl QTensorModel {
@@ -313,12 +356,12 @@ impl QTensorModel {
         #[cfg(feature = "cuda")]
         let cuda_dev = crate::cuda::CudaDevice::new(0).ok().map(std::sync::Arc::new);
         #[cfg(feature = "cuda")]
-        let execution_plan = cuda_dev.as_ref()
+        let mut execution_plan = cuda_dev.as_ref()
             .and_then(|_| crate::cuda::CudaDevice::device_info(0).ok())
             .map(crate::execution_plan::ExecutionPlan::for_device)
             .unwrap_or_else(crate::execution_plan::ExecutionPlan::portable);
         #[cfg(not(feature = "cuda"))]
-        let execution_plan = crate::execution_plan::ExecutionPlan::portable();
+        let mut execution_plan = crate::execution_plan::ExecutionPlan::portable();
 
         let mmap = File::open(&gguf_path)
             .ok()
@@ -625,7 +668,23 @@ impl QTensorModel {
                 gpu_d_moe_act_scratch: parking_lot::Mutex::new(gpu_d_moe_act_scratch),
                 #[cfg(feature = "cuda")]
                 gpu_d_moe_out: parking_lot::Mutex::new(gpu_d_moe_out),
+                #[cfg(feature = "cuda")]
+                gpu_ffn_graph: parking_lot::Mutex::new(None),
             });
+        }
+
+        #[cfg(feature = "cuda")]
+        if let Some(ref dev) = cuda_dev {
+            let mut captured = 0usize;
+            for (index, layer) in layers.iter().enumerate() {
+                let graph = capture_layer_ffn_graph(dev, layer, dim);
+                captured += usize::from(graph.is_some());
+                if graph.is_some() && std::env::var_os("QTENSOR_GRAPH_DEBUG").is_some() {
+                    eprintln!("[qtensor] prepared FFN/MoE CUDA graph for layer {index}");
+                }
+                *layer.gpu_ffn_graph.lock() = graph;
+            }
+            execution_plan.decode_graph = captured > 0;
         }
 
         // Preload complete token embedding table in memory
@@ -1203,7 +1262,12 @@ impl QTensorModel {
 
             #[cfg(feature = "cuda")]
             let (mlp_queued, moe_queued) = if let Some(ref dev) = self.cuda_dev {
-                let mlp_q = if let (Some(ref g_gate), Some(ref g_up), Some(ref g_down)) = (&layer.gpu_ffn_gate, &layer.gpu_ffn_up, &layer.gpu_ffn_down) {
+                let graph_queued = if resident_ffn_prepared {
+                    let graph = layer.gpu_ffn_graph.lock();
+                    graph.as_ref().is_some_and(|graph| dev.launch_graph(graph).is_ok())
+                } else { false };
+
+                let mlp_q = if graph_queued { true } else if let (Some(ref g_gate), Some(ref g_up), Some(ref g_down)) = (&layer.gpu_ffn_gate, &layer.gpu_ffn_up, &layer.gpu_ffn_down) {
                     let mut in_g = layer.gpu_d_mlp_in.lock();
                     let mut gate_g = layer.gpu_d_mlp_gate.lock();
                     let mut up_g = layer.gpu_d_mlp_up.lock();
@@ -1220,7 +1284,7 @@ impl QTensorModel {
                     } else { false }
                 } else { false };
 
-                let moe_q = if layer.is_moe && (resident_ffn_prepared || router_input.is_some() || !top8_experts.is_empty()) {
+                let moe_q = if graph_queued { true } else if layer.is_moe && (resident_ffn_prepared || router_input.is_some() || !top8_experts.is_empty()) {
                     if let (Some(ref g_gu_exps), Some(ref g_down_exps)) = (&layer.gpu_ffn_gate_up_exps, &layer.gpu_ffn_down_exps) {
                         let mut in_g = layer.gpu_d_moe_in.lock();
                         let mut ids_g = layer.gpu_d_moe_exp_ids.lock();

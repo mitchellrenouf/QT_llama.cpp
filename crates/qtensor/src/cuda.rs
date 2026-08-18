@@ -168,6 +168,16 @@ extern "C" {
         d_act_scratch: *mut f32, d_out_moe: *mut f32, dim: i32,
         exp_ffn_dim: i32, n_active: i32, batch: i32, stream: CudaStream,
     );
+    fn cuda_op_ffn_compute_launches(
+        gate: *const u8, up: *const u8, down: *const u8,
+        shared_in: *const f32, dense_act: *mut f32, dense_out: *mut f32,
+        router_weights: *const f32, router_in: *const f32, router_logits: *mut f32,
+        expert_ids: *mut i32, expert_weights: *mut f32,
+        gate_up_exps: *const u8, down_exps: *const u8, down_scales: *const f32,
+        moe_in: *const f32, moe_act: *mut f32, moe_out: *mut f32,
+        dim: i32, ffn_dim: i32, exp_dim: i32, n_experts: i32, n_active: i32,
+        stream: CudaStream,
+    );
 }
 
 /// RAII wrapper for GPU Device Memory
@@ -454,6 +464,29 @@ unsafe impl Send for CudaDevice {}
 unsafe impl Sync for CudaDevice {}
 
 impl CudaDevice {
+    #[allow(clippy::too_many_arguments)]
+    pub fn enqueue_ffn_compute_for_capture(
+        &self, gate: &CudaBuffer<u8>, up: &CudaBuffer<u8>, down: &CudaBuffer<u8>,
+        shared_in: &CudaBuffer<f32>, dense_act: &mut CudaBuffer<f32>, dense_out: &mut CudaBuffer<f32>,
+        router_weights: &CudaBuffer<f32>, router_in: &CudaBuffer<f32>, router_logits: &mut CudaBuffer<f32>,
+        expert_ids: &mut CudaBuffer<i32>, expert_weights: &mut CudaBuffer<f32>,
+        gate_up_exps: &CudaBuffer<u8>, down_exps: &CudaBuffer<u8>, down_scales: Option<&CudaBuffer<f32>>,
+        moe_in: &CudaBuffer<f32>, moe_act: &mut CudaBuffer<f32>, moe_out: &mut CudaBuffer<f32>,
+        dim: usize, ffn_dim: usize, exp_dim: usize,
+    ) {
+        unsafe {
+            cuda_op_ffn_compute_launches(
+                gate.as_ptr(), up.as_ptr(), down.as_ptr(), shared_in.as_ptr(),
+                dense_act.as_mut_ptr(), dense_out.as_mut_ptr(), router_weights.as_ptr(),
+                router_in.as_ptr(), router_logits.as_mut_ptr(), expert_ids.as_mut_ptr(),
+                expert_weights.as_mut_ptr(), gate_up_exps.as_ptr(), down_exps.as_ptr(),
+                down_scales.map_or(ptr::null(), CudaBuffer::as_ptr), moe_in.as_ptr(),
+                moe_act.as_mut_ptr(), moe_out.as_mut_ptr(), dim as i32, ffn_dim as i32,
+                exp_dim as i32, 128, 8, self.stream,
+            );
+        }
+    }
+
     pub fn capture<F>(&self, launches: F) -> Result<CudaGraphExec>
     where F: FnOnce() -> Result<()> {
         unsafe { cudaSetDevice(self.device_id) };
