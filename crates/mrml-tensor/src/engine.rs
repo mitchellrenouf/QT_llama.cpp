@@ -2,7 +2,7 @@ use crate::model::MrmlModel;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub struct MrmlEngine {
@@ -51,13 +51,16 @@ impl MrmlEngine {
         guard.chat_template.clone()
     }
 
-    pub fn generate_stream(
+    pub fn generate_stream<F>(
         &self,
         prompt: &str,
         max_tokens: usize,
         temperature: f32,
-    ) -> (mpsc::Receiver<Result<String>>, Arc<AtomicBool>) {
-        let (tx, rx) = mpsc::sync_channel(4096);
+        mut emit: F,
+    ) -> Arc<AtomicBool>
+    where
+        F: FnMut(Result<String>) -> bool + Send + 'static,
+    {
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_flag = cancelled.clone();
 
@@ -115,7 +118,7 @@ impl MrmlEngine {
 
                 generated += 1;
 
-                if tx.send(Ok(piece)).is_err() {
+                if !emit(Ok(piece)) {
                     break;
                 }
             }
@@ -129,6 +132,6 @@ impl MrmlEngine {
             eprintln!("[mrml] Generated {} tokens in {:.2}s ({:.1} tk/s)", generated, elapsed, tps);
         });
 
-        (rx, cancelled)
+        cancelled
     }
 }
