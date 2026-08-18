@@ -1539,7 +1539,6 @@ dependencies = [
  "memmap2",
  "parking_lot",
  "rayon",
- "thiserror",
  "tokio",
 ]
 
