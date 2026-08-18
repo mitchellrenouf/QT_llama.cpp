@@ -246,6 +246,12 @@ cargo test -p mrml-tensor --release --features cuda
 
 CUDA tests require compatible NVIDIA hardware and a CUDA-enabled build.
 
+## Development roadmap
+
+The staged [third-party Rust crate removal plan](docs/dependency-removal-plan.md)
+defines the compatibility, quality, and inference-performance gates for moving
+the workspace to repository-owned Rust code.
+
 ## License
 
 MRML is dedicated to the public domain under
