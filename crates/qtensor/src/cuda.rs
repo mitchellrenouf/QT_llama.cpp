@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::ffi::c_void;
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr;
 use std::sync::Arc;
@@ -22,7 +23,8 @@ pub enum CudaMemcpyKind {
 
 #[allow(dead_code)]
 extern "C" {
-    fn cudaSetDevice(device: i32) -> i32;
+    #[link_name = "cudaSetDevice"]
+    fn cuda_set_device_raw(device: i32) -> i32;
     fn cudaGetDevice(device: *mut i32) -> i32;
     fn cudaGetDeviceCount(count: *mut i32) -> i32;
     fn cudaDeviceGetAttribute(value: *mut i32, attr: i32, device: i32) -> i32;
@@ -179,6 +181,29 @@ extern "C" {
         dim: i32, ffn_dim: i32, exp_dim: i32, n_experts: i32, n_active: i32,
         stream: CudaStream,
     );
+}
+
+// CUDA's current device is thread-local. Decode used to enter the runtime for
+// every buffer operation and kernel launch even though inference stays on one
+// device. ggml avoids that repeated runtime/driver dispatch by remembering the
+// active device on the submitting thread. Keep the existing call sites behind
+// this shim so allocations, copies, graphs, and launches share the policy.
+thread_local! {
+    static ACTIVE_CUDA_DEVICE: Cell<i32> = const { Cell::new(-1) };
+}
+
+#[allow(non_snake_case)]
+unsafe fn cudaSetDevice(device: i32) -> i32 {
+    ACTIVE_CUDA_DEVICE.with(|active| {
+        if active.get() == device {
+            return 0;
+        }
+        let status = cuda_set_device_raw(device);
+        if status == 0 {
+            active.set(device);
+        }
+        status
+    })
 }
 
 /// RAII wrapper for GPU Device Memory
