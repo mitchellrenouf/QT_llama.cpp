@@ -7,7 +7,6 @@ members = [
     "crates/mrml-cli",
     "crates/mrml-machine",
     "crates/mrml-server",
-    "crates/mrml-qt",
 ]
 
 [workspace.package]

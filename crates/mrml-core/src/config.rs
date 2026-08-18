@@ -106,10 +106,6 @@ pub struct Config {
     #[arg(long)]
     pub system_prompt: Option<String>,
 
-    /// Run in terminal CLI mode instead of the default Qt6 GUI mode
-    #[arg(long)]
-    pub cli: bool,
-
     /// Execute a single prompt directly in CLI mode and exit
     #[arg(long, short = 'p')]
     pub prompt: Option<String>,

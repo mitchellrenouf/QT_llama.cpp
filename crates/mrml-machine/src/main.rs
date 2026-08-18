@@ -192,7 +192,6 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = Args::parse();
-    args.config.cli = true;
     args.config.prompt = None;
     let mut agent = MrmlAgent::new(args.config);
     agent.init_mcp_servers().await?;

@@ -2,7 +2,7 @@
 
 MRML—the **Mitchell Renouf Machine Learning Library**—is an experimental,
 CC0-licensed Rust workspace for running Gemma 4 GGUF models locally. It combines
-a native inference engine with terminal, desktop, machine-readable, and
+a native inference engine with terminal, machine-readable, and
 OpenAI-compatible HTTP interfaces plus agent tools.
 
 MRML does **not** link to llama.cpp. Its tensor operations, GGUF loader, CPU
@@ -18,7 +18,6 @@ MRML is under active development and currently specializes in
 
 Working today:
 
-- Native Qt 6 desktop application on Windows and Linux.
 - Interactive and one-shot terminal clients.
 - Versioned JSONL interface for automation and regression tests.
 - OpenAI-compatible `/v1/models` and `/v1/chat/completions` HTTP/SSE server.
@@ -51,7 +50,7 @@ Important limitations:
 ## Quick start
 
 You need stable Rust. CUDA builds additionally require an NVIDIA driver and
-CUDA Toolkit 13.3. The desktop application also requires Qt 6.
+CUDA Toolkit 13.3.
 
 CPU-only CLI:
 
@@ -79,7 +78,6 @@ space, network use, and VRAM before accepting a download.
 | `mrml-cli` | `mrml-cli` | Interactive and one-shot terminal frontend |
 | `mrml-machine` | `mrml-machine` | Stable JSONL automation and benchmark frontend |
 | `mrml-server` | `mrml-server` | OpenAI-compatible HTTP/SSE server |
-| `mrml-qt` | `mrml-qt` | Native Qt 6 desktop frontend |
 | `mrml-core` | — | Agent, configuration, tools, rules, and model resolution |
 | `mrml-model` | — | Application-facing model and streaming adapter |
 | `mrml-tensor` | — | GGUF execution, tensor math, CPU kernels, and CUDA kernels |
@@ -89,9 +87,6 @@ Common commands:
 ```powershell
 # Interactive terminal
 cargo run --release -p mrml-cli --features cuda -- --model C:\path\to\model.gguf
-
-# Desktop application
-cargo run --release -p mrml-qt --features cuda -- --model C:\path\to\model.gguf
 
 # OpenAI-compatible server
 cargo run --release -p mrml-server --features cuda -- `
@@ -200,42 +195,6 @@ not enough to characterize the engine.
    at long context usually points to attention/KV traffic.
 7. Use an identical local GGUF when comparing with llama.cpp. Repository labels
    such as `Q4_0` do not guarantee byte-identical model files.
-
-## Building the desktop application
-
-On Windows, install Visual Studio Build Tools with the Desktop development with
-C++ workload, Rust MSVC, a Qt 6 `msvc2022_64` kit, and CUDA 13.3:
-
-```powershell
-$env:Path = "C:\Qt\6.8.3\msvc2022_64\bin;$env:Path"
-$env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3"
-qmake -query QT_VERSION
-nvcc --version
-cargo build --release --locked -p mrml-qt --no-default-features --features cuda
-```
-
-On Linux, install Qt 6, a C++ toolchain, Rust, the NVIDIA driver, and CUDA 13.3:
-
-```bash
-export CUDA_PATH=/opt/cuda
-export PATH="$CUDA_PATH/bin:$PATH"
-qmake6 -query QT_VERSION
-nvcc --version
-cargo build --release --locked -p mrml-qt --no-default-features --features cuda
-```
-
-## Flatpak
-
-The Flatpak application ID is `dev.mitchellrenouf.mrml`. Its manifest builds
-the CUDA variant and relies on the host NVIDIA driver for driver libraries.
-
-```bash
-./scripts/build-flatpak.sh
-flatpak run dev.mitchellrenouf.mrml
-```
-
-The application requests broad host filesystem and device access for workspace
-automation and local GPU inference. Review the manifest before installation.
 
 ## Testing
 
