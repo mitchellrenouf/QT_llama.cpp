@@ -21,6 +21,8 @@ extern "C" {
     fn cudaSetDevice(device: i32) -> i32;
     fn cudaGetDevice(device: *mut i32) -> i32;
     fn cudaGetDeviceCount(count: *mut i32) -> i32;
+    fn cudaDeviceGetAttribute(value: *mut i32, attr: i32, device: i32) -> i32;
+    fn cudaRuntimeGetVersion(version: *mut i32) -> i32;
     fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> i32;
 
     fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32;
@@ -330,10 +332,64 @@ pub struct CudaDevice {
     stream: CudaStream,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CudaDeviceInfo {
+    pub device_id: i32,
+    pub compute_major: i32,
+    pub compute_minor: i32,
+    pub multiprocessors: i32,
+    pub runtime_version: i32,
+    pub total_memory: usize,
+}
+
+impl CudaDeviceInfo {
+    pub fn compute_capability(self) -> i32 {
+        self.compute_major * 10 + self.compute_minor
+    }
+
+    pub fn is_blackwell(self) -> bool {
+        self.compute_major >= 10
+    }
+}
+
 unsafe impl Send for CudaDevice {}
 unsafe impl Sync for CudaDevice {}
 
 impl CudaDevice {
+    pub fn device_info(device_id: i32) -> Result<CudaDeviceInfo> {
+        // cudaDevAttrMultiProcessorCount=16, ComputeCapabilityMajor=75,
+        // ComputeCapabilityMinor=76. These ABI values are stable in cudart.
+        unsafe { cudaSetDevice(device_id) };
+        let mut major = 0;
+        let mut minor = 0;
+        let mut multiprocessors = 0;
+        let mut runtime_version = 0;
+        let attrs = [
+            (75, &mut major),
+            (76, &mut minor),
+            (16, &mut multiprocessors),
+        ];
+        for (attr, output) in attrs {
+            let status = unsafe { cudaDeviceGetAttribute(output, attr, device_id) };
+            if status != 0 {
+                return Err(anyhow!("cudaDeviceGetAttribute({attr}) failed with code {status}"));
+            }
+        }
+        let status = unsafe { cudaRuntimeGetVersion(&mut runtime_version) };
+        if status != 0 {
+            return Err(anyhow!("cudaRuntimeGetVersion failed with code {status}"));
+        }
+        let (_, total_memory) = Self::get_memory_info(device_id)?;
+        Ok(CudaDeviceInfo {
+            device_id,
+            compute_major: major,
+            compute_minor: minor,
+            multiprocessors,
+            runtime_version,
+            total_memory,
+        })
+    }
+
     pub fn count() -> usize {
         let mut count = 0;
         let res = unsafe { cudaGetDeviceCount(&mut count) };

@@ -162,6 +162,7 @@ pub struct TransformerLayer {
     pub gpu_d_moe_out: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
 }
 
+#[derive(Clone)]
 pub struct GenerationState {
     pub current_token: i32,
     pub pos: usize,
@@ -184,6 +185,8 @@ pub struct QTensorModel {
     pub gguf_path: PathBuf,
     pub cache_type_k: KvCacheFormat,
     pub cache_type_v: KvCacheFormat,
+    pub execution_plan: crate::execution_plan::ExecutionPlan,
+    prompt_prefix_state: parking_lot::Mutex<Option<GenerationState>>,
     pub token_embd_info: Option<GgufTensorInfo>,
     pub output_norm_weights: Vec<f32>,
     pub layers: Vec<TransformerLayer>,
@@ -300,6 +303,13 @@ impl QTensorModel {
 
         #[cfg(feature = "cuda")]
         let cuda_dev = crate::cuda::CudaDevice::new(0).ok().map(std::sync::Arc::new);
+        #[cfg(feature = "cuda")]
+        let execution_plan = cuda_dev.as_ref()
+            .and_then(|_| crate::cuda::CudaDevice::device_info(0).ok())
+            .map(crate::execution_plan::ExecutionPlan::for_device)
+            .unwrap_or_else(crate::execution_plan::ExecutionPlan::portable);
+        #[cfg(not(feature = "cuda"))]
+        let execution_plan = crate::execution_plan::ExecutionPlan::portable();
 
         let mmap = File::open(&gguf_path)
             .ok()
@@ -683,6 +693,7 @@ impl QTensorModel {
             resident_layers,
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cpu)).count(),
         );
+        eprintln!("[qtensor] Execution plan: {execution_plan}");
 
         Ok(Self {
             config,
@@ -696,6 +707,8 @@ impl QTensorModel {
             gguf_path,
             cache_type_k: KvCacheFormat::F32,
             cache_type_v: KvCacheFormat::F32,
+            execution_plan,
+            prompt_prefix_state: parking_lot::Mutex::new(None),
             token_embd_info,
             output_norm_weights,
             layers,
@@ -1647,13 +1660,44 @@ impl QTensorModel {
     }
 
     pub fn init_generation_state(&self, prompt_tokens: &[i32]) -> GenerationState {
+        // Reuse the prior prompt state when the next rendered conversation
+        // extends it. GPU KV rows are held in the model's persistent buffers;
+        // the Empty row markers preserve their logical positions here.
+        let cached_prefix = self.prompt_prefix_state.lock().clone();
+        if let Some(prefix) = cached_prefix.as_ref() {
+            if prefix.pos <= prompt_tokens.len()
+                && prefix.history_tokens == prompt_tokens[..prefix.pos]
+            {
+                let mut state = prefix.clone();
+                for (pos, &token_id) in prompt_tokens[prefix.pos..].iter().enumerate() {
+                    state.hidden = self.forward_token(
+                        token_id,
+                        prefix.pos + pos,
+                        &mut state.k_cache,
+                        &mut state.v_cache,
+                    );
+                    state.current_token = token_id;
+                    state.pos += 1;
+                    state.history_tokens.push(token_id);
+                }
+                state.generated_count = 0;
+                *self.prompt_prefix_state.lock() = Some(state.clone());
+                if std::env::var_os("QTENSOR_PREFIX_DEBUG").is_some() {
+                    eprintln!("[qtensor] reused {} prompt KV tokens", prefix.pos);
+                }
+                return state;
+            }
+        }
+
         #[cfg(feature = "cuda")]
         if let Some((hidden, k_cache, v_cache)) = self.prefill_cuda(prompt_tokens) {
-            return GenerationState {
+            let state = GenerationState {
                 current_token: *prompt_tokens.last().unwrap_or(&1),
                 pos: prompt_tokens.len(), generated_count: 0,
                 history_tokens: prompt_tokens.to_vec(), hidden, k_cache, v_cache,
             };
+            *self.prompt_prefix_state.lock() = Some(state.clone());
+            return state;
         }
         let n_layers = self.config.n_layers;
         let mut k_cache = vec![Vec::new(); n_layers];
@@ -1669,7 +1713,7 @@ impl QTensorModel {
 
         let last_token = *prompt_tokens.last().unwrap_or(&1);
 
-        GenerationState {
+        let state = GenerationState {
             current_token: last_token,
             pos: prompt_tokens.len(),
             generated_count: 0,
@@ -1677,7 +1721,9 @@ impl QTensorModel {
             hidden,
             k_cache,
             v_cache,
-        }
+        };
+        *self.prompt_prefix_state.lock() = Some(state.clone());
+        state
     }
 
     /// Execute real multi-layer transformer forward pass on single token and sample next token ID

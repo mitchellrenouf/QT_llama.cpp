@@ -9,6 +9,7 @@ pub mod kv_cache;
 pub mod speculative;
 pub mod model;
 pub mod engine;
+pub mod execution_plan;
 
 #[cfg(feature = "cuda")]
 pub mod cuda;
