@@ -36,7 +36,9 @@ impl Tool for GitCheckpointTool {
             .current_dir(workspace_root)
             .output()?;
 
-        let commit_hash = String::from_utf8_lossy(&stash_output.stdout).trim().to_string();
+        let commit_hash = String::from_utf8_lossy(&stash_output.stdout)
+            .trim()
+            .to_string();
 
         if commit_hash.is_empty() {
             // No changes to stash, save HEAD hash
@@ -44,7 +46,9 @@ impl Tool for GitCheckpointTool {
                 .args(["rev-parse", "HEAD"])
                 .current_dir(workspace_root)
                 .output()?;
-            let head_hash = String::from_utf8_lossy(&head_output.stdout).trim().to_string();
+            let head_hash = String::from_utf8_lossy(&head_output.stdout)
+                .trim()
+                .to_string();
             Ok(format!("Checkpoint created at HEAD: {}", head_hash))
         } else {
             // Save stash reference
@@ -56,7 +60,10 @@ impl Tool for GitCheckpointTool {
             if store_output.status.success() {
                 Ok(format!("Successfully created Git Checkpoint [{}] ('{}'). Use git_rollback to revert if needed.", commit_hash, msg))
             } else {
-                Ok(format!("Checkpoint hash generated: {}. Uncommitted changes snapshotted.", commit_hash))
+                Ok(format!(
+                    "Checkpoint hash generated: {}. Uncommitted changes snapshotted.",
+                    commit_hash
+                ))
             }
         }
     }
@@ -93,7 +100,10 @@ impl Tool for GitRollbackTool {
                 .output()?;
             let stderr = String::from_utf8_lossy(&output.stderr);
             if output.status.success() {
-                Ok(format!("Successfully restored workspace to checkpoint '{}'.", target))
+                Ok(format!(
+                    "Successfully restored workspace to checkpoint '{}'.",
+                    target
+                ))
             } else {
                 Err(anyhow!("Failed to rollback to {}: {}", target, stderr))
             }
@@ -104,7 +114,10 @@ impl Tool for GitRollbackTool {
                 .current_dir(workspace_root)
                 .output()?;
             if output.status.success() {
-                Ok("Successfully discarded all uncommitted changes and restored working tree.".to_string())
+                Ok(
+                    "Successfully discarded all uncommitted changes and restored working tree."
+                        .to_string(),
+                )
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 Err(anyhow!("Failed to rollback changes: {}", stderr))
@@ -147,7 +160,11 @@ impl Tool for GitDiffTool {
         if stat.trim().is_empty() && detail.trim().is_empty() {
             Ok("No uncommitted changes in working tree.".to_string())
         } else {
-            Ok(format!("--- GIT DIFF SUMMARY ---\n{}\n--- DETAILED DIFF ---\n{}", stat.trim(), detail.trim()))
+            Ok(format!(
+                "--- GIT DIFF SUMMARY ---\n{}\n--- DETAILED DIFF ---\n{}",
+                stat.trim(),
+                detail.trim()
+            ))
         }
     }
 }

@@ -7,7 +7,9 @@ pub struct Paths {
 }
 
 pub fn paths(root: impl AsRef<Path>) -> Paths {
-    Paths { pending: vec![root.as_ref().to_path_buf()] }
+    Paths {
+        pending: vec![root.as_ref().to_path_buf()],
+    }
 }
 
 impl Iterator for Paths {
@@ -17,11 +19,13 @@ impl Iterator for Paths {
         let path = self.pending.pop()?;
         if path.is_dir() {
             if let Ok(entries) = fs::read_dir(&path) {
-                self.pending.extend(entries.filter_map(Result::ok).filter_map(|entry| {
-                    entry.file_type().ok().and_then(|kind| {
-                        (!kind.is_symlink()).then(|| entry.path())
-                    })
-                }));
+                self.pending
+                    .extend(entries.filter_map(Result::ok).filter_map(|entry| {
+                        entry
+                            .file_type()
+                            .ok()
+                            .and_then(|kind| (!kind.is_symlink()).then(|| entry.path()))
+                    }));
             }
         }
         Some(path)

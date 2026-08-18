@@ -44,8 +44,14 @@ impl McpClient {
             .stderr(Stdio::inherit())
             .spawn()?;
 
-        let stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open MCP stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to open MCP stdout"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open MCP stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open MCP stdout"))?;
         let reader = BufReader::new(stdout);
 
         let client = Arc::new(Self {
@@ -107,7 +113,8 @@ impl McpClient {
             return Err(anyhow!("MCP Error: {}", err));
         }
 
-        resp.result.ok_or_else(|| anyhow!("Empty result from MCP server"))
+        resp.result
+            .ok_or_else(|| anyhow!("Empty result from MCP server"))
     }
 
     pub async fn list_tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn Tool>>> {
@@ -116,7 +123,10 @@ impl McpClient {
 
         if let Some(tools_arr) = res.get("tools").and_then(|t| t.as_array()) {
             for t in tools_arr {
-                if let (Some(name), Some(desc)) = (t.get("name").and_then(|n| n.as_str()), t.get("description").and_then(|d| d.as_str())) {
+                if let (Some(name), Some(desc)) = (
+                    t.get("name").and_then(|n| n.as_str()),
+                    t.get("description").and_then(|d| d.as_str()),
+                ) {
                     let schema = t.get("inputSchema").cloned().unwrap_or(serde_json::json!({
                         "type": "object",
                         "properties": {}

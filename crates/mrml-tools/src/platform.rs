@@ -21,17 +21,49 @@ pub fn unix_timestamp_millis() -> u128 {
 }
 
 pub fn local_date_string() -> String {
-    const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const WEEKDAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
     let time = local_time();
-    let weekday = WEEKDAYS.get(time.weekday as usize).copied().unwrap_or("Unknown");
-    let month = time.month.checked_sub(1).and_then(|index| MONTHS.get(index as usize)).copied().unwrap_or("Unknown");
+    let weekday = WEEKDAYS
+        .get(time.weekday as usize)
+        .copied()
+        .unwrap_or("Unknown");
+    let month = time
+        .month
+        .checked_sub(1)
+        .and_then(|index| MONTHS.get(index as usize))
+        .copied()
+        .unwrap_or("Unknown");
     format!("{weekday}, {month} {:2}, {}", time.day, time.year)
 }
 
 pub fn local_timestamp_string() -> String {
     let time = local_time();
-    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", time.year, time.month, time.day, time.hour, time.minute, time.second)
+    format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        time.year, time.month, time.day, time.hour, time.minute, time.second
+    )
 }
 
 #[cfg(windows)]
@@ -49,10 +81,20 @@ fn local_time() -> LocalTime {
         milliseconds: u16,
     }
     #[link(name = "kernel32")]
-    unsafe extern "system" { fn GetLocalTime(time: *mut SystemTime); }
+    unsafe extern "system" {
+        fn GetLocalTime(time: *mut SystemTime);
+    }
     let mut value = SystemTime::default();
     unsafe { GetLocalTime(&mut value) };
-    LocalTime { year: value.year, month: value.month, day: value.day, weekday: value.weekday, hour: value.hour, minute: value.minute, second: value.second }
+    LocalTime {
+        year: value.year,
+        month: value.month,
+        day: value.day,
+        weekday: value.weekday,
+        hour: value.hour,
+        minute: value.minute,
+        second: value.second,
+    }
 }
 
 #[cfg(unix)]
@@ -60,19 +102,48 @@ fn local_time() -> LocalTime {
     use std::ffi::{c_int, c_long};
     #[repr(C)]
     struct Tm {
-        second: c_int, minute: c_int, hour: c_int, day: c_int, month: c_int,
-        year: c_int, weekday: c_int, year_day: c_int, daylight: c_int,
-        utc_offset: c_long, zone: *const i8,
+        second: c_int,
+        minute: c_int,
+        hour: c_int,
+        day: c_int,
+        month: c_int,
+        year: c_int,
+        weekday: c_int,
+        year_day: c_int,
+        daylight: c_int,
+        utc_offset: c_long,
+        zone: *const i8,
     }
-    unsafe extern "C" { fn localtime_r(clock: *const c_long, result: *mut Tm) -> *mut Tm; }
-    let seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as c_long;
+    unsafe extern "C" {
+        fn localtime_r(clock: *const c_long, result: *mut Tm) -> *mut Tm;
+    }
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as c_long;
     let mut value = std::mem::MaybeUninit::<Tm>::uninit();
     let result = unsafe { localtime_r(&seconds, value.as_mut_ptr()) };
     if result.is_null() {
-        return LocalTime { year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0 };
+        return LocalTime {
+            year: 1970,
+            month: 1,
+            day: 1,
+            weekday: 4,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        };
     }
     let value = unsafe { value.assume_init() };
-    LocalTime { year: (value.year + 1900) as u16, month: (value.month + 1) as u16, day: value.day as u16, weekday: value.weekday as u16, hour: value.hour as u16, minute: value.minute as u16, second: value.second as u16 }
+    LocalTime {
+        year: (value.year + 1900) as u16,
+        month: (value.month + 1) as u16,
+        day: value.day as u16,
+        weekday: value.weekday as u16,
+        hour: value.hour as u16,
+        minute: value.minute as u16,
+        second: value.second as u16,
+    }
 }
 
 pub fn home_dir() -> Option<PathBuf> {

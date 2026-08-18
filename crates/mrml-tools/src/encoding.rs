@@ -10,8 +10,16 @@ pub fn base64_encode(input: &[u8]) -> String {
             | chunk.get(2).copied().unwrap_or(0) as u32;
         output.push(ALPHABET[((bits >> 18) & 63) as usize] as char);
         output.push(ALPHABET[((bits >> 12) & 63) as usize] as char);
-        output.push(if chunk.len() > 1 { ALPHABET[((bits >> 6) & 63) as usize] as char } else { '=' });
-        output.push(if chunk.len() > 2 { ALPHABET[(bits & 63) as usize] as char } else { '=' });
+        output.push(if chunk.len() > 1 {
+            ALPHABET[((bits >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(bits & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     output
 }
@@ -20,7 +28,13 @@ pub fn base64_encode(input: &[u8]) -> String {
 mod tests {
     #[test]
     fn base64_matches_standard_vectors() {
-        for (raw, encoded) in [(b"".as_slice(), ""), (b"f", "Zg=="), (b"fo", "Zm8="), (b"foo", "Zm9v"), (b"foobar", "Zm9vYmFy")] {
+        for (raw, encoded) in [
+            (b"".as_slice(), ""),
+            (b"f", "Zg=="),
+            (b"fo", "Zm8="),
+            (b"foo", "Zm9v"),
+            (b"foobar", "Zm9vYmFy"),
+        ] {
             assert_eq!(super::base64_encode(raw), encoded);
         }
     }

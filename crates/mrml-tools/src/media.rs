@@ -42,7 +42,9 @@ impl Tool for SpeakTextTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let text = args["text"].as_str().ok_or_else(|| anyhow!("Missing text"))?;
+        let text = args["text"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing text"))?;
 
         if !is_speech_enabled() {
             return Ok(format!("Text-to-Speech synthesis is currently disabled. (Type '/speech' in CLI to enable audio output).\nText provided: '{}'", text));
@@ -176,7 +178,10 @@ impl Tool for CaptureWebcamTool {
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
         let desk_tool = crate::desktop::TakeScreenshotTool;
         let result = desk_tool.execute(workspace_root, args).await?;
-        Ok(format!("Captured video frame for visual analysis.\n{}", result))
+        Ok(format!(
+            "Captured video frame for visual analysis.\n{}",
+            result
+        ))
     }
 }
 
@@ -244,4 +249,3 @@ mod tests {
         set_speech_enabled(false);
     }
 }
-

@@ -170,7 +170,9 @@ impl Tool for OpenAppTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let app_name = args["app_name"].as_str().ok_or_else(|| anyhow!("Missing app_name"))?;
+        let app_name = args["app_name"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing app_name"))?;
 
         if app_name.starts_with("flatpak run ") {
             let parts: Vec<&str> = app_name.split_whitespace().collect();
@@ -212,5 +214,3 @@ mod tests {
         assert!(found.is_some());
     }
 }
-
-

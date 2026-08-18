@@ -2,8 +2,8 @@ pub mod browser;
 pub mod desktop;
 pub mod editor;
 pub mod git;
-pub mod media;
 pub mod mcp;
+pub mod media;
 pub mod web;
 
 pub mod diff;
@@ -56,12 +56,14 @@ pub trait Tool: Send + Sync {
 
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    order: Vec<String>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
             tools: HashMap::new(),
+            order: Vec::new(),
         };
 
         // Editor & OS Tools
@@ -103,7 +105,11 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+        let name = tool.name().to_string();
+        if !self.tools.contains_key(&name) {
+            self.order.push(name.clone());
+        }
+        self.tools.insert(name, tool);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
@@ -111,6 +117,73 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|t| t.to_tool_definition()).collect()
+        self.order
+            .iter()
+            .filter_map(|name| self.tools.get(name))
+            .map(|tool| tool.to_tool_definition())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_exposes_every_tool_in_stable_prompt_order() {
+        let expected = [
+            "view_file",
+            "write_file",
+            "replace_file_content",
+            "list_dir",
+            "grep_search",
+            "run_command",
+            "git_checkpoint",
+            "git_rollback",
+            "git_diff",
+            "web_search",
+            "web_fetch",
+            "take_screenshot",
+            "open_app",
+            "browser_open",
+            "browser_get_content",
+            "browser_screenshot",
+            "browser_click_element",
+            "browser_click",
+            "browser_type",
+            "speak_text",
+            "record_audio",
+            "capture_webcam",
+            "record_screen_video",
+        ];
+        let registry = ToolRegistry::new();
+        let definitions = registry.definitions();
+        let actual: Vec<_> = definitions
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect();
+        assert_eq!(actual, expected);
+        for definition in definitions {
+            assert!(!definition.function.description.trim().is_empty());
+            assert_eq!(definition.function.parameters["type"], "object");
+            assert!(registry.get(&definition.function.name).is_some());
+        }
+    }
+
+    #[test]
+    fn replacing_a_registered_tool_does_not_reorder_it() {
+        let mut registry = ToolRegistry::new();
+        let before: Vec<_> = registry
+            .definitions()
+            .into_iter()
+            .map(|item| item.function.name)
+            .collect();
+        registry.register(Arc::new(editor::ViewFileTool));
+        let after: Vec<_> = registry
+            .definitions()
+            .into_iter()
+            .map(|item| item.function.name)
+            .collect();
+        assert_eq!(before, after);
     }
 }

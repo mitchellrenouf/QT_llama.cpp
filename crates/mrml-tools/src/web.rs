@@ -55,7 +55,10 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
         }
     }
 
-    Err(anyhow!("Failed to fetch web content from '{}' via headless browser, curl, or wget.", url))
+    Err(anyhow!(
+        "Failed to fetch web content from '{}' via headless browser, curl, or wget.",
+        url
+    ))
 }
 
 pub struct WebSearchTool;
@@ -84,7 +87,9 @@ impl Tool for WebSearchTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let query = args["query"].as_str().ok_or_else(|| anyhow!("Missing query"))?;
+        let query = args["query"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing query"))?;
         let mut results = Vec::new();
 
         let _is_image_query = query.to_lowercase().contains("image")
@@ -133,7 +138,10 @@ impl Tool for WebSearchTool {
                     } else {
                         src.to_string()
                     };
-                    if full.starts_with("http") && !full.contains("static/favicon") && !full.contains("apple-touch") {
+                    if full.starts_with("http")
+                        && !full.contains("static/favicon")
+                        && !full.contains("apple-touch")
+                    {
                         img_url = Some(full);
                         break;
                     }
@@ -151,17 +159,26 @@ impl Tool for WebSearchTool {
             if !p_text.is_empty() || img_url.is_some() {
                 let mut entry = format!("- **{}** (Wikipedia)\n  URL: {}\n", heading, wiki_url);
                 if let Some(ref img) = img_url {
-                    entry.push_str(&format!("  Image URL: {}\n  Markdown Image: ![{}]({})\n", img, heading, img));
+                    entry.push_str(&format!(
+                        "  Image URL: {}\n  Markdown Image: ![{}]({})\n",
+                        img, heading, img
+                    ));
                 }
                 if !p_text.is_empty() {
-                    entry.push_str(&format!("  Summary: {}\n", crate::markdown::truncate_utf8(&p_text, 1000)));
+                    entry.push_str(&format!(
+                        "  Summary: {}\n",
+                        crate::markdown::truncate_utf8(&p_text, 1000)
+                    ));
                 }
                 results.push(entry);
             }
         }
 
         // 2. Search DuckDuckGo HTML
-        let ddg_url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding::encode(query));
+        let ddg_url = format!(
+            "https://html.duckduckgo.com/html/?q={}",
+            urlencoding::encode(query)
+        );
         if let Ok(html) = fetch_http_text(&ddg_url).await {
             let document = scraper::Html::parse_document(&html);
             let result_block_sel = scraper::Selector::parse(".result").unwrap();
@@ -199,9 +216,15 @@ impl Tool for WebSearchTool {
                     continue;
                 };
 
-                if !title.is_empty() && clean_url.starts_with("http") && !clean_url.contains("duckduckgo.com") {
+                if !title.is_empty()
+                    && clean_url.starts_with("http")
+                    && !clean_url.contains("duckduckgo.com")
+                {
                     if !snippet.is_empty() {
-                        results.push(format!("- **{}**\n  URL: {}\n  Summary: {}", title, clean_url, snippet));
+                        results.push(format!(
+                            "- **{}**\n  URL: {}\n  Summary: {}",
+                            title, clean_url, snippet
+                        ));
                     } else {
                         results.push(format!("- **{}**\n  URL: {}", title, clean_url));
                     }
@@ -249,10 +272,13 @@ impl Tool for WebFetchTool {
         let document = scraper::Html::parse_document(&html);
 
         // Remove script, style, noscript, svg, iframe tags
-        let noise_selector = scraper::Selector::parse("script, style, noscript, svg, iframe, nav, footer").unwrap();
+        let noise_selector =
+            scraper::Selector::parse("script, style, noscript, svg, iframe, nav, footer").unwrap();
         let noise_ids: Vec<_> = document.select(&noise_selector).map(|e| e.id()).collect();
 
-        let content_selector = scraper::Selector::parse("h1, h2, h3, h4, h5, p, article, section, li, a, span").unwrap();
+        let content_selector =
+            scraper::Selector::parse("h1, h2, h3, h4, h5, p, article, section, li, a, span")
+                .unwrap();
 
         let mut lines = Vec::new();
         for element in document.select(&content_selector) {
@@ -281,7 +307,10 @@ impl Tool for WebFetchTool {
 
         let full_text = lines.join("\n");
         if full_text.is_empty() {
-            Ok(format!("Successfully fetched URL '{}', but no clean body text was extracted.", url_str))
+            Ok(format!(
+                "Successfully fetched URL '{}', but no clean body text was extracted.",
+                url_str
+            ))
         } else if full_text.len() > 10000 {
             Ok(format!(
                 "{}... (truncated at 10,000 characters)",

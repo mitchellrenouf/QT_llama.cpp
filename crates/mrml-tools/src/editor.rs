@@ -40,7 +40,9 @@ impl Tool for ViewFileTool {
     }
 
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let path_str = args["path"].as_str().ok_or_else(|| anyhow!("Missing path"))?;
+        let path_str = args["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing path"))?;
         let full_path = workspace_root.join(path_str);
         if !full_path.exists() {
             return Err(anyhow!("File not found: {}", path_str));
@@ -100,8 +102,12 @@ impl Tool for WriteFileTool {
     }
 
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let path_str = args["path"].as_str().ok_or_else(|| anyhow!("Missing path"))?;
-        let content = args["content"].as_str().ok_or_else(|| anyhow!("Missing content"))?;
+        let path_str = args["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing path"))?;
+        let content = args["content"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing content"))?;
         let full_path = workspace_root.join(path_str);
 
         let old_content = fs::read_to_string(&full_path).unwrap_or_default();
@@ -115,7 +121,11 @@ impl Tool for WriteFileTool {
         let diff_str = format_colorized_diff(path_str, &old_content, content);
         print!("{}", diff_str);
 
-        Ok(format!("Successfully wrote {} bytes to file '{}'.", content.len(), path_str))
+        Ok(format!(
+            "Successfully wrote {} bytes to file '{}'.",
+            content.len(),
+            path_str
+        ))
     }
 }
 
@@ -152,9 +162,15 @@ impl Tool for ReplaceFileContentTool {
     }
 
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let path_str = args["path"].as_str().ok_or_else(|| anyhow!("Missing path"))?;
-        let target = args["target_content"].as_str().ok_or_else(|| anyhow!("Missing target_content"))?;
-        let replacement = args["replacement_content"].as_str().ok_or_else(|| anyhow!("Missing replacement_content"))?;
+        let path_str = args["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing path"))?;
+        let target = args["target_content"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing target_content"))?;
+        let replacement = args["replacement_content"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing replacement_content"))?;
         let full_path = workspace_root.join(path_str);
 
         if !full_path.exists() {
@@ -163,7 +179,10 @@ impl Tool for ReplaceFileContentTool {
 
         let content = fs::read_to_string(&full_path)?;
         if !content.contains(target) {
-            return Err(anyhow!("Target content not found in file '{}'. Ensure exact match including whitespace.", path_str));
+            return Err(anyhow!(
+                "Target content not found in file '{}'. Ensure exact match including whitespace.",
+                path_str
+            ));
         }
 
         let updated = content.replacen(target, replacement, 1);
@@ -172,7 +191,10 @@ impl Tool for ReplaceFileContentTool {
         let diff_str = format_colorized_diff(path_str, &content, &updated);
         print!("{}", diff_str);
 
-        Ok(format!("Successfully replaced target content in file '{}'.", path_str))
+        Ok(format!(
+            "Successfully replaced target content in file '{}'.",
+            path_str
+        ))
     }
 }
 
@@ -263,7 +285,9 @@ impl Tool for GrepSearchTool {
     }
 
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let query_str = args["query"].as_str().ok_or_else(|| anyhow!("Missing query"))?;
+        let query_str = args["query"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing query"))?;
         let sub_path = args["path"].as_str().unwrap_or(".");
         let search_path = workspace_root.join(sub_path);
 
@@ -342,7 +366,13 @@ impl Tool for RunCommandTool {
 
         #[cfg(windows)]
         let output = Command::new("powershell.exe")
-            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", cmd_str])
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                cmd_str,
+            ])
             .current_dir(&exec_dir)
             .output()?;
 
@@ -359,8 +389,90 @@ impl Tool for RunCommandTool {
         Ok(format!(
             "Exit Code: {}\n--- STDOUT ---\n{}\n--- STDERR ---\n{}",
             exit_code,
-            if stdout.trim().is_empty() { "(empty)" } else { stdout.trim() },
-            if stderr.trim().is_empty() { "(empty)" } else { stderr.trim() }
+            if stdout.trim().is_empty() {
+                "(empty)"
+            } else {
+                stdout.trim()
+            },
+            if stderr.trim().is_empty() {
+                "(empty)"
+            } else {
+                stderr.trim()
+            }
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_workspace() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "mrml-tools-editor-{}-{}",
+            std::process::id(),
+            crate::platform::unix_timestamp_millis()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn file_tools_write_view_replace_list_and_search() {
+        let root = test_workspace();
+        let write = WriteFileTool
+            .execute(
+                &root,
+                json!({"path":"src/note.txt", "content":"alpha\nbeta\n"}),
+            )
+            .await
+            .unwrap();
+        assert!(write.contains("11 bytes"));
+
+        let viewed = ViewFileTool
+            .execute(
+                &root,
+                json!({"path":"src/note.txt", "start_line":2, "end_line":2}),
+            )
+            .await
+            .unwrap();
+        assert!(viewed.contains("2 | beta"));
+
+        ReplaceFileContentTool
+            .execute(
+                &root,
+                json!({
+                    "path":"src/note.txt", "target_content":"beta", "replacement_content":"gamma"
+                }),
+            )
+            .await
+            .unwrap();
+        let listed = ListDirTool
+            .execute(&root, json!({"path":"src"}))
+            .await
+            .unwrap();
+        assert!(listed.contains("note.txt"));
+        let matches = GrepSearchTool
+            .execute(&root, json!({"query":"g.mm.", "path":"src"}))
+            .await
+            .unwrap();
+        assert!(matches.contains("gamma"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn run_command_captures_stdout_and_exit_status() {
+        let root = test_workspace();
+        #[cfg(windows)]
+        let command = "Write-Output tool-ok";
+        #[cfg(not(windows))]
+        let command = "printf tool-ok";
+        let output = RunCommandTool
+            .execute(&root, json!({"command_line": command}))
+            .await
+            .unwrap();
+        assert!(output.contains("Exit Code: 0"));
+        assert!(output.contains("tool-ok"));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

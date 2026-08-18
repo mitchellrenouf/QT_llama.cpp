@@ -128,11 +128,16 @@ impl ChromiumController {
                     .build()
                     .map_err(|e| anyhow!("Failed to create browser fetcher options: {}", e))?;
                 let fetcher = BrowserFetcher::new(options);
-                eprintln!("[browser] Downloading latest Google Chrome / Headless Shell to {}...", cache_dir.display());
-                let info = fetcher
-                    .fetch()
-                    .await
-                    .map_err(|e| anyhow!("Failed to download latest Chrome/Chromium Headless Shell from Google: {}", e))?;
+                eprintln!(
+                    "[browser] Downloading latest Google Chrome / Headless Shell to {}...",
+                    cache_dir.display()
+                );
+                let info = fetcher.fetch().await.map_err(|e| {
+                    anyhow!(
+                        "Failed to download latest Chrome/Chromium Headless Shell from Google: {}",
+                        e
+                    )
+                })?;
                 info.executable_path
             }
         };
@@ -167,7 +172,10 @@ impl ChromiumController {
         })
     }
 
-    pub async fn get_or_create_page(&mut self, url_opt: Option<&str>) -> Result<chromiumoxide::Page> {
+    pub async fn get_or_create_page(
+        &mut self,
+        url_opt: Option<&str>,
+    ) -> Result<chromiumoxide::Page> {
         if let Some(page) = &self.active_page {
             if let Some(url) = url_opt {
                 page.goto(url)
@@ -235,7 +243,11 @@ impl Tool for BrowserOpenTool {
                 sleep(Duration::from_millis(1500)).await;
 
                 let page_title = page.get_title().await.unwrap_or(None).unwrap_or_default();
-                let page_url = page.url().await.unwrap_or(None).unwrap_or_else(|| url.to_string());
+                let page_url = page
+                    .url()
+                    .await
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| url.to_string());
 
                 Ok(format!(
                     "Successfully opened URL '{}' in Chromium DevTools engine (Title: '{}', URL: '{}').",
@@ -259,12 +271,19 @@ impl Tool for BrowserOpenTool {
                 };
 
                 let web_fetch = WebFetchTool;
-                let fetch_res = web_fetch.execute(workspace_root, json!({"url": url})).await.unwrap_or_default();
+                let fetch_res = web_fetch
+                    .execute(workspace_root, json!({"url": url}))
+                    .await
+                    .unwrap_or_default();
 
                 Ok(format!(
                     "Opened '{}' in default desktop browser (status: {}). Page content:\n{}",
                     url,
-                    if opened_sys { "desktop browser launched" } else { "headless scraper active" },
+                    if opened_sys {
+                        "desktop browser launched"
+                    } else {
+                        "headless scraper active"
+                    },
                     fetch_res
                 ))
             }
@@ -314,11 +333,13 @@ impl Tool for BrowserGetContentTool {
         let display = {
             let document = scraper::Html::parse_document(&html);
             let noise_selector =
-                scraper::Selector::parse("script, style, noscript, svg, iframe, nav, footer").unwrap();
+                scraper::Selector::parse("script, style, noscript, svg, iframe, nav, footer")
+                    .unwrap();
             let noise_ids: Vec<_> = document.select(&noise_selector).map(|e| e.id()).collect();
 
             let content_selector =
-                scraper::Selector::parse("h1, h2, h3, h4, h5, p, article, section, li, a, span").unwrap();
+                scraper::Selector::parse("h1, h2, h3, h4, h5, p, article, section, li, a, span")
+                    .unwrap();
             let mut extracted_lines = Vec::new();
 
             for element in document.select(&content_selector) {
@@ -335,7 +356,10 @@ impl Tool for BrowserGetContentTool {
                 if !in_noise {
                     let text = element.text().collect::<Vec<_>>().join(" ");
                     let trimmed = text.trim();
-                    if !trimmed.is_empty() && trimmed.len() > 2 && !extracted_lines.contains(&trimmed.to_string()) {
+                    if !trimmed.is_empty()
+                        && trimmed.len() > 2
+                        && !extracted_lines.contains(&trimmed.to_string())
+                    {
                         extracted_lines.push(trimmed.to_string());
                     }
                 }
@@ -343,7 +367,10 @@ impl Tool for BrowserGetContentTool {
 
             let full_text = extracted_lines.join("\n");
             if full_text.len() > 6000 {
-                format!("{}... (truncated)", crate::markdown::truncate_utf8(&full_text, 6000))
+                format!(
+                    "{}... (truncated)",
+                    crate::markdown::truncate_utf8(&full_text, 6000)
+                )
             } else {
                 full_text
             }
@@ -352,7 +379,11 @@ impl Tool for BrowserGetContentTool {
         Ok(format!(
             "[Chromium Page DOM Content - '{}']:\n{}",
             page_title,
-            if display.trim().is_empty() { "(No readable text found on page)" } else { display.trim() }
+            if display.trim().is_empty() {
+                "(No readable text found on page)"
+            } else {
+                display.trim()
+            }
         ))
     }
 }
@@ -437,7 +468,9 @@ impl Tool for BrowserClickElementTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let target = args["target"].as_str().ok_or_else(|| anyhow!("Missing target"))?;
+        let target = args["target"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing target"))?;
 
         let controller_arc = get_browser_controller().await?;
         let mut ctrl = controller_arc.lock().await;
@@ -449,7 +482,10 @@ impl Tool for BrowserClickElementTool {
             elem.click()
                 .await
                 .map_err(|e| anyhow!("Failed to click element '{}': {}", target, e))?;
-            return Ok(format!("Successfully clicked element matching selector '{}'.", target));
+            return Ok(format!(
+                "Successfully clicked element matching selector '{}'.",
+                target
+            ));
         }
 
         // 2. Try finding by XPath containing visible text
@@ -458,7 +494,10 @@ impl Tool for BrowserClickElementTool {
             elem.click()
                 .await
                 .map_err(|e| anyhow!("Failed to click element with text '{}': {}", target, e))?;
-            return Ok(format!("Successfully clicked element with text '{}'.", target));
+            return Ok(format!(
+                "Successfully clicked element with text '{}'.",
+                target
+            ));
         }
 
         Err(anyhow!(
@@ -497,8 +536,12 @@ impl Tool for BrowserClickTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let x = args["x"].as_f64().ok_or_else(|| anyhow!("Missing x coordinate"))?;
-        let y = args["y"].as_f64().ok_or_else(|| anyhow!("Missing y coordinate"))?;
+        let x = args["x"]
+            .as_f64()
+            .ok_or_else(|| anyhow!("Missing x coordinate"))?;
+        let y = args["y"]
+            .as_f64()
+            .ok_or_else(|| anyhow!("Missing y coordinate"))?;
 
         let controller_arc = get_browser_controller().await?;
         let mut ctrl = controller_arc.lock().await;
@@ -535,7 +578,10 @@ impl Tool for BrowserClickTool {
         page.execute(press_params).await?;
         page.execute(release_params).await?;
 
-        Ok(format!("Successfully clicked at coordinates ({}, {}) on Chromium page.", x, y))
+        Ok(format!(
+            "Successfully clicked at coordinates ({}, {}) on Chromium page.",
+            x, y
+        ))
     }
 }
 
@@ -564,7 +610,9 @@ impl Tool for BrowserTypeTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let text = args["text"].as_str().ok_or_else(|| anyhow!("Missing text"))?;
+        let text = args["text"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing text"))?;
 
         let controller_arc = get_browser_controller().await?;
         let mut ctrl = controller_arc.lock().await;
