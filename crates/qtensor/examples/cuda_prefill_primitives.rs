@@ -87,6 +87,29 @@ fn main() -> anyhow::Result<()> {
     d_attention.copy_to_host(&mut attention)?;
     assert!(attention.iter().all(|value| value.is_finite()));
 
+    let mut d_geglu = CudaBuffer::alloc(BATCH * ROWS)?;
+    device.gemm_q4_0_geglu(
+        &d_weights, &d_weights, &d_input, &mut d_geglu, ROWS, COLS, BATCH,
+    );
+    device.sync()?;
+    let mut geglu = vec![0.0f32; d_geglu.len()];
+    d_geglu.copy_to_host(&mut geglu)?;
+    let mut d_single_geglu = CudaBuffer::alloc(ROWS)?;
+    for token in 0..BATCH {
+        device.copy_from_host_async(
+            &mut d_single_in,
+            &input[token * COLS..(token + 1) * COLS],
+        )?;
+        device.gemv_q4_0_geglu(
+            &d_weights, &d_weights, &d_single_in, &mut d_single_geglu, ROWS, COLS,
+        );
+        device.sync()?;
+        let mut expected = vec![0.0f32; ROWS];
+        d_single_geglu.copy_to_host(&mut expected)?;
+        assert!(geglu[token * ROWS..(token + 1) * ROWS]
+            .iter().zip(&expected).all(|(a, b)| (a - b).abs() < 1e-4));
+    }
+
     let iterations = 1_000;
     let started = Instant::now();
     for _ in 0..iterations {

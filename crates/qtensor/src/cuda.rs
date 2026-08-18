@@ -106,6 +106,11 @@ extern "C" {
         sliding_window: i32,
         stream: CudaStream,
     );
+    fn cuda_op_gemm_q4_0_geglu(
+        d_w_gate: *const u8, d_w_up: *const u8, d_x: *const f32,
+        d_act: *mut f32, n_rows: i32, n_cols: i32, batch: i32,
+        stream: CudaStream,
+    );
     fn cuda_op_attention_prefill(
         d_q: *const f32, d_k_cache: *const f32, d_v_cache: *const f32,
         d_out: *mut f32, cache_start: i32, batch: i32, n_heads: i32,
@@ -707,6 +712,23 @@ impl CudaDevice {
                 scale,
                 sw,
                 self.stream,
+            );
+        }
+    }
+
+    pub fn gemm_q4_0_geglu(
+        &self, d_w_gate: &CudaBuffer<u8>, d_w_up: &CudaBuffer<u8>,
+        d_x: &CudaBuffer<f32>, d_act: &mut CudaBuffer<f32>,
+        n_rows: usize, n_cols: usize, batch: usize,
+    ) {
+        assert_eq!(d_x.len(), n_cols * batch);
+        assert_eq!(d_act.len(), n_rows * batch);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_gemm_q4_0_geglu(
+                d_w_gate.as_ptr(), d_w_up.as_ptr(), d_x.as_ptr(),
+                d_act.as_mut_ptr(), n_rows as i32, n_cols as i32,
+                batch as i32, self.stream,
             );
         }
     }

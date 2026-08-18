@@ -787,6 +787,38 @@ void cuda_op_rms_norm(
     k_rms_norm_f32<<<1, threads, 0, stream>>>(d_x, d_w, d_out, dim, eps);
 }
 
+__global__ void k_gemm_q4_0_geglu_f32(
+    const uint8_t* w_gate, const uint8_t* w_up, const float* x, float* act,
+    int n_rows, int n_cols, int batch
+) {
+    int lane = threadIdx.x & 31, sublane = lane & 15, warp = threadIdx.x >> 5;
+    int rows_per_block = (blockDim.x / WARP_SIZE) * 2;
+    int row = blockIdx.x * rows_per_block + warp * 2 + (lane >> 4), token = blockIdx.y;
+    bool active = row < n_rows && token < batch;
+    int n_blocks = n_cols / 32, row_bytes = n_blocks * 18;
+    const uint8_t* gate_row = active ? w_gate + (size_t)row * row_bytes : w_gate;
+    const uint8_t* up_row = active ? w_up + (size_t)row * row_bytes : w_up;
+    const float* token_x = x + (size_t)token * n_cols;
+    float gate_sum = 0.0f, up_sum = 0.0f;
+    for (int b = 0; b < n_blocks; ++b) {
+        int off = b * 18;
+        uint16_t dg_raw = (uint16_t)gate_row[off] | ((uint16_t)gate_row[off + 1] << 8);
+        uint16_t du_raw = (uint16_t)up_row[off] | ((uint16_t)up_row[off + 1] << 8);
+        uint8_t bg = active ? gate_row[off + 2 + sublane] : 0;
+        uint8_t bu = active ? up_row[off + 2 + sublane] : 0;
+        float x0 = token_x[b * 32 + sublane], x1 = token_x[b * 32 + sublane + 16];
+        gate_sum += active ? __half2float(__ushort_as_half(dg_raw)) *
+            ((float)((bg & 15) - 8) * x0 + (float)((bg >> 4) - 8) * x1) : 0.0f;
+        up_sum += active ? __half2float(__ushort_as_half(du_raw)) *
+            ((float)((bu & 15) - 8) * x0 + (float)((bu >> 4) - 8) * x1) : 0.0f;
+    }
+    float gate = half_warp_reduce_sum(gate_sum), up = half_warp_reduce_sum(up_sum);
+    if (active && sublane == 0) {
+        float gelu = 0.5f * gate * (1.0f + tanhf(0.7978845608f * gate * (1.0f + 0.044715f * gate * gate)));
+        act[(size_t)token * n_rows + row] = gelu * up;
+    }
+}
+
 __global__ void k_attention_prefill_f32(
     const float* q, const float* k_cache, const float* v_cache, float* out,
     int cache_start, int batch, int n_heads, int n_kv_heads, int head_dim, int q_stride,
@@ -1183,6 +1215,16 @@ void cuda_op_attention(
         d_q, d_k_cache, d_v_cache, d_out,
         n_past, n_heads, n_kv_heads, head_dim, scale, sliding_window
     );
+}
+
+void cuda_op_gemm_q4_0_geglu(
+    const uint8_t* d_w_gate, const uint8_t* d_w_up, const float* d_x,
+    float* d_act, int n_rows, int n_cols, int batch, cudaStream_t stream
+) {
+    int threads = 128, rows_per_block = 2 * threads / WARP_SIZE;
+    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block, batch);
+    k_gemm_q4_0_geglu_f32<<<grid, threads, 0, stream>>>(
+        d_w_gate, d_w_up, d_x, d_act, n_rows, n_cols, batch);
 }
 
 void cuda_op_attention_prefill(
