@@ -10,6 +10,8 @@ use crate::kv_cache::{KvCacheFormat, KvCacheRow};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "cuda")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
@@ -205,6 +207,12 @@ pub struct QTensorModel {
     pub gpu_token_embd_table: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
     pub gpu_d_final_hidden: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_d_normalized_hidden: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    #[cfg(feature = "cuda")]
+    pub gpu_output_norm: Option<crate::cuda::CudaBuffer<f32>>,
+    #[cfg(feature = "cuda")]
+    gpu_normalized_ready: AtomicBool,
     #[cfg(feature = "cuda")]
     pub gpu_d_vocab_logits: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
@@ -747,14 +755,20 @@ impl QTensorModel {
         };
 
         #[cfg(feature = "cuda")]
-        let (gpu_d_final_hidden, gpu_d_vocab_logits) = if cuda_dev.is_some() {
+        let (gpu_d_final_hidden, gpu_d_normalized_hidden, gpu_d_vocab_logits) = if cuda_dev.is_some() {
             (
+                crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                 crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
                 crate::cuda::CudaBuffer::alloc_on(0, vocab_size).ok(),
             )
         } else {
-            (None, None)
+            (None, None, None)
         };
+
+        #[cfg(feature = "cuda")]
+        let gpu_output_norm = if cuda_dev.is_some() {
+            crate::cuda::CudaBuffer::from_host_on(0, &output_norm_weights).ok()
+        } else { None };
 
         #[cfg(feature = "cuda")]
         let (gpu_d_recent_tokens, gpu_d_topk_scores, gpu_d_topk_ids) = if cuda_dev.is_some() {
@@ -815,6 +829,12 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             gpu_d_final_hidden: parking_lot::Mutex::new(gpu_d_final_hidden),
             #[cfg(feature = "cuda")]
+            gpu_d_normalized_hidden: parking_lot::Mutex::new(gpu_d_normalized_hidden),
+            #[cfg(feature = "cuda")]
+            gpu_output_norm,
+            #[cfg(feature = "cuda")]
+            gpu_normalized_ready: AtomicBool::new(false),
+            #[cfg(feature = "cuda")]
             gpu_d_vocab_logits: parking_lot::Mutex::new(gpu_d_vocab_logits),
             #[cfg(feature = "cuda")]
             gpu_valid_vocab,
@@ -856,6 +876,8 @@ impl QTensorModel {
         k_cache: &mut [Vec<KvCacheRow>],
         v_cache: &mut [Vec<KvCacheRow>],
     ) -> Vec<f32> {
+        #[cfg(feature = "cuda")]
+        self.gpu_normalized_ready.store(false, Ordering::Release);
         let dim = self.config.dim;
         let profile = std::env::var_os("QTENSOR_PROFILE").is_some();
         let mut profile_qkv = std::time::Duration::ZERO;
@@ -1522,16 +1544,33 @@ impl QTensorModel {
             profile_ffn += profile_start.elapsed();
         }
 
+        let mut final_hidden = vec![0.0f32; dim];
         #[cfg(feature = "cuda")]
-        if resident_model {
-            if resident_hidden_guard.as_ref().unwrap().copy_to_host(&mut hidden).is_err() {
+        let normalized_on_gpu = if resident_model {
+            if let (Some(dev), Some(weights)) = (&self.cuda_dev, &self.gpu_output_norm) {
+                let mut normalized = self.gpu_d_normalized_hidden.lock();
+                if let Some(d_normalized) = normalized.as_mut() {
+                    dev.rms_norm(
+                        resident_hidden_guard.as_ref().unwrap(), Some(weights), d_normalized, 1e-6,
+                    );
+                    if d_normalized.copy_to_host(&mut final_hidden).is_ok() {
+                        self.gpu_normalized_ready.store(true, Ordering::Release);
+                        true
+                    } else { false }
+                } else { false }
+            } else { false }
+        } else { false };
+        #[cfg(not(feature = "cuda"))]
+        let normalized_on_gpu = false;
+        if !normalized_on_gpu {
+            #[cfg(feature = "cuda")]
+            if resident_model
+                && resident_hidden_guard.as_ref().unwrap().copy_to_host(&mut hidden).is_err()
+            {
                 return vec![0.0; dim];
             }
+            ops::rms_norm(&hidden, Some(&self.output_norm_weights), 1e-6, &mut final_hidden);
         }
-
-        // Final output RMSNorm
-        let mut final_hidden = vec![0.0f32; dim];
-        ops::rms_norm(&hidden, Some(&self.output_norm_weights), 1e-6, &mut final_hidden);
 
         if profile {
             eprintln!(
@@ -1847,7 +1886,7 @@ impl QTensorModel {
 
         #[cfg(feature = "cuda")]
         let gpu_scored: Option<Vec<(f32, i32)>> = if let (Some(ref dev), Some(ref g_table)) = (&self.cuda_dev, &self.gpu_token_embd_table) {
-            let mut hid_guard = self.gpu_d_final_hidden.lock();
+            let mut hid_guard = self.gpu_d_normalized_hidden.lock();
             let mut log_guard = self.gpu_d_vocab_logits.lock();
             let mut recent_guard = self.gpu_d_recent_tokens.lock();
             let mut scores_guard = self.gpu_d_topk_scores.lock();
@@ -1856,7 +1895,8 @@ impl QTensorModel {
                 hid_guard.as_mut(), log_guard.as_mut(), self.gpu_valid_vocab.as_ref(),
                 recent_guard.as_mut(), scores_guard.as_mut(), ids_guard.as_mut(),
             ) {
-                if dev.copy_from_host_async(d_hid, &state.hidden).is_ok() {
+                let resident_ready = self.gpu_normalized_ready.swap(false, Ordering::AcqRel);
+                if resident_ready || dev.copy_from_host_async(d_hid, &state.hidden).is_ok() {
                     dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
                     if std::env::var_os("QTENSOR_FULL_LOGITS").is_some() {
                         let mut logits = vec![0.0f32; self.config.vocab_size];
