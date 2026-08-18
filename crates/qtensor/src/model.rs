@@ -325,6 +325,11 @@ impl QTensorModel {
             .and_then(|file| unsafe { memmap2::Mmap::map(&file).ok() })
             .map(std::sync::Arc::new);
 
+        #[cfg(feature = "cuda")]
+        let gpu_activation_arena = if cuda_dev.is_some() {
+            crate::cuda::CudaArena::new(0, 8 * 1024 * 1024).ok()
+        } else { None };
+
         // Load layer weights
         let mut layers = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
@@ -436,13 +441,10 @@ impl QTensorModel {
             };
 
             #[cfg(feature = "cuda")]
-            let (gpu_d_moe_in, gpu_d_moe_exp_ids, gpu_d_moe_exp_weights, gpu_d_moe_act_scratch, gpu_d_moe_out) = if cuda_dev.is_some() {
+            let (gpu_d_moe_in, gpu_d_moe_exp_ids, gpu_d_moe_exp_weights, gpu_d_moe_act_scratch, gpu_d_moe_out) = if let Some(ref arena) = gpu_activation_arena {
                 (
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, 8).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, 8).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, 8 * exp_ffn_dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    arena.alloc(dim).ok(), arena.alloc(8).ok(), arena.alloc(8).ok(),
+                    arena.alloc(8 * exp_ffn_dim).ok(), arena.alloc(dim).ok(),
                 )
             } else {
                 (None, None, None, None, None)
@@ -467,30 +469,20 @@ impl QTensorModel {
             #[cfg(feature = "cuda")]
             let gpu_ffn_gate_inp_scale = crate::cuda::upload_if_full(cuda_dev.as_deref(), &ffn_gate_inp_scale, dim);
             #[cfg(feature = "cuda")]
-            let (gpu_d_router_in, gpu_d_router_logits) = if cuda_dev.is_some() {
+            let (gpu_d_router_in, gpu_d_router_logits) = if let Some(ref arena) = gpu_activation_arena {
                 (
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, 128).ok(),
+                    arena.alloc(dim).ok(), arena.alloc(128).ok(),
                 )
             } else { (None, None) };
 
             #[cfg(feature = "cuda")]
-            let (gpu_d_cur, gpu_d_hidden, gpu_d_attn_res, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_qkv, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if cuda_dev.is_some() {
+            let (gpu_d_cur, gpu_d_hidden, gpu_d_attn_res, gpu_d_q, gpu_d_k, gpu_d_v, gpu_d_qkv, gpu_d_attn_in, gpu_d_attn_out, gpu_d_mlp_in, gpu_d_mlp_gate, gpu_d_mlp_up, gpu_d_mlp_act, gpu_d_mlp_down) = if let Some(ref arena) = gpu_activation_arena {
                 (
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, q_dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, kv_dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, kv_dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, q_dim + 2 * kv_dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, q_dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, 2112).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, 2112).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, 2112).ok(),
-                    crate::cuda::CudaBuffer::alloc_on(0, dim).ok(),
+                    arena.alloc(dim).ok(), arena.alloc(dim).ok(), arena.alloc(dim).ok(),
+                    arena.alloc(q_dim).ok(), arena.alloc(kv_dim).ok(), arena.alloc(kv_dim).ok(),
+                    arena.alloc(q_dim + 2 * kv_dim).ok(), arena.alloc(q_dim).ok(),
+                    arena.alloc(dim).ok(), arena.alloc(dim).ok(), arena.alloc(2112).ok(),
+                    arena.alloc(2112).ok(), arena.alloc(2112).ok(), arena.alloc(dim).ok(),
                 )
             } else {
                 (None, None, None, None, None, None, None, None, None, None, None, None, None, None)

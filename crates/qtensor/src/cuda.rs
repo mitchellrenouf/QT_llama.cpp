@@ -2,6 +2,8 @@ use anyhow::{anyhow, Result};
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub type CudaStream = *mut c_void;
 
@@ -164,8 +166,78 @@ pub struct CudaBuffer<T> {
     ptr: *mut T,
     len: usize,
     device_id: i32,
-    pooled: bool,
+    allocation: CudaAllocation,
     _marker: PhantomData<T>,
+}
+
+enum CudaAllocation {
+    Owned,
+    Pooled,
+    Arena(Arc<CudaArenaAllocation>),
+}
+
+struct CudaArenaAllocation {
+    ptr: *mut c_void,
+    bytes: usize,
+    device_id: i32,
+}
+
+unsafe impl Send for CudaArenaAllocation {}
+unsafe impl Sync for CudaArenaAllocation {}
+
+impl Drop for CudaArenaAllocation {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                cudaSetDevice(self.device_id);
+                cudaFree(self.ptr);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct CudaArena {
+    allocation: Arc<CudaArenaAllocation>,
+    next: Arc<AtomicUsize>,
+}
+
+impl CudaArena {
+    pub fn new(device_id: i32, bytes: usize) -> Result<Self> {
+        unsafe { cudaSetDevice(device_id) };
+        let mut ptr = ptr::null_mut();
+        let status = unsafe { cudaMalloc(&mut ptr, bytes) };
+        if status != 0 || ptr.is_null() {
+            return Err(anyhow!("CUDA arena allocation of {bytes} bytes failed with code {status}"));
+        }
+        Ok(Self {
+            allocation: Arc::new(CudaArenaAllocation { ptr, bytes, device_id }),
+            next: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    pub fn alloc<T>(&self, len: usize) -> Result<CudaBuffer<T>> {
+        let bytes = len.checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| anyhow!("CUDA arena allocation size overflow"))?;
+        let aligned = (bytes + 255) & !255;
+        let offset = self.next.fetch_add(aligned, Ordering::Relaxed);
+        if offset + aligned > self.allocation.bytes {
+            self.next.fetch_sub(aligned, Ordering::Relaxed);
+            return Err(anyhow!("CUDA arena exhausted: requested {bytes} bytes, {} remain",
+                self.allocation.bytes.saturating_sub(offset)));
+        }
+        let ptr = unsafe { (self.allocation.ptr as *mut u8).add(offset) as *mut T };
+        Ok(CudaBuffer {
+            ptr,
+            len,
+            device_id: self.allocation.device_id,
+            allocation: CudaAllocation::Arena(self.allocation.clone()),
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn used_bytes(&self) -> usize { self.next.load(Ordering::Relaxed) }
+    pub fn capacity_bytes(&self) -> usize { self.allocation.bytes }
 }
 
 pub fn upload_if_full<T: Copy>(
@@ -197,7 +269,7 @@ impl<T> CudaBuffer<T> {
             ptr: raw_ptr as *mut T,
             len,
             device_id,
-            pooled: false,
+            allocation: CudaAllocation::Owned,
             _marker: PhantomData,
         })
     }
@@ -210,7 +282,7 @@ impl<T> CudaBuffer<T> {
         if res != 0 || raw_ptr.is_null() {
             return Err(anyhow!("CUDA pooled allocation failed on GPU {} with code {}", device_id, res));
         }
-        Ok(Self { ptr: raw_ptr as *mut T, len, device_id, pooled: true, _marker: PhantomData })
+        Ok(Self { ptr: raw_ptr as *mut T, len, device_id, allocation: CudaAllocation::Pooled, _marker: PhantomData })
     }
 
     pub fn alloc(len: usize) -> Result<Self> {
@@ -313,13 +385,11 @@ impl<T> Drop for CudaBuffer<T> {
         if !self.ptr.is_null() {
             unsafe {
                 cudaSetDevice(self.device_id);
-                if self.pooled {
-                    cuda_pool_release(
-                        self.ptr as *mut c_void,
-                        self.len * std::mem::size_of::<T>(),
-                    );
-                } else {
-                    cudaFree(self.ptr as *mut c_void);
+                match &self.allocation {
+                    CudaAllocation::Pooled => cuda_pool_release(
+                        self.ptr as *mut c_void, self.len * std::mem::size_of::<T>()),
+                    CudaAllocation::Owned => { cudaFree(self.ptr as *mut c_void); }
+                    CudaAllocation::Arena(owner) => { let _ = owner; }
                 }
             };
         }
@@ -1073,6 +1143,20 @@ impl Drop for CudaDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arena_returns_stable_aligned_non_overlapping_views() -> Result<()> {
+        if !CudaDevice::is_available() { return Ok(()); }
+        let arena = CudaArena::new(0, 4096)?;
+        let first = arena.alloc::<u8>(257)?;
+        let second = arena.alloc::<f32>(64)?;
+        assert_eq!((first.as_ptr() as usize) & 255, 0);
+        assert_eq!((second.as_ptr() as usize) & 255, 0);
+        assert!(second.as_ptr() as usize >= first.as_ptr() as usize + 512);
+        assert_eq!(arena.used_bytes(), 768);
+        assert_eq!(arena.capacity_bytes(), 4096);
+        Ok(())
+    }
 
     #[test]
     fn moe_router_matches_cpu_top8_and_softmax() -> Result<()> {
