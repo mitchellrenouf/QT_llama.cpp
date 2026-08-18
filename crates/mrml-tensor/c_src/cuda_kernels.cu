@@ -1020,7 +1020,6 @@ __global__ void k_gemm_q4_0_geglu_f32(
         }
     }
 }
-
 __global__ void k_attention_prefill_f32(
     const float* q, const uint8_t* k_cache, const uint8_t* v_cache, float* out,
     int cache_start, int batch, int n_heads, int n_kv_heads, int head_dim, int q_stride,
@@ -1213,6 +1212,78 @@ __global__ void k_vocab_topk_f32(
     }
 }
 
+// Load each vocabulary partition once, then sort it in shared memory. The
+// selection kernel above is a useful low-memory fallback, but rescans every
+// logit K times. Gemma's 262144-token vocabulary with 128 partitions has
+// exactly 2048 entries per partition and fits comfortably in shared memory.
+__global__ void k_vocab_topk_bitonic_f32(
+    const float* __restrict__ logits,
+    const uint8_t* __restrict__ valid,
+    const int32_t* __restrict__ recent,
+    float* __restrict__ out_scores,
+    int32_t* __restrict__ out_ids,
+    int vocab_size,
+    int n_recent,
+    int generated_count,
+    int k
+) {
+    constexpr int partition_capacity = 2048;
+    __shared__ float scores[partition_capacity];
+    __shared__ int32_t ids[partition_capacity];
+    const int partition_start = (int)(((long long)vocab_size * blockIdx.x) / gridDim.x);
+    const int partition_end = (int)(((long long)vocab_size * (blockIdx.x + 1)) / gridDim.x);
+    const int count = partition_end - partition_start;
+
+    for (int local = threadIdx.x; local < partition_capacity; local += blockDim.x) {
+        const int id = partition_start + local;
+        float score = -3.402823466e+38F;
+        int32_t stored_id = -1;
+        if (local < count && valid[id]
+            && !(generated_count < 4 && (id == 1 || id == 2 || id == 105 || id == 106))) {
+            score = logits[id];
+            #pragma unroll
+            for (int r = 0; r < 32; ++r) {
+                if (r < n_recent && recent[r] == id) score -= 1.8f;
+            }
+            stored_id = id;
+        }
+        scores[local] = score;
+        ids[local] = stored_id;
+    }
+    __syncthreads();
+
+    // Ascending bitonic network; the largest K values end up at the tail.
+    for (unsigned size = 2; size <= partition_capacity; size <<= 1) {
+        for (unsigned stride = size >> 1; stride > 0; stride >>= 1) {
+            for (unsigned index = threadIdx.x; index < partition_capacity; index += blockDim.x) {
+                const unsigned other = index ^ stride;
+                if (other > index) {
+                    const bool ascending = (index & size) == 0;
+                    const float a_score = scores[index];
+                    const float b_score = scores[other];
+                    const int32_t a_id = ids[index];
+                    const int32_t b_id = ids[other];
+                    const bool a_after_b = a_score > b_score
+                        || (a_score == b_score && a_id >= 0 && (b_id < 0 || a_id < b_id));
+                    if (a_after_b == ascending) {
+                        scores[index] = b_score;
+                        scores[other] = a_score;
+                        ids[index] = b_id;
+                        ids[other] = a_id;
+                    }
+                }
+            }
+            __syncthreads();
+        }
+    }
+
+    for (int rank = threadIdx.x; rank < k; rank += blockDim.x) {
+        const int source = partition_capacity - 1 - rank;
+        out_scores[blockIdx.x * k + rank] = scores[source];
+        out_ids[blockIdx.x * k + rank] = ids[source];
+    }
+}
+
 void cuda_op_gemv_q4_0_qkv(
     const uint8_t* d_w_q,
     const uint8_t* d_w_k,
@@ -1328,11 +1399,19 @@ void cuda_op_vocab_topk(
     cudaStream_t stream
 ) {
     const int threads = 256;
-    const int shared = (32 * (sizeof(float) + sizeof(int32_t))) + k * sizeof(int32_t);
-    k_vocab_topk_f32<<<partitions, threads, shared, stream>>>(
-        d_logits, d_valid, d_recent, d_scores, d_ids,
-        vocab_size, n_recent, generated_count, k
-    );
+    const int max_partition = (vocab_size + partitions - 1) / partitions;
+    if (max_partition <= 2048 && k >= 8) {
+        k_vocab_topk_bitonic_f32<<<partitions, threads, 0, stream>>>(
+            d_logits, d_valid, d_recent, d_scores, d_ids,
+            vocab_size, n_recent, generated_count, k
+        );
+    } else {
+        const int shared = (32 * (sizeof(float) + sizeof(int32_t))) + k * sizeof(int32_t);
+        k_vocab_topk_f32<<<partitions, threads, shared, stream>>>(
+            d_logits, d_valid, d_recent, d_scores, d_ids,
+            vocab_size, n_recent, generated_count, k
+        );
+    }
 }
 
 void cuda_op_add(

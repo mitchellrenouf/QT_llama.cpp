@@ -1930,15 +1930,17 @@ impl MrmlModel {
                         recent_upload[..recent_tokens.len()].copy_from_slice(&recent_tokens);
                         if dev.copy_from_host_async(d_recent, &recent_upload).is_ok() {
                             const PARTITIONS: usize = 128;
-                            const K: usize = 40;
+                            let candidate_count = if temperature <= 0.0 { 1 } else { 40 };
                             dev.vocab_topk(
                                 d_log, valid, d_recent, d_scores, d_ids,
                                 self.config.vocab_size, recent_tokens.len(), generated_count,
-                                K, PARTITIONS,
+                                candidate_count, PARTITIONS,
                             );
-                            let mut scores = vec![0.0f32; PARTITIONS * K];
-                            let mut ids = vec![0i32; PARTITIONS * K];
+                            let mut scores = vec![0.0f32; PARTITIONS * 40];
+                            let mut ids = vec![0i32; PARTITIONS * 40];
                             if d_scores.copy_to_host(&mut scores).is_ok() && d_ids.copy_to_host(&mut ids).is_ok() {
+                                scores.truncate(PARTITIONS * candidate_count);
+                                ids.truncate(PARTITIONS * candidate_count);
                                 Some(scores.into_iter().zip(ids).filter(|(_, id)| *id >= 0).collect())
                             } else {
                                 None
@@ -2011,7 +2013,9 @@ impl MrmlModel {
             sum_exp += p;
         }
 
-        let best_token = if sum_exp > 0.0 {
+        let best_token = if temperature <= 0.0 {
+            all_scored.first().map(|x| x.1).unwrap_or(506)
+        } else if sum_exp > 0.0 {
             let rng_val = (((state.pos as u64).wrapping_mul(6364136223846793005).wrapping_add(1) >> 33) as f32) / (u32::MAX as f32);
             let mut acc = 0.0f32;
             let mut chosen = all_scored[0].1;
