@@ -6,6 +6,7 @@ use crate::quant::dequantize_q8_0;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use crate::kv_cache::{KvCacheFormat, KvCacheRow};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -167,8 +168,8 @@ pub struct GenerationState {
     pub generated_count: usize,
     pub history_tokens: Vec<i32>,
     pub hidden: Vec<f32>,
-    pub k_cache: Vec<Vec<Vec<f32>>>, // [n_layers][seq_len][kv_dim]
-    pub v_cache: Vec<Vec<Vec<f32>>>, // [n_layers][seq_len][kv_dim]
+    pub k_cache: Vec<Vec<KvCacheRow>>, // [n_layers][seq_len]
+    pub v_cache: Vec<Vec<KvCacheRow>>, // [n_layers][seq_len]
 }
 
 pub struct QTensorModel {
@@ -181,6 +182,8 @@ pub struct QTensorModel {
     pub valid_vocab_token: Vec<bool>,
     pub chat_template: Option<String>,
     pub gguf_path: PathBuf,
+    pub cache_type_k: KvCacheFormat,
+    pub cache_type_v: KvCacheFormat,
     pub token_embd_info: Option<GgufTensorInfo>,
     pub output_norm_weights: Vec<f32>,
     pub layers: Vec<TransformerLayer>,
@@ -688,6 +691,8 @@ impl QTensorModel {
             valid_vocab_token,
             chat_template,
             gguf_path,
+            cache_type_k: KvCacheFormat::F32,
+            cache_type_v: KvCacheFormat::F32,
             token_embd_info,
             output_norm_weights,
             layers,
@@ -739,8 +744,8 @@ impl QTensorModel {
         &self,
         token_id: i32,
         pos: usize,
-        k_cache: &mut [Vec<Vec<f32>>],
-        v_cache: &mut [Vec<Vec<f32>>],
+        k_cache: &mut [Vec<KvCacheRow>],
+        v_cache: &mut [Vec<KvCacheRow>],
     ) -> Vec<f32> {
         let dim = self.config.dim;
         let profile = std::env::var_os("QTENSOR_PROFILE").is_some();
@@ -902,11 +907,11 @@ impl QTensorModel {
 
             // Store into KV cache
             if gpu_qkv_pipeline {
-                k_cache[l].push(Vec::new());
-                v_cache[l].push(Vec::new());
+                k_cache[l].push(KvCacheRow::Empty);
+                v_cache[l].push(KvCacheRow::Empty);
             } else {
-                k_cache[l].push(k.clone());
-                v_cache[l].push(v.clone());
+                k_cache[l].push(KvCacheRow::from_f32(&k, self.cache_type_k));
+                v_cache[l].push(KvCacheRow::from_f32(&v, self.cache_type_v));
             }
 
             // Multi-head Attention
@@ -984,25 +989,19 @@ impl QTensorModel {
             if !attention_used_gpu { for h in 0..layer.n_heads {
                 let kv_h = h / (layer.n_heads / layer.n_kv_heads);
                 let q_head = &q[h * layer.head_dim..(h + 1) * layer.head_dim];
+                let mut q_head_q8 = vec![0u8; layer.head_dim / 32 * 34];
+                crate::quant::quantize_f32_to_q8_0(q_head, &mut q_head_q8);
 
                 for (idx, t) in (start_t..seq_len).enumerate() {
-                    let k_t = &k_cache[l][t][kv_h * layer.head_dim..(kv_h + 1) * layer.head_dim];
-                    let mut dot = 0.0f32;
-                    for d in 0..layer.head_dim {
-                        dot += q_head[d] * k_t[d];
-                    }
-                    scores[idx] = dot; // f_attention_scale = 1.0 in Gemma 4
+                    scores[idx] = k_cache[l][t].dot_head(q_head, &q_head_q8, kv_h * layer.head_dim);
                 }
 
                 ops::softmax(&mut scores);
 
                 let out_head = &mut attn_out[h * layer.head_dim..(h + 1) * layer.head_dim];
                 for (idx, t) in (start_t..seq_len).enumerate() {
-                    let v_t = &v_cache[l][t][kv_h * layer.head_dim..(kv_h + 1) * layer.head_dim];
                     let s = scores[idx];
-                    for d in 0..layer.head_dim {
-                        out_head[d] += s * v_t[d];
-                    }
+                    v_cache[l][t].add_head_scaled(out_head, kv_h * layer.head_dim, s);
                 }
             } }
             profile_attention += profile_start.elapsed();

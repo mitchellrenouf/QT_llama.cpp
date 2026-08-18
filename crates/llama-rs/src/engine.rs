@@ -20,11 +20,16 @@ impl LlamaEngine {
         model_path: P,
         _n_gpu_layers: i32,
         ctx_size: u32,
-        _cache_type_k: &str,
-        _cache_type_v: &str,
+        cache_type_k: &str,
+        cache_type_v: &str,
         _backend: Option<&str>,
     ) -> Result<Self> {
-        let inner = QTensorEngine::new(model_path, ctx_size as usize)?;
+        let automatic = if ctx_size >= 131_072 { "q4_0" } else { "f16" };
+        let cache_type_k = if cache_type_k == "auto" { automatic } else { cache_type_k };
+        let cache_type_v = if cache_type_v == "auto" { automatic } else { cache_type_v };
+        let inner = QTensorEngine::new_with_cache(
+            model_path, ctx_size as usize, cache_type_k, cache_type_v,
+        )?;
         Ok(Self {
             inner: Arc::new(inner),
         })

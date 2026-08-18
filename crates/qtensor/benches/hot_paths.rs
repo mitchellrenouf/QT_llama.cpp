@@ -4,6 +4,7 @@ use qtensor::ops::{
 use qtensor::quant::{f16_to_f32, f32_to_f16, quantize_f32_to_q8_0, vec_dot_q8_0_q8_0};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
+use qtensor::{KvCacheFormat, KvCacheRow};
 
 fn elapsed_best(mut f: impl FnMut(), rounds: usize) -> Duration {
     (0..rounds)
@@ -161,4 +162,25 @@ fn main() {
         quant_vocab,
         float_vocab.as_secs_f64() / quant_vocab.as_secs_f64()
     );
+
+    let kv_dim = 1024;
+    let context = 8192;
+    let head_dim = 256;
+    let kv_values: Vec<f32> = (0..kv_dim).map(|i| (i as f32 * 0.031).sin()).collect();
+    let query: Vec<f32> = (0..head_dim).map(|i| (i as f32 * 0.021).cos()).collect();
+    let mut query_q8 = vec![0; head_dim / 32 * 34];
+    quantize_f32_to_q8_0(&query, &mut query_q8);
+    for format in [KvCacheFormat::F32, KvCacheFormat::Q8, KvCacheFormat::Q4] {
+        let cache: Vec<_> = (0..context).map(|_| KvCacheRow::from_f32(&kv_values, format)).collect();
+        let bytes = match format { KvCacheFormat::F32 => 4 * kv_dim, KvCacheFormat::Q8 => 34 * kv_dim / 32, KvCacheFormat::Q4 => 18 * kv_dim / 32 };
+        let scan = elapsed_best(|| {
+            let mut out = vec![0.0f32; head_dim];
+            for row in &cache {
+                let score = row.dot_head(&query, &query_q8, 0);
+                row.add_head_scaled(&mut out, 0, score * 0.0001);
+            }
+            black_box(out);
+        }, 5);
+        println!("{format:?} KV attention scan (8k): {:?}, {:.1} MiB", scan, (bytes * context) as f64 / 1_048_576.0);
+    }
 }

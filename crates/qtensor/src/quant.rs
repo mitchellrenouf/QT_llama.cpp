@@ -171,11 +171,31 @@ pub fn quantize_f32_to_q8_0(src: &[f32], dst: &mut [u8]) {
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avxvnni")]
+unsafe fn avx_vnni_dpwssd(acc: __m256i, lhs: __m256i, rhs: __m256i) -> __m256i {
+    let mut result = acc;
+    core::arch::asm!(
+        // VEX.256.66.0F38.W0 52 /r: vpdpwssd ymm0, ymm1, ymm2.
+        // The mnemonic currently selects the EVEX/AVX-512VL encoding in LLVM's
+        // integrated assembler, so spell out the AVX-VNNI encoding.
+        ".byte 0xc4, 0xe2, 0x75, 0x52, 0xc2",
+        inout("ymm0") result,
+        in("ymm1") lhs,
+        in("ymm2") rhs,
+        options(pure, nomem, nostack),
+    );
+    result
+}
+
 /// Fast dot product between Q4_0 row (weights) and Q8_0 column (activations) with AVX2 SIMD
 #[inline]
 pub fn vec_dot_q4_0_q8_0(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
+        if avx_vnni_enabled() {
+            unsafe { return vec_dot_q4_0_q8_0_avx_vnni(w_q4, a_q8, n_elements); }
+        }
         if is_x86_feature_detected!("avx2") {
             unsafe {
                 return vec_dot_q4_0_q8_0_avx2(w_q4, a_q8, n_elements);
@@ -282,16 +302,116 @@ fn vec_dot_q4_0_q8_0_scalar(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 
     sum
 }
 
+/// Quantize F32 values into GGML Q4_0 blocks (32 values per 18-byte block).
+pub fn quantize_f32_to_q4_0(src: &[f32], dst: &mut [u8]) {
+    assert_eq!(src.len() % 32, 0);
+    assert!(dst.len() >= src.len() / 32 * 18);
+    for (block_index, values) in src.chunks_exact(32).enumerate() {
+        let max_abs = values.iter().fold(0.0f32, |max, value| max.max(value.abs()));
+        let scale = if max_abs > 0.0 { max_abs / 8.0 } else { 0.0 };
+        let offset = block_index * 18;
+        dst[offset..offset + 2].copy_from_slice(&f32_to_f16(scale).to_le_bytes());
+        let inverse = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+        for index in 0..16 {
+            let low = ((values[index] * inverse).round() as i32).clamp(-8, 7) + 8;
+            let high = ((values[index + 16] * inverse).round() as i32).clamp(-8, 7) + 8;
+            dst[offset + 2 + index] = low as u8 | ((high as u8) << 4);
+        }
+    }
+}
+
+/// AVX-VNNI is opt-in until all supported Rust/LLVM assemblers are known to
+/// emit the VEX form. Some toolchains incorrectly encode these intrinsics as
+/// AVX-512VL, which faults on otherwise AVX-VNNI-capable processors.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn avx_vnni_enabled() -> bool {
+    is_x86_feature_detected!("avxvnni")
+}
+
+#[cfg(test)]
+mod simd_tests {
+    use super::*;
+
+    #[test]
+    fn dispatched_dots_match_scalar() {
+        let values: Vec<f32> = (0..256).map(|i| ((i * 37 % 101) as f32 - 50.0) / 13.0).collect();
+        let other: Vec<f32> = (0..256).map(|i| ((i * 19 % 89) as f32 - 44.0) / 11.0).collect();
+        let mut q4 = vec![0u8; values.len() / 32 * 18];
+        let mut q8_a = vec![0u8; values.len() / 32 * 34];
+        let mut q8_b = vec![0u8; other.len() / 32 * 34];
+        quantize_f32_to_q4_0(&values, &mut q4);
+        quantize_f32_to_q8_0(&values, &mut q8_a);
+        quantize_f32_to_q8_0(&other, &mut q8_b);
+        let q4_scalar = vec_dot_q4_0_q8_0_scalar(&q4, &q8_b, values.len());
+        let q8_scalar = vec_dot_q8_0_q8_0_scalar(&q8_a, &q8_b, values.len());
+        assert!((vec_dot_q4_0_q8_0(&q4, &q8_b, values.len()) - q4_scalar).abs() < 1e-3);
+        assert!((vec_dot_q8_0_q8_0(&q8_a, &q8_b, values.len()) - q8_scalar).abs() < 1e-3);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avxvnni")]
+unsafe fn vec_dot_q4_0_q8_0_avx_vnni(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 {
+    let mut sum = 0.0f32;
+    let mask = _mm_set1_epi8(0x0f);
+    for block in 0..n_elements / 32 {
+        let w_off = block * 18;
+        let a_off = block * 34;
+        let scale = f16_to_f32(u16::from_le_bytes([*w_q4.get_unchecked(w_off), *w_q4.get_unchecked(w_off + 1)]))
+            * f16_to_f32(u16::from_le_bytes([*a_q8.get_unchecked(a_off), *a_q8.get_unchecked(a_off + 1)]));
+        let packed = _mm_loadu_si128(w_q4.as_ptr().add(w_off + 2) as *const __m128i);
+        let low = _mm_sub_epi8(_mm_and_si128(packed, mask), _mm_set1_epi8(8));
+        let high = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16(packed, 4), mask), _mm_set1_epi8(8));
+        let q8_low = _mm_loadu_si128(a_q8.as_ptr().add(a_off + 2) as *const __m128i);
+        let q8_high = _mm_loadu_si128(a_q8.as_ptr().add(a_off + 18) as *const __m128i);
+        let mut dot = avx_vnni_dpwssd(
+            _mm256_setzero_si256(), _mm256_cvtepi8_epi16(low), _mm256_cvtepi8_epi16(q8_low));
+        dot = avx_vnni_dpwssd(dot, _mm256_cvtepi8_epi16(high), _mm256_cvtepi8_epi16(q8_high));
+        let mut lanes = [0i32; 8];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, dot);
+        sum += lanes.iter().sum::<i32>() as f32 * scale;
+    }
+    sum
+}
+
 /// Dot product between two Q8_0 vectors. This is used by the tied Q8_0 token
 /// embedding/output matrix and mirrors llama.cpp's Q8_0 x Q8_0 decode path.
 #[inline]
 pub fn vec_dot_q8_0_q8_0(x: &[u8], y: &[u8], n_elements: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    if avx_vnni_enabled() {
+        return unsafe { vec_dot_q8_0_q8_0_avx_vnni(x, y, n_elements) };
+    }
     #[cfg(target_arch = "x86_64")]
     if is_x86_feature_detected!("avx2") {
         return unsafe { vec_dot_q8_0_q8_0_avx2(x, y, n_elements) };
     }
 
     vec_dot_q8_0_q8_0_scalar(x, y, n_elements)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,avxvnni")]
+unsafe fn vec_dot_q8_0_q8_0_avx_vnni(x: &[u8], y: &[u8], n_elements: usize) -> f32 {
+    let mut sum = 0.0f32;
+    for block in 0..n_elements / 32 {
+        let x_off = block * 34;
+        let y_off = block * 34;
+        let scale = f16_to_f32(u16::from_le_bytes([*x.get_unchecked(x_off), *x.get_unchecked(x_off + 1)]))
+            * f16_to_f32(u16::from_le_bytes([*y.get_unchecked(y_off), *y.get_unchecked(y_off + 1)]));
+        let x_low = _mm_loadu_si128(x.as_ptr().add(x_off + 2) as *const __m128i);
+        let x_high = _mm_loadu_si128(x.as_ptr().add(x_off + 18) as *const __m128i);
+        let y_low = _mm_loadu_si128(y.as_ptr().add(y_off + 2) as *const __m128i);
+        let y_high = _mm_loadu_si128(y.as_ptr().add(y_off + 18) as *const __m128i);
+        let mut dot = avx_vnni_dpwssd(
+            _mm256_setzero_si256(), _mm256_cvtepi8_epi16(x_low), _mm256_cvtepi8_epi16(y_low));
+        dot = avx_vnni_dpwssd(dot, _mm256_cvtepi8_epi16(x_high), _mm256_cvtepi8_epi16(y_high));
+        let mut lanes = [0i32; 8];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, dot);
+        sum += lanes.iter().sum::<i32>() as f32 * scale;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -19,7 +19,7 @@ pub use gguf::{GgufFile, GgufTensorInfo, GgufValue};
 pub use tensor::{Tensor, TensorStorage};
 pub use graph::{CGraph, Node, OpType};
 pub use device::{DeviceManager, DeviceType};
-pub use kv_cache::{KvCacheManager, LayerKvCache, PrefixCache};
+pub use kv_cache::{KvCacheFormat, KvCacheManager, KvCacheRow, LayerKvCache, PrefixCache};
 pub use speculative::SpeculativeDecoder;
 pub use model::{ModelConfig, QTensorModel};
 pub use engine::QTensorEngine;

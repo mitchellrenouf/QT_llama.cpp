@@ -33,6 +33,18 @@ impl QTensorEngine {
         guard.is_eog_token(token)
     }
 
+    pub fn new_with_cache<P: AsRef<Path>>(
+        model_path: P,
+        max_context: usize,
+        cache_type_k: &str,
+        cache_type_v: &str,
+    ) -> Result<Self> {
+        let mut model = QTensorModel::load_from_gguf(model_path, max_context)?;
+        model.cache_type_k = crate::kv_cache::KvCacheFormat::parse(cache_type_k)?;
+        model.cache_type_v = crate::kv_cache::KvCacheFormat::parse(cache_type_v)?;
+        Ok(Self { model: Arc::new(Mutex::new(model)) })
+    }
+
     pub fn chat_template(&self) -> Option<String> {
         let guard = self.model.lock().unwrap();
         guard.chat_template.clone()
