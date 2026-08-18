@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub type CudaStream = *mut c_void;
+type CudaGraphHandle = *mut c_void;
+type CudaGraphExecHandle = *mut c_void;
 
 #[allow(dead_code)]
 #[repr(C)]
@@ -34,6 +36,13 @@ extern "C" {
     fn cudaStreamCreate(stream: *mut CudaStream) -> i32;
     fn cudaStreamDestroy(stream: CudaStream) -> i32;
     fn cudaStreamSynchronize(stream: CudaStream) -> i32;
+    fn cudaStreamBeginCapture(stream: CudaStream, mode: i32) -> i32;
+    fn cudaStreamEndCapture(stream: CudaStream, graph: *mut CudaGraphHandle) -> i32;
+    fn cudaGraphInstantiate(exec: *mut CudaGraphExecHandle, graph: CudaGraphHandle,
+        error_node: *mut *mut c_void, log_buffer: *mut i8, buffer_size: usize) -> i32;
+    fn cudaGraphLaunch(exec: CudaGraphExecHandle, stream: CudaStream) -> i32;
+    fn cudaGraphDestroy(graph: CudaGraphHandle) -> i32;
+    fn cudaGraphExecDestroy(exec: CudaGraphExecHandle) -> i32;
     fn cudaDeviceSynchronize() -> i32;
     fn cuda_pool_alloc(pointer: *mut *mut c_void, bytes: usize) -> i32;
     fn cuda_pool_release(pointer: *mut c_void, bytes: usize);
@@ -402,6 +411,25 @@ pub struct CudaDevice {
     stream: CudaStream,
 }
 
+pub struct CudaGraphExec {
+    handle: CudaGraphExecHandle,
+    device_id: i32,
+}
+
+unsafe impl Send for CudaGraphExec {}
+unsafe impl Sync for CudaGraphExec {}
+
+impl Drop for CudaGraphExec {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                cudaSetDevice(self.device_id);
+                cudaGraphExecDestroy(self.handle);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaDeviceInfo {
     pub device_id: i32,
@@ -426,6 +454,44 @@ unsafe impl Send for CudaDevice {}
 unsafe impl Sync for CudaDevice {}
 
 impl CudaDevice {
+    pub fn capture<F>(&self, launches: F) -> Result<CudaGraphExec>
+    where F: FnOnce() -> Result<()> {
+        unsafe { cudaSetDevice(self.device_id) };
+        // Thread-local capture prevents an invalid capture from poisoning work
+        // submitted by another inference/test thread.
+        let status = unsafe { cudaStreamBeginCapture(self.stream, 1) };
+        if status != 0 { return Err(anyhow!("cudaStreamBeginCapture failed with code {status}")); }
+        if let Err(error) = launches() {
+            let mut discarded = ptr::null_mut();
+            unsafe {
+                cudaStreamEndCapture(self.stream, &mut discarded);
+                if !discarded.is_null() { cudaGraphDestroy(discarded); }
+            }
+            return Err(error);
+        }
+        let mut graph = ptr::null_mut();
+        let status = unsafe { cudaStreamEndCapture(self.stream, &mut graph) };
+        if status != 0 || graph.is_null() {
+            return Err(anyhow!("cudaStreamEndCapture failed with code {status}"));
+        }
+        let mut exec = ptr::null_mut();
+        let status = unsafe {
+            cudaGraphInstantiate(&mut exec, graph, ptr::null_mut(), ptr::null_mut(), 0)
+        };
+        unsafe { cudaGraphDestroy(graph) };
+        if status != 0 || exec.is_null() {
+            return Err(anyhow!("cudaGraphInstantiate failed with code {status}"));
+        }
+        Ok(CudaGraphExec { handle: exec, device_id: self.device_id })
+    }
+
+    pub fn launch_graph(&self, graph: &CudaGraphExec) -> Result<()> {
+        unsafe { cudaSetDevice(self.device_id) };
+        let status = unsafe { cudaGraphLaunch(graph.handle, self.stream) };
+        if status != 0 { return Err(anyhow!("cudaGraphLaunch failed with code {status}")); }
+        Ok(())
+    }
+
     pub fn device_info(device_id: i32) -> Result<CudaDeviceInfo> {
         // cudaDevAttrMultiProcessorCount=16, ComputeCapabilityMajor=75,
         // ComputeCapabilityMinor=76. These ABI values are stable in cudart.
@@ -1143,9 +1209,11 @@ impl Drop for CudaDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    static CUDA_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn arena_returns_stable_aligned_non_overlapping_views() -> Result<()> {
+        let _serial = CUDA_TEST_LOCK.lock().unwrap();
         if !CudaDevice::is_available() { return Ok(()); }
         let arena = CudaArena::new(0, 4096)?;
         let first = arena.alloc::<u8>(257)?;
@@ -1159,7 +1227,37 @@ mod tests {
     }
 
     #[test]
+    fn captured_kernel_graph_replays_with_stable_arena_buffers() -> Result<()> {
+        let _serial = CUDA_TEST_LOCK.lock().unwrap();
+        if !CudaDevice::is_available() { return Ok(()); }
+        let device = CudaDevice::new(0)?;
+        let arena = CudaArena::new(0, 4096)?;
+        let mut a = arena.alloc::<f32>(64)?;
+        let mut b = arena.alloc::<f32>(64)?;
+        let mut output = arena.alloc::<f32>(64)?;
+        a.copy_from_host(&vec![1.25; 64])?;
+        b.copy_from_host(&vec![2.5; 64])?;
+        let graph = device.capture(|| {
+            // Captured sections must contain launches only. The ordinary Rust
+            // wrappers select a device defensively before each launch, which
+            // CUDA intentionally rejects while a stream is being captured.
+            unsafe {
+                cuda_op_add(a.as_ptr(), b.as_ptr(), output.as_mut_ptr(), 64, device.stream);
+            }
+            Ok(())
+        })?;
+        device.launch_graph(&graph)?;
+        device.launch_graph(&graph)?;
+        device.sync()?;
+        let mut actual = vec![0.0; 64];
+        output.copy_to_host(&mut actual)?;
+        assert!(actual.iter().all(|value| (*value - 3.75).abs() < 1e-6));
+        Ok(())
+    }
+
+    #[test]
     fn moe_router_matches_cpu_top8_and_softmax() -> Result<()> {
+        let _serial = CUDA_TEST_LOCK.lock().unwrap();
         if !CudaDevice::is_available() {
             return Ok(());
         }
@@ -1212,6 +1310,7 @@ mod tests {
 
     #[test]
     fn fused_ffn_residual_pipeline_matches_cpu() -> Result<()> {
+        let _serial = CUDA_TEST_LOCK.lock().unwrap();
         if !CudaDevice::is_available() { return Ok(()); }
         const DIM: usize = 257;
         let values = |seed: usize| -> Vec<f32> {
