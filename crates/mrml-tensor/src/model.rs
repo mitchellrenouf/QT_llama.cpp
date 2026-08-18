@@ -201,7 +201,7 @@ pub struct MrmlModel {
     pub layers: Vec<TransformerLayer>,
     pub data_offset: u64,
     pub token_embd_table: Vec<u8>,
-    pub mmap: Option<std::sync::Arc<memmap2::Mmap>>,
+    pub mmap: Option<std::sync::Arc<crate::mmap::Mmap>>,
     #[cfg(feature = "cuda")]
     pub cuda_dev: Option<std::sync::Arc<crate::cuda::CudaDevice>>,
     #[cfg(feature = "cuda")]
@@ -378,7 +378,7 @@ impl MrmlModel {
 
         let mmap = File::open(&gguf_path)
             .ok()
-            .and_then(|file| unsafe { memmap2::Mmap::map(&file).ok() })
+            .and_then(|file| crate::mmap::Mmap::map(&file).ok())
             .map(std::sync::Arc::new);
 
         #[cfg(feature = "cuda")]

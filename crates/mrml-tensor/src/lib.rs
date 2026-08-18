@@ -10,6 +10,7 @@ pub mod speculative;
 pub mod model;
 pub mod engine;
 pub mod execution_plan;
+pub mod mmap;
 #[doc(hidden)]
 pub mod sync;
 
