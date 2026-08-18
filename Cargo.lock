@@ -1487,18 +1487,12 @@ dependencies = [
 name = "mrml-model"
 version = "0.4.0"
 dependencies = [
- "anyhow",
- "cc",
- "cmake",
- "futures-util",
  "minijinja",
  "minijinja-contrib",
  "mrml-tensor",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
- "walkdir",
 ]
 
 [[package]]

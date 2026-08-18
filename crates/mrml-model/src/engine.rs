@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::{Error, Result};
 use mrml_tensor::MrmlEngine;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -48,7 +48,7 @@ impl ModelEngine {
             temperature,
             move |piece| {
                 let chunk = piece
-                    .map_err(anyhow::Error::new)
+                    .map_err(Error::from)
                     .map(|text| GenerationChunk { text, token_count: 1 });
                 tx.blocking_send(chunk).is_ok()
             },

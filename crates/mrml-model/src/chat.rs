@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use anyhow::{anyhow, Result};
+use crate::error::{Error as ModelError, Result};
 use minijinja::{context, Environment, Error, ErrorKind};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -185,7 +185,7 @@ pub fn render_chat_template<T: Serialize>(
                 {
                     if let Some(encoded) = arguments.as_str() {
                         *arguments = serde_json::from_str(encoded).map_err(|error| {
-                            anyhow!("invalid tool-call arguments passed to chat template: {error}")
+                            ModelError::message(format!("invalid tool-call arguments passed to chat template: {error}"))
                         })?;
                     }
                 }

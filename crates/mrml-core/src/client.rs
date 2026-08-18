@@ -385,7 +385,7 @@ impl MrmlClient {
         while let Some(piece_res) = rx.recv().await {
             let chunk = match piece_res {
                 Ok(p) => p,
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             };
             let piece = chunk.text;
 
