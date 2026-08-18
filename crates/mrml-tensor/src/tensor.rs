@@ -1,5 +1,5 @@
 use crate::types::{DType, Shape, Strides};
-use anyhow::{anyhow, Result};
+use crate::anyhow::{anyhow, Result};
 
 pub enum TensorStorage<'a> {
     OwnedF32(Vec<f32>),

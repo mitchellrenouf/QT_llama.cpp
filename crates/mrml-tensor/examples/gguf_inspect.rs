@@ -1,6 +1,6 @@
 use mrml_tensor::gguf::GgufFile;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> mrml_tensor::anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: gguf_inspect <model.gguf>");
     let gguf = GgufFile::open(path)?;
     let mut metadata: Vec<_> = gguf.metadata.iter().collect();

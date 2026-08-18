@@ -3,7 +3,7 @@ use crate::gguf::{GgufFile, GgufTensorInfo};
 use crate::kv_cache::KvCacheManager;
 use crate::ops;
 use crate::quant::dequantize_q8_0;
-use anyhow::Result;
+use crate::anyhow::{self, Result};
 use rayon::prelude::*;
 use crate::sync as parking_lot;
 use std::collections::HashMap;

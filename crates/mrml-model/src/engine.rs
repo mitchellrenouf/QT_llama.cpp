@@ -47,10 +47,9 @@ impl ModelEngine {
             max_tokens,
             temperature,
             move |piece| {
-                let chunk = piece.map(|text| GenerationChunk {
-                    text,
-                    token_count: 1,
-                });
+                let chunk = piece
+                    .map_err(anyhow::Error::new)
+                    .map(|text| GenerationChunk { text, token_count: 1 });
                 tx.blocking_send(chunk).is_ok()
             },
         );
@@ -58,11 +57,11 @@ impl ModelEngine {
     }
 
     pub fn tokenize(&self, text: &str, add_special: bool) -> Result<Vec<i32>> {
-        self.inner.tokenize(text, add_special)
+        Ok(self.inner.tokenize(text, add_special)?)
     }
 
     pub fn token_to_piece(&self, token: i32) -> Result<String> {
-        self.inner.token_to_piece(token)
+        Ok(self.inner.token_to_piece(token)?)
     }
 
     pub fn is_eog(&self, token: i32) -> bool {

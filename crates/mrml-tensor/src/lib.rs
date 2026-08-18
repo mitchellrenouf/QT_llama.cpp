@@ -1,4 +1,5 @@
 pub mod types;
+pub mod anyhow;
 pub mod quant;
 pub mod gguf;
 pub mod tensor;

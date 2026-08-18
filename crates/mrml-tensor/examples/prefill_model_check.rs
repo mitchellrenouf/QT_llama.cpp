@@ -1,6 +1,6 @@
 use mrml_tensor::MrmlModel;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> mrml_tensor::anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)
         .expect("usage: prefill_model_check <model.gguf> [prompt]");

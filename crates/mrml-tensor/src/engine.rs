@@ -1,5 +1,5 @@
 use crate::model::MrmlModel;
-use anyhow::Result;
+use crate::anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

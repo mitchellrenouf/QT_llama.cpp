@@ -1,5 +1,5 @@
 #[cfg(feature = "cuda")]
-fn main() -> anyhow::Result<()> {
+fn main() -> mrml_tensor::anyhow::Result<()> {
     use mrml_tensor::cuda::{CudaBuffer, CudaDevice};
     use mrml_tensor::quant::f32_to_f16;
     use std::time::Instant;
