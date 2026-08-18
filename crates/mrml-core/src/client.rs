@@ -785,8 +785,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
             let repo_dir = root.join(&repo_slug);
             if repo_dir.is_dir() {
                 let mut best_match = None;
-                for entry in walkdir::WalkDir::new(&repo_dir).into_iter().flatten() {
-                    let path = entry.into_path();
+                for path in crate::fs_walk::paths(&repo_dir) {
                     let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
                     if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
                         if name.contains(&target_quant) {
@@ -805,8 +804,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
             // Legacy folder name check (e.g. user_model)
             let legacy_dir = root.join(format!("{}_{}", spec.user, spec.model));
             if legacy_dir.is_dir() {
-                for entry in walkdir::WalkDir::new(&legacy_dir).into_iter().flatten() {
-                    let path = entry.into_path();
+                for path in crate::fs_walk::paths(&legacy_dir) {
                     let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
                     if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
                         if name.contains(&target_quant) {
@@ -820,8 +818,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
 
     // 2. Scan whole cache roots for matching model file
     for root in &cache_roots {
-        for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
-            let path = entry.into_path();
+        for path in crate::fs_walk::paths(root) {
             let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
             if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
                 if name.contains("gemma-4") || name.contains("gemma") {

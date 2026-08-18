@@ -6,7 +6,6 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use walkdir::WalkDir;
 
 pub struct ViewFileTool;
 #[async_trait]
@@ -271,8 +270,8 @@ impl Tool for GrepSearchTool {
         let re = regex::Regex::new(query_str)?;
         let mut matches = Vec::new();
 
-        for entry in WalkDir::new(search_path).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
+        for path in crate::fs_walk::paths(search_path) {
+            let path = path.as_path();
             if path.is_file() {
                 let rel = path.strip_prefix(workspace_root).unwrap_or(path);
                 let rel_str = rel.to_string_lossy();

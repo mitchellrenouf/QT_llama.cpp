@@ -106,8 +106,7 @@ impl ChromiumController {
             .join("chromium");
 
         if exec_path.is_none() && cache_dir.is_dir() {
-            for entry in walkdir::WalkDir::new(&cache_dir).into_iter().filter_map(|e| e.ok()) {
-                let p = entry.path();
+            for p in crate::fs_walk::paths(&cache_dir) {
                 let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if (file_name == "chrome-headless-shell"
                     || file_name == "chromium-headless-shell"
@@ -115,7 +114,7 @@ impl ChromiumController {
                     || file_name == "chromium")
                     && p.is_file()
                 {
-                    exec_path = Some(p.to_path_buf());
+                    exec_path = Some(p);
                     break;
                 }
             }

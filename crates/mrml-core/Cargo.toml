@@ -26,7 +26,6 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-walkdir = "2.5"
 urlencoding = "2.1"
 similar = "3.1"
 scraper = "0.27"

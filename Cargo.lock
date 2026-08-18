@@ -1468,7 +1468,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "urlencoding",
- "walkdir",
 ]
 
 [[package]]

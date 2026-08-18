@@ -99,10 +99,10 @@ impl HfModelSpec {
         }
 
         let target_quant_lower = self.quant.to_lowercase();
-        for entry in walkdir::WalkDir::new(&model_dir).into_iter().flatten() {
-            let name = entry.file_name().to_string_lossy().to_lowercase();
+        for path in crate::fs_walk::paths(&model_dir) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
             if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
-                if let Ok(meta) = entry.metadata() {
+                if let Ok(meta) = path.metadata() {
                     if meta.len() > 10 * 1024 * 1024 { // > 10MB
                         return true;
                     }
