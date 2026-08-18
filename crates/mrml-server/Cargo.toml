@@ -1,0 +1,30 @@
+[package]
+name = "mrml-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+autobins = false
+
+[[bin]]
+name = "mrml-server"
+path = "src/main.rs"
+
+[features]
+default = ["auto"]
+auto = ["mrml-core/auto"]
+cuda = ["mrml-core/cuda"]
+vulkan = ["mrml-core/vulkan"]
+
+[dependencies]
+mrml-core = { path = "../mrml-core", default-features = false }
+anyhow.workspace = true
+clap.workspace = true
+colored.workspace = true
+futures-util.workspace = true
+mrml-model = { path = "../mrml-model" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite = "0.26"
+tungstenite = "0.26"

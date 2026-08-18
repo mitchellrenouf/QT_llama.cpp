@@ -1,121 +1,153 @@
-# RustLlama
+# MRML
 
-RustLlama is a local AI assistant written in Rust. It provides a native Qt 6 desktop interface, a terminal interface, an OpenAI-compatible HTTP/SSE server, workspace tools, browser automation, and an in-process GGUF inference engine named `qtensor`.
+MRML is the **Mitchell Renouf Machine Learning Library**, a CC0-licensed,
+free-as-in-speech machine learning library. It is a Rust workspace for local
+GGUF inference, AI-agent tooling, and native desktop, terminal, machine, and
+HTTP interfaces. The project is hosted at
+[github.com/mitchellrenouf/mrml](https://github.com/mitchellrenouf/mrml).
 
-The native engine currently targets Gemma 4 GGUF models and supports CPU inference plus custom NVIDIA CUDA kernels. It does not use or require llama.cpp. Vulkan, ROCm, and SYCL appear as future-facing feature/backend choices in parts of the codebase, but they do not currently provide native GPU inference.
+MRML currently focuses on Gemma 4 GGUF models. Its inference implementation is
+native to this repository and does not link to or require llama.cpp. The
+`mrml-tensor` crate supplies quantized CPU operations and custom NVIDIA CUDA
+kernels; `mrml-model` exposes the model and chat interface used by the apps.
 
-## Current state
+## Current status
 
-- Native Qt 6 Widgets GUI on Windows and Linux.
-- Interactive CLI (`--cli`) and one-shot prompts (`--cli --prompt "..."`).
-- OpenAI-compatible `/v1/models` and `/v1/chat/completions` server (`--serve`).
+Working today:
+
+- Native Qt 6 desktop application on Windows and Linux.
+- Interactive and one-shot terminal CLI.
+- Versioned JSONL machine CLI for ChatGPT and automated regression tests.
+- OpenAI-compatible `/v1/models` and `/v1/chat/completions` HTTP/SSE server.
 - Memory-mapped GGUF loading and native Q4_0/Q8_0 CPU operations.
-- CUDA Q4_0/Q8_0 projections, attention, MoE routing, and GPU-resident decode buffers.
+- CUDA Q4_0/Q8_0 projections, attention, MoE routing, CUDA graphs, GPU-resident
+  activation buffers, and F16/Q8_0/Q4_0 KV-cache storage.
 - General, coder, and automatic agent modes.
-- Built-in workspace, Git, shell, browser, desktop, and media tools.
-- Optional external tools through stdio Model Context Protocol servers.
-- Context selection through `--ctx-size` and automatic conversation compaction through `--max-context-tokens`.
+- Workspace, Git, shell, browser, desktop, media, and stdio MCP tools.
+- Configurable context size and automatic conversation compaction.
 
-Performance depends heavily on the model, quantization, GPU, available VRAM, prompt length, and whether every required layer remains GPU-resident. No fixed token-rate claim is made. As a reference, Gemma 4 26B A4B Q4_0 currently decodes at approximately 69 tokens/second on an RTX 5070 Ti after warm-up in the tested short-context CLI workload.
+Performance depends on prompt length, context size, quantization, GPU clocks,
+available VRAM, and full layer residency. On the current RTX 5070 Ti test
+system, Gemma 4 26B A4B Q4_0 sustains approximately **60 tokens/second** in the
+8K CUDA machine-CLI workload after warm-up. This is a measured reference, not
+a universal performance guarantee.
 
 ### Known limitations
 
-- CUDA is the only implemented native GPU backend. The Vulkan, ROCm, and SYCL feature flags are placeholders.
-- The native CUDA KV cache supports F16, Q8_0, and Q4_0 storage. Gemma 4 sliding-window layers use a circular GPU cache; global-layer capacity depends on available VRAM.
-- The engine currently evaluates only the most recent prompt tail during initialization. A configured 256K maximum therefore does not mean that 256K tokens are resident or evaluated.
-- The speculative-decoding module contains n-gram proposal logic, but generation does not yet perform MTP/draft-model loading or batched speculative verification.
-- GPU allocation is best-effort. Insufficient VRAM can leave a layer without its full resident CUDA path and reduce performance considerably.
+- CUDA is the only implemented native GPU backend. Vulkan, ROCm, and SYCL
+  feature/backend selections are placeholders and do not yet execute inference.
+- GPU allocation is best-effort. Other GPU processes can prevent full model
+  residency and cause a substantial slowdown.
+- The configured 256K maximum is supported by cache sizing and compaction, but
+  prompt initialization currently evaluates only the most recent prompt tail;
+  it does not yet evaluate an arbitrary 256K-token prompt in full.
+- Q4 KV storage saves VRAM but is slower than F16 at 8K on the current CUDA
+  kernels. The automatic default therefore remains F16 for shorter contexts.
+- The speculative module has n-gram proposal logic, but generation does not yet
+  load a draft/MTP model or perform batched speculative verification.
 
-## Build requirements
+## Workspace crates and binaries
 
-- Stable Rust with Cargo
-- Qt 6 development files, Qt Widgets/UiTools, and `qmake`
-- A C++ compiler compatible with the installed Qt build
-- NVIDIA CUDA Toolkit 13.3 for CUDA builds
+| Crate | Purpose | Binary |
+| --- | --- | --- |
+| `mrml-core` | Agent, configuration, tools, rules, and Hugging Face integration | — |
+| `mrml-model` | Application-facing GGUF model/chat adapter | — |
+| `mrml-tensor` | Tensor math, GGUF execution, KV cache, CPU and CUDA kernels | — |
+| `mrml-cli` | Interactive and one-shot terminal frontend | `mrml-cli` |
+| `mrml-machine` | JSONL automation and ChatGPT regression frontend | `mrml-machine` |
+| `mrml-server` | OpenAI-compatible HTTP/SSE frontend | `mrml-server` |
+| `mrml-qt` | Native Qt 6 desktop frontend | `mrml-qt` |
 
-### Windows
+## Requirements
 
-Install Visual Studio Build Tools with Desktop development with C++, a Qt 6 `msvc2022_64` kit, Rust MSVC, and CUDA 13.3. Then ensure Qt and CUDA are discoverable:
+- Stable Rust and Cargo.
+- Qt 6 development files, Qt Widgets/UiTools, and `qmake` for `mrml-qt`.
+- A C++ compiler compatible with the installed Qt build.
+- NVIDIA CUDA Toolkit 13.3 for CUDA builds.
+
+On Windows, install Visual Studio Build Tools with the Desktop development with
+C++ workload, Rust MSVC, a Qt 6 `msvc2022_64` kit, and CUDA 13.3:
 
 ```powershell
 $env:Path = "C:\Qt\6.8.3\msvc2022_64\bin;$env:Path"
 $env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3"
 qmake -query QT_VERSION
 nvcc --version
-cargo build -p rustllama-qt --release --locked --no-default-features --features cuda
+cargo build -p mrml-qt --release --locked --no-default-features --features cuda
 ```
 
-The Windows GitHub Actions runner installs Qt and CUDA and uses that same explicit CUDA feature selection.
-
-### Linux
-
-Install Qt 6, a C++ toolchain, Rust, the NVIDIA driver, and CUDA 13.3. Package names vary by distribution. A source build is:
+On Linux, install Qt 6, a C++ toolchain, Rust, the NVIDIA driver, and CUDA 13.3:
 
 ```bash
 export CUDA_PATH=/opt/cuda
 export PATH="$CUDA_PATH/bin:$PATH"
 qmake6 -query QT_VERSION
 nvcc --version
-cargo build -p rustllama-qt --release --locked --no-default-features --features cuda
+cargo build -p mrml-qt --release --locked --no-default-features --features cuda
 ```
 
-For a CPU-only build:
+CPU-only terminal builds do not require CUDA or Qt:
 
 ```bash
-cargo build -p rustllama-cli --release --locked --no-default-features
+cargo build -p mrml-cli --release --locked --no-default-features
 ```
 
 ## Running
 
-The default model setting downloads/resolves `ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0`. A local GGUF can be selected explicitly.
+The default model resolves
+`ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0`. Pass `--model` to select a local GGUF.
 
 ```bash
-# Desktop GUI
-cargo run -p rustllama-qt --release --no-default-features --features cuda -- --model /path/to/model.gguf
+# Desktop
+cargo run --release --bin mrml-qt --features cuda -- --model /path/to/model.gguf
 
 # Interactive terminal
-cargo run -p rustllama-cli --release --no-default-features --features cuda -- --model /path/to/model.gguf
+cargo run --release --bin mrml-cli --features cuda -- --model /path/to/model.gguf
 
-# One-shot CLI prompt with an 8K configured context
-cargo run -p rustllama-cli --release --no-default-features --features cuda -- --prompt "Hello" --ctx-size 8192 --model /path/to/model.gguf
+# One-shot terminal prompt
+cargo run --release --bin mrml-cli --features cuda -- --prompt "Hello" --ctx-size 8192 --model /path/to/model.gguf
 
 # HTTP/SSE server
-cargo run -p rustllama-server --release --no-default-features --features cuda -- --port 8080 --model /path/to/model.gguf
+cargo run --release --bin mrml-server --features cuda -- --port 8080 --model /path/to/model.gguf
 ```
 
-For automated testing from ChatGPT or another process, use the machine CLI. It
-emits versioned JSON records with the `RUSTLLAMA_MACHINE_JSON=` prefix:
+### Machine interface
+
+`mrml-machine` is the stable non-interactive interface for ChatGPT and test
+harnesses. Records use schema version 1 and the `MRML_MACHINE_JSON=` prefix so
+they remain identifiable alongside CUDA diagnostics.
 
 ```bash
-cargo run --release --bin rustllama-machine --features cuda -- chat --prompt "What time is it?"
-printf '{"op":"chat","id":1,"prompt":"What time is it?"}\n{"op":"exit","id":2}\n' | cargo run --release --bin rustllama-machine --features cuda -- session
+cargo run --release --bin mrml-machine --features cuda -- chat --prompt "What time is it?"
+printf '{"op":"chat","id":1,"prompt":"Hi"}\n{"op":"exit","id":2}\n' | cargo run --release --bin mrml-machine --features cuda -- session
 ```
 
-Useful options include `--max-tokens`, `--temperature`, `--gpu-layers`, `--workspace-root`, `--mode`, and `--mcp-server`. Run `rustllama-cli --help` for the complete current list.
+Session operations are `chat`, `health`, `reset`, and `exit`. Chat results
+include content, separated reasoning, tool events, finish reason, token count,
+generation time, wall time, and tokens per second.
+
+Run `mrml-cli --help` or `mrml-machine --help` for all model, cache, backend,
+context, workspace, and MCP options.
 
 ## Flatpak
 
-The Flatpak application ID is `dev.mitchellrenouf.rustllama`. Its main manifest installs CUDA 13.3 for compilation and builds RustLlama with `--no-default-features --features cuda`; CUDA is therefore compiled into the Linux package rather than relying on feature autodetection. After compilation, the toolkit, headers, compiler, and unused libraries are removed. The finished package retains only `libcudart`, while the host NVIDIA driver provides `libcuda`.
+The Flatpak application ID is `dev.mitchellrenouf.mrml`. The manifest compiles
+MRML with CUDA 13.3, removes the toolkit after the build, and retains only the
+CUDA runtime required by the application. The host NVIDIA driver supplies the
+driver libraries.
 
 ```bash
 ./scripts/build-flatpak.sh
-flatpak run dev.mitchellrenouf.rustllama
+flatpak run dev.mitchellrenouf.mrml
 ```
 
-The Flatpak requests broad host filesystem and device access because the application provides workspace automation and local GPU inference. Review the manifest permissions before installation.
-
-## Repository layout
-
-- `crates/rustllama-core/`: shared agent, configuration, model client, tools, and Hugging Face integration
-- `crates/rustllama-cli/`: terminal application
-- `crates/rustllama-machine/`: JSONL automation and ChatGPT test interface
-- `crates/rustllama-server/`: OpenAI-compatible HTTP/SSE server
-- `crates/rustllama-qt/`: native Qt desktop application and Qt-only build checks
-- `crates/qtensor/`: GGUF reader, tensor operations, model execution, and CUDA kernels
-- `crates/llama-rs/`: application-facing inference wrapper (despite its historical name, it does not link llama.cpp)
-- `flatpak/`: Flatpak manifests and desktop metadata
-- `.github/workflows/flatpak-build.yml`: Linux Flatpak and Windows CUDA release builds
+The application requests broad host filesystem and device access for workspace
+automation and local GPU inference. Review the manifest before installation.
 
 ## License
 
-CC0 1.0 Universal (CC0-1.0). See [LICENSE](LICENSE).
+MRML is free as in speech. It is dedicated to the public domain under
+[CC0 1.0 Universal](LICENSE) (`CC0-1.0`), so anyone may use, study, modify,
+share, and redistribute it for any purpose, including commercially, without
+asking permission. Where a public-domain dedication is not legally possible,
+CC0 provides the broadest possible waiver and license fallback.

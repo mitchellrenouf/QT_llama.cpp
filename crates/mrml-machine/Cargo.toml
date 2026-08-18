@@ -1,0 +1,27 @@
+[package]
+name = "mrml-machine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+autobins = false
+
+[[bin]]
+name = "mrml-machine"
+path = "src/main.rs"
+
+[features]
+default = ["auto"]
+auto = ["mrml-core/auto"]
+cuda = ["mrml-core/cuda"]
+vulkan = ["mrml-core/vulkan"]
+hipblas = ["mrml-core/hipblas"]
+sycl = ["mrml-core/sycl"]
+
+[dependencies]
+mrml-core = { path = "../mrml-core", default-features = false }
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

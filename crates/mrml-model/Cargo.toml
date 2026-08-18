@@ -1,0 +1,31 @@
+[package]
+name = "mrml-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "MRML model and chat adapter for native in-process GGUF inference"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["sync", "rt"] }
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+minijinja = { version = "2.12", features = ["builtins", "json"] }
+minijinja-contrib = { version = "2.24", features = ["pycompat"] }
+mrml-tensor = { path = "../mrml-tensor", default-features = false }
+
+[features]
+default = ["auto"]
+auto = ["mrml-tensor/cuda"]
+cuda = ["mrml-tensor/cuda"]
+vulkan = []
+hipblas = []
+sycl = []
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1.0"
+walkdir = "2.5"

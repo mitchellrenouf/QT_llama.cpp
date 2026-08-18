@@ -1,0 +1,32 @@
+id: dev.mitchellrenouf.mrml.Extension.oneapi
+branch: '6.11'
+runtime: dev.mitchellrenouf.mrml
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+build-extension: true
+appstream-compose: false
+
+build-options:
+  prefix: /app/extensions/oneapi
+
+modules:
+  - name: intel-oneapi-toolkit
+    buildsystem: simple
+    build-commands:
+      - sh intel-oneapi-toolkit-2026.0.1.27_offline.sh -a --silent --eula accept --install-dir /app/extensions/oneapi
+      - rm -rf /app/extensions/oneapi/doc /app/extensions/oneapi/samples /app/extensions/oneapi/share/doc
+      - mkdir -p /app/extensions/oneapi/share/metainfo
+      - |
+        cat > /app/extensions/oneapi/share/metainfo/dev.mitchellrenouf.mrml.Extension.oneapi.metainfo.xml << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <component type="runtime">
+          <id>dev.mitchellrenouf.mrml.Extension.oneapi</id>
+          <metadata_license>CC0-1.0</metadata_license>
+          <name>Intel oneAPI SYCL Extension for MRML</name>
+          <summary>Reserved runtime libraries for future MRML SYCL support</summary>
+        </component>
+        EOF
+    sources:
+      - type: file
+        url: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c9c3d3e3-ddb4-490e-bb41-6e9041ba32a7/intel-oneapi-toolkit-2026.0.1.27_offline.sh
+        sha256: 30231d00de0108892ea6d50e785091b40cb8790bb006bca5e4f5e64735a33cfa

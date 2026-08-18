@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/llama-rs",
-    "crates/qtensor",
-    "crates/rustllama-core",
-    "crates/rustllama-cli",
-    "crates/rustllama-machine",
-    "crates/rustllama-server",
-    "crates/rustllama-qt",
+    "crates/mrml-model",
+    "crates/mrml-tensor",
+    "crates/mrml-core",
+    "crates/mrml-cli",
+    "crates/mrml-machine",
+    "crates/mrml-server",
+    "crates/mrml-qt",
 ]
 
 [workspace.package]
 version = "0.4.0"
 edition = "2021"
-authors = ["Mitchell <mitchell@localhost>"]
+authors = ["Mitchell Renouf <mitchell@localhost>"]
 license = "CC0-1.0"
 
 [workspace.dependencies]

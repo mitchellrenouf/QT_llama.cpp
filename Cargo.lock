@@ -1427,24 +1427,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
-name = "llama-rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cc",
- "cmake",
- "futures-util",
- "minijinja",
- "minijinja-contrib",
- "qtensor",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "walkdir",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1547,6 +1529,122 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mrml-cli"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "mrml-core",
+ "tokio",
+]
+
+[[package]]
+name = "mrml-core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chromiumoxide",
+ "chrono",
+ "clap",
+ "colored",
+ "dirs",
+ "futures-util",
+ "mrml-model",
+ "regex",
+ "scraper",
+ "serde",
+ "serde_json",
+ "similar",
+ "termimad",
+ "tokio",
+ "tokio-tungstenite",
+ "urlencoding",
+ "walkdir",
+]
+
+[[package]]
+name = "mrml-machine"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "mrml-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "mrml-model"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "cmake",
+ "futures-util",
+ "minijinja",
+ "minijinja-contrib",
+ "mrml-tensor",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "walkdir",
+]
+
+[[package]]
+name = "mrml-qt"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "futures-util",
+ "mrml-core",
+ "qtrs",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tungstenite 0.26.2",
+]
+
+[[package]]
+name = "mrml-server"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "futures-util",
+ "mrml-core",
+ "mrml-model",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tungstenite 0.26.2",
+]
+
+[[package]]
+name = "mrml-tensor"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "chrono",
+ "crossbeam-channel",
+ "dirs",
+ "memmap2",
+ "parking_lot",
+ "rayon",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -1713,22 +1811,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "qtensor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cc",
- "chrono",
- "crossbeam-channel",
- "dirs",
- "memmap2",
- "parking_lot",
- "rayon",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -2020,88 +2102,6 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rustllama-cli"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "colored",
- "rustllama-core",
- "tokio",
-]
-
-[[package]]
-name = "rustllama-core"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.23.1",
- "chromiumoxide",
- "chrono",
- "clap",
- "colored",
- "dirs",
- "futures-util",
- "llama-rs",
- "regex",
- "scraper",
- "serde",
- "serde_json",
- "similar",
- "termimad",
- "tokio",
- "tokio-tungstenite",
- "urlencoding",
- "walkdir",
-]
-
-[[package]]
-name = "rustllama-machine"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "rustllama-core",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "rustllama-qt"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "colored",
- "futures-util",
- "qtrs",
- "rustllama-core",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tungstenite 0.26.2",
-]
-
-[[package]]
-name = "rustllama-server"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "colored",
- "futures-util",
- "llama-rs",
- "rustllama-core",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tungstenite 0.26.2",
 ]
 
 [[package]]

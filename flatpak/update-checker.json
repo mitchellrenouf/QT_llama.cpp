@@ -1,8 +1,8 @@
 {
-  "name": "qt-llama",
+  "name": "mrml",
   "data-checker": {
     "type": "git",
-    "url": "https://github.com/mitchellrenouf/rustllama.git",
+    "url": "https://github.com/mitchellrenouf/mrml.git",
     "tag-pattern": "^v([0-9.]+)$",
     "version-scheme": "semantic"
   }

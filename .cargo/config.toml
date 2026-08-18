@@ -4,8 +4,8 @@
 [env]
 CXXFLAGS_x86_64_pc_windows_msvc = "/std:c++17 /Zc:__cplusplus /permissive-"
 CXXFLAGS_aarch64_pc_windows_msvc = "/std:c++17 /Zc:__cplusplus /permissive-"
-CXX_x86_64_pc_windows_msvc = { value = "scripts/rustllama-cl.cmd", relative = true, force = true }
-AR_x86_64_pc_windows_msvc = { value = "scripts/rustllama-lib.cmd", relative = true, force = true }
+CXX_x86_64_pc_windows_msvc = { value = "scripts/mrml-cl.cmd", relative = true, force = true }
+AR_x86_64_pc_windows_msvc = { value = "scripts/mrml-lib.cmd", relative = true, force = true }
 
 [target.x86_64-pc-windows-msvc]
-linker = "scripts/rustllama-link.cmd"
+linker = "scripts/mrml-link.cmd"

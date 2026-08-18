@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.mitchellrenouf.mrml</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>CC0-1.0</project_license>
+  <name>MRML</name>
+  <summary>Local AI assistant with native GGUF inference and workspace automation</summary>
+
+  <description>
+    <p>
+      MRML (Mitchell Renouf Machine Learning Library) is a local AI assistant and coding agent powered by its native GGUF engine and Gemma 4 models.
+      It features rich multimodal understanding, headless browser automation with Chrome DevTools Protocol, desktop screenshot analysis,
+      media processing, and automated workspace tools.
+    </p>
+    <ul>
+      <li>Autonomous tool orchestration and multi-step turn planning</li>
+      <li>NVIDIA GPU acceleration through native CUDA kernels</li>
+      <li>Full headless Chromium browser automation (Brave/Chromium/Chrome) and web search</li>
+      <li>Desktop visual perception and GUI control</li>
+      <li>Speech synthesis (TTS) and microphone audio recording</li>
+      <li>Smart context management and auto-compaction for long tasks</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">dev.mitchellrenouf.mrml.desktop</launchable>
+
+  <provides>
+    <binary>mrml</binary>
+    <binary>mrml-qt</binary>
+    <binary>mrml-wrapper</binary>
+  </provides>
+
+  <developer id="dev.mitchellrenouf">
+    <name>Mitchell Renouf</name>
+  </developer>
+
+  <url type="homepage">https://github.com/mitchellrenouf/mrml</url>
+  <url type="bugtracker">https://github.com/mitchellrenouf/mrml/issues</url>
+  <url type="vcs-browser">https://github.com/mitchellrenouf/mrml</url>
+
+  <categories>
+    <category>Utility</category>
+    <category>Development</category>
+    <category>ArtificialIntelligence</category>
+  </categories>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <releases>
+    <release version="0.4.0" date="2026-08-16">
+      <description>
+        <p>Qt 6 desktop and CLI release with native CUDA inference, Chromium CDP automation, and Flatpak packaging.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>

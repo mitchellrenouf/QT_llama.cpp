@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== Building RustLlama Flatpak (KDE 6.11 / Qt6 / CUDA) ==="
+echo "=== Building MRML Flatpak (KDE 6.11 / Qt6 / CUDA) ==="
 
 # 1. Ensure runtime & sdk are installed
 echo "Checking KDE 6.11 Platform/Sdk and Rust extension..."
@@ -26,12 +26,12 @@ if [ "${BUILD_GPU_EXTENSIONS:-0}" = "1" ]; then
 fi
 
 echo "Building package with flatpak-builder..."
-flatpak-builder --force-clean --user --install-deps-from=flathub --repo="$REPO_DIR" "$BUILD_DIR" flatpak/dev.mitchellrenouf.rustllama.yml
+flatpak-builder --force-clean --user --install-deps-from=flathub --repo="$REPO_DIR" "$BUILD_DIR" flatpak/dev.mitchellrenouf.mrml.yml
 
 # 5. Create standalone .flatpak single-file bundle
-echo "Creating standalone bundle dev.mitchellrenouf.rustllama.flatpak..."
-flatpak build-bundle "$REPO_DIR" dev.mitchellrenouf.rustllama.flatpak dev.mitchellrenouf.rustllama 6.11
+echo "Creating standalone bundle dev.mitchellrenouf.mrml.flatpak..."
+flatpak build-bundle "$REPO_DIR" dev.mitchellrenouf.mrml.flatpak dev.mitchellrenouf.mrml 6.11
 
 echo "=== Flatpak Build Complete! ==="
-echo "To install locally: flatpak install --user -y dev.mitchellrenouf.rustllama.flatpak"
-echo "To run: flatpak run dev.mitchellrenouf.rustllama"
+echo "To install locally: flatpak install --user -y dev.mitchellrenouf.mrml.flatpak"
+echo "To run: flatpak run dev.mitchellrenouf.mrml"
