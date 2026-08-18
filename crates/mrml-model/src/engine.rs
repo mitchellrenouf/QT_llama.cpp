@@ -41,15 +41,15 @@ impl ModelEngine {
         max_tokens: usize,
         temperature: f32,
     ) -> (mpsc::Receiver<Result<GenerationChunk>>, Arc<AtomicBool>) {
-        let (mut source, cancel) = self.inner.generate_stream(prompt, max_tokens, temperature);
+        let (source, cancel) = self.inner.generate_stream(prompt, max_tokens, temperature);
         let (tx, rx) = mpsc::channel(4096);
-        tokio::spawn(async move {
-            while let Some(piece) = source.recv().await {
+        std::thread::spawn(move || {
+            while let Ok(piece) = source.recv() {
                 let piece = piece.map(|text| GenerationChunk {
                     text,
                     token_count: 1,
                 });
-                if tx.send(piece).await.is_err() {
+                if tx.blocking_send(piece).is_err() {
                     break;
                 }
             }

@@ -2,9 +2,8 @@ use crate::model::MrmlModel;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::mpsc;
 
 pub struct MrmlEngine {
     pub model: Arc<Mutex<MrmlModel>>,
@@ -58,7 +57,7 @@ impl MrmlEngine {
         max_tokens: usize,
         temperature: f32,
     ) -> (mpsc::Receiver<Result<String>>, Arc<AtomicBool>) {
-        let (tx, rx) = mpsc::channel(4096);
+        let (tx, rx) = mpsc::sync_channel(4096);
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_flag = cancelled.clone();
 
@@ -116,7 +115,7 @@ impl MrmlEngine {
 
                 generated += 1;
 
-                if tx.blocking_send(Ok(piece)).is_err() {
+                if tx.send(Ok(piece)).is_err() {
                     break;
                 }
             }
