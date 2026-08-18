@@ -10,6 +10,8 @@ pub mod speculative;
 pub mod model;
 pub mod engine;
 pub mod execution_plan;
+#[doc(hidden)]
+pub mod sync;
 
 #[cfg(feature = "cuda")]
 pub mod cuda;

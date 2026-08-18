@@ -5,6 +5,7 @@ use crate::ops;
 use crate::quant::dequantize_q8_0;
 use anyhow::Result;
 use rayon::prelude::*;
+use crate::sync as parking_lot;
 use std::collections::HashMap;
 use crate::kv_cache::{KvCacheFormat, KvCacheRow};
 use std::fs::File;
@@ -1967,13 +1968,15 @@ impl MrmlModel {
         } else {
             let mut hidden_q8 = vec![0u8; row_bytes];
             crate::quant::quantize_f32_to_q8_0(&state.hidden, &mut hidden_q8);
+            let valid_vocab_token = &self.valid_vocab_token;
+            let vocab_size = self.config.vocab_size;
 
             self.token_embd_table
                 .par_chunks_exact(row_bytes)
                 .enumerate()
-                .take(self.config.vocab_size)
+                .take(vocab_size)
                 .filter_map(|(tid, row)| {
-                    if !self.valid_vocab_token[tid] {
+                    if !valid_vocab_token[tid] {
                         return None;
                     }
                     if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106) {
