@@ -450,7 +450,7 @@ __global__ void k_qkv_postprocess_batch_f32(
     float* qkv, const float* q_norm, const float* k_norm,
     uint8_t* k_cache, uint8_t* v_cache, int start_pos, int cache_start,
     int n_heads, int n_kv_heads, int head_dim, float freq_base, int batch,
-    int k_format, int v_format
+    int cache_capacity, int k_format, int v_format
 ) {
     int head = blockIdx.x, token = blockIdx.y, tid = threadIdx.x;
     if (token >= batch) return;
@@ -469,7 +469,12 @@ __global__ void k_qkv_postprocess_batch_f32(
     __shared__ float norm_scale;
     if (tid == 0) norm_scale = rsqrtf(total / (float)head_dim + 1e-6f);
     __syncthreads();
-    int cache_pos = cache_start + token, pos = start_pos + token;
+    int cache_pos = cache_start + token;
+    if ((cache_capacity & (cache_capacity - 1)) == 0)
+        cache_pos &= cache_capacity - 1;
+    else if (cache_pos >= cache_capacity)
+        cache_pos %= cache_capacity;
+    int pos = start_pos + token;
     if (is_q || is_k) {
         const float* weights = is_q ? q_norm : k_norm;
         for (int i = tid; i < head_dim / 2; i += blockDim.x) {
@@ -753,11 +758,12 @@ __global__ void k_finish_ffn_f32(
 }
 
 // 7. CUDA Causal Attention with Sliding Window Attention (SWA up to 256k tokens)
-template<int format>
+template<int format, bool circular = false>
 __device__ __forceinline__ float load_cache_value(
     const uint8_t* cache, int token, int head, int index,
-    int n_kv_heads, int head_dim
+    int n_kv_heads, int head_dim, int cache_capacity
 ) {
+    if constexpr (circular) token &= cache_capacity - 1;
     if (format == 0) {
         const __half* values = reinterpret_cast<const __half*>(cache);
         return __half2float(values[(size_t)token * n_kv_heads * head_dim
@@ -777,14 +783,18 @@ __device__ __forceinline__ float load_cache_value(
 
 __device__ __forceinline__ float load_cache_value_runtime(
     const uint8_t* cache, int token, int head, int index,
-    int n_kv_heads, int head_dim, int format
+    int n_kv_heads, int head_dim, int cache_capacity, int format
 ) {
-    if (format == 0) return load_cache_value<0>(cache, token, head, index, n_kv_heads, head_dim);
-    if (format == 1) return load_cache_value<1>(cache, token, head, index, n_kv_heads, head_dim);
-    return load_cache_value<2>(cache, token, head, index, n_kv_heads, head_dim);
+    if ((cache_capacity & (cache_capacity - 1)) == 0)
+        token &= cache_capacity - 1;
+    else if (token >= cache_capacity)
+        token %= cache_capacity;
+    if (format == 0) return load_cache_value<0, false>(cache, token, head, index, n_kv_heads, head_dim, cache_capacity);
+    if (format == 1) return load_cache_value<1, false>(cache, token, head, index, n_kv_heads, head_dim, cache_capacity);
+    return load_cache_value<2, false>(cache, token, head, index, n_kv_heads, head_dim, cache_capacity);
 }
 
-template<int k_format, int v_format>
+template<int k_format, int v_format, bool circular>
 __global__ void k_attention_causal_swa_f32(
     const float* __restrict__ q,       // [n_heads, head_dim]
     const uint8_t* __restrict__ k_cache,
@@ -795,7 +805,7 @@ __global__ void k_attention_causal_swa_f32(
     int n_kv_heads,
     int head_dim,
     float scale,
-    int sliding_window
+    int sliding_window, int cache_capacity
 ) {
     int head = blockIdx.x;
     if (head >= n_heads) return;
@@ -816,8 +826,8 @@ __global__ void k_attention_causal_swa_f32(
     for (int p = start_pos + tid; p < total_keys; p += blockDim.x) {
         float dot = 0.0f;
         for (int d = 0; d < head_dim; ++d) {
-            dot += q_h[d] * load_cache_value<k_format>(k_cache, p, kv_head, d,
-                n_kv_heads, head_dim);
+            dot += q_h[d] * load_cache_value<k_format, circular>(k_cache, p, kv_head, d,
+                n_kv_heads, head_dim, cache_capacity);
         }
         s_scores[p - start_pos] = dot * scale;
     }
@@ -848,8 +858,8 @@ __global__ void k_attention_causal_swa_f32(
     for (int d = tid; d < head_dim; d += blockDim.x) {
         float val = 0.0f;
         for (int p = start_pos; p < total_keys; ++p) {
-            val += (s_scores[p - start_pos] * inv_sum) * load_cache_value<v_format>(
-                v_cache, p, kv_head, d, n_kv_heads, head_dim);
+            val += (s_scores[p - start_pos] * inv_sum) * load_cache_value<v_format, circular>(
+                v_cache, p, kv_head, d, n_kv_heads, head_dim, cache_capacity);
         }
         out_h[d] = val;
     }
@@ -970,7 +980,7 @@ __global__ void k_gemm_q4_0_geglu_f32(
 __global__ void k_attention_prefill_f32(
     const float* q, const uint8_t* k_cache, const uint8_t* v_cache, float* out,
     int cache_start, int batch, int n_heads, int n_kv_heads, int head_dim, int q_stride,
-    float scale, int sliding_window, int k_format, int v_format
+    float scale, int sliding_window, int cache_capacity, int k_format, int v_format
 ) {
     int head = blockIdx.x, token = blockIdx.y;
     if (head >= n_heads || token >= batch) return;
@@ -985,7 +995,7 @@ __global__ void k_attention_prefill_f32(
     for (int p = start + tid; p < keys; p += blockDim.x) {
         float dot = 0.0f;
         for (int d = 0; d < head_dim; ++d) dot += q_h[d] * load_cache_value_runtime(
-            k_cache, p, kv_head, d, n_kv_heads, head_dim, k_format);
+            k_cache, p, kv_head, d, n_kv_heads, head_dim, cache_capacity, k_format);
         scores[p - start] = dot * scale;
     }
     __syncthreads();
@@ -1005,7 +1015,7 @@ __global__ void k_attention_prefill_f32(
         float value = 0.0f;
         for (int p = start; p < keys; ++p) {
             value += scores[p - start] * inv * load_cache_value_runtime(
-                v_cache, p, kv_head, d, n_kv_heads, head_dim, v_format);
+                v_cache, p, kv_head, d, n_kv_heads, head_dim, cache_capacity, v_format);
         }
         out_h[d] = value;
     }
@@ -1215,14 +1225,14 @@ void cuda_op_qkv_postprocess_batch(
     float* d_qkv, const float* d_q_norm, const float* d_k_norm,
     uint8_t* d_k_cache, uint8_t* d_v_cache, int start_pos, int cache_start,
     int n_heads, int n_kv_heads, int head_dim, float freq_base,
-    int batch, int k_format, int v_format, cudaStream_t stream
+    int batch, int cache_capacity, int k_format, int v_format, cudaStream_t stream
 ) {
     dim3 grid(n_heads + 2 * n_kv_heads, batch);
     int threads = head_dim >= 512 ? 256 : 128;
     k_qkv_postprocess_batch_f32<<<grid, threads, 0, stream>>>(
         d_qkv, d_q_norm, d_k_norm, d_k_cache, d_v_cache,
         start_pos, cache_start, n_heads, n_kv_heads, head_dim, freq_base, batch,
-        k_format, v_format);
+        cache_capacity, k_format, v_format);
 }
 
 void cuda_op_gemv_q4_0_geglu(
@@ -1372,14 +1382,19 @@ void cuda_op_attention(
     int n_kv_heads,
     int head_dim,
     float scale,
-    int sliding_window, int k_format, int v_format,
+    int sliding_window, int cache_capacity, int k_format, int v_format,
     cudaStream_t stream
 ) {
-    int shared_mem = (n_past + 1) * sizeof(float);
-#define QTENSOR_LAUNCH_ATTN(K, V) k_attention_causal_swa_f32<K, V><<<n_heads, 128, shared_mem, stream>>>(d_q, d_k_cache, d_v_cache, d_out, n_past, n_heads, n_kv_heads, head_dim, scale, sliding_window)
-    if (k_format == 0) { if (v_format == 0) QTENSOR_LAUNCH_ATTN(0,0); else if (v_format == 1) QTENSOR_LAUNCH_ATTN(0,1); else QTENSOR_LAUNCH_ATTN(0,2); }
-    else if (k_format == 1) { if (v_format == 0) QTENSOR_LAUNCH_ATTN(1,0); else if (v_format == 1) QTENSOR_LAUNCH_ATTN(1,1); else QTENSOR_LAUNCH_ATTN(1,2); }
-    else { if (v_format == 0) QTENSOR_LAUNCH_ATTN(2,0); else if (v_format == 1) QTENSOR_LAUNCH_ATTN(2,1); else QTENSOR_LAUNCH_ATTN(2,2); }
+    int score_count = sliding_window > 0 ? min(n_past + 1, sliding_window) : n_past + 1;
+    int shared_mem = score_count * sizeof(float);
+#define QTENSOR_LAUNCH_ATTN(K, V, C) k_attention_causal_swa_f32<K, V, C><<<n_heads, 128, shared_mem, stream>>>(d_q, d_k_cache, d_v_cache, d_out, n_past, n_heads, n_kv_heads, head_dim, scale, sliding_window, cache_capacity)
+#define QTENSOR_DISPATCH_ATTN(C) \
+    if (k_format == 0) { if (v_format == 0) QTENSOR_LAUNCH_ATTN(0,0,C); else if (v_format == 1) QTENSOR_LAUNCH_ATTN(0,1,C); else QTENSOR_LAUNCH_ATTN(0,2,C); } \
+    else if (k_format == 1) { if (v_format == 0) QTENSOR_LAUNCH_ATTN(1,0,C); else if (v_format == 1) QTENSOR_LAUNCH_ATTN(1,1,C); else QTENSOR_LAUNCH_ATTN(1,2,C); } \
+    else { if (v_format == 0) QTENSOR_LAUNCH_ATTN(2,0,C); else if (v_format == 1) QTENSOR_LAUNCH_ATTN(2,1,C); else QTENSOR_LAUNCH_ATTN(2,2,C); }
+    if (sliding_window > 0) { QTENSOR_DISPATCH_ATTN(true) }
+    else { QTENSOR_DISPATCH_ATTN(false) }
+#undef QTENSOR_DISPATCH_ATTN
 #undef QTENSOR_LAUNCH_ATTN
 }
 
@@ -1409,13 +1424,14 @@ void cuda_op_attention_prefill(
     const float* d_q, const uint8_t* d_k_cache, const uint8_t* d_v_cache,
     float* d_out, int cache_start, int batch, int n_heads, int n_kv_heads,
     int head_dim, int q_stride, float scale, int sliding_window,
-    int k_format, int v_format, cudaStream_t stream
+    int cache_capacity, int k_format, int v_format, cudaStream_t stream
 ) {
     dim3 grid(n_heads, batch);
-    int max_keys = cache_start + batch;
+    int max_keys = sliding_window > 0 ? min(cache_start + batch, sliding_window) : cache_start + batch;
     k_attention_prefill_f32<<<grid, 128, max_keys * sizeof(float), stream>>>(
         d_q, d_k_cache, d_v_cache, d_out, cache_start, batch, n_heads,
-        n_kv_heads, head_dim, q_stride, scale, sliding_window, k_format, v_format);
+        n_kv_heads, head_dim, q_stride, scale, sliding_window, cache_capacity,
+        k_format, v_format);
 }
 
 // Fused MoE Top-K Gate+Up GEMV + GeGLU Kernel

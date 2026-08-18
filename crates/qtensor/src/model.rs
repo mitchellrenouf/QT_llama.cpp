@@ -377,6 +377,29 @@ impl QTensorModel {
             crate::cuda::CudaArena::new(0, 8 * 1024 * 1024).ok()
         } else { None };
 
+        #[cfg(feature = "cuda")]
+        let (swa_gpu_capacity, global_gpu_capacity) = {
+            let swa_layers = (0..n_layers).filter(|layer| layer % 6 != 5).count();
+            let global_layers = n_layers - swa_layers;
+            let swa_dim = 8 * 256;
+            let global_dim = 2 * 512;
+            let total_budget = 2560usize * 4
+                * (swa_layers * swa_dim + global_layers * global_dim);
+            // A power-of-two ring makes every SWA cache wrap a cheap bit mask in the
+            // attention hot loop.  Keep a full extra window so a 128-token prefill
+            // tile can never overwrite keys still visible to another row in the tile.
+            let swa_capacity = max_context.min(2048);
+            let swa_bytes = cache_type_k.cuda_bytes_per_token(swa_dim)
+                + cache_type_v.cuda_bytes_per_token(swa_dim);
+            let global_bytes = cache_type_k.cuda_bytes_per_token(global_dim)
+                + cache_type_v.cuda_bytes_per_token(global_dim);
+            let remaining = total_budget.saturating_sub(swa_layers * swa_capacity * swa_bytes);
+            let global_capacity = if global_layers == 0 { 0 } else {
+                (remaining / (global_layers * global_bytes) / 128) * 128
+            };
+            (swa_capacity, max_context.min(global_capacity.max(128)))
+        };
+
         // Load layer weights
         let mut layers = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
@@ -539,11 +562,7 @@ impl QTensorModel {
             // Cover the complete rendered system/tool prompt for batched
             // prefill. Longer contexts will use a compact f16 cache path once
             // available rather than silently truncating model-visible input.
-            let fp16_budget = 2560usize * kv_dim * 4; // K + V, two bytes each.
-            let selected_bytes = cache_type_k.cuda_bytes_per_token(kv_dim)
-                + cache_type_v.cuda_bytes_per_token(kv_dim);
-            let format_capacity = (fp16_budget / selected_bytes / 128) * 128;
-            let gpu_kv_capacity = max_context.min(format_capacity.max(128));
+            let gpu_kv_capacity = if is_swa { swa_gpu_capacity } else { global_gpu_capacity };
             #[cfg(feature = "cuda")]
             let (gpu_d_k_cache, gpu_d_v_cache) = if cuda_dev.is_some() {
                 (
@@ -889,7 +908,7 @@ impl QTensorModel {
         let resident_model = false;
         #[cfg(feature = "cuda")]
         let resident_fast_path = resident_model
-            && self.layers.iter().all(|layer| pos < layer.gpu_kv_capacity);
+            && self.layers.iter().all(|layer| layer.is_swa || pos < layer.gpu_kv_capacity);
         #[cfg(not(feature = "cuda"))]
         let resident_fast_path = false;
 
@@ -907,7 +926,7 @@ impl QTensorModel {
             let profile_start = std::time::Instant::now();
 
             #[cfg(feature = "cuda")]
-            let gpu_qkv_pipeline = if k_cache[l].len() < layer.gpu_kv_capacity {
+            let gpu_qkv_pipeline = if layer.is_swa || k_cache[l].len() < layer.gpu_kv_capacity {
                 if let (
                     Some(ref dev), Some(ref g_q), Some(ref g_k), Some(ref g_v),
                     Some(ref q_norm), Some(ref k_norm),
@@ -933,7 +952,8 @@ impl QTensorModel {
                     if input_ready {
                         dev.gemv_q4_0_qkv(g_q, g_k, g_v, d_cur, d_qkv, layer.q_dim, layer.kv_dim, dim);
                         dev.qkv_postprocess(
-                            d_qkv, q_norm, k_norm, d_kc, d_vc, pos, k_cache[l].len(),
+                            d_qkv, q_norm, k_norm, d_kc, d_vc, pos,
+                            k_cache[l].len() % layer.gpu_kv_capacity,
                             layer.n_heads, layer.n_kv_heads, layer.head_dim, layer.rope_freq_base,
                             layer.gpu_k_format, layer.gpu_v_format,
                         );
@@ -1018,7 +1038,7 @@ impl QTensorModel {
             let mut scores = if resident_fast_path { Vec::new() } else { vec![0.0f32; attn_window_len] };
 
             #[cfg(feature = "cuda")]
-            let attention_used_gpu = if seq_len <= layer.gpu_kv_capacity {
+            let attention_used_gpu = if layer.is_swa || seq_len <= layer.gpu_kv_capacity {
                 if let Some(ref dev) = self.cuda_dev {
                     let mut kc_guard = layer.gpu_d_k_cache.lock();
                     let mut vc_guard = layer.gpu_d_v_cache.lock();
@@ -1032,6 +1052,7 @@ impl QTensorModel {
                                     d_qkv, d_kc, d_vc, d_out, seq_len - 1,
                                     layer.n_heads, layer.n_kv_heads, layer.head_dim, 1.0,
                                     if layer.is_swa { Some(layer.sliding_window) } else { None },
+                                    layer.gpu_kv_capacity,
                                     layer.gpu_k_format, layer.gpu_v_format,
                                 );
                                 true
@@ -1058,6 +1079,7 @@ impl QTensorModel {
                                 layer.head_dim,
                                 1.0,
                                 if layer.is_swa { Some(layer.sliding_window) } else { None },
+                                layer.gpu_kv_capacity,
                                 layer.gpu_k_format, layer.gpu_v_format,
                             );
                             d_out.copy_to_host(&mut attn_out).is_ok()
@@ -1611,7 +1633,9 @@ impl QTensorModel {
     #[cfg(feature = "cuda")]
     fn prefill_cuda(&self, prompt_tokens: &[i32]) -> Option<(Vec<f32>, Vec<Vec<KvCacheRow>>, Vec<Vec<KvCacheRow>>)> {
         let device = self.cuda_dev.as_ref()?;
-        let capacity = self.layers.iter().map(|layer| layer.gpu_kv_capacity).min()?;
+        let capacity = self.layers.iter().filter(|layer| !layer.is_swa)
+            .map(|layer| layer.gpu_kv_capacity).min()
+            .or_else(|| self.layers.iter().map(|layer| layer.gpu_kv_capacity).min())?;
         if std::env::var_os("QTENSOR_PREFILL_DEBUG").is_some() {
             eprintln!("[qtensor] prefill tokens={} capacity={}", prompt_tokens.len(), capacity);
         }
@@ -1667,7 +1691,8 @@ impl QTensorModel {
                     &mut qkv, layer.gpu_attn_q_norm.as_ref()?, layer.gpu_attn_k_norm.as_ref()?,
                     k_cache, v_cache, cache_start, cache_start,
                     layer.n_heads, layer.n_kv_heads, layer.head_dim,
-                    layer.rope_freq_base, batch, layer.gpu_k_format, layer.gpu_v_format,
+                    layer.rope_freq_base, batch, layer.gpu_kv_capacity,
+                    layer.gpu_k_format, layer.gpu_v_format,
                 );
                 let mut attention = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * q_dim).ok()?;
                 device.attention_prefill(
@@ -1675,6 +1700,7 @@ impl QTensorModel {
                     layer.n_heads, layer.n_kv_heads, layer.head_dim,
                     1.0,
                     if layer.is_swa { Some(layer.sliding_window) } else { None },
+                    layer.gpu_kv_capacity,
                     layer.gpu_k_format, layer.gpu_v_format,
                 );
                 drop(k_guard);
