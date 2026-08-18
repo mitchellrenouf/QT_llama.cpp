@@ -201,6 +201,67 @@ __global__ void k_gemv_q4_0_f32(
     }
 }
 
+// Prompt-prefill matrix variant. Each grid.y row is one prompt token, while
+// grid.x retains the decode GEMV row mapping. This reuses a quantized weight
+// tile across a batch and replaces one kernel launch per token with one launch
+// per layer operation.
+__global__ void k_gemm_q4_0_f32(
+    const uint8_t* __restrict__ w_q4,
+    const float* __restrict__ x,
+    float* __restrict__ y,
+    int n_rows,
+    int n_cols,
+    int batch
+) {
+    int lane = threadIdx.x & 31;
+    int sublane = lane & 15;
+    int warp = threadIdx.x >> 5;
+    int rows_per_block = (blockDim.x / WARP_SIZE) * 2;
+    int row = blockIdx.x * rows_per_block + warp * 2 + (lane >> 4);
+    int token = blockIdx.y;
+    bool active = row < n_rows && token < batch;
+    int n_blocks = n_cols / 32;
+    int row_bytes = n_blocks * 18;
+    const uint8_t* row_w = active ? w_q4 + (size_t)row * row_bytes : w_q4;
+    const float* token_x = x + (size_t)token * n_cols;
+    float local_sum = 0.0f;
+    for (int b = 0; b < n_blocks; ++b) {
+        int w_off = b * 18;
+        uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
+        float d = __half2float(__ushort_as_half(d_raw));
+        const uint8_t* qs = row_w + w_off + 2;
+        uint8_t byte = active ? qs[sublane] : 0;
+        local_sum += active ? d * (
+            (float)((byte & 0x0F) - 8) * token_x[b * 32 + sublane]
+            + (float)((byte >> 4) - 8) * token_x[b * 32 + sublane + 16]
+        ) : 0.0f;
+    }
+    float total = half_warp_reduce_sum(local_sum);
+    if (active && sublane == 0) y[(size_t)token * n_rows + row] = total;
+}
+
+__global__ void k_rms_norm_batch_f32(
+    const float* __restrict__ x, const float* __restrict__ weight,
+    float* __restrict__ out, int dim, int batch, float eps
+) {
+    int token = blockIdx.x;
+    if (token >= batch) return;
+    const float* token_x = x + (size_t)token * dim;
+    float* token_out = out + (size_t)token * dim;
+    float local_sum_sq = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        float value = token_x[i];
+        local_sum_sq += value * value;
+    }
+    float total_sum_sq = block_reduce_sum(local_sum_sq);
+    __shared__ float scale;
+    if (threadIdx.x == 0) scale = rsqrtf(total_sum_sq / (float)dim + eps);
+    __syncthreads();
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        token_out[i] = token_x[i] * scale * (weight ? weight[i] : 1.0f);
+    }
+}
+
 // Fused Q/K/V projection. A single launch writes a contiguous result so the
 // host needs one synchronization/copy instead of three per transformer layer.
 __global__ void k_gemv_q4_0_qkv_f32(
@@ -651,6 +712,13 @@ void cuda_op_rms_norm(
     k_rms_norm_f32<<<1, threads, 0, stream>>>(d_x, d_w, d_out, dim, eps);
 }
 
+void cuda_op_rms_norm_batch(
+    const float* d_x, const float* d_w, float* d_out,
+    int dim, int batch, float eps, cudaStream_t stream
+) {
+    k_rms_norm_batch_f32<<<batch, 256, 0, stream>>>(d_x, d_w, d_out, dim, batch, eps);
+}
+
 void cuda_op_swiglu(
     const float* d_gate,
     const float* d_up,
@@ -700,6 +768,18 @@ void cuda_op_gemv_q4_0(
     int rows_per_block = 2 * threads / WARP_SIZE;
     int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
     k_gemv_q4_0_f32<<<blocks, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
+}
+
+void cuda_op_gemm_q4_0(
+    const uint8_t* d_w_q4, const float* d_x, float* d_y,
+    int n_rows, int n_cols, int batch, cudaStream_t stream
+) {
+    const int threads = 256;
+    const int rows_per_block = (threads / WARP_SIZE) * 2;
+    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block, batch);
+    k_gemm_q4_0_f32<<<grid, threads, 0, stream>>>(
+        d_w_q4, d_x, d_y, n_rows, n_cols, batch
+    );
 }
 
 // Exact top-K candidates per disjoint vocabulary partition. The union of each

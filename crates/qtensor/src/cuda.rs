@@ -34,10 +34,12 @@ extern "C" {
 
     // Exported custom kernel launches from cuda_kernels.cu
     fn cuda_op_rms_norm(d_x: *const f32, d_w: *const f32, d_out: *mut f32, dim: i32, eps: f32, stream: CudaStream);
+    fn cuda_op_rms_norm_batch(d_x: *const f32, d_w: *const f32, d_out: *mut f32, dim: i32, batch: i32, eps: f32, stream: CudaStream);
     fn cuda_op_swiglu(d_gate: *const f32, d_up: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_geglu(d_gate: *const f32, d_up: *const f32, d_out: *mut f32, size: i32, stream: CudaStream);
     fn cuda_op_rope_256k(d_vec: *mut f32, pos: i32, head_dim: i32, n_heads: i32, freq_base: f32, freq_scale: f32, stream: CudaStream);
     fn cuda_op_gemv_q4_0(d_w_q4: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, stream: CudaStream);
+    fn cuda_op_gemm_q4_0(d_w_q4: *const u8, d_x: *const f32, d_y: *mut f32, n_rows: i32, n_cols: i32, batch: i32, stream: CudaStream);
     fn cuda_op_gemv_q4_0_qkv(
         d_w_q: *const u8, d_w_k: *const u8, d_w_v: *const u8,
         d_x: *const f32, d_y: *mut f32, q_rows: i32, kv_rows: i32,
@@ -333,6 +335,27 @@ impl CudaDevice {
         }
     }
 
+    pub fn rms_norm_batch(
+        &self,
+        d_x: &CudaBuffer<f32>,
+        d_weight: Option<&CudaBuffer<f32>>,
+        d_out: &mut CudaBuffer<f32>,
+        dim: usize,
+        batch: usize,
+        eps: f32,
+    ) {
+        assert_eq!(d_x.len(), dim * batch);
+        assert_eq!(d_out.len(), dim * batch);
+        let w_ptr = d_weight.map(|weight| weight.as_ptr()).unwrap_or(ptr::null());
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_rms_norm_batch(
+                d_x.as_ptr(), w_ptr, d_out.as_mut_ptr(), dim as i32,
+                batch as i32, eps, self.stream,
+            );
+        }
+    }
+
     pub fn swiglu(
         &self,
         d_gate: &CudaBuffer<f32>,
@@ -413,6 +436,26 @@ impl CudaDevice {
                 n_rows as i32,
                 n_cols as i32,
                 self.stream,
+            );
+        }
+    }
+
+    pub fn gemm_q4_0(
+        &self,
+        d_w_q4: &CudaBuffer<u8>,
+        d_x: &CudaBuffer<f32>,
+        d_y: &mut CudaBuffer<f32>,
+        n_rows: usize,
+        n_cols: usize,
+        batch: usize,
+    ) {
+        assert_eq!(d_x.len(), n_cols * batch);
+        assert_eq!(d_y.len(), n_rows * batch);
+        unsafe {
+            cudaSetDevice(self.device_id);
+            cuda_op_gemm_q4_0(
+                d_w_q4.as_ptr(), d_x.as_ptr(), d_y.as_mut_ptr(),
+                n_rows as i32, n_cols as i32, batch as i32, self.stream,
             );
         }
     }
