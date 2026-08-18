@@ -31,6 +31,8 @@ extern "C" {
     fn cudaStreamDestroy(stream: CudaStream) -> i32;
     fn cudaStreamSynchronize(stream: CudaStream) -> i32;
     fn cudaDeviceSynchronize() -> i32;
+    fn cuda_pool_alloc(pointer: *mut *mut c_void, bytes: usize) -> i32;
+    fn cuda_pool_release(pointer: *mut c_void, bytes: usize);
 
     // Exported custom kernel launches from cuda_kernels.cu
     fn cuda_op_rms_norm(d_x: *const f32, d_w: *const f32, d_out: *mut f32, dim: i32, eps: f32, stream: CudaStream);
@@ -160,6 +162,7 @@ pub struct CudaBuffer<T> {
     ptr: *mut T,
     len: usize,
     device_id: i32,
+    pooled: bool,
     _marker: PhantomData<T>,
 }
 
@@ -192,8 +195,20 @@ impl<T> CudaBuffer<T> {
             ptr: raw_ptr as *mut T,
             len,
             device_id,
+            pooled: false,
             _marker: PhantomData,
         })
+    }
+
+    pub fn alloc_pooled_on(device_id: i32, len: usize) -> Result<Self> {
+        unsafe { cudaSetDevice(device_id) };
+        let mut raw_ptr: *mut c_void = ptr::null_mut();
+        let bytes = len * std::mem::size_of::<T>();
+        let res = unsafe { cuda_pool_alloc(&mut raw_ptr, bytes) };
+        if res != 0 || raw_ptr.is_null() {
+            return Err(anyhow!("CUDA pooled allocation failed on GPU {} with code {}", device_id, res));
+        }
+        Ok(Self { ptr: raw_ptr as *mut T, len, device_id, pooled: true, _marker: PhantomData })
     }
 
     pub fn alloc(len: usize) -> Result<Self> {
@@ -296,7 +311,14 @@ impl<T> Drop for CudaBuffer<T> {
         if !self.ptr.is_null() {
             unsafe {
                 cudaSetDevice(self.device_id);
-                cudaFree(self.ptr as *mut c_void);
+                if self.pooled {
+                    cuda_pool_release(
+                        self.ptr as *mut c_void,
+                        self.len * std::mem::size_of::<T>(),
+                    );
+                } else {
+                    cudaFree(self.ptr as *mut c_void);
+                }
             };
         }
     }

@@ -1554,11 +1554,11 @@ impl QTensorModel {
                 let ffn_dim = 2112usize;
                 let exp_dim = 704usize;
                 let active = 8usize;
-                let mut normed = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut normed = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
                 device.rms_norm_batch(
                     &hidden, layer.gpu_attn_norm.as_ref(), &mut normed, dim, batch, 1e-6,
                 );
-                let mut qkv = crate::cuda::CudaBuffer::alloc_on(0, batch * (q_dim + 2 * kv_dim)).ok()?;
+                let mut qkv = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * (q_dim + 2 * kv_dim)).ok()?;
                 device.gemm_q4_0_qkv(
                     layer.gpu_attn_q.as_ref()?, layer.gpu_attn_k.as_ref()?,
                     layer.gpu_attn_v.as_ref()?, &normed, &mut qkv,
@@ -1574,7 +1574,7 @@ impl QTensorModel {
                     layer.n_heads, layer.n_kv_heads, layer.head_dim,
                     layer.rope_freq_base, batch,
                 );
-                let mut attention = crate::cuda::CudaBuffer::alloc_on(0, batch * q_dim).ok()?;
+                let mut attention = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * q_dim).ok()?;
                 device.attention_prefill(
                     &qkv, k_cache, v_cache, &mut attention, cache_start, batch,
                     layer.n_heads, layer.n_kv_heads, layer.head_dim,
@@ -1584,46 +1584,46 @@ impl QTensorModel {
                 drop(k_guard);
                 drop(v_guard);
 
-                let mut attn_proj = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut attn_proj = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
                 device.gemm_q4_0(
                     layer.gpu_attn_output.as_ref()?, &attention, &mut attn_proj,
                     dim, q_dim, batch,
                 );
-                let mut attn_res = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
-                let mut shared_in = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
-                let mut moe_in = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
-                let mut router_in = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut attn_res = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
+                let mut shared_in = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
+                let mut moe_in = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
+                let mut router_in = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
                 device.prepare_ffn_batch(
                     &hidden, &attn_proj, layer.gpu_post_attention_norm.as_ref()?,
                     layer.gpu_ffn_norm.as_ref()?, layer.gpu_pre_ffw_norm_2.as_ref()?,
                     layer.gpu_ffn_gate_inp_scale.as_ref()?, &mut attn_res,
                     &mut shared_in, &mut moe_in, &mut router_in, dim, batch,
                 );
-                let mut dense_act = crate::cuda::CudaBuffer::alloc_on(0, batch * ffn_dim).ok()?;
+                let mut dense_act = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * ffn_dim).ok()?;
                 device.gemm_q4_0_geglu(
                     layer.gpu_ffn_gate.as_ref()?, layer.gpu_ffn_up.as_ref()?,
                     &shared_in, &mut dense_act, ffn_dim, dim, batch,
                 );
-                let mut dense = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut dense = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
                 device.gemm_q4_0(
                     layer.gpu_ffn_down.as_ref()?, &dense_act, &mut dense,
                     dim, ffn_dim, batch,
                 );
-                let mut logits = crate::cuda::CudaBuffer::alloc_on(0, batch * 128).ok()?;
-                let mut ids = crate::cuda::CudaBuffer::alloc_on(0, batch * active).ok()?;
-                let mut probabilities = crate::cuda::CudaBuffer::alloc_on(0, batch * active).ok()?;
+                let mut logits = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * 128).ok()?;
+                let mut ids = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * active).ok()?;
+                let mut probabilities = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * active).ok()?;
                 device.moe_router_batch(
                     layer.gpu_ffn_gate_inp.as_ref()?, &router_in, &mut logits,
                     &mut ids, &mut probabilities, dim, 128, batch,
                 );
-                let mut moe_act = crate::cuda::CudaBuffer::alloc_on(0, batch * active * exp_dim).ok()?;
-                let mut moe = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut moe_act = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * active * exp_dim).ok()?;
+                let mut moe = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
                 device.moe_topk_batch_q4_0(
                     layer.gpu_ffn_gate_up_exps.as_ref()?, layer.gpu_ffn_down_exps.as_ref()?,
                     &ids, &probabilities, layer.gpu_ffn_down_exps_scale.as_ref(),
                     &moe_in, &mut moe_act, &mut moe, dim, exp_dim, active, batch,
                 );
-                let mut next_hidden = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut next_hidden = crate::cuda::CudaBuffer::alloc_pooled_on(0, batch * dim).ok()?;
                 device.finish_ffn_batch(
                     &attn_res, &mut dense, &mut moe,
                     layer.gpu_post_ffw_norm_1.as_ref()?, layer.gpu_post_ffw_norm_2.as_ref()?,

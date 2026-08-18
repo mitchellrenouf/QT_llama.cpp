@@ -3,6 +3,9 @@
 #include <device_launch_parameters.h>
 #include <math.h>
 #include <stdint.h>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 #define WARP_SIZE 32
 
@@ -781,6 +784,26 @@ __global__ void k_attention_causal_swa_f32(
 
 // C-ABI Exported Functions
 extern "C" {
+
+static std::mutex qtensor_pool_mutex;
+static std::unordered_map<size_t, std::vector<void*>> qtensor_pool_blocks;
+
+int cuda_pool_alloc(void** pointer, size_t bytes) {
+    std::lock_guard<std::mutex> lock(qtensor_pool_mutex);
+    auto& blocks = qtensor_pool_blocks[bytes];
+    if (!blocks.empty()) {
+        *pointer = blocks.back();
+        blocks.pop_back();
+        return (int)cudaSuccess;
+    }
+    return (int)cudaMalloc(pointer, bytes);
+}
+
+void cuda_pool_release(void* pointer, size_t bytes) {
+    if (!pointer) return;
+    std::lock_guard<std::mutex> lock(qtensor_pool_mutex);
+    qtensor_pool_blocks[bytes].push_back(pointer);
+}
 
 void cuda_op_rms_norm(
     const float* d_x,
