@@ -2,6 +2,43 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(windows)]
+fn find_msvc_bin() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("VCToolsInstallDir") {
+        let bin = PathBuf::from(path).join("bin").join("Hostx64").join("x64");
+        if bin.join("cl.exe").is_file() {
+            return Some(bin);
+        }
+    }
+
+    let program_files = env::var_os("ProgramFiles(x86)")?;
+    let vswhere = PathBuf::from(program_files)
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+    let output = Command::new(vswhere)
+        .args(["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let tools = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim())
+        .join("VC")
+        .join("Tools")
+        .join("MSVC");
+    let mut versions = std::fs::read_dir(tools)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    versions.sort_unstable();
+    versions.into_iter().rev().find_map(|version| {
+        let bin = version.join("bin").join("Hostx64").join("x64");
+        bin.join("cl.exe").is_file().then_some(bin)
+    })
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=c_src/cuda_kernels.cu");
     println!("cargo:rerun-if-env-changed=MRML_CUDA_ARCHS");
@@ -45,15 +82,12 @@ fn main() {
                 };
 
                 let mut cmd = Command::new(&nvcc_path);
-                
-                if is_windows {
-                    let cl_tool = cc::Build::new().get_compiler();
-                    let cl_path = cl_tool.path();
-                    if let Some(cl_dir) = cl_path.parent() {
-                        cmd.arg("-ccbin").arg(cl_dir);
-                    }
-                }
 
+                #[cfg(windows)]
+                let msvc_bin = find_msvc_bin().expect("Visual Studio C++ x64 tools are required for CUDA builds");
+                #[cfg(windows)]
+                cmd.arg("-ccbin").arg(&msvc_bin);
+                
                 cmd.args(&[
                     "-c", "c_src/cuda_kernels.cu",
                     "-o", obj_out.to_str().unwrap(),
@@ -92,28 +126,12 @@ fn main() {
                     panic!("nvcc compilation failed");
                 }
 
-                // Create static library archive
-                let lib_exe = if is_windows {
-                    let cl_tool = cc::Build::new().get_compiler();
-                    cl_tool.path().parent().map(|d| d.join("lib.exe")).unwrap_or_else(|| PathBuf::from("lib.exe"))
-                } else {
-                    PathBuf::from("ar")
-                };
-
-                let mut lib_cmd = Command::new(&lib_exe);
-                if is_windows {
-                    let out_arg = format!("/OUT:{}", lib_out.display());
-                    lib_cmd.args(&[
-                        out_arg.as_str(),
-                        obj_out.to_str().unwrap(),
-                    ]);
-                } else {
-                    lib_cmd.args(&[
-                        "crus",
-                        lib_out.to_str().unwrap(),
-                        obj_out.to_str().unwrap(),
-                    ]);
-                }
+                // Let NVCC drive the platform archiver as well. This uses the same
+                // discovered host toolchain as compilation without a Rust wrapper.
+                let mut lib_cmd = Command::new(&nvcc_path);
+                #[cfg(windows)]
+                lib_cmd.arg("-ccbin").arg(&msvc_bin);
+                lib_cmd.arg("--lib").arg(&obj_out).arg("-o").arg(&lib_out);
                 
                 let lib_status = lib_cmd.status().expect("Failed to execute archiver");
                 if !lib_status.success() {

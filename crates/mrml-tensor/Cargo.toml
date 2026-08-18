@@ -12,9 +12,6 @@ cuda = []
 
 [dependencies]
 
-[build-dependencies]
-cc = { version = "1.2", features = ["parallel"] }
-
 [[bench]]
 name = "hot_paths"
 harness = false
