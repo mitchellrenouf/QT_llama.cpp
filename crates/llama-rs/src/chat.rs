@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use anyhow::{anyhow, Result};
+use minijinja::{context, Environment, Error, ErrorKind};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
@@ -156,6 +158,65 @@ pub fn format_gemma_chat(messages: &[ChatMessage], system_prompt: Option<&str>) 
     format_gemma_canonical_chat(messages, system_prompt, true)
 }
 
+/// Render the tokenizer-provided GGUF chat template with llama.cpp-compatible
+/// inputs. Tool call arguments are converted from the OpenAI wire-format JSON
+/// string into the mapping expected by tokenizer templates.
+pub fn render_chat_template<T: Serialize>(
+    template_source: &str,
+    messages: &[ChatMessage],
+    tools: Option<&[T]>,
+    system_prompt: Option<&str>,
+    enable_thinking: bool,
+) -> Result<String> {
+    let mut message_values = Vec::with_capacity(messages.len() + usize::from(system_prompt.is_some()));
+    if let Some(system) = system_prompt.filter(|text| !text.trim().is_empty()) {
+        message_values.push(serde_json::json!({
+            "role": "system",
+            "content": system.trim(),
+        }));
+    }
+    for message in messages {
+        let mut value = serde_json::to_value(message)?;
+        if let Some(tool_calls) = value.get_mut("tool_calls").and_then(|calls| calls.as_array_mut()) {
+            for tool_call in tool_calls {
+                if let Some(arguments) = tool_call
+                    .get_mut("function")
+                    .and_then(|function| function.get_mut("arguments"))
+                {
+                    if let Some(encoded) = arguments.as_str() {
+                        *arguments = serde_json::from_str(encoded).map_err(|error| {
+                            anyhow!("invalid tool-call arguments passed to chat template: {error}")
+                        })?;
+                    }
+                }
+            }
+        }
+        message_values.push(value);
+    }
+
+    let tool_values = tools
+        .map(serde_json::to_value)
+        .transpose()?
+        .unwrap_or_else(|| serde_json::json!([]));
+    let mut environment = Environment::new();
+    environment.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
+    environment.add_function("raise_exception", |message: String| -> std::result::Result<String, Error> {
+        Err(Error::new(ErrorKind::InvalidOperation, message))
+    });
+    let template = environment.template_from_str(template_source)?;
+    template
+        .render(context! {
+            messages => message_values,
+            tools => tool_values,
+            bos_token => "<bos>",
+            eos_token => "<eos>",
+            add_generation_prompt => true,
+            enable_thinking => enable_thinking,
+            preserve_thinking => false,
+        })
+        .map_err(Into::into)
+}
+
 pub fn format_gemma_canonical_chat(messages: &[ChatMessage], system_prompt: Option<&str>, enable_thinking: bool) -> String {
     let mut formatted = String::new();
 
@@ -242,4 +303,53 @@ pub fn format_gemma_canonical_chat(messages: &[ChatMessage], system_prompt: Opti
         formatted.push_str("<|channel>thought\n");
     }
     formatted
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct TestTool {
+        function: serde_json::Value,
+    }
+
+    #[test]
+    fn renders_messages_tools_and_generation_flags() {
+        let source = "{{ bos_token }}|{{ messages[0].role }}:{{ messages[0].content }}|{{ messages[1].content }}|{{ tools[0].function.name }}|{{ add_generation_prompt }}|{{ enable_thinking }}";
+        let tools = [TestTool {
+            function: serde_json::json!({"name": "clock"}),
+        }];
+        let rendered = render_chat_template(
+            source,
+            &[ChatMessage::user("what time is it?")],
+            Some(&tools),
+            Some("system rules"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(rendered, "<bos>|system:system rules|what time is it?|clock|True|True");
+    }
+
+    #[test]
+    fn deserializes_tool_call_arguments_for_template_mappings() {
+        let source = "{{ messages[0].tool_calls[0].function.arguments.command_line }}";
+        let call = ToolCall {
+            id: "call-1".into(),
+            tool_type: "function".into(),
+            function: FunctionCall {
+                name: "run_command".into(),
+                arguments: r#"{"command_line":"Get-Date"}"#.into(),
+            },
+        };
+        let rendered = render_chat_template::<serde_json::Value>(
+            source,
+            &[ChatMessage::assistant(None, Some(vec![call]))],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(rendered, "Get-Date");
+    }
 }

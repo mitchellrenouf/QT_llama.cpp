@@ -33,6 +33,11 @@ impl QTensorEngine {
         guard.is_eog_token(token)
     }
 
+    pub fn chat_template(&self) -> Option<String> {
+        let guard = self.model.lock().unwrap();
+        guard.chat_template.clone()
+    }
+
     pub fn generate_stream(
         &self,
         prompt: &str,

@@ -179,6 +179,7 @@ pub struct QTensorModel {
     pub vocab: Vec<String>,
     pub vocab_to_id: HashMap<String, i32>,
     pub valid_vocab_token: Vec<bool>,
+    pub chat_template: Option<String>,
     pub gguf_path: PathBuf,
     pub token_embd_info: Option<GgufTensorInfo>,
     pub output_norm_weights: Vec<f32>,
@@ -208,6 +209,10 @@ impl QTensorModel {
     pub fn load_from_gguf<P: AsRef<Path>>(path: P, max_context: usize) -> Result<Self> {
         let gguf_path = path.as_ref().to_path_buf();
         let gguf = GgufFile::open(&gguf_path)?;
+        let chat_template = gguf
+            .get_meta("tokenizer.chat_template")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
 
         if gguf
             .get_meta("general.architecture")
@@ -681,6 +686,7 @@ impl QTensorModel {
             vocab,
             vocab_to_id,
             valid_vocab_token,
+            chat_template,
             gguf_path,
             token_embd_info,
             output_norm_weights,

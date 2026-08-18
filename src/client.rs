@@ -341,7 +341,9 @@ impl LlamaClient {
             .ok_or_else(|| anyhow::anyhow!("qtensor engine not loaded"))?;
 
         let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
-        if let Some(tools) = &request.tools {
+        let chat_template = engine.chat_template();
+        if chat_template.is_none() {
+            if let Some(tools) = &request.tools {
             for tool in tools {
                 sys_prompt.push_str(&format!(
                     "<|tool|>{}<tool|>\n",
@@ -352,9 +354,20 @@ impl LlamaClient {
                     )
                 ));
             }
+            }
         }
 
-        let prompt = format_gemma_chat(&request.messages, Some(&sys_prompt));
+        let prompt = if let Some(template) = chat_template {
+            llama_rs::render_chat_template(
+                &template,
+                &request.messages,
+                request.tools.as_deref(),
+                Some(&sys_prompt),
+                true,
+            )?
+        } else {
+            format_gemma_chat(&request.messages, Some(&sys_prompt))
+        };
         let max_tokens = request.max_tokens.unwrap_or(8192) as usize;
         let temp = request.temperature.unwrap_or(0.7);
 

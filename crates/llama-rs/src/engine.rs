@@ -63,4 +63,8 @@ impl LlamaEngine {
     pub fn is_eog(&self, token: i32) -> bool {
         self.inner.is_eog(token)
     }
+
+    pub fn chat_template(&self) -> Option<String> {
+        self.inner.chat_template()
+    }
 }

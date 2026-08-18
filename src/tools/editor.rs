@@ -334,7 +334,10 @@ impl Tool for RunCommandTool {
     }
 
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let cmd_str = args["command_line"].as_str().ok_or_else(|| anyhow!("Missing command_line"))?;
+        let cmd_str = args["command_line"]
+            .as_str()
+            .or_else(|| args["command"].as_str())
+            .ok_or_else(|| anyhow!("Missing command_line (or command)"))?;
         let cwd_str = args["cwd"].as_str().unwrap_or(".");
         let exec_dir = workspace_root.join(cwd_str);
 
