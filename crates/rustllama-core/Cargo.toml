@@ -1,8 +1,9 @@
 [package]
-name = "llamarust-core"
+name = "rustllama-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [features]
 default = ["auto"]

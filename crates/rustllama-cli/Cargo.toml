@@ -1,8 +1,9 @@
 [package]
-name = "llamarust-cli"
+name = "rustllama-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 autobins = false
 
 [[bin]]
@@ -11,14 +12,14 @@ path = "src/main.rs"
 
 [features]
 default = ["auto"]
-auto = ["llamarust-core/auto"]
-cuda = ["llamarust-core/cuda"]
-vulkan = ["llamarust-core/vulkan"]
-hipblas = ["llamarust-core/hipblas"]
-sycl = ["llamarust-core/sycl"]
+auto = ["rustllama-core/auto"]
+cuda = ["rustllama-core/cuda"]
+vulkan = ["rustllama-core/vulkan"]
+hipblas = ["rustllama-core/hipblas"]
+sycl = ["rustllama-core/sycl"]
 
 [dependencies]
-llamarust-core = { path = "../llamarust-core", default-features = false }
+rustllama-core = { path = "../rustllama-core", default-features = false }
 anyhow.workspace = true
 clap.workspace = true
 colored.workspace = true

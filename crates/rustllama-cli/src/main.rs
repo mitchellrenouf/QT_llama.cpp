@@ -1,5 +1,5 @@
-pub use llamarust_core::config;
-use llamarust_core::{AgentMode, Config, GemmaAgent};
+pub use rustllama_core::config;
+use rustllama_core::{AgentMode, Config, GemmaAgent};
 use clap::Parser;
 use colored::*;
 use std::io::{self, BufRead, Write};

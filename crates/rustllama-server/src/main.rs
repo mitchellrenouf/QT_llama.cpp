@@ -1,6 +1,6 @@
 use clap::Parser;
-use llamarust_core::{Config, GemmaAgent};
-use llamarust_server::ApiServer;
+use rustllama_core::{Config, GemmaAgent};
+use rustllama_server::ApiServer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

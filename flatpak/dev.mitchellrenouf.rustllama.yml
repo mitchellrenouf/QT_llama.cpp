@@ -113,7 +113,7 @@ modules:
         EOF
 
       # CUDA is explicit so the packaged Linux binary cannot silently become CPU-only.
-      - cargo build -p llamarust-qt --release --locked --no-default-features --features cuda
+      - cargo build -p rustllama-qt --release --locked --no-default-features --features cuda
 
       # NVCC and the CUDA headers/static libraries are build-only. libcudart
       # was copied to /app/lib above; the host NVIDIA runtime provides libcuda.

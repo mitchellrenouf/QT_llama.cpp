@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>dev.mitchellrenouf.rustllama</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT</project_license>
+  <project_license>CC0-1.0</project_license>
   <name>RustLlama</name>
   <summary>Local AI assistant with native GGUF inference and workspace automation</summary>
 

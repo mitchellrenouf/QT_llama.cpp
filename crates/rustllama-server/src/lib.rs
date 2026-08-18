@@ -1,4 +1,4 @@
-use llamarust_core::client::{ChatCompletionRequest, ChatMessage, LlamaClient, StreamEvent};
+use rustllama_core::client::{ChatCompletionRequest, ChatMessage, LlamaClient, StreamEvent};
 use anyhow::Result;
 use colored::Colorize;
 use serde::{Deserialize, Serialize};

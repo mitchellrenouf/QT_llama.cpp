@@ -1445,76 +1445,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llamarust-cli"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "colored",
- "llamarust-core",
- "tokio",
-]
-
-[[package]]
-name = "llamarust-core"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.23.1",
- "chromiumoxide",
- "chrono",
- "clap",
- "colored",
- "dirs",
- "futures-util",
- "llama-rs",
- "regex",
- "scraper",
- "serde",
- "serde_json",
- "similar",
- "termimad",
- "tokio",
- "tokio-tungstenite",
- "urlencoding",
- "walkdir",
-]
-
-[[package]]
-name = "llamarust-qt"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "colored",
- "futures-util",
- "llamarust-core",
- "qtrs",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tungstenite 0.26.2",
-]
-
-[[package]]
-name = "llamarust-server"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "colored",
- "futures-util",
- "llama-rs",
- "llamarust-core",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tungstenite 0.26.2",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2090,6 +2020,76 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustllama-cli"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "rustllama-core",
+ "tokio",
+]
+
+[[package]]
+name = "rustllama-core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chromiumoxide",
+ "chrono",
+ "clap",
+ "colored",
+ "dirs",
+ "futures-util",
+ "llama-rs",
+ "regex",
+ "scraper",
+ "serde",
+ "serde_json",
+ "similar",
+ "termimad",
+ "tokio",
+ "tokio-tungstenite",
+ "urlencoding",
+ "walkdir",
+]
+
+[[package]]
+name = "rustllama-qt"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "futures-util",
+ "qtrs",
+ "rustllama-core",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tungstenite 0.26.2",
+]
+
+[[package]]
+name = "rustllama-server"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "futures-util",
+ "llama-rs",
+ "rustllama-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tungstenite 0.26.2",
 ]
 
 [[package]]

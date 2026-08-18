@@ -42,7 +42,7 @@ $env:Path = "C:\Qt\6.8.3\msvc2022_64\bin;$env:Path"
 $env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3"
 qmake -query QT_VERSION
 nvcc --version
-cargo build -p llamarust-qt --release --locked --no-default-features --features cuda
+cargo build -p rustllama-qt --release --locked --no-default-features --features cuda
 ```
 
 The Windows GitHub Actions runner installs Qt and CUDA and uses that same explicit CUDA feature selection.
@@ -56,13 +56,13 @@ export CUDA_PATH=/opt/cuda
 export PATH="$CUDA_PATH/bin:$PATH"
 qmake6 -query QT_VERSION
 nvcc --version
-cargo build -p llamarust-qt --release --locked --no-default-features --features cuda
+cargo build -p rustllama-qt --release --locked --no-default-features --features cuda
 ```
 
 For a CPU-only build:
 
 ```bash
-cargo build -p llamarust-cli --release --locked --no-default-features
+cargo build -p rustllama-cli --release --locked --no-default-features
 ```
 
 ## Running
@@ -71,16 +71,16 @@ The default model setting downloads/resolves `ggml-org/gemma-4-26B-A4B-it-GGUF:Q
 
 ```bash
 # Desktop GUI
-cargo run -p llamarust-qt --release --no-default-features --features cuda -- --model /path/to/model.gguf
+cargo run -p rustllama-qt --release --no-default-features --features cuda -- --model /path/to/model.gguf
 
 # Interactive terminal
-cargo run -p llamarust-cli --release --no-default-features --features cuda -- --model /path/to/model.gguf
+cargo run -p rustllama-cli --release --no-default-features --features cuda -- --model /path/to/model.gguf
 
 # One-shot CLI prompt with an 8K configured context
-cargo run -p llamarust-cli --release --no-default-features --features cuda -- --prompt "Hello" --ctx-size 8192 --model /path/to/model.gguf
+cargo run -p rustllama-cli --release --no-default-features --features cuda -- --prompt "Hello" --ctx-size 8192 --model /path/to/model.gguf
 
 # HTTP/SSE server
-cargo run -p llamarust-server --release --no-default-features --features cuda -- --port 8080 --model /path/to/model.gguf
+cargo run -p rustllama-server --release --no-default-features --features cuda -- --port 8080 --model /path/to/model.gguf
 ```
 
 Useful options include `--max-tokens`, `--temperature`, `--gpu-layers`, `--workspace-root`, `--mode`, and `--mcp-server`. Run `rustllama --help` for the complete current list.
@@ -98,10 +98,10 @@ The Flatpak requests broad host filesystem and device access because the applica
 
 ## Repository layout
 
-- `crates/llamarust-core/`: shared agent, configuration, model client, tools, and Hugging Face integration
-- `crates/llamarust-cli/`: terminal application
-- `crates/llamarust-server/`: OpenAI-compatible HTTP/SSE server
-- `crates/llamarust-qt/`: native Qt desktop application and Qt-only build checks
+- `crates/rustllama-core/`: shared agent, configuration, model client, tools, and Hugging Face integration
+- `crates/rustllama-cli/`: terminal application
+- `crates/rustllama-server/`: OpenAI-compatible HTTP/SSE server
+- `crates/rustllama-qt/`: native Qt desktop application and Qt-only build checks
 - `crates/qtensor/`: GGUF reader, tensor operations, model execution, and CUDA kernels
 - `crates/llama-rs/`: application-facing inference wrapper (despite its historical name, it does not link llama.cpp)
 - `flatpak/`: Flatpak manifests and desktop metadata
@@ -109,4 +109,4 @@ The Flatpak requests broad host filesystem and device access because the applica
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+CC0 1.0 Universal (CC0-1.0). See [LICENSE](LICENSE).
