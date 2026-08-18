@@ -4,7 +4,6 @@ use crate::kv_cache::KvCacheManager;
 use crate::ops;
 use crate::quant::dequantize_q8_0;
 use crate::anyhow::{self, Result};
-use rayon::prelude::*;
 use crate::sync as parking_lot;
 use std::collections::HashMap;
 use crate::kv_cache::{KvCacheFormat, KvCacheRow};
@@ -1971,11 +1970,10 @@ impl MrmlModel {
             let valid_vocab_token = &self.valid_vocab_token;
             let vocab_size = self.config.vocab_size;
 
-            self.token_embd_table
-                .par_chunks_exact(row_bytes)
-                .enumerate()
-                .take(vocab_size)
-                .filter_map(|(tid, row)| {
+            let token_embd_table = &self.token_embd_table;
+            crate::parallel::map(vocab_size, 1024, |tid| {
+                    let row_start = tid * row_bytes;
+                    let row = &token_embd_table[row_start..row_start + row_bytes];
                     if !valid_vocab_token[tid] {
                         return None;
                     }
@@ -1990,6 +1988,8 @@ impl MrmlModel {
                     }
                     Some((score, tid as i32))
                 })
+                .into_iter()
+                .flatten()
                 .collect()
         };
 

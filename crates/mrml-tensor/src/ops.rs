@@ -143,8 +143,6 @@ pub fn softmax(logits: &mut [f32]) {
     }
 }
 
-use rayon::prelude::*;
-
 /// Quantized Matrix-Vector Multiplication: y = W * x (where W is Q4_0 and x is F32)
 /// Using Q8_0 activation quantization with Rayon thread pool
 pub fn mat_vec_mul_q4_0(
@@ -230,11 +228,18 @@ pub fn mat_vec_mul_q4_0_q8_0(
             }
         }
     } else {
-        y_out.par_iter_mut().enumerate().for_each(|(r, y)| {
-            let row_start = r * row_bytes;
-            if row_start + row_bytes <= w_q4_bytes.len() {
-                let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
-                *y = vec_dot_q4_0_q8_0(row_slice, &x_q8, n_cols);
+        let output_address = y_out.as_mut_ptr() as usize;
+        crate::parallel::for_each_range(y_out.len(), 64, |start, end| {
+            for r in start..end {
+                let row_start = r * row_bytes;
+                if row_start + row_bytes <= w_q4_bytes.len() {
+                    let row_slice = &w_q4_bytes[row_start..row_start + row_bytes];
+                    // SAFETY: each worker owns a disjoint row range.
+                    unsafe {
+                        *(output_address as *mut f32).add(r) =
+                            vec_dot_q4_0_q8_0(row_slice, &x_q8, n_cols);
+                    }
+                }
             }
         });
     }
