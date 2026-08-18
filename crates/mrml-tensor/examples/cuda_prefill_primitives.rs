@@ -76,11 +76,13 @@ fn main() -> anyhow::Result<()> {
     device.qkv_postprocess_batch(
         &mut d_qkv, &d_norm, &d_norm, &mut d_k_cache, &mut d_v_cache,
         0, 0, HEADS, KV_HEADS, HEAD_DIM, 10_000.0, BATCH,
+        BATCH, 0, 0,
     );
     let mut d_attention = CudaBuffer::alloc(BATCH * Q_ROWS)?;
     device.attention_prefill(
         &d_qkv, &d_k_cache, &d_v_cache, &mut d_attention, 0, BATCH,
         HEADS, KV_HEADS, HEAD_DIM, 1.0 / (HEAD_DIM as f32).sqrt(), None,
+        BATCH, 0, 0,
     );
     device.sync()?;
     let mut attention = vec![0.0f32; d_attention.len()];
@@ -208,6 +210,105 @@ fn main() -> anyhow::Result<()> {
         batched.as_secs_f64() * 1_000.0,
         sequential.as_secs_f64() * 1_000.0,
         sequential.as_secs_f64() / batched.as_secs_f64(),
+    );
+
+    // Use a Gemma-sized projection as the performance gate. The tiny case
+    // above is intentionally convenient for correctness, but mostly measures
+    // launch overhead and cannot reveal whether batched weights are reused.
+    const MODEL_DIM: usize = 2816;
+    const MODEL_ROWS: usize = 2816;
+    const MODEL_BATCH: usize = 128;
+    const MODEL_ITERS: usize = 100;
+    let model_row_bytes = MODEL_DIM / 32 * 18;
+    let mut model_weights = vec![0u8; MODEL_ROWS * model_row_bytes];
+    for block in model_weights.chunks_exact_mut(18) {
+        block[..2].copy_from_slice(&f32_to_f16(0.0625).to_le_bytes());
+        block[2..].fill(0x98);
+    }
+    let model_input: Vec<f32> = (0..MODEL_BATCH * MODEL_DIM)
+        .map(|index| ((index % 127) as f32 - 63.0) / 64.0)
+        .collect();
+    let d_model_weights = CudaBuffer::from_host(&model_weights)?;
+    let d_model_input = CudaBuffer::from_host(&model_input)?;
+    let mut d_model_output = CudaBuffer::alloc(MODEL_BATCH * MODEL_ROWS)?;
+    for _ in 0..10 {
+        device.gemm_q4_0(
+            &d_model_weights, &d_model_input, &mut d_model_output,
+            MODEL_ROWS, MODEL_DIM, MODEL_BATCH,
+        );
+    }
+    device.sync()?;
+    let started = Instant::now();
+    for _ in 0..MODEL_ITERS {
+        device.gemm_q4_0(
+            &d_model_weights, &d_model_input, &mut d_model_output,
+            MODEL_ROWS, MODEL_DIM, MODEL_BATCH,
+        );
+    }
+    device.sync()?;
+    let model_elapsed = started.elapsed();
+    println!(
+        "gemma_projection rows={MODEL_ROWS} cols={MODEL_DIM} batch={MODEL_BATCH} iterations={MODEL_ITERS} total_ms={:.3} per_iteration_ms={:.3}",
+        model_elapsed.as_secs_f64() * 1_000.0,
+        model_elapsed.as_secs_f64() * 1_000.0 / MODEL_ITERS as f64,
+    );
+
+    const MODEL_Q_ROWS: usize = 4096;
+    const MODEL_KV_ROWS: usize = 1024;
+    const MODEL_FFN_ROWS: usize = 2112;
+    let mut q_weights = vec![0u8; MODEL_Q_ROWS * model_row_bytes];
+    let mut kv_weights = vec![0u8; MODEL_KV_ROWS * model_row_bytes];
+    let mut ffn_weights = vec![0u8; MODEL_FFN_ROWS * model_row_bytes];
+    for block in q_weights.chunks_exact_mut(18)
+        .chain(kv_weights.chunks_exact_mut(18))
+        .chain(ffn_weights.chunks_exact_mut(18))
+    {
+        block[..2].copy_from_slice(&f32_to_f16(0.0625).to_le_bytes());
+        block[2..].fill(0x98);
+    }
+    let d_q_weights = CudaBuffer::from_host(&q_weights)?;
+    let d_kv_weights = CudaBuffer::from_host(&kv_weights)?;
+    let d_ffn_weights = CudaBuffer::from_host(&ffn_weights)?;
+    let mut d_model_qkv = CudaBuffer::alloc(
+        MODEL_BATCH * (MODEL_Q_ROWS + 2 * MODEL_KV_ROWS),
+    )?;
+    let mut d_model_geglu = CudaBuffer::alloc(MODEL_BATCH * MODEL_FFN_ROWS)?;
+    for _ in 0..10 {
+        device.gemm_q4_0_qkv(
+            &d_q_weights, &d_kv_weights, &d_kv_weights, &d_model_input,
+            &mut d_model_qkv, MODEL_Q_ROWS, MODEL_KV_ROWS, MODEL_DIM, MODEL_BATCH,
+        );
+        device.gemm_q4_0_geglu(
+            &d_ffn_weights, &d_ffn_weights, &d_model_input, &mut d_model_geglu,
+            MODEL_FFN_ROWS, MODEL_DIM, MODEL_BATCH,
+        );
+    }
+    device.sync()?;
+    let started = Instant::now();
+    for _ in 0..MODEL_ITERS {
+        device.gemm_q4_0_qkv(
+            &d_q_weights, &d_kv_weights, &d_kv_weights, &d_model_input,
+            &mut d_model_qkv, MODEL_Q_ROWS, MODEL_KV_ROWS, MODEL_DIM, MODEL_BATCH,
+        );
+    }
+    device.sync()?;
+    let qkv_elapsed = started.elapsed();
+    let started = Instant::now();
+    for _ in 0..MODEL_ITERS {
+        device.gemm_q4_0_geglu(
+            &d_ffn_weights, &d_ffn_weights, &d_model_input, &mut d_model_geglu,
+            MODEL_FFN_ROWS, MODEL_DIM, MODEL_BATCH,
+        );
+    }
+    device.sync()?;
+    let geglu_elapsed = started.elapsed();
+    println!(
+        "gemma_qkv batch={MODEL_BATCH} iterations={MODEL_ITERS} per_iteration_ms={:.3}",
+        qkv_elapsed.as_secs_f64() * 1_000.0 / MODEL_ITERS as f64,
+    );
+    println!(
+        "gemma_geglu batch={MODEL_BATCH} iterations={MODEL_ITERS} per_iteration_ms={:.3}",
+        geglu_elapsed.as_secs_f64() * 1_000.0 / MODEL_ITERS as f64,
     );
     Ok(())
 }

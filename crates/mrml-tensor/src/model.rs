@@ -801,6 +801,13 @@ impl MrmlModel {
             layer_devices.iter().filter(|d| matches!(d, DeviceType::Cpu)).count(),
         );
         eprintln!("[mrml] Execution plan: {execution_plan}");
+        #[cfg(feature = "cuda")]
+        if cuda_dev.is_some() && resident_layers != n_layers {
+            eprintln!(
+                "[mrml] WARNING: only {resident_layers}/{n_layers} layers are fully CUDA-resident; \
+                 resident decode and batched prefill are disabled, so inference may be substantially slower"
+            );
+        }
 
         Ok(Self {
             config,

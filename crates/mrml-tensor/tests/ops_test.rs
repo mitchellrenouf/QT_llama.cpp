@@ -248,16 +248,24 @@ fn test_cuda_qkv_postprocess_matches_cpu() {
     let mut d_k_cache = CudaBuffer::alloc(3 * kv_dim).unwrap();
     let mut d_v_cache = CudaBuffer::alloc(3 * kv_dim).unwrap();
     dev.qkv_postprocess(&mut d_qkv, &d_q_norm, &d_k_norm, &mut d_k_cache, &mut d_v_cache,
-        37, 1, n_heads, n_kv_heads, head_dim, 10_000.0);
+        37, 1, n_heads, n_kv_heads, head_dim, 10_000.0, 0, 0);
     let mut actual = vec![0.0; expected.len()];
     d_qkv.copy_to_host(&mut actual).unwrap();
     for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
         assert!((a - e).abs() < 2e-4, "index {i}: {a} != {e}");
     }
-    let mut k_cache = vec![0.0; 3 * kv_dim];
-    let mut v_cache = vec![0.0; 3 * kv_dim];
+    let mut k_cache = vec![0u16; 3 * kv_dim];
+    let mut v_cache = vec![0u16; 3 * kv_dim];
     d_k_cache.copy_to_host(&mut k_cache).unwrap();
     d_v_cache.copy_to_host(&mut v_cache).unwrap();
-    assert_eq!(&k_cache[kv_dim..2 * kv_dim], &actual[q_dim..q_dim + kv_dim]);
-    assert_eq!(&v_cache[kv_dim..2 * kv_dim], &actual[q_dim + kv_dim..]);
+    for (stored, expected) in k_cache[kv_dim..2 * kv_dim]
+        .iter().zip(&actual[q_dim..q_dim + kv_dim])
+    {
+        assert!((mrml_tensor::quant::f16_to_f32(*stored) - expected).abs() < 1e-3);
+    }
+    for (stored, expected) in v_cache[kv_dim..2 * kv_dim]
+        .iter().zip(&actual[q_dim + kv_dim..])
+    {
+        assert!((mrml_tensor::quant::f16_to_f32(*stored) - expected).abs() < 1e-3);
+    }
 }

@@ -216,31 +216,44 @@ __global__ void k_gemm_q4_0_f32(
     int n_cols,
     int batch
 ) {
+    constexpr int TOKEN_TILE = 8;
     int lane = threadIdx.x & 31;
     int sublane = lane & 15;
     int warp = threadIdx.x >> 5;
     int rows_per_block = (blockDim.x / WARP_SIZE) * 2;
     int row = blockIdx.x * rows_per_block + warp * 2 + (lane >> 4);
-    int token = blockIdx.y;
-    bool active = row < n_rows && token < batch;
+    int token_start = blockIdx.y * TOKEN_TILE;
+    bool active_row = row < n_rows;
     int n_blocks = n_cols / 32;
     int row_bytes = n_blocks * 18;
-    const uint8_t* row_w = active ? w_q4 + (size_t)row * row_bytes : w_q4;
-    const float* token_x = x + (size_t)token * n_cols;
-    float local_sum = 0.0f;
+    const uint8_t* row_w = active_row ? w_q4 + (size_t)row * row_bytes : w_q4;
+    float local_sum[TOKEN_TILE] = {};
     for (int b = 0; b < n_blocks; ++b) {
         int w_off = b * 18;
         uint16_t d_raw = (uint16_t)row_w[w_off] | ((uint16_t)row_w[w_off + 1] << 8);
         float d = __half2float(__ushort_as_half(d_raw));
         const uint8_t* qs = row_w + w_off + 2;
-        uint8_t byte = active ? qs[sublane] : 0;
-        local_sum += active ? d * (
-            (float)((byte & 0x0F) - 8) * token_x[b * 32 + sublane]
-            + (float)((byte >> 4) - 8) * token_x[b * 32 + sublane + 16]
-        ) : 0.0f;
+        uint8_t byte = active_row ? qs[sublane] : 0;
+        float q0 = (float)((byte & 0x0F) - 8) * d;
+        float q1 = (float)((byte >> 4) - 8) * d;
+        #pragma unroll
+        for (int tile = 0; tile < TOKEN_TILE; ++tile) {
+            int token = token_start + tile;
+            if (active_row && token < batch) {
+                const float* token_x = x + (size_t)token * n_cols + b * 32;
+                local_sum[tile] += q0 * token_x[sublane]
+                    + q1 * token_x[sublane + 16];
+            }
+        }
     }
-    float total = half_warp_reduce_sum(local_sum);
-    if (active && sublane == 0) y[(size_t)token * n_rows + row] = total;
+    #pragma unroll
+    for (int tile = 0; tile < TOKEN_TILE; ++tile) {
+        float total = half_warp_reduce_sum(local_sum[tile]);
+        int token = token_start + tile;
+        if (active_row && token < batch && sublane == 0) {
+            y[(size_t)token * n_rows + row] = total;
+        }
+    }
 }
 
 __global__ void k_rms_norm_batch_f32(
@@ -323,28 +336,43 @@ __global__ void k_gemm_q4_0_qkv_f32(
     const uint8_t* w_q, const uint8_t* w_k, const uint8_t* w_v,
     const float* x, float* y, int q_rows, int kv_rows, int n_cols, int batch
 ) {
+    constexpr int TOKEN_TILE = 8;
     int lane = threadIdx.x & 31, sublane = lane & 15, warp = threadIdx.x >> 5;
     int rows_per_block = (blockDim.x / WARP_SIZE) * 2;
     int out_row = blockIdx.x * rows_per_block + warp * 2 + (lane >> 4);
-    int token = blockIdx.y, total_rows = q_rows + 2 * kv_rows;
-    bool active = out_row < total_rows && token < batch;
+    int token_start = blockIdx.y * TOKEN_TILE;
+    int total_rows = q_rows + 2 * kv_rows;
+    bool active_row = out_row < total_rows;
     const uint8_t* matrix = w_q; int row = out_row;
     if (out_row >= q_rows && out_row < q_rows + kv_rows) { matrix = w_k; row -= q_rows; }
     else if (out_row >= q_rows + kv_rows) { matrix = w_v; row -= q_rows + kv_rows; }
     int n_blocks = n_cols / 32, row_bytes = n_blocks * 18;
-    const uint8_t* row_w = active ? matrix + (size_t)row * row_bytes : matrix;
-    const float* token_x = x + (size_t)token * n_cols;
-    float sum = 0.0f;
+    const uint8_t* row_w = active_row ? matrix + (size_t)row * row_bytes : matrix;
+    float sums[TOKEN_TILE] = {};
     for (int b = 0; b < n_blocks; ++b) {
         int off = b * 18;
         uint16_t raw = (uint16_t)row_w[off] | ((uint16_t)row_w[off + 1] << 8);
         float d = __half2float(__ushort_as_half(raw));
-        uint8_t packed = active ? row_w[off + 2 + sublane] : 0;
-        sum += active ? d * ((float)((packed & 15) - 8) * token_x[b * 32 + sublane]
-            + (float)((packed >> 4) - 8) * token_x[b * 32 + sublane + 16]) : 0.0f;
+        uint8_t packed = active_row ? row_w[off + 2 + sublane] : 0;
+        float q0 = (float)((packed & 15) - 8) * d;
+        float q1 = (float)((packed >> 4) - 8) * d;
+        #pragma unroll
+        for (int tile = 0; tile < TOKEN_TILE; ++tile) {
+            int token = token_start + tile;
+            if (active_row && token < batch) {
+                const float* token_x = x + (size_t)token * n_cols + b * 32;
+                sums[tile] += q0 * token_x[sublane] + q1 * token_x[sublane + 16];
+            }
+        }
     }
-    float total = half_warp_reduce_sum(sum);
-    if (active && sublane == 0) y[(size_t)token * total_rows + out_row] = total;
+    #pragma unroll
+    for (int tile = 0; tile < TOKEN_TILE; ++tile) {
+        float total = half_warp_reduce_sum(sums[tile]);
+        int token = token_start + tile;
+        if (active_row && token < batch && sublane == 0) {
+            y[(size_t)token * total_rows + out_row] = total;
+        }
+    }
 }
 
 __device__ void store_quantized_cache_head(
@@ -949,31 +977,47 @@ __global__ void k_gemm_q4_0_geglu_f32(
     const uint8_t* w_gate, const uint8_t* w_up, const float* x, float* act,
     int n_rows, int n_cols, int batch
 ) {
+    constexpr int TOKEN_TILE = 8;
     int lane = threadIdx.x & 31, sublane = lane & 15, warp = threadIdx.x >> 5;
     int rows_per_block = (blockDim.x / WARP_SIZE) * 2;
-    int row = blockIdx.x * rows_per_block + warp * 2 + (lane >> 4), token = blockIdx.y;
-    bool active = row < n_rows && token < batch;
+    int row = blockIdx.x * rows_per_block + warp * 2 + (lane >> 4);
+    int token_start = blockIdx.y * TOKEN_TILE;
+    bool active_row = row < n_rows;
     int n_blocks = n_cols / 32, row_bytes = n_blocks * 18;
-    const uint8_t* gate_row = active ? w_gate + (size_t)row * row_bytes : w_gate;
-    const uint8_t* up_row = active ? w_up + (size_t)row * row_bytes : w_up;
-    const float* token_x = x + (size_t)token * n_cols;
-    float gate_sum = 0.0f, up_sum = 0.0f;
+    const uint8_t* gate_row = active_row ? w_gate + (size_t)row * row_bytes : w_gate;
+    const uint8_t* up_row = active_row ? w_up + (size_t)row * row_bytes : w_up;
+    float gate_sum[TOKEN_TILE] = {};
+    float up_sum[TOKEN_TILE] = {};
     for (int b = 0; b < n_blocks; ++b) {
         int off = b * 18;
         uint16_t dg_raw = (uint16_t)gate_row[off] | ((uint16_t)gate_row[off + 1] << 8);
         uint16_t du_raw = (uint16_t)up_row[off] | ((uint16_t)up_row[off + 1] << 8);
-        uint8_t bg = active ? gate_row[off + 2 + sublane] : 0;
-        uint8_t bu = active ? up_row[off + 2 + sublane] : 0;
-        float x0 = token_x[b * 32 + sublane], x1 = token_x[b * 32 + sublane + 16];
-        gate_sum += active ? __half2float(__ushort_as_half(dg_raw)) *
-            ((float)((bg & 15) - 8) * x0 + (float)((bg >> 4) - 8) * x1) : 0.0f;
-        up_sum += active ? __half2float(__ushort_as_half(du_raw)) *
-            ((float)((bu & 15) - 8) * x0 + (float)((bu >> 4) - 8) * x1) : 0.0f;
+        uint8_t bg = active_row ? gate_row[off + 2 + sublane] : 0;
+        uint8_t bu = active_row ? up_row[off + 2 + sublane] : 0;
+        float dg = __half2float(__ushort_as_half(dg_raw));
+        float du = __half2float(__ushort_as_half(du_raw));
+        float g0 = (float)((bg & 15) - 8) * dg, g1 = (float)((bg >> 4) - 8) * dg;
+        float u0 = (float)((bu & 15) - 8) * du, u1 = (float)((bu >> 4) - 8) * du;
+        #pragma unroll
+        for (int tile = 0; tile < TOKEN_TILE; ++tile) {
+            int token = token_start + tile;
+            if (active_row && token < batch) {
+                const float* token_x = x + (size_t)token * n_cols + b * 32;
+                float x0 = token_x[sublane], x1 = token_x[sublane + 16];
+                gate_sum[tile] += g0 * x0 + g1 * x1;
+                up_sum[tile] += u0 * x0 + u1 * x1;
+            }
+        }
     }
-    float gate = half_warp_reduce_sum(gate_sum), up = half_warp_reduce_sum(up_sum);
-    if (active && sublane == 0) {
-        float gelu = 0.5f * gate * (1.0f + tanhf(0.7978845608f * gate * (1.0f + 0.044715f * gate * gate)));
-        act[(size_t)token * n_rows + row] = gelu * up;
+    #pragma unroll
+    for (int tile = 0; tile < TOKEN_TILE; ++tile) {
+        float gate = half_warp_reduce_sum(gate_sum[tile]);
+        float up = half_warp_reduce_sum(up_sum[tile]);
+        int token = token_start + tile;
+        if (active_row && token < batch && sublane == 0) {
+            float gelu = 0.5f * gate * (1.0f + tanhf(0.7978845608f * gate * (1.0f + 0.044715f * gate * gate)));
+            act[(size_t)token * n_rows + row] = gelu * up;
+        }
     }
 }
 
@@ -1085,7 +1129,9 @@ void cuda_op_gemm_q4_0(
 ) {
     const int threads = 256;
     const int rows_per_block = (threads / WARP_SIZE) * 2;
-    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block, batch);
+    constexpr int token_tile = 8;
+    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block,
+              (batch + token_tile - 1) / token_tile);
     k_gemm_q4_0_f32<<<grid, threads, 0, stream>>>(
         d_w_q4, d_x, d_y, n_rows, n_cols, batch
     );
@@ -1194,7 +1240,9 @@ void cuda_op_gemm_q4_0_qkv(
 ) {
     int threads = 128, rows_per_block = 2 * threads / WARP_SIZE;
     int total_rows = q_rows + 2 * kv_rows;
-    dim3 grid((total_rows + rows_per_block - 1) / rows_per_block, batch);
+    constexpr int token_tile = 8;
+    dim3 grid((total_rows + rows_per_block - 1) / rows_per_block,
+              (batch + token_tile - 1) / token_tile);
     k_gemm_q4_0_qkv_f32<<<grid, threads, 0, stream>>>(
         d_w_q, d_w_k, d_w_v, d_x, d_y, q_rows, kv_rows, n_cols, batch);
 }
@@ -1415,7 +1463,9 @@ void cuda_op_gemm_q4_0_geglu(
     float* d_act, int n_rows, int n_cols, int batch, cudaStream_t stream
 ) {
     int threads = 128, rows_per_block = 2 * threads / WARP_SIZE;
-    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block, batch);
+    constexpr int token_tile = 8;
+    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block,
+              (batch + token_tile - 1) / token_tile);
     k_gemm_q4_0_geglu_f32<<<grid, threads, 0, stream>>>(
         d_w_gate, d_w_up, d_x, d_act, n_rows, n_cols, batch);
 }
