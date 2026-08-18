@@ -1,6 +1,7 @@
 use crate::tools::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,7 +134,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         let img_bytes = fs::read(&file_path)?;
-        let base64_str = crate::encoding::base64_encode(&img_bytes);
+        let base64_str = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
         let data_uri = format!("data:image/jpeg;base64,{}", base64_str);
 
         Ok(format!(

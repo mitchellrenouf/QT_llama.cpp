@@ -2,7 +2,6 @@ pub mod agent;
 pub mod client;
 pub mod config;
 pub mod diff;
-pub mod encoding;
 pub mod fs_walk;
 pub mod hf;
 pub mod markdown;

@@ -1,6 +1,7 @@
 use crate::tools::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -143,7 +144,7 @@ impl Tool for RecordAudioTool {
         }
 
         let audio_bytes = fs::read(&file_path)?;
-        let base64_str = crate::encoding::base64_encode(&audio_bytes);
+        let base64_str = base64::engine::general_purpose::STANDARD.encode(&audio_bytes);
 
         Ok(format!(
             "Audio recorded successfully for {} seconds at '{}'. Base64 payload size: {} bytes.\nAUDIO_BASE64:{}",
