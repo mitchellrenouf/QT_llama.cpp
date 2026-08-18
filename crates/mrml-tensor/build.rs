@@ -87,7 +87,7 @@ fn main() {
                 let msvc_bin = find_msvc_bin().expect("Visual Studio C++ x64 tools are required for CUDA builds");
                 #[cfg(windows)]
                 cmd.arg("-ccbin").arg(&msvc_bin);
-                
+
                 cmd.args(&[
                     "-c", "c_src/cuda_kernels.cu",
                     "-o", obj_out.to_str().unwrap(),
