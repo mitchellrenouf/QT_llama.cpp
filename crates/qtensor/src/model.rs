@@ -127,9 +127,9 @@ pub struct TransformerLayer {
     #[cfg(feature = "cuda")]
     pub gpu_d_qkv: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
     #[cfg(feature = "cuda")]
-    pub gpu_d_k_cache: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    pub gpu_d_k_cache: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<u16>>>,
     #[cfg(feature = "cuda")]
-    pub gpu_d_v_cache: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<f32>>>,
+    pub gpu_d_v_cache: parking_lot::Mutex<Option<crate::cuda::CudaBuffer<u16>>>,
     #[cfg(feature = "cuda")]
     pub gpu_kv_capacity: usize,
     #[cfg(feature = "cuda")]
@@ -478,7 +478,10 @@ impl QTensorModel {
             };
 
             #[cfg(feature = "cuda")]
-            let gpu_kv_capacity = max_context.min(1024);
+            // Cover the complete rendered system/tool prompt for batched
+            // prefill. Longer contexts will use a compact f16 cache path once
+            // available rather than silently truncating model-visible input.
+            let gpu_kv_capacity = max_context.min(2560);
             #[cfg(feature = "cuda")]
             let (gpu_d_k_cache, gpu_d_v_cache) = if cuda_dev.is_some() {
                 (
@@ -950,9 +953,11 @@ impl QTensorModel {
                             let mut q_guard = layer.gpu_d_q.lock();
                             if let Some(ref mut d_q) = q_guard.as_mut() {
                                 let offset = (seq_len - 1) * layer.kv_dim;
+                                let k_f16: Vec<u16> = k.iter().map(|&value| crate::quant::f32_to_f16(value)).collect();
+                                let v_f16: Vec<u16> = v.iter().map(|&value| crate::quant::f32_to_f16(value)).collect();
                                 if dev.copy_from_host_async(d_q, &q).is_ok()
-                                    && dev.copy_from_host_at_async(d_kc, offset, &k).is_ok()
-                                    && dev.copy_from_host_at_async(d_vc, offset, &v).is_ok() {
+                                    && dev.copy_from_host_at_async(d_kc, offset, &k_f16).is_ok()
+                                    && dev.copy_from_host_at_async(d_vc, offset, &v_f16).is_ok() {
                             dev.attention_causal(
                                 d_q,
                                 d_kc,
@@ -1431,8 +1436,10 @@ impl QTensorModel {
         }
 
         let mut tokens = Vec::new();
-        if let Some(&bos) = self.vocab_to_id.get("<bos>").or_else(|| self.vocab_to_id.get("<s>")) {
+        if !text.starts_with("<bos>") && !text.starts_with("<s>") {
+            if let Some(&bos) = self.vocab_to_id.get("<bos>").or_else(|| self.vocab_to_id.get("<s>")) {
             tokens.push(bos);
+            }
         }
 
         let formatted = text.replace(' ', "\u{2581}");
@@ -1502,11 +1509,152 @@ impl QTensorModel {
                 return true;
             }
         }
-        token == 1 || token == 2 || token == 106 || token == 107
+        token == 1 || token == 2 || token == 106
     }
 
     /// Initialize generation state with fast prompt prefill pass
+    #[cfg(feature = "cuda")]
+    fn prefill_cuda(&self, prompt_tokens: &[i32]) -> Option<(Vec<f32>, Vec<Vec<KvCacheRow>>, Vec<Vec<KvCacheRow>>)> {
+        let device = self.cuda_dev.as_ref()?;
+        let capacity = self.layers.iter().map(|layer| layer.gpu_kv_capacity).min()?;
+        if std::env::var_os("QTENSOR_PREFILL_DEBUG").is_some() {
+            eprintln!("[qtensor] prefill tokens={} capacity={}", prompt_tokens.len(), capacity);
+        }
+        if prompt_tokens.is_empty() || prompt_tokens.len() > capacity {
+            return None;
+        }
+        if !self.layers.iter().all(|layer| {
+            layer.gpu_attn_q.is_some() && layer.gpu_attn_k.is_some()
+                && layer.gpu_attn_v.is_some() && layer.gpu_attn_output.is_some()
+                && layer.gpu_ffn_gate.is_some() && layer.gpu_ffn_up.is_some()
+                && layer.gpu_ffn_down.is_some() && layer.gpu_ffn_gate_up_exps.is_some()
+                && layer.gpu_ffn_down_exps.is_some()
+        }) {
+            return None;
+        }
+
+        let dim = self.config.dim;
+        let mut last_hidden = vec![0.0f32; dim];
+        const CHUNK: usize = 128;
+        for (chunk_index, tokens) in prompt_tokens.chunks(CHUNK).enumerate() {
+            let batch = tokens.len();
+            let cache_start = chunk_index * CHUNK;
+            let mut embeddings = vec![0.0f32; batch * dim];
+            let embedding_scale = (dim as f32).sqrt();
+            for (token_index, &token) in tokens.iter().enumerate() {
+                let row = &mut embeddings[token_index * dim..(token_index + 1) * dim];
+                self.read_token_embedding(token, row).ok()?;
+                for value in row { *value *= embedding_scale; }
+            }
+            let mut hidden = crate::cuda::CudaBuffer::from_host_on(0, &embeddings).ok()?;
+
+            for layer in &self.layers {
+                let q_dim = layer.q_dim;
+                let kv_dim = layer.kv_dim;
+                let ffn_dim = 2112usize;
+                let exp_dim = 704usize;
+                let active = 8usize;
+                let mut normed = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                device.rms_norm_batch(
+                    &hidden, layer.gpu_attn_norm.as_ref(), &mut normed, dim, batch, 1e-6,
+                );
+                let mut qkv = crate::cuda::CudaBuffer::alloc_on(0, batch * (q_dim + 2 * kv_dim)).ok()?;
+                device.gemm_q4_0_qkv(
+                    layer.gpu_attn_q.as_ref()?, layer.gpu_attn_k.as_ref()?,
+                    layer.gpu_attn_v.as_ref()?, &normed, &mut qkv,
+                    q_dim, kv_dim, dim, batch,
+                );
+                let mut k_guard = layer.gpu_d_k_cache.lock();
+                let mut v_guard = layer.gpu_d_v_cache.lock();
+                let k_cache = k_guard.as_mut()?;
+                let v_cache = v_guard.as_mut()?;
+                device.qkv_postprocess_batch(
+                    &mut qkv, layer.gpu_attn_q_norm.as_ref()?, layer.gpu_attn_k_norm.as_ref()?,
+                    k_cache, v_cache, cache_start, cache_start,
+                    layer.n_heads, layer.n_kv_heads, layer.head_dim,
+                    layer.rope_freq_base, batch,
+                );
+                let mut attention = crate::cuda::CudaBuffer::alloc_on(0, batch * q_dim).ok()?;
+                device.attention_prefill(
+                    &qkv, k_cache, v_cache, &mut attention, cache_start, batch,
+                    layer.n_heads, layer.n_kv_heads, layer.head_dim,
+                    1.0,
+                    if layer.is_swa { Some(layer.sliding_window) } else { None },
+                );
+                drop(k_guard);
+                drop(v_guard);
+
+                let mut attn_proj = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                device.gemm_q4_0(
+                    layer.gpu_attn_output.as_ref()?, &attention, &mut attn_proj,
+                    dim, q_dim, batch,
+                );
+                let mut attn_res = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut shared_in = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut moe_in = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                let mut router_in = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                device.prepare_ffn_batch(
+                    &hidden, &attn_proj, layer.gpu_post_attention_norm.as_ref()?,
+                    layer.gpu_ffn_norm.as_ref()?, layer.gpu_pre_ffw_norm_2.as_ref()?,
+                    layer.gpu_ffn_gate_inp_scale.as_ref()?, &mut attn_res,
+                    &mut shared_in, &mut moe_in, &mut router_in, dim, batch,
+                );
+                let mut dense_act = crate::cuda::CudaBuffer::alloc_on(0, batch * ffn_dim).ok()?;
+                device.gemm_q4_0_geglu(
+                    layer.gpu_ffn_gate.as_ref()?, layer.gpu_ffn_up.as_ref()?,
+                    &shared_in, &mut dense_act, ffn_dim, dim, batch,
+                );
+                let mut dense = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                device.gemm_q4_0(
+                    layer.gpu_ffn_down.as_ref()?, &dense_act, &mut dense,
+                    dim, ffn_dim, batch,
+                );
+                let mut logits = crate::cuda::CudaBuffer::alloc_on(0, batch * 128).ok()?;
+                let mut ids = crate::cuda::CudaBuffer::alloc_on(0, batch * active).ok()?;
+                let mut probabilities = crate::cuda::CudaBuffer::alloc_on(0, batch * active).ok()?;
+                device.moe_router_batch(
+                    layer.gpu_ffn_gate_inp.as_ref()?, &router_in, &mut logits,
+                    &mut ids, &mut probabilities, dim, 128, batch,
+                );
+                let mut moe_act = crate::cuda::CudaBuffer::alloc_on(0, batch * active * exp_dim).ok()?;
+                let mut moe = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                device.moe_topk_batch_q4_0(
+                    layer.gpu_ffn_gate_up_exps.as_ref()?, layer.gpu_ffn_down_exps.as_ref()?,
+                    &ids, &probabilities, layer.gpu_ffn_down_exps_scale.as_ref(),
+                    &moe_in, &mut moe_act, &mut moe, dim, exp_dim, active, batch,
+                );
+                let mut next_hidden = crate::cuda::CudaBuffer::alloc_on(0, batch * dim).ok()?;
+                device.finish_ffn_batch(
+                    &attn_res, &mut dense, &mut moe,
+                    layer.gpu_post_ffw_norm_1.as_ref()?, layer.gpu_post_ffw_norm_2.as_ref()?,
+                    layer.gpu_post_ffw_norm.as_ref()?, &mut next_hidden,
+                    layer.layer_output_scale, dim, batch,
+                );
+                hidden = next_hidden;
+            }
+            device.sync().ok()?;
+            let mut chunk_hidden = vec![0.0f32; batch * dim];
+            hidden.copy_to_host(&mut chunk_hidden).ok()?;
+            last_hidden.copy_from_slice(&chunk_hidden[(batch - 1) * dim..batch * dim]);
+        }
+        let mut k_cache = vec![Vec::new(); self.config.n_layers];
+        let mut v_cache = vec![Vec::new(); self.config.n_layers];
+        for layer in 0..self.config.n_layers {
+            k_cache[layer].resize_with(prompt_tokens.len(), || KvCacheRow::Empty);
+            v_cache[layer].resize_with(prompt_tokens.len(), || KvCacheRow::Empty);
+        }
+        Some((last_hidden, k_cache, v_cache))
+    }
+
     pub fn init_generation_state(&self, prompt_tokens: &[i32]) -> GenerationState {
+        #[cfg(feature = "cuda")]
+        if let Some((hidden, k_cache, v_cache)) = self.prefill_cuda(prompt_tokens) {
+            return GenerationState {
+                current_token: *prompt_tokens.last().unwrap_or(&1),
+                pos: prompt_tokens.len(), generated_count: 0,
+                history_tokens: prompt_tokens.to_vec(), hidden, k_cache, v_cache,
+            };
+        }
         let n_layers = self.config.n_layers;
         let mut k_cache = vec![Vec::new(); n_layers];
         let mut v_cache = vec![Vec::new(); n_layers];
@@ -1565,7 +1713,7 @@ impl QTensorModel {
                             }
                             Some(logits.into_iter().enumerate().filter_map(|(tid, score)| {
                                 if !self.valid_vocab_token[tid]
-                                    || (generated_count < 4 && matches!(tid, 1 | 2 | 105 | 106 | 107))
+                                    || (generated_count < 4 && matches!(tid, 1 | 2 | 105 | 106))
                                 {
                                     None
                                 } else {
@@ -1624,7 +1772,7 @@ impl QTensorModel {
                     if !self.valid_vocab_token[tid] {
                         return None;
                     }
-                    if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106 || tid == 107) {
+                    if generated_count < 4 && (tid == 1 || tid == 2 || tid == 105 || tid == 106) {
                         return None;
                     }
 

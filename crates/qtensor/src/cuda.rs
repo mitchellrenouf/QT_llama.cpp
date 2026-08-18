@@ -52,13 +52,13 @@ extern "C" {
     );
     fn cuda_op_qkv_postprocess(
         d_qkv: *mut f32, d_q_norm: *const f32, d_k_norm: *const f32,
-        d_k_cache: *mut f32, d_v_cache: *mut f32, pos: i32, cache_pos: i32,
+        d_k_cache: *mut u16, d_v_cache: *mut u16, pos: i32, cache_pos: i32,
         n_heads: i32, n_kv_heads: i32, head_dim: i32, freq_base: f32,
         stream: CudaStream,
     );
     fn cuda_op_qkv_postprocess_batch(
         d_qkv: *mut f32, d_q_norm: *const f32, d_k_norm: *const f32,
-        d_k_cache: *mut f32, d_v_cache: *mut f32, start_pos: i32,
+        d_k_cache: *mut u16, d_v_cache: *mut u16, start_pos: i32,
         cache_start: i32, n_heads: i32, n_kv_heads: i32, head_dim: i32,
         freq_base: f32, batch: i32, stream: CudaStream,
     );
@@ -105,8 +105,8 @@ extern "C" {
     );
     fn cuda_op_attention(
         d_q: *const f32,
-        d_k_cache: *const f32,
-        d_v_cache: *const f32,
+        d_k_cache: *const u16,
+        d_v_cache: *const u16,
         d_out: *mut f32,
         n_past: i32,
         n_heads: i32,
@@ -127,7 +127,7 @@ extern "C" {
         stream: CudaStream,
     );
     fn cuda_op_attention_prefill(
-        d_q: *const f32, d_k_cache: *const f32, d_v_cache: *const f32,
+        d_q: *const f32, d_k_cache: *const u16, d_v_cache: *const u16,
         d_out: *mut f32, cache_start: i32, batch: i32, n_heads: i32,
         n_kv_heads: i32, head_dim: i32, q_stride: i32, scale: f32, sliding_window: i32,
         stream: CudaStream,
@@ -589,8 +589,8 @@ impl CudaDevice {
         qkv: &mut CudaBuffer<f32>,
         q_norm: &CudaBuffer<f32>,
         k_norm: &CudaBuffer<f32>,
-        k_cache: &mut CudaBuffer<f32>,
-        v_cache: &mut CudaBuffer<f32>,
+        k_cache: &mut CudaBuffer<u16>,
+        v_cache: &mut CudaBuffer<u16>,
         pos: usize,
         cache_pos: usize,
         n_heads: usize,
@@ -611,8 +611,8 @@ impl CudaDevice {
 
     pub fn qkv_postprocess_batch(
         &self, qkv: &mut CudaBuffer<f32>, q_norm: &CudaBuffer<f32>,
-        k_norm: &CudaBuffer<f32>, k_cache: &mut CudaBuffer<f32>,
-        v_cache: &mut CudaBuffer<f32>, start_pos: usize, cache_start: usize,
+        k_norm: &CudaBuffer<f32>, k_cache: &mut CudaBuffer<u16>,
+        v_cache: &mut CudaBuffer<u16>, start_pos: usize, cache_start: usize,
         n_heads: usize, n_kv_heads: usize, head_dim: usize, freq_base: f32,
         batch: usize,
     ) {
@@ -709,8 +709,8 @@ impl CudaDevice {
     pub fn attention_causal(
         &self,
         d_q: &CudaBuffer<f32>,
-        d_k_cache: &CudaBuffer<f32>,
-        d_v_cache: &CudaBuffer<f32>,
+        d_k_cache: &CudaBuffer<u16>,
+        d_v_cache: &CudaBuffer<u16>,
         d_out: &mut CudaBuffer<f32>,
         n_past: usize,
         n_heads: usize,
@@ -756,8 +756,8 @@ impl CudaDevice {
     }
 
     pub fn attention_prefill(
-        &self, d_q: &CudaBuffer<f32>, d_k_cache: &CudaBuffer<f32>,
-        d_v_cache: &CudaBuffer<f32>, d_out: &mut CudaBuffer<f32>,
+        &self, d_q: &CudaBuffer<f32>, d_k_cache: &CudaBuffer<u16>,
+        d_v_cache: &CudaBuffer<u16>, d_out: &mut CudaBuffer<f32>,
         cache_start: usize, batch: usize, n_heads: usize, n_kv_heads: usize,
         head_dim: usize, scale: f32, sliding_window: Option<usize>,
     ) {

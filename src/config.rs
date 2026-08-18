@@ -192,6 +192,7 @@ CURRENT SYSTEM DATE: {current_date}
 Workspace Root: "{abs_workspace}"
 {rules_section}
 DYNAMIC WEB FETCHING & SPEECH GUIDELINES:
+- For the current local time or any other live system state, call `run_command` first. On Windows use `Get-Date`; on Linux or macOS use `date`. Never claim that you lack access when an available tool can answer the request.
 - When a user asks you to "go to/on [website] and tell me/read/say the news/content":
   1. First execute `web_fetch` or `browser_open` on the specific URL (e.g., `https://apnews.com`).
   2. Extract the clean headlines and news text from the web tool output.

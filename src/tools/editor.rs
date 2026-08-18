@@ -313,7 +313,7 @@ impl Tool for RunCommandTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a terminal shell command in the workspace."
+        "Execute a terminal shell command in the workspace. Use this tool for live system information such as the current local time (Get-Date on Windows; date on Linux/macOS), builds, tests, and other command-line tasks."
     }
 
     fn parameters(&self) -> serde_json::Value {
