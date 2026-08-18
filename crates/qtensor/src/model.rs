@@ -213,6 +213,15 @@ pub struct QTensorModel {
 
 impl QTensorModel {
     pub fn load_from_gguf<P: AsRef<Path>>(path: P, max_context: usize) -> Result<Self> {
+        Self::load_from_gguf_with_cache(path, max_context, KvCacheFormat::F32, KvCacheFormat::F32)
+    }
+
+    pub fn load_from_gguf_with_cache<P: AsRef<Path>>(
+        path: P,
+        max_context: usize,
+        cache_type_k: KvCacheFormat,
+        cache_type_v: KvCacheFormat,
+    ) -> Result<Self> {
         let gguf_path = path.as_ref().to_path_buf();
         let gguf = GgufFile::open(&gguf_path)?;
         let chat_template = gguf
@@ -705,8 +714,8 @@ impl QTensorModel {
             valid_vocab_token,
             chat_template,
             gguf_path,
-            cache_type_k: KvCacheFormat::F32,
-            cache_type_v: KvCacheFormat::F32,
+            cache_type_k,
+            cache_type_v,
             execution_plan,
             prompt_prefix_state: parking_lot::Mutex::new(None),
             token_embd_info,

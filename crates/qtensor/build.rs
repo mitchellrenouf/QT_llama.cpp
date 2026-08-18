@@ -65,7 +65,10 @@ fn main() {
                 // CUDA selects the best image at load time; the final PTX image
                 // preserves forward compatibility with later architectures.
                 let archs = env::var("QTENSOR_CUDA_ARCHS")
-                    .unwrap_or_else(|_| "75,89,120".to_string());
+                    // Turing; Ampere datacenter/consumer; Ada; Hopper; and
+                    // Blackwell datacenter/consumer. Keep the lowest PTX as a
+                    // forward-compatible fallback for intermediate GPUs.
+                    .unwrap_or_else(|_| "75,80,86,89,90,100,103,120".to_string());
                 let mut parsed_archs = Vec::new();
                 for arch in archs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                     if !arch.chars().all(|c| c.is_ascii_digit()) {
@@ -74,8 +77,8 @@ fn main() {
                     cmd.arg(format!("-gencode=arch=compute_{arch},code=sm_{arch}"));
                     parsed_archs.push(arch.to_string());
                 }
-                if let Some(highest) = parsed_archs.last() {
-                    cmd.arg(format!("-gencode=arch=compute_{highest},code=compute_{highest}"));
+                if let Some(lowest) = parsed_archs.first() {
+                    cmd.arg(format!("-gencode=arch=compute_{lowest},code=compute_{lowest}"));
                 }
 
                 if is_windows {

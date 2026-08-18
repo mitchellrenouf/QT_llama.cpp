@@ -39,9 +39,11 @@ impl QTensorEngine {
         cache_type_k: &str,
         cache_type_v: &str,
     ) -> Result<Self> {
-        let mut model = QTensorModel::load_from_gguf(model_path, max_context)?;
-        model.cache_type_k = crate::kv_cache::KvCacheFormat::parse(cache_type_k)?;
-        model.cache_type_v = crate::kv_cache::KvCacheFormat::parse(cache_type_v)?;
+        let cache_type_k = crate::kv_cache::KvCacheFormat::parse(cache_type_k)?;
+        let cache_type_v = crate::kv_cache::KvCacheFormat::parse(cache_type_v)?;
+        let model = QTensorModel::load_from_gguf_with_cache(
+            model_path, max_context, cache_type_k, cache_type_v,
+        )?;
         Ok(Self { model: Arc::new(Mutex::new(model)) })
     }
 
