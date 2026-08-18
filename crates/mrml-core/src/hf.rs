@@ -80,7 +80,7 @@ impl HfModelSpec {
             }
         }
 
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = crate::platform::home_dir() {
             return home.join(".cache").join("huggingface").join("hub");
         }
 

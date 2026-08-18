@@ -48,7 +48,7 @@ impl Tool for TakeScreenshotTool {
         let shot_dir = workspace_root.join(".mrml").join("screenshots");
         fs::create_dir_all(&shot_dir)?;
 
-        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let timestamp = crate::platform::local_timestamp_string();
         let file_path = shot_dir.join(format!("screenshot_{}.jpg", timestamp));
         let path_str = file_path.to_string_lossy().to_string();
 

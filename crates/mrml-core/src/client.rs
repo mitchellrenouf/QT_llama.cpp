@@ -153,7 +153,7 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
                 args.to_string()
             };
             return Some(ToolCall {
-                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
                 tool_type: "function".to_string(),
                 function: FunctionCall {
                     name: name.to_string(),
@@ -171,7 +171,7 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
         if !name.is_empty() {
             let normalized_args = normalize_relaxed_json(args_part);
             return Some(ToolCall {
-                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
                 tool_type: "function".to_string(),
                 function: FunctionCall {
                     name: name.to_string(),
@@ -186,7 +186,7 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
         if !name.is_empty() {
             let normalized_args = parse_kwargs_to_json(args_part);
             return Some(ToolCall {
-                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
                 tool_type: "function".to_string(),
                 function: FunctionCall {
                     name: name.to_string(),
@@ -314,7 +314,7 @@ impl MrmlClient {
             .await?;
 
         Ok(ChatCompletionResponse {
-            id: format!("chatcmpl-{}", chrono::Utc::now().timestamp_millis()),
+            id: format!("chatcmpl-{}", crate::platform::unix_timestamp_millis()),
             choices: vec![ChatCompletionChoice {
                 index: 0,
                 message: msg,
@@ -637,7 +637,7 @@ impl MrmlClient {
                                 args.to_string()
                             };
                             let tc = ToolCall {
-                                id: format!("call_{}", chrono::Utc::now().timestamp_millis()),
+                                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
                                 tool_type: "function".to_string(),
                                 function: FunctionCall {
                                     name: name.to_string(),
@@ -754,7 +754,7 @@ pub fn get_model_cache_roots() -> Vec<PathBuf> {
         }
     }
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::platform::home_dir() {
         roots.push(home.join(".cache").join("huggingface").join("hub"));
         roots.push(home.join(".cache").join("gemma").join("models"));
     }
@@ -831,8 +831,8 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     let candidates = [
         PathBuf::from("models").join(model_arg),
         PathBuf::from(model_arg).with_extension("gguf"),
-        dirs::home_dir().unwrap_or_default().join(".cache/gemma").join(model_arg),
-        dirs::home_dir().unwrap_or_default().join(".cache/gemma/gemma-4-26b-it-q4_0.gguf"),
+        crate::platform::home_dir().unwrap_or_default().join(".cache/gemma").join(model_arg),
+        crate::platform::home_dir().unwrap_or_default().join(".cache/gemma/gemma-4-26b-it-q4_0.gguf"),
         PathBuf::from("/models/gemma-4-26b-it-q4_0.gguf"),
     ];
 

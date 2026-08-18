@@ -170,7 +170,7 @@ impl Config {
             .display()
             .to_string();
 
-        let current_date = chrono::Local::now().format("%A, %B %e, %Y").to_string();
+        let current_date = crate::platform::local_date_string();
         let os_name = detect_os_name();
 
         let rules_section = if rules_text.trim().is_empty() {

@@ -5,6 +5,7 @@ pub mod diff;
 pub mod fs_walk;
 pub mod hf;
 pub mod markdown;
+pub mod platform;
 pub mod rules;
 pub mod tools;
 

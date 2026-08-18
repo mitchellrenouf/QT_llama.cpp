@@ -100,7 +100,7 @@ impl ChromiumController {
         }
 
         // Check persistent cache directory for previously downloaded Google Chrome Headless Shell
-        let cache_dir = dirs::cache_dir()
+        let cache_dir = crate::platform::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("mrml")
             .join("chromium");
@@ -396,7 +396,7 @@ impl Tool for BrowserScreenshotTool {
         let shot_dir = workspace_root.join(".mrml").join("screenshots");
         fs::create_dir_all(&shot_dir)?;
 
-        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let timestamp = crate::platform::local_timestamp_string();
         let file_path = shot_dir.join(format!("browser_screenshot_{}.jpg", timestamp));
         fs::write(&file_path, &img_bytes)?;
 

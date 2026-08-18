@@ -93,7 +93,7 @@ impl Tool for RecordAudioTool {
         let audio_dir = workspace_root.join(".mrml").join("audio");
         fs::create_dir_all(&audio_dir)?;
 
-        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let timestamp = crate::platform::local_timestamp_string();
         let file_path = audio_dir.join(format!("audio_{}.wav", timestamp));
         let path_str = file_path.to_string_lossy().to_string();
 
