@@ -83,6 +83,14 @@ cargo run -p rustllama-cli --release --no-default-features --features cuda -- --
 cargo run -p rustllama-server --release --no-default-features --features cuda -- --port 8080 --model /path/to/model.gguf
 ```
 
+For automated testing from ChatGPT or another process, use the machine CLI. It
+emits versioned JSON records with the `RUSTLLAMA_MACHINE_JSON=` prefix:
+
+```bash
+cargo run --release --bin rustllama-machine --features cuda -- chat --prompt "What time is it?"
+printf '{"op":"chat","id":1,"prompt":"What time is it?"}\n{"op":"exit","id":2}\n' | cargo run --release --bin rustllama-machine --features cuda -- session
+```
+
 Useful options include `--max-tokens`, `--temperature`, `--gpu-layers`, `--workspace-root`, `--mode`, and `--mcp-server`. Run `rustllama-cli --help` for the complete current list.
 
 ## Flatpak
@@ -100,6 +108,7 @@ The Flatpak requests broad host filesystem and device access because the applica
 
 - `crates/rustllama-core/`: shared agent, configuration, model client, tools, and Hugging Face integration
 - `crates/rustllama-cli/`: terminal application
+- `crates/rustllama-machine/`: JSONL automation and ChatGPT test interface
 - `crates/rustllama-server/`: OpenAI-compatible HTTP/SSE server
 - `crates/rustllama-qt/`: native Qt desktop application and Qt-only build checks
 - `crates/qtensor/`: GGUF reader, tensor operations, model execution, and CUDA kernels

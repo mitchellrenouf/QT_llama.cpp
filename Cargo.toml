@@ -5,6 +5,7 @@ members = [
     "crates/qtensor",
     "crates/rustllama-core",
     "crates/rustllama-cli",
+    "crates/rustllama-machine",
     "crates/rustllama-server",
     "crates/rustllama-qt",
 ]
