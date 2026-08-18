@@ -316,6 +316,34 @@ __global__ void k_gemv_q4_0_qkv_f32(
 // Normalize projected heads, apply RoPE, and append K/V directly to the
 // persistent device cache. This keeps Q/K/V off the host between projection
 // and attention.
+__global__ void k_gemm_q4_0_qkv_f32(
+    const uint8_t* w_q, const uint8_t* w_k, const uint8_t* w_v,
+    const float* x, float* y, int q_rows, int kv_rows, int n_cols, int batch
+) {
+    int lane = threadIdx.x & 31, sublane = lane & 15, warp = threadIdx.x >> 5;
+    int rows_per_block = (blockDim.x / WARP_SIZE) * 2;
+    int out_row = blockIdx.x * rows_per_block + warp * 2 + (lane >> 4);
+    int token = blockIdx.y, total_rows = q_rows + 2 * kv_rows;
+    bool active = out_row < total_rows && token < batch;
+    const uint8_t* matrix = w_q; int row = out_row;
+    if (out_row >= q_rows && out_row < q_rows + kv_rows) { matrix = w_k; row -= q_rows; }
+    else if (out_row >= q_rows + kv_rows) { matrix = w_v; row -= q_rows + kv_rows; }
+    int n_blocks = n_cols / 32, row_bytes = n_blocks * 18;
+    const uint8_t* row_w = active ? matrix + (size_t)row * row_bytes : matrix;
+    const float* token_x = x + (size_t)token * n_cols;
+    float sum = 0.0f;
+    for (int b = 0; b < n_blocks; ++b) {
+        int off = b * 18;
+        uint16_t raw = (uint16_t)row_w[off] | ((uint16_t)row_w[off + 1] << 8);
+        float d = __half2float(__ushort_as_half(raw));
+        uint8_t packed = active ? row_w[off + 2 + sublane] : 0;
+        sum += active ? d * ((float)((packed & 15) - 8) * token_x[b * 32 + sublane]
+            + (float)((packed >> 4) - 8) * token_x[b * 32 + sublane + 16]) : 0.0f;
+    }
+    float total = half_warp_reduce_sum(sum);
+    if (active && sublane == 0) y[(size_t)token * total_rows + out_row] = total;
+}
+
 __global__ void k_qkv_postprocess_f32(
     float* __restrict__ qkv,
     const float* __restrict__ q_norm,
@@ -375,6 +403,53 @@ __global__ void k_qkv_postprocess_f32(
             float value = src[i] * norm_scale;
             src[i] = value;
             v_cache[dst + i] = value;
+        }
+    }
+}
+
+__global__ void k_qkv_postprocess_batch_f32(
+    float* qkv, const float* q_norm, const float* k_norm,
+    float* k_cache, float* v_cache, int start_pos, int cache_start,
+    int n_heads, int n_kv_heads, int head_dim, float freq_base, int batch
+) {
+    int head = blockIdx.x, token = blockIdx.y, tid = threadIdx.x;
+    if (token >= batch) return;
+    int q_dim = n_heads * head_dim, kv_dim = n_kv_heads * head_dim;
+    int total_dim = q_dim + 2 * kv_dim;
+    bool is_q = head < n_heads;
+    bool is_k = head >= n_heads && head < n_heads + n_kv_heads;
+    int local_head = is_q ? head : head - n_heads;
+    float* base = qkv + (size_t)token * total_dim;
+    float* src = is_q ? base + local_head * head_dim
+        : is_k ? base + q_dim + local_head * head_dim
+        : base + q_dim + kv_dim + (head - n_heads - n_kv_heads) * head_dim;
+    float sum_sq = 0.0f;
+    for (int i = tid; i < head_dim; i += blockDim.x) sum_sq += src[i] * src[i];
+    float total = block_reduce_sum(sum_sq);
+    __shared__ float norm_scale;
+    if (tid == 0) norm_scale = rsqrtf(total / (float)head_dim + 1e-6f);
+    __syncthreads();
+    int cache_pos = cache_start + token, pos = start_pos + token;
+    if (is_q || is_k) {
+        const float* weights = is_q ? q_norm : k_norm;
+        for (int i = tid; i < head_dim / 2; i += blockDim.x) {
+            float a = src[i] * norm_scale * weights[i];
+            float b = src[i + head_dim / 2] * norm_scale * weights[i + head_dim / 2];
+            float theta = (float)pos / powf(freq_base, (float)(2 * i) / (float)head_dim);
+            float s, c; sincosf(theta, &s, &c);
+            float r0 = a * c - b * s, r1 = a * s + b * c;
+            src[i] = r0; src[i + head_dim / 2] = r1;
+            if (is_k) {
+                size_t dst = (size_t)cache_pos * kv_dim + (size_t)local_head * head_dim;
+                k_cache[dst + i] = r0; k_cache[dst + i + head_dim / 2] = r1;
+            }
+        }
+    } else {
+        int v_head = head - n_heads - n_kv_heads;
+        size_t dst = (size_t)cache_pos * kv_dim + (size_t)v_head * head_dim;
+        for (int i = tid; i < head_dim; i += blockDim.x) {
+            float value = src[i] * norm_scale;
+            src[i] = value; v_cache[dst + i] = value;
         }
     }
 }
@@ -712,6 +787,50 @@ void cuda_op_rms_norm(
     k_rms_norm_f32<<<1, threads, 0, stream>>>(d_x, d_w, d_out, dim, eps);
 }
 
+__global__ void k_attention_prefill_f32(
+    const float* q, const float* k_cache, const float* v_cache, float* out,
+    int cache_start, int batch, int n_heads, int n_kv_heads, int head_dim, int q_stride,
+    float scale, int sliding_window
+) {
+    int head = blockIdx.x, token = blockIdx.y;
+    if (head >= n_heads || token >= batch) return;
+    int n_past = cache_start + token;
+    int gqa_ratio = n_heads / n_kv_heads, kv_head = head / gqa_ratio;
+    int start = (sliding_window > 0 && n_past >= sliding_window)
+        ? n_past - sliding_window + 1 : 0;
+    int keys = n_past + 1, tid = threadIdx.x;
+    int kv_dim = n_kv_heads * head_dim;
+    const float* q_h = q + (size_t)token * q_stride + head * head_dim;
+    extern __shared__ float scores[];
+    for (int p = start + tid; p < keys; p += blockDim.x) {
+        const float* k_h = k_cache + (size_t)p * kv_dim + kv_head * head_dim;
+        float dot = 0.0f;
+        for (int d = 0; d < head_dim; ++d) dot += q_h[d] * k_h[d];
+        scores[p - start] = dot * scale;
+    }
+    __syncthreads();
+    float local_max = -1e20f;
+    for (int p = tid; p < keys - start; p += blockDim.x) local_max = fmaxf(local_max, scores[p]);
+    float max_score = block_reduce_max(local_max);
+    __syncthreads();
+    float local_sum = 0.0f;
+    for (int p = tid; p < keys - start; p += blockDim.x) {
+        float value = expf(scores[p] - max_score); scores[p] = value; local_sum += value;
+    }
+    float sum = block_reduce_sum(local_sum);
+    __syncthreads();
+    float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+    float* out_h = out + (size_t)token * n_heads * head_dim + head * head_dim;
+    for (int d = tid; d < head_dim; d += blockDim.x) {
+        float value = 0.0f;
+        for (int p = start; p < keys; ++p) {
+            const float* v_h = v_cache + (size_t)p * kv_dim + kv_head * head_dim;
+            value += scores[p - start] * inv * v_h[d];
+        }
+        out_h[d] = value;
+    }
+}
+
 void cuda_op_rms_norm_batch(
     const float* d_x, const float* d_w, float* d_out,
     int dim, int batch, float eps, cudaStream_t stream
@@ -878,6 +997,18 @@ void cuda_op_gemv_q4_0_qkv(
     );
 }
 
+void cuda_op_gemm_q4_0_qkv(
+    const uint8_t* d_w_q, const uint8_t* d_w_k, const uint8_t* d_w_v,
+    const float* d_x, float* d_y, int q_rows, int kv_rows, int n_cols,
+    int batch, cudaStream_t stream
+) {
+    int threads = 128, rows_per_block = 2 * threads / WARP_SIZE;
+    int total_rows = q_rows + 2 * kv_rows;
+    dim3 grid((total_rows + rows_per_block - 1) / rows_per_block, batch);
+    k_gemm_q4_0_qkv_f32<<<grid, threads, 0, stream>>>(
+        d_w_q, d_w_k, d_w_v, d_x, d_y, q_rows, kv_rows, n_cols, batch);
+}
+
 void cuda_op_qkv_postprocess(
     float* d_qkv,
     const float* d_q_norm,
@@ -898,6 +1029,19 @@ void cuda_op_qkv_postprocess(
         d_qkv, d_q_norm, d_k_norm, d_k_cache, d_v_cache,
         pos, cache_pos, n_heads, n_kv_heads, head_dim, freq_base
     );
+}
+
+void cuda_op_qkv_postprocess_batch(
+    float* d_qkv, const float* d_q_norm, const float* d_k_norm,
+    float* d_k_cache, float* d_v_cache, int start_pos, int cache_start,
+    int n_heads, int n_kv_heads, int head_dim, float freq_base,
+    int batch, cudaStream_t stream
+) {
+    dim3 grid(n_heads + 2 * n_kv_heads, batch);
+    int threads = head_dim >= 512 ? 256 : 128;
+    k_qkv_postprocess_batch_f32<<<grid, threads, 0, stream>>>(
+        d_qkv, d_q_norm, d_k_norm, d_k_cache, d_v_cache,
+        start_pos, cache_start, n_heads, n_kv_heads, head_dim, freq_base, batch);
 }
 
 void cuda_op_gemv_q4_0_geglu(
@@ -1039,6 +1183,18 @@ void cuda_op_attention(
         d_q, d_k_cache, d_v_cache, d_out,
         n_past, n_heads, n_kv_heads, head_dim, scale, sliding_window
     );
+}
+
+void cuda_op_attention_prefill(
+    const float* d_q, const float* d_k_cache, const float* d_v_cache,
+    float* d_out, int cache_start, int batch, int n_heads, int n_kv_heads,
+    int head_dim, int q_stride, float scale, int sliding_window, cudaStream_t stream
+) {
+    dim3 grid(n_heads, batch);
+    int max_keys = cache_start + batch;
+    k_attention_prefill_f32<<<grid, 128, max_keys * sizeof(float), stream>>>(
+        d_q, d_k_cache, d_v_cache, d_out, cache_start, batch,
+        n_heads, n_kv_heads, head_dim, q_stride, scale, sliding_window);
 }
 
 // Fused MoE Top-K Gate+Up GEMV + GeGLU Kernel
