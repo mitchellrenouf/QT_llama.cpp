@@ -1,25 +1,48 @@
-use alloc::collections::BTreeMap as HashMap;
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
+use mrml_runtime::{OrderedMap, Text, Vector};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Element {
-    pub text: String,
-    pub attributes: HashMap<String, String>,
+    pub text: Text,
+    pub attributes: OrderedMap<Text, Text>,
 }
 
-fn decode_entities(text: &str) -> String {
-    text.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
+fn replace_all(text: &str, needle: &str, replacement: &str) -> Text {
+    let mut output = Text::with_capacity(text.len()).expect("MRML allocation failed");
+    let mut remainder = text;
+    while let Some(index) = remainder.find(needle) {
+        output.push_str(&remainder[..index]);
+        output.push_str(replacement);
+        remainder = &remainder[index + needle.len()..];
+    }
+    output.push_str(remainder);
+    output
 }
 
-fn attributes(opening: &str) -> HashMap<String, String> {
-    let mut result = HashMap::new();
+fn decode_entities(text: &str) -> Text {
+    let mut output = Text::from(text);
+    for (needle, replacement) in [
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&nbsp;", " "),
+    ] {
+        output = replace_all(&output, needle, replacement);
+    }
+    output
+}
+
+fn ascii_lowercase(text: &str) -> Text {
+    let mut output = Text::with_capacity(text.len()).expect("MRML allocation failed");
+    for character in text.chars() {
+        output.push(character.to_ascii_lowercase());
+    }
+    output
+}
+
+fn attributes(opening: &str) -> OrderedMap<Text, Text> {
+    let mut result = OrderedMap::new();
     let bytes = opening.as_bytes();
     let mut index = opening.find(char::is_whitespace).unwrap_or(opening.len());
     while index < bytes.len() {
@@ -36,12 +59,12 @@ fn attributes(opening: &str) -> HashMap<String, String> {
             index += 1;
             continue;
         }
-        let key = opening[key_start..index].to_ascii_lowercase();
+        let key = ascii_lowercase(&opening[key_start..index]);
         while index < bytes.len() && bytes[index].is_ascii_whitespace() {
             index += 1;
         }
         if index >= bytes.len() || bytes[index] != b'=' {
-            result.insert(key, String::new());
+            result.insert(key, Text::new());
             continue;
         }
         index += 1;
@@ -69,20 +92,31 @@ fn attributes(opening: &str) -> HashMap<String, String> {
     result
 }
 
-fn normalize_text(text: &str) -> String {
-    decode_entities(&visible_text(text))
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+fn normalized_words(text: &str) -> Text {
+    let mut output = Text::with_capacity(text.len()).expect("MRML allocation failed");
+    for word in text.split_whitespace() {
+        if !output.is_empty() {
+            output.push(' ');
+        }
+        output.push_str(word);
+    }
+    output
 }
 
-pub fn elements(html: &str, tag: &str, class_contains: Option<&str>) -> Vec<Element> {
-    let lower = html.to_ascii_lowercase();
-    let opening_prefix = format!("<{tag}");
-    let closing = format!("</{tag}>");
-    let mut result = Vec::new();
+fn normalize_text(text: &str) -> Text {
+    normalized_words(&decode_entities(&visible_text(text)))
+}
+
+pub fn elements(html: &str, tag: &str, class_contains: Option<&str>) -> Vector<Element> {
+    let lower = ascii_lowercase(html);
+    let mut opening_prefix = Text::from("<");
+    opening_prefix.push_str(tag);
+    let mut closing = Text::from("</");
+    closing.push_str(tag);
+    closing.push('>');
+    let mut result = Vector::new();
     let mut cursor = 0;
-    while let Some(relative) = lower[cursor..].find(&opening_prefix) {
+    while let Some(relative) = lower[cursor..].find(opening_prefix.as_str()) {
         let start = cursor + relative;
         let boundary = lower.as_bytes().get(start + opening_prefix.len()).copied();
         if boundary.is_some_and(|byte| !byte.is_ascii_whitespace() && byte != b'>' && byte != b'/')
@@ -105,14 +139,14 @@ pub fn elements(html: &str, tag: &str, class_contains: Option<&str>) -> Vec<Elem
         }
         if matches!(tag, "img" | "meta" | "link" | "input") {
             result.push(Element {
-                text: String::new(),
+                text: Text::new(),
                 attributes: attrs,
             });
             cursor = open_end + 1;
             continue;
         }
         let content_start = open_end + 1;
-        let Some(close_rel) = lower[content_start..].find(&closing) else {
+        let Some(close_rel) = lower[content_start..].find(closing.as_str()) else {
             break;
         };
         let content_end = content_start + close_rel;
@@ -125,14 +159,14 @@ pub fn elements(html: &str, tag: &str, class_contains: Option<&str>) -> Vec<Elem
     result
 }
 
-pub fn visible_text(html: &str) -> String {
+pub fn visible_text(html: &str) -> Text {
     const NOISE: &[&str] = &[
         "script", "style", "noscript", "svg", "iframe", "nav", "footer",
     ];
     const BLOCK: &[&str] = &[
         "h1", "h2", "h3", "h4", "h5", "p", "article", "section", "li", "a", "div", "br",
     ];
-    let mut output = String::with_capacity(html.len() / 3);
+    let mut output = Text::with_capacity(html.len() / 3).expect("MRML allocation failed");
     let mut noise_depth = 0usize;
     let mut cursor = 0;
     while cursor < html.len() {
@@ -143,12 +177,12 @@ pub fn visible_text(html: &str) -> String {
             let end = cursor + end_rel;
             let raw = html[cursor + 1..end].trim();
             let closing = raw.starts_with('/');
-            let name = raw
-                .trim_start_matches('/')
-                .split(|character: char| character.is_whitespace() || character == '/')
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
+            let name = ascii_lowercase(
+                raw.trim_start_matches('/')
+                    .split(|character: char| character.is_whitespace() || character == '/')
+                    .next()
+                    .unwrap_or(""),
+            );
             if NOISE.contains(&name.as_str()) {
                 if closing {
                     noise_depth = noise_depth.saturating_sub(1);
@@ -168,14 +202,21 @@ pub fn visible_text(html: &str) -> String {
             cursor += character.len_utf8();
         }
     }
-    let mut lines = Vec::new();
+    let mut lines = Vector::new();
     for line in decode_entities(&output).lines() {
-        let cleaned = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        let cleaned = normalized_words(line);
         if cleaned.len() >= 3 && !lines.contains(&cleaned) {
             lines.push(cleaned);
         }
     }
-    lines.join("\n")
+    let mut visible = Text::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index != 0 {
+            visible.push('\n');
+        }
+        visible.push_str(line);
+    }
+    visible
 }
 
 #[cfg(test)]
@@ -196,6 +237,9 @@ mod tests {
             Some("result__a"),
         );
         assert_eq!(links[0].text, "An Example");
-        assert_eq!(links[0].attributes["href"], "https://example.com");
+        assert_eq!(
+            links[0].attributes.get("href").unwrap(),
+            "https://example.com"
+        );
     }
 }

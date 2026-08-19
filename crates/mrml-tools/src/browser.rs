@@ -398,7 +398,7 @@ impl Tool for BrowserGetContentTool {
                 crate::markdown::truncate_utf8(&text, 6000)
             )
         } else {
-            text
+            text.to_string()
         };
         Ok(format!(
             "[Headless Edge DOM Content - '{}']:\n{}",

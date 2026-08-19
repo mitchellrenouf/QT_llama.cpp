@@ -112,42 +112,46 @@ impl Tool for WebSearchTool {
 
         if let Ok(html) = fetch_http_text(&wiki_url).await {
             let heading = crate::html::elements(&html, "h1", None)
-                .into_iter()
+                .iter()
                 .next()
-                .map(|element| element.text)
-                .unwrap_or_else(|| query.to_string());
+                .map(|element| element.text.clone())
+                .unwrap_or_else(|| mrml_runtime::Text::from(query));
 
             let mut img_url = None;
-            for element in crate::html::elements(&html, "meta", None)
-                .into_iter()
-                .chain(crate::html::elements(&html, "img", None))
-            {
-                if let Some(content) = element.attributes.get("content") {
-                    if content.starts_with("http") {
-                        img_url = Some(content.to_string());
-                        break;
+            let metadata = crate::html::elements(&html, "meta", None);
+            let images = crate::html::elements(&html, "img", None);
+            for elements in [&metadata, &images] {
+                for element in elements {
+                    if let Some(content) = element.attributes.get("content") {
+                        if content.starts_with("http") {
+                            img_url = Some(content.to_string());
+                            break;
+                        }
+                    }
+                    if let Some(src) = element.attributes.get("src") {
+                        let full = if src.starts_with("//") {
+                            format!("https:{}", src)
+                        } else {
+                            src.to_string()
+                        };
+                        if full.starts_with("http")
+                            && !full.contains("static/favicon")
+                            && !full.contains("apple-touch")
+                        {
+                            img_url = Some(full);
+                            break;
+                        }
                     }
                 }
-                if let Some(src) = element.attributes.get("src") {
-                    let full = if src.starts_with("//") {
-                        format!("https:{}", src)
-                    } else {
-                        src.to_string()
-                    };
-                    if full.starts_with("http")
-                        && !full.contains("static/favicon")
-                        && !full.contains("apple-touch")
-                    {
-                        img_url = Some(full);
-                        break;
-                    }
+                if img_url.is_some() {
+                    break;
                 }
             }
 
             let p_text = crate::html::elements(&html, "p", None)
-                .into_iter()
+                .iter()
                 .take(4)
-                .map(|element| element.text)
+                .map(|element| element.text.to_string())
                 .filter(|t| !t.is_empty() && t.len() > 20)
                 .collect::<Vec<_>>()
                 .join("\n\n");
@@ -178,12 +182,12 @@ impl Tool for WebSearchTool {
         if let Ok(html) = fetch_http_text(&ddg_url).await {
             let links = crate::html::elements(&html, "a", Some("result__a"));
             let snippets = crate::html::elements(&html, "a", Some("result__snippet"));
-            for (index, link) in links.into_iter().take(6).enumerate() {
-                let title = link.text;
+            for (index, link) in links.iter().take(6).enumerate() {
+                let title = &link.text;
                 let raw_href = link
                     .attributes
                     .get("href")
-                    .map(String::as_str)
+                    .map(|value| value.as_str())
                     .unwrap_or("");
                 let snippet = snippets
                     .get(index)
@@ -269,7 +273,7 @@ impl Tool for WebFetchTool {
                 crate::markdown::truncate_utf8(&full_text, 10000)
             ))
         } else {
-            Ok(full_text)
+            Ok(full_text.to_string())
         }
     }
 }
