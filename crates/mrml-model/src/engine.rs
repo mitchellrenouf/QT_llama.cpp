@@ -1,13 +1,13 @@
 use crate::error::{Error, Result};
+use core::sync::atomic::AtomicBool;
+use mrml_runtime::Shared;
 use mrml_tensor::MrmlEngine;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
 #[derive(Clone)]
 pub struct ModelEngine {
-    inner: Arc<MrmlEngine>,
+    inner: Shared<MrmlEngine>,
 }
 
 pub struct GenerationChunk {
@@ -38,7 +38,7 @@ impl ModelEngine {
         let inner =
             MrmlEngine::new_with_cache(model_path, ctx_size as usize, cache_type_k, cache_type_v)?;
         Ok(Self {
-            inner: Arc::new(inner),
+            inner: Shared::new(inner),
         })
     }
 
@@ -47,7 +47,7 @@ impl ModelEngine {
         prompt: &str,
         max_tokens: usize,
         temperature: f32,
-    ) -> (mpsc::Receiver<Result<GenerationChunk>>, Arc<AtomicBool>) {
+    ) -> (mpsc::Receiver<Result<GenerationChunk>>, Shared<AtomicBool>) {
         let (tx, rx) = mpsc::sync_channel(4096);
         let cancel = self
             .inner

@@ -1,34 +1,33 @@
 use crate::anyhow::Result;
 use crate::model::MrmlModel;
+use core::sync::atomic::{AtomicBool, Ordering};
+use mrml_runtime::{Instant, Shared, SpinMutex};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 pub struct MrmlEngine {
-    pub model: Arc<Mutex<MrmlModel>>,
+    pub model: Shared<SpinMutex<MrmlModel>>,
 }
 
 impl MrmlEngine {
     pub fn new<P: AsRef<Path>>(model_path: P, max_context: usize) -> Result<Self> {
         let model = MrmlModel::load_from_gguf(model_path, max_context)?;
         Ok(Self {
-            model: Arc::new(Mutex::new(model)),
+            model: Shared::new(SpinMutex::new(model)),
         })
     }
 
     pub fn tokenize(&self, text: &str, _add_special: bool) -> Result<Vec<i32>> {
-        let guard = self.model.lock().unwrap();
+        let guard = self.model.lock();
         Ok(guard.tokenize(text))
     }
 
     pub fn token_to_piece(&self, token: i32) -> Result<String> {
-        let guard = self.model.lock().unwrap();
+        let guard = self.model.lock();
         Ok(guard.token_to_piece(token))
     }
 
     pub fn is_eog(&self, token: i32) -> bool {
-        let guard = self.model.lock().unwrap();
+        let guard = self.model.lock();
         guard.is_eog_token(token)
     }
 
@@ -47,17 +46,17 @@ impl MrmlEngine {
             cache_type_v,
         )?;
         Ok(Self {
-            model: Arc::new(Mutex::new(model)),
+            model: Shared::new(SpinMutex::new(model)),
         })
     }
 
     pub fn chat_template(&self) -> Option<String> {
-        let guard = self.model.lock().unwrap();
+        let guard = self.model.lock();
         guard.chat_template.clone()
     }
 
     pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {
-        self.model.lock().unwrap().gpu_layer_residency()
+        self.model.lock().gpu_layer_residency()
     }
 
     pub fn generate_stream<F>(
@@ -66,11 +65,11 @@ impl MrmlEngine {
         max_tokens: usize,
         temperature: f32,
         mut emit: F,
-    ) -> Arc<AtomicBool>
+    ) -> Shared<AtomicBool>
     where
         F: FnMut(Result<String>) -> bool + Send + 'static,
     {
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = Shared::new(AtomicBool::new(false));
         let cancel_flag = cancelled.clone();
 
         let model_arc = self.model.clone();
@@ -78,7 +77,7 @@ impl MrmlEngine {
 
         std::thread::spawn(move || {
             let prompt_tokens = {
-                let guard = model_arc.lock().unwrap();
+                let guard = model_arc.lock();
                 guard.tokenize(&prompt_string)
             };
 
@@ -87,7 +86,7 @@ impl MrmlEngine {
             }
 
             let mut state = {
-                let guard = model_arc.lock().unwrap();
+                let guard = model_arc.lock();
                 guard.init_generation_state(&prompt_tokens)
             };
 
@@ -100,12 +99,12 @@ impl MrmlEngine {
                 }
 
                 let next_token = {
-                    let guard = model_arc.lock().unwrap();
+                    let guard = model_arc.lock();
                     guard.step_generation(&mut state, temperature)
                 };
 
                 let (piece, is_eog) = {
-                    let guard = model_arc.lock().unwrap();
+                    let guard = model_arc.lock();
                     let eog = guard.is_eog_token(next_token);
                     let piece_str = guard.token_to_piece(next_token);
                     (piece_str, eog)
