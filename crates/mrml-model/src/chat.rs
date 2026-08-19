@@ -1,6 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::error::{Error as ModelError, Result};
-use minijinja::{context, Environment, Error, ErrorKind};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
@@ -84,7 +83,11 @@ impl ChatMessage {
         }
     }
 
-    pub fn tool(tool_call_id: impl Into<String>, name: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn tool(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             role: "tool".to_string(),
             content: Some(MessageContent::Text(content.into())),
@@ -122,7 +125,13 @@ impl ChatMessage {
 pub fn format_argument_canonical(val: &serde_json::Value) -> String {
     match val {
         serde_json::Value::Null => "null".to_string(),
-        serde_json::Value::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
+        serde_json::Value::Bool(b) => {
+            if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::String(s) => format!("<|\"|>{}<|\"|>", s),
         serde_json::Value::Array(arr) => {
@@ -139,16 +148,36 @@ pub fn format_argument_canonical(val: &serde_json::Value) -> String {
     }
 }
 
-pub fn format_tool_declaration_canonical(name: &str, description: &str, params: &serde_json::Value) -> String {
-    let mut s = format!("declaration:{}{{description:<|\"|>{}<|\"|>", name, description);
+pub fn format_tool_declaration_canonical(
+    name: &str,
+    description: &str,
+    params: &serde_json::Value,
+) -> String {
+    let mut s = format!(
+        "declaration:{}{{description:<|\"|>{}<|\"|>",
+        name, description
+    );
     if let Some(props) = params.get("properties").and_then(|p| p.as_object()) {
         let mut prop_entries = Vec::new();
         for (prop_name, prop_val) in props {
-            let desc = prop_val.get("description").and_then(|d| d.as_str()).unwrap_or("");
-            let p_type = prop_val.get("type").and_then(|t| t.as_str()).unwrap_or("string").to_uppercase();
-            prop_entries.push(format!("{}:{{description:<|\"|>{}<|\"|>,type:<|\"|>{}<|\"|>}}", prop_name, desc, p_type));
+            let desc = prop_val
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            let p_type = prop_val
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("string")
+                .to_uppercase();
+            prop_entries.push(format!(
+                "{}:{{description:<|\"|>{}<|\"|>,type:<|\"|>{}<|\"|>}}",
+                prop_name, desc, p_type
+            ));
         }
-        s.push_str(&format!(",parameters:{{properties:{{{}}},type:<|\"|>OBJECT<|\"|>}}", prop_entries.join(",")));
+        s.push_str(&format!(
+            ",parameters:{{properties:{{{}}},type:<|\"|>OBJECT<|\"|>}}",
+            prop_entries.join(",")
+        ));
     }
     s.push('}');
     s
@@ -168,59 +197,134 @@ pub fn render_chat_template<T: Serialize>(
     system_prompt: Option<&str>,
     enable_thinking: bool,
 ) -> Result<String> {
-    let mut message_values = Vec::with_capacity(messages.len() + usize::from(system_prompt.is_some()));
-    if let Some(system) = system_prompt.filter(|text| !text.trim().is_empty()) {
-        message_values.push(serde_json::json!({
-            "role": "system",
-            "content": system.trim(),
-        }));
+    if !template_source.contains("Google Gemma 4 Canonical Chat Template") {
+        return Err(ModelError::message(
+            "the embedded GGUF chat template is not a supported Gemma 4 canonical template",
+        ));
     }
-    for message in messages {
-        let mut value = serde_json::to_value(message)?;
-        if let Some(tool_calls) = value.get_mut("tool_calls").and_then(|calls| calls.as_array_mut()) {
-            for tool_call in tool_calls {
-                if let Some(arguments) = tool_call
-                    .get_mut("function")
-                    .and_then(|function| function.get_mut("arguments"))
-                {
-                    if let Some(encoded) = arguments.as_str() {
-                        *arguments = serde_json::from_str(encoded).map_err(|error| {
-                            ModelError::message(format!("invalid tool-call arguments passed to chat template: {error}"))
-                        })?;
-                    }
-                }
-            }
-        }
-        message_values.push(value);
-    }
-
-    let tool_values = tools
+    let tools = tools
         .map(serde_json::to_value)
         .transpose()?
         .unwrap_or_else(|| serde_json::json!([]));
-    let mut environment = Environment::new();
-    environment.set_unknown_method_callback(crate::pycompat::unknown_method_callback);
-    environment.add_function(
-        "raise_exception",
-        |message: String| -> std::result::Result<String, Error> {
-            Err(Error::new(ErrorKind::InvalidOperation, message))
-        },
-    );
-    let template = environment.template_from_str(template_source)?;
-    template
-        .render(context! {
-            messages => message_values,
-            tools => tool_values,
-            bos_token => "<bos>",
-            eos_token => "<eos>",
-            add_generation_prompt => true,
-            enable_thinking => enable_thinking,
-            preserve_thinking => false,
-        })
-        .map_err(Into::into)
+    render_gemma4_template(messages, tools.as_array().map(Vec::as_slice).unwrap_or(&[]), system_prompt, enable_thinking)
 }
 
-pub fn format_gemma_canonical_chat(messages: &[ChatMessage], system_prompt: Option<&str>, enable_thinking: bool) -> String {
+fn render_gemma4_template(
+    messages: &[ChatMessage],
+    tools: &[serde_json::Value],
+    system_prompt: Option<&str>,
+    enable_thinking: bool,
+) -> Result<String> {
+    let mut output = String::from("<bos>");
+    let mut first = 0;
+    let leading_system = messages.first().filter(|message| {
+        message.role == "system" || message.role == "developer"
+    });
+    let system = system_prompt
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| leading_system.and_then(ChatMessage::get_text_content));
+    if system_prompt.is_none() && leading_system.is_some() {
+        first = 1;
+    }
+    if enable_thinking || !tools.is_empty() || system.is_some() {
+        output.push_str("<|turn>system\n");
+        if enable_thinking {
+            output.push_str("<|think|>\n");
+        }
+        if let Some(system) = &system {
+            output.push_str(system.trim());
+        }
+        for tool in tools {
+            output.push_str("<|tool>");
+            output.push_str(&format_tool_value(tool)?);
+            output.push_str("<tool|>");
+        }
+        output.push_str("<turn|>\n");
+    }
+
+    let mut index = first;
+    while index < messages.len() {
+        let message = &messages[index];
+        if message.role == "tool" {
+            index += 1;
+            continue;
+        }
+        let role = if message.role == "assistant" { "model" } else { &message.role };
+        output.push_str("<|turn>");
+        output.push_str(role);
+        output.push('\n');
+        if message.role == "assistant" {
+            if let Some(reasoning) = message.reasoning_content.as_deref().filter(|text| !text.is_empty()) {
+                output.push_str("<|channel>thought\n");
+                output.push_str(reasoning);
+                output.push_str("\n<channel|>");
+            }
+            if let Some(calls) = &message.tool_calls {
+                for call in calls {
+                    let arguments: serde_json::Value = serde_json::from_str(&call.function.arguments)
+                        .map_err(|error| ModelError::message(format!("invalid tool-call arguments passed to chat template: {error}")))?;
+                    let arguments = arguments.as_object().ok_or_else(|| {
+                        ModelError::message("tool-call arguments must be a JSON object")
+                    })?;
+                    output.push_str("<|tool_call>call:");
+                    output.push_str(&call.function.name);
+                    output.push('{');
+                    for (position, (key, value)) in arguments.iter().enumerate() {
+                        if position != 0 { output.push(','); }
+                        output.push_str(key);
+                        output.push(':');
+                        output.push_str(&format_argument_canonical(value));
+                    }
+                    output.push_str("}<tool_call|>");
+                }
+                let mut follow = index + 1;
+                while follow < messages.len() && messages[follow].role == "tool" {
+                    let response = &messages[follow];
+                    let name = calls.iter()
+                        .find(|call| response.tool_call_id.as_deref() == Some(call.id.as_str()))
+                        .map(|call| call.function.name.as_str())
+                        .or(response.name.as_deref())
+                        .unwrap_or("unknown");
+                    output.push_str("<|tool_response>response:");
+                    output.push_str(name);
+                    output.push_str("{value:");
+                    output.push_str(&format_argument_canonical(&serde_json::Value::String(
+                        response.get_text_content().unwrap_or_default(),
+                    )));
+                    output.push_str("}<tool_response|>");
+                    follow += 1;
+                }
+                index = follow.saturating_sub(1);
+            }
+        }
+        if let Some(content) = message.get_text_content() {
+            output.push_str(content.trim());
+        }
+        output.push_str("<turn|>\n");
+        index += 1;
+    }
+    output.push_str("<|turn>model\n");
+    if !enable_thinking {
+        output.push_str("<|channel>thought\n<channel|>");
+    }
+    Ok(output)
+}
+
+fn format_tool_value(tool: &serde_json::Value) -> Result<String> {
+    let function = tool.get("function").ok_or_else(|| ModelError::message("tool is missing function"))?;
+    Ok(format_tool_declaration_canonical(
+        function.get("name").and_then(|value| value.as_str()).unwrap_or("unknown"),
+        function.get("description").and_then(|value| value.as_str()).unwrap_or(""),
+        function.get("parameters").unwrap_or(&serde_json::Value::Null),
+    ))
+}
+
+pub fn format_gemma_canonical_chat(
+    messages: &[ChatMessage],
+    system_prompt: Option<&str>,
+    enable_thinking: bool,
+) -> String {
     let mut formatted = String::new();
 
     let mut system_text = String::new();
@@ -267,8 +371,9 @@ pub fn format_gemma_canonical_chat(messages: &[ChatMessage], system_prompt: Opti
                 }
                 if let Some(tool_calls) = &msg.tool_calls {
                     for tc in tool_calls {
-                        let args_val = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
-                            .unwrap_or(serde_json::json!({}));
+                        let args_val =
+                            serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                                .unwrap_or(serde_json::json!({}));
                         formatted.push_str(&format!(
                             "<|tool_call>call:{}{}<tool_call|>",
                             tc.function.name,
@@ -312,6 +417,8 @@ pub fn format_gemma_canonical_chat(messages: &[ChatMessage], system_prompt: Opti
 mod template_tests {
     use super::*;
 
+    const GEMMA_TEMPLATE: &str = "Template: Google Gemma 4 Canonical Chat Template";
+
     #[derive(Serialize)]
     struct TestTool {
         function: serde_json::Value,
@@ -319,24 +426,25 @@ mod template_tests {
 
     #[test]
     fn renders_messages_tools_and_generation_flags() {
-        let source = "{{ bos_token }}|{{ messages[0].role }}:{{ messages[0].content }}|{{ messages[1].content }}|{{ tools[0].function.name }}|{{ add_generation_prompt }}|{{ enable_thinking }}";
         let tools = [TestTool {
-            function: serde_json::json!({"name": "clock"}),
+            function: serde_json::json!({"name": "clock", "description": "", "parameters": null}),
         }];
         let rendered = render_chat_template(
-            source,
+            GEMMA_TEMPLATE,
             &[ChatMessage::user("what time is it?")],
             Some(&tools),
             Some("system rules"),
             true,
         )
         .unwrap();
-        assert_eq!(rendered, "<bos>|system:system rules|what time is it?|clock|True|True");
+        assert_eq!(
+            rendered,
+            "<bos><|turn>system\n<|think|>\nsystem rules<|tool>declaration:clock{description:<|\"|><|\"|>}<tool|><turn|>\n<|turn>user\nwhat time is it?<turn|>\n<|turn>model\n"
+        );
     }
 
     #[test]
     fn deserializes_tool_call_arguments_for_template_mappings() {
-        let source = "{{ messages[0].tool_calls[0].function.arguments.command_line }}";
         let call = ToolCall {
             id: "call-1".into(),
             tool_type: "function".into(),
@@ -346,13 +454,52 @@ mod template_tests {
             },
         };
         let rendered = render_chat_template::<serde_json::Value>(
-            source,
+            GEMMA_TEMPLATE,
             &[ChatMessage::assistant(None, Some(vec![call]))],
             None,
             None,
             false,
         )
         .unwrap();
-        assert_eq!(rendered, "Get-Date");
+        assert!(rendered.contains("<|tool_call>call:run_command{command_line:<|\"|>Get-Date<|\"|>}<tool_call|>"));
+    }
+
+    #[test]
+    fn pairs_openai_tool_responses_with_function_names() {
+        let call = ToolCall {
+            id: "call-7".into(),
+            tool_type: "function".into(),
+            function: FunctionCall {
+                name: "clock".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let rendered = render_chat_template::<serde_json::Value>(
+            GEMMA_TEMPLATE,
+            &[
+                ChatMessage::assistant(None, Some(vec![call])),
+                ChatMessage::tool("call-7", "ignored", "10:59"),
+            ],
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(rendered.contains(
+            "<|tool_call>call:clock{}<tool_call|><|tool_response>response:clock{value:<|\"|>10:59<|\"|>}<tool_response|>"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_template_dialects() {
+        let error = render_chat_template::<serde_json::Value>(
+            "{{ messages }}",
+            &[ChatMessage::user("hello")],
+            None,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not a supported Gemma 4"));
     }
 }

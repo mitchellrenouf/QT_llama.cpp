@@ -8,11 +8,17 @@ pub struct Error {
 
 impl Error {
     pub fn message(text: impl Into<String>) -> Self {
-        Self { message: text.into(), source: None }
+        Self {
+            message: text.into(),
+            source: None,
+        }
     }
 
     pub fn with_source(error: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self { message: error.to_string(), source: Some(Box::new(error)) }
+        Self {
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        }
     }
 }
 
@@ -29,15 +35,15 @@ impl std::error::Error for Error {
 }
 
 impl From<mrml_tensor::anyhow::Error> for Error {
-    fn from(error: mrml_tensor::anyhow::Error) -> Self { Self::with_source(error) }
-}
-
-impl From<minijinja::Error> for Error {
-    fn from(error: minijinja::Error) -> Self { Self::with_source(error) }
+    fn from(error: mrml_tensor::anyhow::Error) -> Self {
+        Self::with_source(error)
+    }
 }
 
 impl From<serde_json::Error> for Error {
-    fn from(error: serde_json::Error) -> Self { Self::with_source(error) }
+    fn from(error: serde_json::Error) -> Self {
+        Self::with_source(error)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -46,6 +52,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod tests {
     #[test]
     fn preserves_message_text() {
-        assert_eq!(super::Error::message("model failed").to_string(), "model failed");
+        assert_eq!(
+            super::Error::message("model failed").to_string(),
+            "model failed"
+        );
     }
 }

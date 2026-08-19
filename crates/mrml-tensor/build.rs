@@ -1,6 +1,5 @@
-use std::env;
-use std::path::PathBuf;
-use std::process::Command;
+#[cfg(feature = "cuda")]
+use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-changed=cuda_ptx/kernels.rs");
