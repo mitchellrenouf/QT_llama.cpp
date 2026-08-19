@@ -7,12 +7,10 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, OnceCell};
-
-static BROWSER_INSTANCE: OnceCell<Arc<Mutex<EdgeController>>> = OnceCell::const_new();
+static BROWSER_INSTANCE: OnceLock<Arc<Mutex<EdgeController>>> = OnceLock::new();
 
 struct CdpSocket {
     stream: TcpStream,
@@ -139,7 +137,7 @@ pub struct EdgeController {
     profile: PathBuf,
 }
 impl EdgeController {
-    pub async fn ensure_latest_and_launch() -> Result<Self> {
+    pub fn ensure_latest_and_launch() -> Result<Self> {
         Self::launch()
     }
     fn launch() -> Result<Self> {
@@ -184,7 +182,7 @@ impl EdgeController {
         }
         Err(anyhow!("Edge did not expose DevTools on port {}", port))
     }
-    pub async fn get_or_create_page(&mut self, url: Option<&str>) -> Result<&mut Self> {
+    pub fn get_or_create_page(&mut self, url: Option<&str>) -> Result<&mut Self> {
         if self.page.is_none() {
             let deadline = Instant::now() + Duration::from_secs(3);
             let target = loop {
@@ -238,7 +236,7 @@ impl EdgeController {
         )?["result"]["value"]
             .clone())
     }
-    pub async fn content(&mut self) -> Result<String> {
+    pub fn content(&mut self) -> Result<String> {
         Ok(self
             .eval("document.documentElement.outerHTML")?
             .as_str()
@@ -337,14 +335,12 @@ fn http_json(port: u16, method: &str, path: &str) -> Result<Value> {
     Ok(serde_json::from_slice(&body)?)
 }
 pub async fn get_browser_controller() -> Result<Arc<Mutex<EdgeController>>> {
-    Ok(BROWSER_INSTANCE
-        .get_or_try_init(|| async {
-            Ok::<_, anyhow::Error>(Arc::new(Mutex::new(
-                EdgeController::ensure_latest_and_launch().await?,
-            )))
-        })
-        .await?
-        .clone())
+    if let Some(controller) = BROWSER_INSTANCE.get() {
+        return Ok(controller.clone());
+    }
+    let controller = Arc::new(Mutex::new(EdgeController::ensure_latest_and_launch()?));
+    let _ = BROWSER_INSTANCE.set(controller.clone());
+    Ok(BROWSER_INSTANCE.get().cloned().unwrap_or(controller))
 }
 
 pub struct BrowserOpenTool;
@@ -361,8 +357,8 @@ impl Tool for BrowserOpenTool {
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let u = a["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
         let x = get_browser_controller().await?;
-        let mut c = x.lock().await;
-        c.get_or_create_page(Some(u)).await?;
+        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        c.get_or_create_page(Some(u))?;
         Ok(format!(
             "Opened '{}' in headless Edge (Title: '{}', URL: '{}').",
             u,
@@ -384,10 +380,10 @@ impl Tool for BrowserGetContentTool {
     }
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let x = get_browser_controller().await?;
-        let mut c = x.lock().await;
-        c.get_or_create_page(a["url"].as_str()).await?;
+        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        c.get_or_create_page(a["url"].as_str())?;
         let title = c.title()?;
-        let text = crate::html::visible_text(&c.content().await?);
+        let text = crate::html::visible_text(&c.content()?);
         let d = if text.len() > 6000 {
             format!(
                 "{}... (truncated)",
@@ -420,8 +416,8 @@ impl Tool for BrowserScreenshotTool {
     }
     async fn execute(&self, r: &Path, _: Value) -> Result<String> {
         let x = get_browser_controller().await?;
-        let mut c = x.lock().await;
-        c.get_or_create_page(None).await?;
+        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        c.get_or_create_page(None)?;
         let data = c.cdp(
             "Page.captureScreenshot",
             json!({"format":"jpeg","quality":75}),
@@ -462,8 +458,8 @@ impl Tool for BrowserClickElementTool {
             .as_str()
             .ok_or_else(|| anyhow!("Missing target"))?;
         let x = get_browser_controller().await?;
-        let mut c = x.lock().await;
-        c.get_or_create_page(None).await?;
+        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        c.get_or_create_page(None)?;
         let q = serde_json::string(t);
         let js=format!("(()=>{{const t={q};let e;try{{e=document.querySelector(t)}}catch(_){{}}if(!e)e=[...document.querySelectorAll('a,button,input,[role=button],[onclick]')].find(x=>(x.innerText||x.value||'').trim().includes(t));if(!e)return false;e.scrollIntoView({{block:'center'}});e.click();return true}})()");
         if c.eval(&js)?.as_bool() == Some(true) {
@@ -488,8 +484,8 @@ impl Tool for BrowserClickTool {
         let x = a["x"].as_f64().ok_or_else(|| anyhow!("Missing x"))?;
         let y = a["y"].as_f64().ok_or_else(|| anyhow!("Missing y"))?;
         let ctl = get_browser_controller().await?;
-        let mut c = ctl.lock().await;
-        c.get_or_create_page(None).await?;
+        let mut c = ctl.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        c.get_or_create_page(None)?;
         for (k, b) in [
             ("mouseMoved", false),
             ("mousePressed", true),
@@ -519,8 +515,8 @@ impl Tool for BrowserTypeTool {
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let t = a["text"].as_str().ok_or_else(|| anyhow!("Missing text"))?;
         let x = get_browser_controller().await?;
-        let mut c = x.lock().await;
-        c.get_or_create_page(None).await?;
+        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        c.get_or_create_page(None)?;
         c.cdp("Input.insertText", json!({"text":t}))?;
         Ok(format!("Typed '{}' into the browser page.", t))
     }
@@ -544,13 +540,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn installed_browser_navigates_types_clicks_and_screenshots() {
+    #[test]
+    fn installed_browser_navigates_types_clicks_and_screenshots() {
         if find_browser().is_none() {
             return;
         }
-        let mut browser = EdgeController::ensure_latest_and_launch().await.unwrap();
-        browser.get_or_create_page(Some("data:text/html,<title>MRML%20Browser%20Test</title><input%20id='name'><button%20id='go'%20onclick=\"document.title=document.querySelector('%23name').value\">Go</button>")).await.unwrap();
+        crate::block_on(async {
+        let mut browser = EdgeController::ensure_latest_and_launch().unwrap();
+        browser.get_or_create_page(Some("data:text/html,<title>MRML%20Browser%20Test</title><input%20id='name'><button%20id='go'%20onclick=\"document.title=document.querySelector('%23name').value\">Go</button>")).unwrap();
         assert_eq!(browser.title().unwrap(), "MRML Browser Test");
         browser
             .eval("document.querySelector('#name').focus()")
@@ -577,5 +574,6 @@ mod tests {
             )
             .unwrap();
         assert!(shot["data"].as_str().is_some_and(|data| data.len() > 100));
+        });
     }
 }

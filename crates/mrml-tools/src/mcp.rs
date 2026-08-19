@@ -1,18 +1,16 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::Stdio;
-use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use crate::{DynTool, Tool};
 
 pub struct McpClient {
     stdin: Mutex<ChildStdin>,
     reader: Mutex<BufReader<ChildStdout>>,
-    _child: Child,
+    _child: Mutex<Child>,
     req_id: Mutex<u64>,
 }
 
@@ -38,7 +36,7 @@ impl McpClient {
         let client = Arc::new(Self {
             stdin: Mutex::new(stdin),
             reader: Mutex::new(reader),
-            _child: child,
+            _child: Mutex::new(child),
             req_id: Mutex::new(1),
         });
 
@@ -61,7 +59,7 @@ impl McpClient {
 
     pub async fn call_method(&self, method: &str, params: Option<Value>) -> Result<Value> {
         let id = {
-            let mut id_guard = self.req_id.lock().await;
+            let mut id_guard = self.req_id.lock().map_err(|_| anyhow!("MCP request ID lock poisoned"))?;
             let current = *id_guard;
             *id_guard += 1;
             current
@@ -77,15 +75,15 @@ impl McpClient {
         req_str.push('\n');
 
         {
-            let mut stdin_guard = self.stdin.lock().await;
-            stdin_guard.write_all(req_str.as_bytes()).await?;
-            stdin_guard.flush().await?;
+            let mut stdin_guard = self.stdin.lock().map_err(|_| anyhow!("MCP stdin lock poisoned"))?;
+            stdin_guard.write_all(req_str.as_bytes())?;
+            stdin_guard.flush()?;
         }
 
         let mut line = String::new();
         {
-            let mut reader_guard = self.reader.lock().await;
-            reader_guard.read_line(&mut line).await?;
+            let mut reader_guard = self.reader.lock().map_err(|_| anyhow!("MCP stdout lock poisoned"))?;
+            reader_guard.read_line(&mut line)?;
         }
 
         let resp: Value = serde_json::from_str(&line)?;

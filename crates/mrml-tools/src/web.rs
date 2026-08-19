@@ -6,10 +6,12 @@ use std::path::Path;
 pub async fn fetch_http_text(url: &str) -> Result<String> {
     // 1. Try headless Chromium if browser controller is available
     if let Ok(browser_ctrl) = crate::browser::get_browser_controller().await {
-        let mut guard = browser_ctrl.lock().await;
-        if let Ok(page) = guard.get_or_create_page(Some(url)).await {
-            tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
-            if let Ok(html) = page.content().await {
+        let mut guard = browser_ctrl
+            .lock()
+            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        if let Ok(page) = guard.get_or_create_page(Some(url)) {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            if let Ok(html) = page.content() {
                 if !html.is_empty() {
                     return Ok(html);
                 }
@@ -18,7 +20,7 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
     }
 
     // 2. Direct HTTP fallback using curl
-    if let Ok(output) = tokio::process::Command::new("curl")
+    if let Ok(output) = std::process::Command::new("curl")
         .arg("-sL")
         .arg("--max-time")
         .arg("10")
@@ -26,7 +28,6 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
         .arg("Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
         .arg(url)
         .output()
-        .await
     {
         if output.status.success() {
             let body = String::from_utf8_lossy(&output.stdout).to_string();
@@ -37,14 +38,13 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
     }
 
     // 3. Fallback to wget
-    if let Ok(output) = tokio::process::Command::new("wget")
+    if let Ok(output) = std::process::Command::new("wget")
         .arg("-qO-")
         .arg("--timeout=10")
         .arg("-U")
         .arg("Mozilla/5.0 (X11; Linux x86_64)")
         .arg(url)
         .output()
-        .await
     {
         if output.status.success() {
             let body = String::from_utf8_lossy(&output.stdout).to_string();

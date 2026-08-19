@@ -116,7 +116,6 @@ dependencies = [
  "mrml-terminal-style",
  "mrml-urlencoding",
  "mrml-windows",
- "tokio",
 ]
 
 [[package]]

@@ -408,8 +408,9 @@ mod tests {
         path
     }
 
-    #[tokio::test]
-    async fn file_tools_write_view_replace_list_and_search() {
+    #[test]
+    fn file_tools_write_view_replace_list_and_search() {
+        crate::block_on(async {
         let root = test_workspace();
         let write = WriteFileTool
             .execute(
@@ -449,10 +450,12 @@ mod tests {
             .unwrap();
         assert!(matches.contains("gamma"));
         let _ = std::fs::remove_dir_all(root);
+        });
     }
 
-    #[tokio::test]
-    async fn run_command_captures_stdout_and_exit_status() {
+    #[test]
+    fn run_command_captures_stdout_and_exit_status() {
+        crate::block_on(async {
         let root = test_workspace();
         #[cfg(windows)]
         let command = "Write-Output tool-ok";
@@ -465,5 +468,6 @@ mod tests {
         assert!(output.contains("Exit Code: 0"));
         assert!(output.contains("tool-ok"));
         let _ = std::fs::remove_dir_all(root);
+        });
     }
 }
