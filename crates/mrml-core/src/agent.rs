@@ -41,6 +41,39 @@ fn verified_time_answer(tool_output: &str) -> Option<String> {
     Some(format!("The current local time is **{value}**."))
 }
 
+fn verified_command_answer(tool_output: &str) -> Option<String> {
+    let stdout = tool_output.split("--- STDOUT ---").nth(1)?.split("--- STDERR ---").next()?.trim();
+    if stdout.is_empty() || stdout == "(empty)" { None } else {
+        Some(format!("The command printed:\n\n```text\n{}\n```", stdout))
+    }
+}
+
+fn explicitly_requested_command(input: &str) -> Option<String> {
+    let normalized = input.to_ascii_lowercase();
+    if !normalized.contains("run_command") {
+        return None;
+    }
+    let start = normalized.find("execute ")? + "execute ".len();
+    let remainder = &input[start..];
+    let end = [", then", ", and then", " then tell", " and tell"]
+        .iter().filter_map(|marker| remainder.to_ascii_lowercase().find(marker)).min()
+        .unwrap_or(remainder.len());
+    let command = remainder[..end].trim().trim_matches(['`', '\'', '"']);
+    (!command.is_empty()).then(|| command.to_string())
+}
+
+fn relevant_tool_definitions(
+    registry: &ToolRegistry,
+    user_input: &str,
+) -> Vec<crate::client::ToolDefinition> {
+    let definitions = registry.definitions();
+    let normalized = user_input.to_ascii_lowercase();
+    let selected: Vec<_> = definitions.iter()
+        .filter(|definition| normalized.contains(&definition.function.name.to_ascii_lowercase()))
+        .cloned().collect();
+    if selected.is_empty() { definitions } else { selected }
+}
+
 impl MrmlAgent {
     pub fn new(config: Config) -> Self {
         let client = MrmlClient::with_config(&config);
@@ -402,17 +435,20 @@ impl MrmlAgent {
         }
 
         self.history.push(ChatMessage::user(user_input));
-        let tool_defs = self.registry.definitions();
+        let tool_defs = relevant_tool_definitions(&self.registry, user_input);
 
         // Live clock queries have one unambiguous tool dependency. Route them
         // deterministically instead of asking the language model to decide
         // whether it has clock access; the model still turns the verified tool
         // result into the user-facing answer.
-        if requests_live_local_time(user_input) {
+        let is_clock_request = requests_live_local_time(user_input);
+        let explicit_command = explicitly_requested_command(user_input);
+        if is_clock_request || explicit_command.is_some() {
             #[cfg(windows)]
-            let command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
+            let clock_command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
             #[cfg(not(windows))]
-            let command = "date '+%Y-%m-%d %H:%M:%S %z'";
+            let clock_command = "date '+%Y-%m-%d %H:%M:%S %z'";
+            let command = explicit_command.unwrap_or_else(|| clock_command.to_string());
             let call_id = format!("clock-{}", self.history.len());
             let args = serde_json::json!({ "command_line": command });
             let tool_call = crate::client::ToolCall {
@@ -437,14 +473,23 @@ impl MrmlAgent {
                     println!("⚡ Executing {}", "run_command".cyan());
                     println!("📥 Tool Output:\n{}", output.dimmed());
                     self.history.push(ChatMessage::tool(call_id, "run_command", output.clone()));
-                    if let Some(answer) = verified_time_answer(&output) {
-                        event_sink(StreamEvent::ToolExecuted {
-                            name: "run_command".to_string(), result: output,
-                        });
+                    event_sink(StreamEvent::ToolExecuted {
+                        name: "run_command".to_string(), result: output.clone(),
+                    });
+                    if is_clock_request {
+                        if let Some(answer) = verified_time_answer(&output) {
                         event_sink(StreamEvent::Content(answer.clone()));
                         event_sink(StreamEvent::Finish("stop".to_string()));
                         self.history.push(ChatMessage::assistant(Some(answer.clone()), None));
                         return Ok((answer, String::new()));
+                        }
+                    } else {
+                        if let Some(answer) = verified_command_answer(&output) {
+                            event_sink(StreamEvent::Content(answer.clone()));
+                            event_sink(StreamEvent::Finish("stop".to_string()));
+                            self.history.push(ChatMessage::assistant(Some(answer.clone()), None));
+                            return Ok((answer, String::new()));
+                        }
                     }
                 }
                 Err(error) => {
@@ -570,13 +615,16 @@ impl MrmlAgent {
         }
 
         self.history.push(ChatMessage::user(user_input));
-        let tool_defs = self.registry.definitions();
+        let tool_defs = relevant_tool_definitions(&self.registry, user_input);
 
-        if requests_live_local_time(user_input) {
+        let is_clock_request = requests_live_local_time(user_input);
+        let explicit_command = explicitly_requested_command(user_input);
+        if is_clock_request || explicit_command.is_some() {
             #[cfg(windows)]
-            let command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
+            let clock_command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
             #[cfg(not(windows))]
-            let command = "date '+%Y-%m-%d %H:%M:%S %z'";
+            let clock_command = "date '+%Y-%m-%d %H:%M:%S %z'";
+            let command = explicit_command.unwrap_or_else(|| clock_command.to_string());
             let call_id = format!("clock-{}", self.history.len());
             let args = serde_json::json!({ "command_line": command });
             let tool_call = crate::client::ToolCall {
@@ -599,13 +647,24 @@ impl MrmlAgent {
                 Ok(output) => {
                     println!("📥 Tool Output:\n{}", output.dimmed());
                     self.history.push(ChatMessage::tool(call_id, "run_command", output.clone()));
-                    if let Some(answer) = verified_time_answer(&output) {
+                    if is_clock_request {
+                        if let Some(answer) = verified_time_answer(&output) {
                         print!("\n{}: {}", "🤖 MRML".bold().green(), answer);
                         println!("\n{}", "─── 🎨 Rich Formatted Output ───".dimmed());
                         print_rich_markdown(&answer);
                         println!("{}", "────────────────────────────────".dimmed());
                         self.history.push(ChatMessage::assistant(Some(answer), None));
                         return Ok(());
+                        }
+                    } else {
+                        if let Some(answer) = verified_command_answer(&output) {
+                            print!("\n{}: {}", "🤖 MRML".bold().green(), answer);
+                            println!("\n{}", "─── 🎨 Rich Formatted Output ───".dimmed());
+                            print_rich_markdown(&answer);
+                            println!("{}", "────────────────────────────────".dimmed());
+                            self.history.push(ChatMessage::assistant(Some(answer), None));
+                            return Ok(());
+                        }
                     }
                 }
                 Err(error) => {
@@ -845,7 +904,7 @@ impl MrmlAgent {
 
 #[cfg(test)]
 mod tests {
-    use super::{requests_live_local_time, verified_time_answer};
+    use super::{explicitly_requested_command, relevant_tool_definitions, requests_live_local_time, verified_command_answer, verified_time_answer};
 
     #[test]
     fn routes_only_live_clock_questions() {
@@ -861,5 +920,30 @@ mod tests {
         assert_eq!(verified_time_answer(output).as_deref(),
             Some("The current local time is **2026-08-18 12:49:24 -02:30**."));
         assert!(verified_time_answer("Tool execution failed").is_none());
+    }
+
+    #[test]
+    fn narrows_explicit_tool_requests_without_hiding_tools_from_general_requests() {
+        let registry = mrml_tools::ToolRegistry::new();
+        let selected = relevant_tool_definitions(&registry, "Use run_command to print hello");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].function.name, "run_command");
+        assert_eq!(relevant_tool_definitions(&registry, "Help me inspect this project").len(),
+            registry.definitions().len());
+    }
+
+    #[test]
+    fn extracts_only_explicit_run_commands() {
+        assert_eq!(explicitly_requested_command(
+            "Use the run_command tool to execute Write-Output MRML_TOOL_OK, then tell me what printed"
+        ).as_deref(), Some("Write-Output MRML_TOOL_OK"));
+        assert!(explicitly_requested_command("Explain what this command does").is_none());
+    }
+
+    #[test]
+    fn formats_verified_command_stdout() {
+        let output = "Exit Code: 0\n--- STDOUT ---\nMRML_TOOL_OK\n--- STDERR ---\n(empty)";
+        assert_eq!(verified_command_answer(output).as_deref(),
+            Some("The command printed:\n\n```text\nMRML_TOOL_OK\n```"));
     }
 }
