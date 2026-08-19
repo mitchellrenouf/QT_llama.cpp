@@ -6,7 +6,12 @@ use crate::kv_cache::{KvCacheFormat, KvCacheRow};
 use crate::ops;
 use crate::quant::dequantize_q8_0;
 use crate::sync as parking_lot;
+use core::cmp::Ordering as CompareOrdering;
+use core::ffi::CStr;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use mrml_runtime::Vector;
+use mrml_runtime::{Instant, Shared};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -15,8 +20,13 @@ use std::os::fd::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "cuda")]
-use std::sync::atomic::{AtomicBool, Ordering};
+
+fn environment_is_set(name: &CStr) -> bool {
+    #[cfg(windows)]
+    return mrml_windows::environment_variable_is_set(name);
+    #[cfg(unix)]
+    return mrml_linux::environment_variable_is_set(name);
+}
 
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
@@ -205,9 +215,9 @@ pub struct MrmlModel {
     pub layers: Vec<TransformerLayer>,
     pub data_offset: u64,
     pub token_embd_table: Vec<u8>,
-    pub mmap: Option<std::sync::Arc<crate::mmap::Mmap>>,
+    pub mmap: Option<Shared<crate::mmap::Mmap>>,
     #[cfg(feature = "cuda")]
-    pub cuda_dev: Option<std::sync::Arc<crate::cuda::CudaDevice>>,
+    pub cuda_dev: Option<Shared<crate::cuda::CudaDevice>>,
     #[cfg(feature = "cuda")]
     pub gpu_token_embd_table: Option<crate::cuda::CudaBuffer<u8>>,
     #[cfg(feature = "cuda")]
@@ -336,7 +346,7 @@ fn capture_layer_ffn_graph(
     match captured {
         Ok(graph) => Some(graph),
         Err(error) => {
-            if std::env::var_os("MRML_GRAPH_DEBUG").is_some() {
+            if environment_is_set(c"MRML_GRAPH_DEBUG") {
                 eprintln!("[mrml] FFN/MoE CUDA graph capture failed: {error}");
             }
             None
@@ -453,9 +463,7 @@ impl MrmlModel {
         };
 
         #[cfg(feature = "cuda")]
-        let cuda_dev = crate::cuda::CudaDevice::new(0)
-            .ok()
-            .map(std::sync::Arc::new);
+        let cuda_dev = crate::cuda::CudaDevice::new(0).ok().map(Shared::new);
         #[cfg(feature = "cuda")]
         let mut execution_plan = cuda_dev
             .as_ref()
@@ -476,7 +484,7 @@ impl MrmlModel {
                 let mapped = unsafe { crate::mmap::Mmap::map_raw(file.as_raw_fd(), len) };
                 mapped.ok()
             })
-            .map(std::sync::Arc::new);
+            .map(Shared::new);
 
         #[cfg(feature = "cuda")]
         let gpu_activation_arena = if cuda_dev.is_some() {
@@ -936,7 +944,7 @@ impl MrmlModel {
             for (index, layer) in layers.iter().enumerate() {
                 let graph = capture_layer_ffn_graph(dev, layer, dim);
                 captured += usize::from(graph.is_some());
-                if graph.is_some() && std::env::var_os("MRML_GRAPH_DEBUG").is_some() {
+                if graph.is_some() && environment_is_set(c"MRML_GRAPH_DEBUG") {
                     eprintln!("[mrml] prepared FFN/MoE CUDA graph for layer {index}");
                 }
                 *layer.gpu_ffn_graph.lock() = graph;
@@ -1114,11 +1122,11 @@ impl MrmlModel {
         #[cfg(feature = "cuda")]
         self.gpu_normalized_ready.store(false, Ordering::Release);
         let dim = self.config.dim;
-        let profile = std::env::var_os("MRML_PROFILE").is_some();
-        let mut profile_qkv = std::time::Duration::ZERO;
-        let mut profile_attention = std::time::Duration::ZERO;
-        let mut profile_output = std::time::Duration::ZERO;
-        let mut profile_ffn = std::time::Duration::ZERO;
+        let profile = environment_is_set(c"MRML_PROFILE");
+        let mut profile_qkv = Duration::ZERO;
+        let mut profile_attention = Duration::ZERO;
+        let mut profile_output = Duration::ZERO;
+        let mut profile_ffn = Duration::ZERO;
 
         let mut hidden = vec![0.0f32; dim];
         let _ = self.read_token_embedding(token_id, &mut hidden);
@@ -1131,7 +1139,7 @@ impl MrmlModel {
         #[cfg(feature = "cuda")]
         let mut resident_hidden_guard = self.gpu_d_final_hidden.lock();
         #[cfg(feature = "cuda")]
-        let resident_model = std::env::var_os("MRML_DISABLE_RESIDENT").is_none()
+        let resident_model = !environment_is_set(c"MRML_DISABLE_RESIDENT")
             && self.cuda_dev.is_some()
             && resident_hidden_guard.is_some()
             && self.layers.iter().all(|layer| {
@@ -1203,7 +1211,7 @@ impl MrmlModel {
             } else {
                 vec![0.0f32; layer.kv_dim]
             };
-            let profile_start = std::time::Instant::now();
+            let profile_start = Instant::now();
 
             #[cfg(feature = "cuda")]
             let gpu_qkv_pipeline = if layer.is_swa || k_cache[l].len() < layer.gpu_kv_capacity {
@@ -1353,7 +1361,7 @@ impl MrmlModel {
             }
 
             // Multi-head Attention
-            let profile_start = std::time::Instant::now();
+            let profile_start = Instant::now();
             let seq_len = k_cache[l].len();
             let mut attn_out = if resident_fast_path {
                 Vec::new()
@@ -1489,14 +1497,14 @@ impl MrmlModel {
             profile_attention += profile_start.elapsed();
 
             // Attention Output Projection
-            let profile_start = std::time::Instant::now();
+            let profile_start = Instant::now();
             let mut attn_proj = if resident_fast_path {
                 Vec::new()
             } else {
                 vec![0.0f32; dim]
             };
             #[cfg(feature = "cuda")]
-            let resident_ffn_capable = std::env::var_os("MRML_DISABLE_RESIDENT").is_none()
+            let resident_ffn_capable = !environment_is_set(c"MRML_DISABLE_RESIDENT")
                 && layer.is_moe
                 && layer.gpu_post_attention_norm.is_some()
                 && layer.gpu_ffn_norm.is_some()
@@ -1639,7 +1647,7 @@ impl MrmlModel {
             profile_output += profile_start.elapsed();
 
             // 1. Prepare Shared Dense MLP & MoE inputs
-            let profile_start = std::time::Instant::now();
+            let profile_start = Instant::now();
             let ffn_dim = 2112;
             let mut ffn_in_shared = if resident_ffn_prepared {
                 Vec::new()
@@ -1712,7 +1720,7 @@ impl MrmlModel {
                     }
 
                     expert_logits
-                        .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                        .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal));
                     let max_l = expert_logits[0].0;
                     let mut sum_exp = 0.0f32;
                     for i in 0..8 {
@@ -1748,7 +1756,7 @@ impl MrmlModel {
                         .is_some_and(|graph| match dev.launch_graph(graph) {
                             Ok(()) => true,
                             Err(error) => {
-                                if std::env::var_os("MRML_GRAPH_DEBUG").is_some() {
+                                if environment_is_set(c"MRML_GRAPH_DEBUG") {
                                     eprintln!("[mrml] FFN/MoE CUDA graph replay failed: {error}");
                                 }
                                 false
@@ -2261,7 +2269,7 @@ impl MrmlModel {
             .map(|layer| layer.gpu_kv_capacity)
             .min()
             .or_else(|| self.layers.iter().map(|layer| layer.gpu_kv_capacity).min())?;
-        if std::env::var_os("MRML_PREFILL_DEBUG").is_some() {
+        if environment_is_set(c"MRML_PREFILL_DEBUG") {
             eprintln!(
                 "[mrml] prefill tokens={} capacity={}",
                 prompt_tokens.len(),
@@ -2511,7 +2519,7 @@ impl MrmlModel {
                 }
                 state.generated_count = 0;
                 *self.prompt_prefix_state.lock() = Some(state.clone());
-                if std::env::var_os("MRML_PREFIX_DEBUG").is_some() {
+                if environment_is_set(c"MRML_PREFIX_DEBUG") {
                     eprintln!("[mrml] reused {} prompt KV tokens", prefix.pos);
                 }
                 return state;
@@ -2561,8 +2569,8 @@ impl MrmlModel {
 
     /// Execute real multi-layer transformer forward pass on single token and sample next token ID
     pub fn step_generation(&self, state: &mut GenerationState, temperature: f32) -> i32 {
-        let profile = std::env::var_os("MRML_PROFILE").is_some();
-        let sample_start = std::time::Instant::now();
+        let profile = environment_is_set(c"MRML_PROFILE");
+        let sample_start = Instant::now();
         let dim = self.config.dim;
         let row_bytes = (dim / 32) * 34;
 
@@ -2601,7 +2609,7 @@ impl MrmlModel {
                     let resident_ready = self.gpu_normalized_ready.swap(false, Ordering::AcqRel);
                     if resident_ready || dev.copy_from_host_async(d_hid, &state.hidden).is_ok() {
                         dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
-                        if std::env::var_os("MRML_FULL_LOGITS").is_some() {
+                        if environment_is_set(c"MRML_FULL_LOGITS") {
                             let mut logits = vec![0.0f32; self.config.vocab_size];
                             if d_log.copy_to_host(&mut logits).is_ok() {
                                 for &token in &recent_tokens {
@@ -2714,7 +2722,7 @@ impl MrmlModel {
         // Partition in linear time before sorting the small candidate set. A
         // full sort of a 256k-token vocabulary was needlessly O(vocab log vocab).
         let score_order = |a: &(f32, i32), b: &(f32, i32)| {
-            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal)
         };
         if all_scored.len() > 40 {
             all_scored.select_nth_unstable_by(40, score_order);
