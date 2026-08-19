@@ -1,5 +1,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::{AtomicU8, Ordering};
+
 #[cfg(feature = "std")]
 #[inline]
 fn round(value: f32) -> f32 {
@@ -15,13 +18,34 @@ fn round(value: f32) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn avx2_enabled() -> bool {
-    #[cfg(feature = "std")]
-    {
-        std::is_x86_feature_detected!("avx2")
+    if cfg!(target_feature = "avx2") {
+        return true;
     }
-    #[cfg(not(feature = "std"))]
-    {
-        cfg!(target_feature = "avx2")
+    static DETECTED: AtomicU8 = AtomicU8::new(0);
+    cached_x86_feature(&DETECTED, || {
+        x86_avx_state_enabled() && core::arch::x86_64::__cpuid_count(7, 0).ebx & (1 << 5) != 0
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn x86_avx_state_enabled() -> bool {
+    let features = core::arch::x86_64::__cpuid(1).ecx;
+    let avx_and_osxsave = (features & (1 << 28) != 0) && (features & (1 << 27) != 0);
+    avx_and_osxsave && unsafe { core::arch::x86_64::_xgetbv(0) } & 0b110 == 0b110
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn cached_x86_feature(cache: &AtomicU8, detect: impl FnOnce() -> bool) -> bool {
+    match cache.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            let enabled = detect();
+            cache.store(if enabled { 2 } else { 1 }, Ordering::Relaxed);
+            enabled
+        }
     }
 }
 
@@ -377,14 +401,13 @@ pub fn quantize_f32_to_q4_0(src: &[f32], dst: &mut [u8]) {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn avx_vnni_enabled() -> bool {
-    #[cfg(feature = "std")]
-    {
-        std::is_x86_feature_detected!("avxvnni")
+    if cfg!(target_feature = "avxvnni") {
+        return true;
     }
-    #[cfg(not(feature = "std"))]
-    {
-        cfg!(target_feature = "avxvnni")
-    }
+    static DETECTED: AtomicU8 = AtomicU8::new(0);
+    cached_x86_feature(&DETECTED, || {
+        x86_avx_state_enabled() && core::arch::x86_64::__cpuid_count(7, 1).eax & (1 << 4) != 0
+    })
 }
 
 #[cfg(test)]
@@ -413,6 +436,19 @@ mod simd_tests {
         let q8_scalar = vec_dot_q8_0_q8_0_scalar(&q8_a, &q8_b, values.len());
         assert!((vec_dot_q4_0_q8_0(&q4, &q8_b, values.len()) - q4_scalar).abs() < 1e-3);
         assert!((vec_dot_q8_0_q8_0(&q8_a, &q8_b, values.len()) - q8_scalar).abs() < 1e-3);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn core_cpuid_matches_standard_feature_detection() {
+        assert_eq!(avx2_enabled(), std::is_x86_feature_detected!("avx2"));
+        assert_eq!(avx_vnni_enabled(), std::is_x86_feature_detected!("avxvnni"));
+    }
+
+    #[test]
+    fn runtime_detects_expected_avx2_on_x86_64_test_host() {
+        assert!(avx2_enabled());
+        assert!(avx_vnni_enabled());
     }
 }
 

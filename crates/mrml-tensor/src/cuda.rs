@@ -2,12 +2,13 @@
 #![allow(non_snake_case)]
 
 use crate::anyhow::{Result, anyhow};
+use core::cell::Cell;
 use core::ffi::{CStr, c_void};
-use std::cell::Cell;
+use core::marker::PhantomData;
+use core::mem;
+use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(unix)]
@@ -168,39 +169,35 @@ fn cuda_driver() -> Result<&'static CudaDriverApi> {
     }
     let api = unsafe {
         CudaDriverApi {
-            init: std::mem::transmute(cuda_driver_symbol("cuInit")?),
-            device_get: std::mem::transmute(cuda_driver_symbol("cuDeviceGet")?),
-            device_get_count: std::mem::transmute(cuda_driver_symbol("cuDeviceGetCount")?),
-            device_get_attribute: std::mem::transmute(cuda_driver_symbol("cuDeviceGetAttribute")?),
-            driver_get_version: std::mem::transmute(cuda_driver_symbol("cuDriverGetVersion")?),
-            primary_ctx_retain: std::mem::transmute(cuda_driver_symbol(
-                "cuDevicePrimaryCtxRetain",
-            )?),
-            ctx_set_current: std::mem::transmute(cuda_driver_symbol("cuCtxSetCurrent")?),
-            mem_get_info: std::mem::transmute(cuda_driver_symbol("cuMemGetInfo_v2")?),
-            mem_alloc: std::mem::transmute(cuda_driver_symbol("cuMemAlloc_v2")?),
-            mem_free: std::mem::transmute(cuda_driver_symbol("cuMemFree_v2")?),
-            memcpy_htod: std::mem::transmute(cuda_driver_symbol("cuMemcpyHtoD_v2")?),
-            memcpy_dtoh: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoH_v2")?),
-            memcpy_dtod: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoD_v2")?),
-            memcpy_htod_async: std::mem::transmute(cuda_driver_symbol("cuMemcpyHtoDAsync_v2")?),
-            memcpy_dtoh_async: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoHAsync_v2")?),
-            memcpy_dtod_async: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoDAsync_v2")?),
-            memset_d8_async: std::mem::transmute(cuda_driver_symbol("cuMemsetD8Async")?),
-            stream_create: std::mem::transmute(cuda_driver_symbol("cuStreamCreate")?),
-            stream_destroy: std::mem::transmute(cuda_driver_symbol("cuStreamDestroy_v2")?),
-            stream_synchronize: std::mem::transmute(cuda_driver_symbol("cuStreamSynchronize")?),
-            stream_begin_capture: std::mem::transmute(cuda_driver_symbol(
-                "cuStreamBeginCapture_v2",
-            )?),
-            stream_end_capture: std::mem::transmute(cuda_driver_symbol("cuStreamEndCapture")?),
-            graph_instantiate: std::mem::transmute(cuda_driver_symbol("cuGraphInstantiate_v2")?),
-            graph_launch: std::mem::transmute(cuda_driver_symbol("cuGraphLaunch")?),
-            graph_destroy: std::mem::transmute(cuda_driver_symbol("cuGraphDestroy")?),
-            graph_exec_destroy: std::mem::transmute(cuda_driver_symbol("cuGraphExecDestroy")?),
-            module_load_data: std::mem::transmute(cuda_driver_symbol("cuModuleLoadData")?),
-            module_get_function: std::mem::transmute(cuda_driver_symbol("cuModuleGetFunction")?),
-            launch_kernel: std::mem::transmute(cuda_driver_symbol("cuLaunchKernel")?),
+            init: mem::transmute(cuda_driver_symbol("cuInit")?),
+            device_get: mem::transmute(cuda_driver_symbol("cuDeviceGet")?),
+            device_get_count: mem::transmute(cuda_driver_symbol("cuDeviceGetCount")?),
+            device_get_attribute: mem::transmute(cuda_driver_symbol("cuDeviceGetAttribute")?),
+            driver_get_version: mem::transmute(cuda_driver_symbol("cuDriverGetVersion")?),
+            primary_ctx_retain: mem::transmute(cuda_driver_symbol("cuDevicePrimaryCtxRetain")?),
+            ctx_set_current: mem::transmute(cuda_driver_symbol("cuCtxSetCurrent")?),
+            mem_get_info: mem::transmute(cuda_driver_symbol("cuMemGetInfo_v2")?),
+            mem_alloc: mem::transmute(cuda_driver_symbol("cuMemAlloc_v2")?),
+            mem_free: mem::transmute(cuda_driver_symbol("cuMemFree_v2")?),
+            memcpy_htod: mem::transmute(cuda_driver_symbol("cuMemcpyHtoD_v2")?),
+            memcpy_dtoh: mem::transmute(cuda_driver_symbol("cuMemcpyDtoH_v2")?),
+            memcpy_dtod: mem::transmute(cuda_driver_symbol("cuMemcpyDtoD_v2")?),
+            memcpy_htod_async: mem::transmute(cuda_driver_symbol("cuMemcpyHtoDAsync_v2")?),
+            memcpy_dtoh_async: mem::transmute(cuda_driver_symbol("cuMemcpyDtoHAsync_v2")?),
+            memcpy_dtod_async: mem::transmute(cuda_driver_symbol("cuMemcpyDtoDAsync_v2")?),
+            memset_d8_async: mem::transmute(cuda_driver_symbol("cuMemsetD8Async")?),
+            stream_create: mem::transmute(cuda_driver_symbol("cuStreamCreate")?),
+            stream_destroy: mem::transmute(cuda_driver_symbol("cuStreamDestroy_v2")?),
+            stream_synchronize: mem::transmute(cuda_driver_symbol("cuStreamSynchronize")?),
+            stream_begin_capture: mem::transmute(cuda_driver_symbol("cuStreamBeginCapture_v2")?),
+            stream_end_capture: mem::transmute(cuda_driver_symbol("cuStreamEndCapture")?),
+            graph_instantiate: mem::transmute(cuda_driver_symbol("cuGraphInstantiate_v2")?),
+            graph_launch: mem::transmute(cuda_driver_symbol("cuGraphLaunch")?),
+            graph_destroy: mem::transmute(cuda_driver_symbol("cuGraphDestroy")?),
+            graph_exec_destroy: mem::transmute(cuda_driver_symbol("cuGraphExecDestroy")?),
+            module_load_data: mem::transmute(cuda_driver_symbol("cuModuleLoadData")?),
+            module_get_function: mem::transmute(cuda_driver_symbol("cuModuleGetFunction")?),
+            launch_kernel: mem::transmute(cuda_driver_symbol("cuLaunchKernel")?),
         }
     };
     let _ = CUDA_DRIVER.set(api);
@@ -1018,7 +1015,7 @@ unsafe fn launch_rust_attention(
         && k_format == 0
         && v_format == 0
     {
-        let shared_bytes = max_keys as u32 * std::mem::size_of::<f32>() as u32;
+        let shared_bytes = max_keys as u32 * mem::size_of::<f32>() as u32;
         launch_rust_kernel_shared(
             "rust_cuda_attention",
             (n_heads as u32, batch as u32, 1),
@@ -1057,7 +1054,7 @@ unsafe fn launch_rust_moe_topk(
         let clear = cudaMemsetAsync(
             out as *mut c_void,
             0,
-            batch as usize * dim as usize * std::mem::size_of::<f32>(),
+            batch as usize * dim as usize * mem::size_of::<f32>(),
             stream,
         );
         if clear != 0 {
@@ -1217,7 +1214,7 @@ impl CudaArena {
 
     pub fn alloc<T>(&self, len: usize) -> Result<CudaBuffer<T>> {
         let bytes = len
-            .checked_mul(std::mem::size_of::<T>())
+            .checked_mul(mem::size_of::<T>())
             .ok_or_else(|| anyhow!("CUDA arena allocation size overflow"))?;
         let aligned = (bytes + 255) & !255;
         let offset = self.next.fetch_add(aligned, Ordering::Relaxed);
@@ -1265,7 +1262,7 @@ impl<T> CudaBuffer<T> {
     pub fn alloc_on(device_id: i32, len: usize) -> Result<Self> {
         unsafe { cudaSetDevice(device_id) };
         let mut raw_ptr: *mut c_void = ptr::null_mut();
-        let bytes = len * std::mem::size_of::<T>();
+        let bytes = len * mem::size_of::<T>();
         let res = unsafe { cudaMalloc(&mut raw_ptr, bytes) };
         if res != 0 || raw_ptr.is_null() {
             return Err(anyhow!(
@@ -1286,7 +1283,7 @@ impl<T> CudaBuffer<T> {
 
     pub fn alloc_pooled_on(device_id: i32, len: usize) -> Result<Self> {
         unsafe { cudaSetDevice(device_id) };
-        let bytes = len * std::mem::size_of::<T>();
+        let bytes = len * mem::size_of::<T>();
         let (raw_ptr, res) = pooled_cuda_alloc(device_id, bytes);
         if res != 0 || raw_ptr.is_null() {
             return Err(anyhow!(
@@ -1321,7 +1318,7 @@ impl<T> CudaBuffer<T> {
     pub fn copy_from_host(&mut self, slice: &[T]) -> Result<()> {
         assert_eq!(self.len, slice.len());
         unsafe { cudaSetDevice(self.device_id) };
-        let bytes = slice.len() * std::mem::size_of::<T>();
+        let bytes = slice.len() * mem::size_of::<T>();
         let res = unsafe {
             cudaMemcpy(
                 self.ptr as *mut c_void,
@@ -1339,7 +1336,7 @@ impl<T> CudaBuffer<T> {
     pub fn copy_from_host_at(&mut self, offset: usize, slice: &[T]) -> Result<()> {
         assert!(offset + slice.len() <= self.len);
         unsafe { cudaSetDevice(self.device_id) };
-        let bytes = std::mem::size_of_val(slice);
+        let bytes = mem::size_of_val(slice);
         let dst = unsafe { self.ptr.add(offset) };
         let res = unsafe {
             cudaMemcpy(
@@ -1358,7 +1355,7 @@ impl<T> CudaBuffer<T> {
     pub fn copy_to_host(&self, slice: &mut [T]) -> Result<()> {
         assert_eq!(self.len, slice.len());
         unsafe { cudaSetDevice(self.device_id) };
-        let bytes = slice.len() * std::mem::size_of::<T>();
+        let bytes = slice.len() * mem::size_of::<T>();
         let res = unsafe {
             cudaMemcpy(
                 slice.as_mut_ptr() as *mut c_void,
@@ -1408,7 +1405,7 @@ impl<T> Drop for CudaBuffer<T> {
                     CudaAllocation::Pooled => pooled_cuda_release(
                         self.device_id,
                         self.ptr as *mut c_void,
-                        self.len * std::mem::size_of::<T>(),
+                        self.len * mem::size_of::<T>(),
                     ),
                     CudaAllocation::Owned => {
                         cudaFree(self.ptr as *mut c_void);
@@ -1921,7 +1918,7 @@ impl CudaDevice {
             cudaMemcpyAsync(
                 dst.as_mut_ptr() as *mut c_void,
                 src.as_ptr() as *const c_void,
-                std::mem::size_of_val(src),
+                mem::size_of_val(src),
                 CudaMemcpyKind::HostToDevice,
                 self.stream,
             )
@@ -1944,7 +1941,7 @@ impl CudaDevice {
             cudaMemcpyAsync(
                 dst.as_mut_ptr().add(offset) as *mut c_void,
                 src.as_ptr() as *const c_void,
-                std::mem::size_of_val(src),
+                mem::size_of_val(src),
                 CudaMemcpyKind::HostToDevice,
                 self.stream,
             )
