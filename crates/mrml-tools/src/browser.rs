@@ -149,8 +149,11 @@ impl EdgeController {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         drop(listener);
-        let profile =
-            std::env::temp_dir().join(format!("mrml-edge-{}-{}", std::process::id(), port));
+        let profile = PathBuf::from(mrml_runtime::temporary_directory().as_str()).join(format!(
+            "mrml-edge-{}-{}",
+            mrml_runtime::process_id(),
+            port
+        ));
         mrml_runtime::create_dir_all(
             profile
                 .to_str()

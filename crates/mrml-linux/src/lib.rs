@@ -66,6 +66,7 @@ unsafe extern "C" {
     fn _exit(status: c_int) -> !;
     fn isatty(file: c_int) -> c_int;
     fn getenv(name: *const i8) -> *mut i8;
+    fn getpid() -> c_int;
     fn open(path: *const i8, flags: c_int, ...) -> c_int;
     fn read(file: c_int, buffer: *mut c_void, count: usize) -> isize;
     fn write(file: c_int, buffer: *const c_void, count: usize) -> isize;
@@ -105,6 +106,11 @@ struct Dirent {
 pub fn processor_count() -> usize {
     const SC_NPROCESSORS_ONLN: c_int = 84;
     unsafe { sysconf(SC_NPROCESSORS_ONLN) }.max(1) as usize
+}
+
+#[cfg(unix)]
+pub fn process_id() -> u32 {
+    (unsafe { getpid() }) as u32
 }
 
 #[cfg(unix)]

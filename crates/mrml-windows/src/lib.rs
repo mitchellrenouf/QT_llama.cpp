@@ -52,6 +52,7 @@ unsafe extern "system" {
     fn GetCommandLineW() -> *const u16;
     fn GetSystemTimeAsFileTime(time: *mut FileTime);
     fn GetProcessHeap() -> *mut c_void;
+    fn GetCurrentProcessId() -> u32;
     fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
     fn HeapReAlloc(heap: *mut c_void, flags: u32, memory: *mut c_void, bytes: usize)
     -> *mut c_void;
@@ -269,6 +270,11 @@ impl Drop for NativeDirectory {
 #[cfg(windows)]
 pub fn processor_count() -> usize {
     unsafe { GetActiveProcessorCount(u16::MAX) }.max(1) as usize
+}
+
+#[cfg(windows)]
+pub fn process_id() -> u32 {
+    unsafe { GetCurrentProcessId() }
 }
 
 #[cfg(windows)]
