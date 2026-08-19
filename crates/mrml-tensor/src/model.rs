@@ -674,7 +674,7 @@ impl MrmlModel {
                             // vocabulary table allocated after the layers. One missing
                             // MoE layer disables the cross-layer resident decode path;
                             // vocabulary scoring has a parallel CPU fallback.
-                            free_mem >= (gate_up_bytes + down_bytes + 32 * 1024 * 1024)
+                            free_mem >= gate_up_bytes + down_bytes
                         } else {
                             false
                         };

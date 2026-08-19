@@ -35,7 +35,7 @@ pub fn sync_channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 }
 
 pub fn blocking_channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
-    channel_with_spin_limit(capacity, 8_192)
+    channel_with_spin_limit(capacity, 0)
 }
 
 fn channel_with_spin_limit<T>(capacity: usize, spin_limit: usize) -> (Sender<T>, Receiver<T>) {

@@ -21,7 +21,6 @@ pub mod model;
 #[cfg(feature = "runtime")]
 pub mod ops;
 #[cfg(feature = "runtime")]
-#[path = "parallel_nostd.rs"]
 pub mod parallel;
 pub mod quant;
 #[cfg(feature = "runtime")]

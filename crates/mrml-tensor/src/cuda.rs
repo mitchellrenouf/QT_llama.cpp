@@ -24,39 +24,44 @@ type CuDevicePtr = u64;
 
 static RUST_PTX_MODULE: OnceCell<usize> = OnceCell::new();
 static RUST_FUNCTIONS: OnceCell<SpinMutex<OrderedMap<Text, usize>>> = OnceCell::new();
+static RUST_KERNEL_HANDLES: [AtomicUsize; 27] = [const { AtomicUsize::new(0) }; 27];
 static CUDA_DRIVER: OnceCell<CudaDriverApi> = OnceCell::new();
 static CUDA_ALLOCATION_POOL: OnceCell<SpinMutex<OrderedMap<(i32, usize), Vector<usize>>>> =
     OnceCell::new();
 const RUST_CUDA_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rust_cuda_kernels.ptx"));
-const RUST_CUDA_KERNELS: &[&str] = &[
-    "rust_cuda_gemm_q4_0_f32",
-    "rust_cuda_gemm_q4_0_qkv_f32",
-    "rust_cuda_gemv_q4_0_qkv_f32",
-    "rust_cuda_gemv_q4_0_f32",
-    "rust_cuda_gemv_q8_0_f32",
-    "rust_cuda_gemm_q4_0_geglu_f32",
-    "rust_cuda_gemv_q4_0_geglu_f32",
-    "rust_cuda_add_f32",
-    "rust_cuda_embedding_f32",
-    "rust_cuda_swiglu_f32",
-    "rust_cuda_geglu_f32",
-    "rust_cuda_rope_f32",
-    "rust_cuda_rms_norm_f32",
-    "rust_cuda_moe_router_logits_f32",
-    "rust_cuda_moe_router_top8_f32",
-    "rust_cuda_prepare_ffn_f32",
-    "rust_cuda_finish_ffn_f32",
-    "rust_cuda_vocab_topk_f32",
-    "rust_cuda_vocab_topk_generic_f32",
-    "rust_cuda_qkv_postprocess",
-    "rust_cuda_attention",
-    "rust_cuda_attention_streaming",
-    "rust_cuda_moe_gate_up_q4",
-    "rust_cuda_moe_gate_up_q4_gemma4_26b",
-    "rust_cuda_moe_down_q4",
-    "rust_cuda_moe_down_q4_combined",
-    "rust_cuda_moe_down_q4_gemma4_26b",
-];
+#[inline(always)]
+fn rust_kernel_index(name: &str) -> Option<usize> {
+    Some(match name {
+        "rust_cuda_gemm_q4_0_f32" => 0,
+        "rust_cuda_gemm_q4_0_qkv_f32" => 1,
+        "rust_cuda_gemv_q4_0_qkv_f32" => 2,
+        "rust_cuda_gemv_q4_0_f32" => 3,
+        "rust_cuda_gemv_q8_0_f32" => 4,
+        "rust_cuda_gemm_q4_0_geglu_f32" => 5,
+        "rust_cuda_gemv_q4_0_geglu_f32" => 6,
+        "rust_cuda_add_f32" => 7,
+        "rust_cuda_embedding_f32" => 8,
+        "rust_cuda_swiglu_f32" => 9,
+        "rust_cuda_geglu_f32" => 10,
+        "rust_cuda_rope_f32" => 11,
+        "rust_cuda_rms_norm_f32" => 12,
+        "rust_cuda_moe_router_logits_f32" => 13,
+        "rust_cuda_moe_router_top8_f32" => 14,
+        "rust_cuda_prepare_ffn_f32" => 15,
+        "rust_cuda_finish_ffn_f32" => 16,
+        "rust_cuda_vocab_topk_f32" => 17,
+        "rust_cuda_vocab_topk_generic_f32" => 18,
+        "rust_cuda_qkv_postprocess" => 19,
+        "rust_cuda_attention" => 20,
+        "rust_cuda_attention_streaming" => 21,
+        "rust_cuda_moe_gate_up_q4" => 22,
+        "rust_cuda_moe_gate_up_q4_gemma4_26b" => 23,
+        "rust_cuda_moe_down_q4" => 24,
+        "rust_cuda_moe_down_q4_combined" => 25,
+        "rust_cuda_moe_down_q4_gemma4_26b" => 26,
+        _ => return None,
+    })
+}
 
 struct CudaDriverApi {
     init: unsafe extern "C" fn(u32) -> i32,
@@ -437,6 +442,13 @@ unsafe fn cudaGraphExecDestroy(exec: CudaGraphExecHandle) -> i32 {
 }
 
 fn rust_ptx_function(name: &str) -> Result<CuFunction> {
+    let kernel_index = rust_kernel_index(name);
+    if let Some(index) = kernel_index {
+        let function = RUST_KERNEL_HANDLES[index].load(Ordering::Acquire);
+        if function != 0 {
+            return Ok(function as CuFunction);
+        }
+    }
     let api = cuda_driver()?;
     let functions = RUST_FUNCTIONS.get_or_init(|| SpinMutex::new(OrderedMap::new()));
     if let Some(function) = functions.lock().get(name).copied() {
@@ -478,14 +490,10 @@ fn rust_ptx_function(name: &str) -> Result<CuFunction> {
         ));
     }
     functions.lock().insert(Text::from(name), function as usize);
-    Ok(function)
-}
-
-fn preload_rust_ptx_functions() -> Result<()> {
-    for name in RUST_CUDA_KERNELS {
-        rust_ptx_function(name)?;
+    if let Some(index) = kernel_index {
+        RUST_KERNEL_HANDLES[index].store(function as usize, Ordering::Release);
     }
-    Ok(())
+    Ok(function)
 }
 
 unsafe fn launch_rust_kernel(
@@ -1692,12 +1700,6 @@ impl CudaDevice {
                 selected
             ));
         }
-        // Resolve every PTX entry point while the device is being initialized.
-        // cuModuleGetFunction forces CUDA's lazy loader to materialize the
-        // function without executing a synthetic inference or changing model
-        // state. Once construction returns, first-token latency contains no
-        // module lookup or PTX JIT work.
-        preload_rust_ptx_functions()?;
         let mut stream: CudaStream = ptr::null_mut();
         let res = unsafe { cudaStreamCreate(&mut stream) };
         if res != 0 {
@@ -1709,6 +1711,7 @@ impl CudaDevice {
         }
         Ok(Self { device_id, stream })
     }
+
 
     pub fn sync(&self) -> Result<()> {
         unsafe { cudaSetDevice(self.device_id) };
