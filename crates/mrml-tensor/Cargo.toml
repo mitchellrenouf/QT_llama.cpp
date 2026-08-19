@@ -8,7 +8,8 @@ description = "MRML Tensor: quantized tensor math, GGUF execution, and CUDA acce
 
 [features]
 default = ["std"]
-std = []
+alloc = []
+std = ["alloc"]
 cuda = ["std"]
 
 [dependencies]
