@@ -45,6 +45,46 @@ struct FindDataW {
     finder_flags: u16,
 }
 
+#[repr(C)]
+#[cfg(windows)]
+struct SecurityAttributes {
+    length: u32,
+    security_descriptor: *mut c_void,
+    inherit_handle: i32,
+}
+
+#[repr(C)]
+#[cfg(windows)]
+struct StartupInfoW {
+    size: u32,
+    reserved: *mut u16,
+    desktop: *mut u16,
+    title: *mut u16,
+    x: u32,
+    y: u32,
+    x_size: u32,
+    y_size: u32,
+    x_count_chars: u32,
+    y_count_chars: u32,
+    fill_attribute: u32,
+    flags: u32,
+    show_window: u16,
+    reserved_bytes: u16,
+    reserved_pointer: *mut u8,
+    stdin: *mut c_void,
+    stdout: *mut c_void,
+    stderr: *mut c_void,
+}
+
+#[repr(C)]
+#[cfg(windows)]
+struct ProcessInformation {
+    process: *mut c_void,
+    thread: *mut c_void,
+    process_id: u32,
+    thread_id: u32,
+}
+
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -53,6 +93,23 @@ unsafe extern "system" {
     fn GetSystemTimeAsFileTime(time: *mut FileTime);
     fn GetProcessHeap() -> *mut c_void;
     fn GetCurrentProcessId() -> u32;
+    fn CreatePipe(read: *mut *mut c_void, write: *mut *mut c_void, attributes: *const SecurityAttributes, size: u32) -> i32;
+    fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    fn CreateProcessW(
+        application: *const u16,
+        command_line: *mut u16,
+        process_attributes: *const SecurityAttributes,
+        thread_attributes: *const SecurityAttributes,
+        inherit_handles: i32,
+        creation_flags: u32,
+        environment: *const c_void,
+        current_directory: *const u16,
+        startup: *mut StartupInfoW,
+        process: *mut ProcessInformation,
+    ) -> i32;
+    fn PeekNamedPipe(handle: *mut c_void, buffer: *mut c_void, size: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+    fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+    fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
     fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
     fn HeapReAlloc(heap: *mut c_void, flags: u32, memory: *mut c_void, bytes: usize)
     -> *mut c_void;
@@ -275,6 +332,126 @@ pub fn processor_count() -> usize {
 #[cfg(windows)]
 pub fn process_id() -> u32 {
     unsafe { GetCurrentProcessId() }
+}
+
+#[cfg(windows)]
+pub struct NativeChild {
+    process: *mut c_void,
+    stdout: *mut c_void,
+    stderr: *mut c_void,
+    status: Option<i32>,
+}
+
+#[cfg(windows)]
+impl NativeChild {
+    pub fn spawn_captured(command_line: &mut [u16], current_directory: Option<&[u16]>) -> Option<Self> {
+        if command_line.last().copied() != Some(0)
+            || current_directory.is_some_and(|path| path.last().copied() != Some(0))
+        {
+            return None;
+        }
+        let attributes = SecurityAttributes {
+            length: core::mem::size_of::<SecurityAttributes>() as u32,
+            security_descriptor: core::ptr::null_mut(),
+            inherit_handle: 1,
+        };
+        let mut stdout_read = core::ptr::null_mut();
+        let mut stdout_write = core::ptr::null_mut();
+        let mut stderr_read = core::ptr::null_mut();
+        let mut stderr_write = core::ptr::null_mut();
+        if unsafe { CreatePipe(&mut stdout_read, &mut stdout_write, &attributes, 0) } == 0
+            || unsafe { CreatePipe(&mut stderr_read, &mut stderr_write, &attributes, 0) } == 0
+        {
+            for handle in [stdout_read, stdout_write, stderr_read, stderr_write] {
+                if !handle.is_null() {
+                    let _ = unsafe { CloseHandle(handle) };
+                }
+            }
+            return None;
+        }
+        const HANDLE_FLAG_INHERIT: u32 = 1;
+        let _ = unsafe { SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0) };
+        let _ = unsafe { SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0) };
+        let mut startup = unsafe { core::mem::zeroed::<StartupInfoW>() };
+        startup.size = core::mem::size_of::<StartupInfoW>() as u32;
+        startup.flags = 0x100;
+        startup.stdin = unsafe { GetStdHandle(u32::MAX - 9) };
+        startup.stdout = stdout_write;
+        startup.stderr = stderr_write;
+        let mut information = unsafe { core::mem::zeroed::<ProcessInformation>() };
+        let created = unsafe {
+            CreateProcessW(
+                core::ptr::null(),
+                command_line.as_mut_ptr(),
+                core::ptr::null(),
+                core::ptr::null(),
+                1,
+                0,
+                core::ptr::null(),
+                current_directory.map_or(core::ptr::null(), |path| path.as_ptr()),
+                &mut startup,
+                &mut information,
+            )
+        };
+        let _ = unsafe { CloseHandle(stdout_write) };
+        let _ = unsafe { CloseHandle(stderr_write) };
+        if created == 0 {
+            let _ = unsafe { CloseHandle(stdout_read) };
+            let _ = unsafe { CloseHandle(stderr_read) };
+            return None;
+        }
+        let _ = unsafe { CloseHandle(information.thread) };
+        Some(Self { process: information.process, stdout: stdout_read, stderr: stderr_read, status: None })
+    }
+
+    fn read_pipe(handle: *mut c_void, buffer: &mut [u8]) -> usize {
+        let mut available = 0u32;
+        if unsafe {
+            PeekNamedPipe(
+                handle,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                &mut available,
+                core::ptr::null_mut(),
+            )
+        } == 0 || available == 0
+        {
+            return 0;
+        }
+        let mut read = 0u32;
+        let count = buffer.len().min(available as usize).min(u32::MAX as usize) as u32;
+        if unsafe { ReadFile(handle, buffer.as_mut_ptr().cast(), count, &mut read, core::ptr::null_mut()) } == 0 {
+            0
+        } else {
+            read as usize
+        }
+    }
+
+    pub fn read_stdout(&mut self, buffer: &mut [u8]) -> usize { Self::read_pipe(self.stdout, buffer) }
+    pub fn read_stderr(&mut self, buffer: &mut [u8]) -> usize { Self::read_pipe(self.stderr, buffer) }
+
+    pub fn try_wait(&mut self) -> Option<i32> {
+        if self.status.is_none() && unsafe { WaitForSingleObject(self.process, 0) } == 0 {
+            let mut code = 0;
+            if unsafe { GetExitCodeProcess(self.process, &mut code) } != 0 {
+                self.status = Some(code as i32);
+            }
+        }
+        self.status
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeChild {
+    fn drop(&mut self) {
+        if self.status.is_none() {
+            let _ = unsafe { WaitForSingleObject(self.process, u32::MAX) };
+        }
+        for handle in [self.process, self.stdout, self.stderr] {
+            let _ = unsafe { CloseHandle(handle) };
+        }
+    }
 }
 
 #[cfg(windows)]

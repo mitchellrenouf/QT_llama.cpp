@@ -75,6 +75,13 @@ unsafe extern "C" {
     fn mkdir(path: *const i8, mode: u32) -> c_int;
     fn unlink(path: *const i8) -> c_int;
     fn rmdir(path: *const i8) -> c_int;
+    fn pipe(files: *mut c_int) -> c_int;
+    fn fork() -> c_int;
+    fn dup2(old: c_int, new: c_int) -> c_int;
+    fn execvp(program: *const i8, arguments: *const *const i8) -> c_int;
+    fn chdir(path: *const i8) -> c_int;
+    fn waitpid(process: c_int, status: *mut c_int, options: c_int) -> c_int;
+    fn fcntl(file: c_int, command: c_int, ...) -> c_int;
     fn rename(existing: *const i8, replacement: *const i8) -> c_int;
     fn opendir(path: *const i8) -> *mut c_void;
     fn readdir(directory: *mut c_void) -> *mut Dirent;
@@ -111,6 +118,106 @@ pub fn processor_count() -> usize {
 #[cfg(unix)]
 pub fn process_id() -> u32 {
     (unsafe { getpid() }) as u32
+}
+
+#[cfg(unix)]
+pub struct NativeChild {
+    process: c_int,
+    stdout: c_int,
+    stderr: c_int,
+    status: Option<i32>,
+}
+
+#[cfg(unix)]
+impl NativeChild {
+    pub fn spawn_captured(
+        program: &CStr,
+        arguments: &[*const i8],
+        current_directory: Option<&CStr>,
+    ) -> Option<Self> {
+        let mut stdout_pipe = [-1; 2];
+        let mut stderr_pipe = [-1; 2];
+        if unsafe { pipe(stdout_pipe.as_mut_ptr()) } != 0
+            || unsafe { pipe(stderr_pipe.as_mut_ptr()) } != 0
+        {
+            for file in stdout_pipe.into_iter().chain(stderr_pipe) {
+                if file >= 0 {
+                    let _ = unsafe { close(file) };
+                }
+            }
+            return None;
+        }
+        let process = unsafe { fork() };
+        if process == 0 {
+            let _ = unsafe { close(stdout_pipe[0]) };
+            let _ = unsafe { close(stderr_pipe[0]) };
+            let _ = unsafe { dup2(stdout_pipe[1], 1) };
+            let _ = unsafe { dup2(stderr_pipe[1], 2) };
+            let _ = unsafe { close(stdout_pipe[1]) };
+            let _ = unsafe { close(stderr_pipe[1]) };
+            if let Some(directory) = current_directory {
+                if unsafe { chdir(directory.as_ptr()) } != 0 {
+                    unsafe { _exit(126) };
+                }
+            }
+            let _ = unsafe { execvp(program.as_ptr(), arguments.as_ptr()) };
+            unsafe { _exit(127) };
+        }
+        let _ = unsafe { close(stdout_pipe[1]) };
+        let _ = unsafe { close(stderr_pipe[1]) };
+        if process < 0 {
+            let _ = unsafe { close(stdout_pipe[0]) };
+            let _ = unsafe { close(stderr_pipe[0]) };
+            return None;
+        }
+        const F_SETFL: c_int = 4;
+        const O_NONBLOCK: c_int = 0o4000;
+        let _ = unsafe { fcntl(stdout_pipe[0], F_SETFL, O_NONBLOCK) };
+        let _ = unsafe { fcntl(stderr_pipe[0], F_SETFL, O_NONBLOCK) };
+        Some(Self { process, stdout: stdout_pipe[0], stderr: stderr_pipe[0], status: None })
+    }
+
+    fn read_pipe(file: c_int, buffer: &mut [u8]) -> usize {
+        let read = unsafe { read(file, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if read > 0 { read as usize } else { 0 }
+    }
+
+    pub fn read_stdout(&mut self, buffer: &mut [u8]) -> usize {
+        Self::read_pipe(self.stdout, buffer)
+    }
+
+    pub fn read_stderr(&mut self, buffer: &mut [u8]) -> usize {
+        Self::read_pipe(self.stderr, buffer)
+    }
+
+    pub fn try_wait(&mut self) -> Option<i32> {
+        if let Some(status) = self.status {
+            return Some(status);
+        }
+        let mut status = 0;
+        const WNOHANG: c_int = 1;
+        if unsafe { waitpid(self.process, &mut status, WNOHANG) } == self.process {
+            let code = if status & 0x7f == 0 {
+                (status >> 8) & 0xff
+            } else {
+                128 + (status & 0x7f)
+            };
+            self.status = Some(code);
+        }
+        self.status
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativeChild {
+    fn drop(&mut self) {
+        let _ = unsafe { close(self.stdout) };
+        let _ = unsafe { close(self.stderr) };
+        if self.status.is_none() {
+            let mut status = 0;
+            let _ = unsafe { waitpid(self.process, &mut status, 0) };
+        }
+    }
 }
 
 #[cfg(unix)]

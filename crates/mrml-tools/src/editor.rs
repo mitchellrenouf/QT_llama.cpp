@@ -3,7 +3,7 @@ use crate::diff::format_colorized_diff;
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Vector, mrml_print as print};
 use serde_json::json;
-use std::process::Command;
+use mrml_runtime::Command;
 
 pub struct ViewFileTool;
 impl Tool for ViewFileTool {
@@ -379,7 +379,7 @@ impl Tool for RunCommandTool {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let exit_code = output.status.code().unwrap_or(-1);
+        let exit_code = output.status.code();
 
         Ok(format!(
             "Exit Code: {}\n--- STDOUT ---\n{}\n--- STDERR ---\n{}",
