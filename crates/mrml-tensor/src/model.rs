@@ -9,9 +9,29 @@ use crate::sync as parking_lot;
 use core::cmp::Ordering as CompareOrdering;
 use core::ffi::CStr;
 use core::fmt::Write as _;
+#[cfg(feature = "cuda")]
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use mrml_runtime::{File, Instant, OrderedMap, Shared, Text, Vector};
+use mrml_runtime::{File, Instant, OrderedMap, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_format as format};
+
+#[cfg(feature = "std")]
+#[inline(always)]
+fn float_sqrt(value: f32) -> f32 { value.sqrt() }
+#[cfg(not(feature = "std"))]
+#[inline(always)]
+fn float_sqrt(value: f32) -> f32 { mrml_math::sqrt(value) }
+#[cfg(feature = "std")]
+#[inline(always)]
+fn float_exp(value: f32) -> f32 { value.exp() }
+#[cfg(not(feature = "std"))]
+#[inline(always)]
+fn float_exp(value: f32) -> f32 { mrml_math::exp(value) }
+#[cfg(feature = "std")]
+#[inline(always)]
+fn float_tanh(value: f32) -> f32 { value.tanh() }
+#[cfg(not(feature = "std"))]
+#[inline(always)]
+fn float_tanh(value: f32) -> f32 { mrml_math::tanh(value) }
 
 type Vec<T> = Vector<T>;
 
@@ -1120,7 +1140,7 @@ impl MrmlModel {
             return Ok(());
         }
 
-        let scale = (dim as f32).sqrt();
+        let scale = float_sqrt(dim as f32);
         for i in 0..dim {
             let pseudo = (((token_id as usize + i * 31) % 1000) as f32 / 1000.0 - 0.5) * 0.02;
             out[i] = pseudo * scale;
@@ -1148,7 +1168,7 @@ impl MrmlModel {
         let mut hidden = filled_vector(dim, 0.0f32);
         let _ = self.read_token_embedding(token_id, &mut hidden);
 
-        let scale = (dim as f32).sqrt();
+        let scale = float_sqrt(dim as f32);
         for val in hidden.iter_mut() {
             *val *= scale;
         }
@@ -1696,7 +1716,7 @@ impl MrmlModel {
             if !resident_ffn_prepared && layer.is_moe && !layer.ffn_gate_inp.is_empty() {
                 let mut router_tmp = vec![0.0f32; dim];
                 ops::rms_norm(&attn_res, None, 1e-6, &mut router_tmp);
-                let inv_sqrt_dim = 1.0f32 / (dim as f32).sqrt();
+                let inv_sqrt_dim = 1.0f32 / float_sqrt(dim as f32);
                 for i in 0..dim {
                     let scale = if i < layer.ffn_gate_inp_scale.len() {
                         layer.ffn_gate_inp_scale[i]
@@ -1736,13 +1756,15 @@ impl MrmlModel {
                         expert_logits[e] = (dot, e);
                     }
 
-                    expert_logits
-                        .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal));
+                    #[cfg(feature = "std")]
+                    expert_logits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal));
+                    #[cfg(not(feature = "std"))]
+                    expert_logits[..].sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal));
                     let max_l = expert_logits[0].0;
                     let mut sum_exp = 0.0f32;
                     for i in 0..8 {
                         top8_experts.push(expert_logits[i].1);
-                        let p = (expert_logits[i].0 - max_l).exp();
+                        let p = float_exp(expert_logits[i].0 - max_l);
                         ex_probs[i] = p;
                         sum_exp += p;
                     }
@@ -2746,7 +2768,7 @@ impl MrmlModel {
                 }
 
                 let dot = crate::quant::vec_dot_q8_0_q8_0(row, &hidden_q8, dim);
-                let mut score = 30.0 * (dot / 30.0).tanh();
+                let mut score = 30.0 * float_tanh(dot / 30.0);
                 if recent_tokens.contains(&(tid as i32)) {
                     score -= 3.5;
                 }
@@ -2775,7 +2797,7 @@ impl MrmlModel {
         let mut sum_exp = 0.0f32;
 
         for (logit, _) in &all_scored {
-            let p = ((logit - max_logit) / temp).exp();
+            let p = float_exp((logit - max_logit) / temp);
             probs.push(p);
             sum_exp += p;
         }

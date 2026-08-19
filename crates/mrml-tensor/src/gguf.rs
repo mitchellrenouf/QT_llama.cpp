@@ -192,7 +192,8 @@ impl GgufFile {
 
 fn read_gguf_string(reader: &mut File) -> Result<Text> {
     let len = read_u64_le(reader)? as usize;
-    let mut buf = vec![0u8; len];
+    let mut buf = Vector::with_capacity(len).expect("MRML allocation failed");
+    buf.resize(len, 0);
     reader.read_exact(&mut buf)?;
     let value = core::str::from_utf8(&buf)
         .map_err(|_| crate::anyhow::Error::msg("GGUF string is not valid UTF-8"))?;

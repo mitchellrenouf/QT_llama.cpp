@@ -1,7 +1,7 @@
 use crate::anyhow::Result;
 use crate::model::MrmlModel;
 use core::sync::atomic::{AtomicBool, Ordering};
-use mrml_runtime::{Instant, Shared, SpinMutex, Text, Vector};
+use mrml_runtime::{Instant, Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln};
 
 pub struct MrmlEngine {
     pub model: Shared<SpinMutex<MrmlModel>>,

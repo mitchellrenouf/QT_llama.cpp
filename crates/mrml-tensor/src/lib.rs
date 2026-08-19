@@ -8,10 +8,10 @@ extern crate std;
 pub mod anyhow;
 #[cfg(feature = "runtime")]
 pub mod device;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod engine;
 pub mod execution_plan;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod gguf;
 #[cfg(feature = "runtime")]
 pub mod graph;
@@ -19,7 +19,7 @@ pub mod graph;
 pub mod kv_cache;
 #[cfg(feature = "runtime")]
 pub mod mmap;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod model;
 #[cfg(feature = "runtime")]
 pub mod ops;
@@ -43,15 +43,15 @@ pub mod cuda;
 // Re-export common types
 #[cfg(feature = "runtime")]
 pub use device::{DeviceManager, DeviceType};
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use engine::MrmlEngine;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use gguf::{GgufFile, GgufTensorInfo, GgufValue};
 #[cfg(feature = "runtime")]
 pub use graph::{CGraph, Node, OpType};
 #[cfg(feature = "runtime")]
 pub use kv_cache::{KvCacheFormat, KvCacheManager, KvCacheRow, LayerKvCache, PrefixCache};
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use model::{ModelConfig, MrmlModel};
 #[cfg(feature = "runtime")]
 pub use speculative::SpeculativeDecoder;
