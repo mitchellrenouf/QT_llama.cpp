@@ -319,8 +319,11 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    mrml_tools::block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     let mut args = Args::parse();
     args.config.prompt = None;
     let mut agent = load_agent_with_residency_policy(&args)?;

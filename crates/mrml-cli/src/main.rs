@@ -3,8 +3,11 @@ use mrml_core::{AgentMode, Config, MrmlAgent};
 use mrml_terminal_style::Colorize;
 use std::io::{self, BufRead, Write};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    mrml_tools::block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     let config = Config::parse();
 
     println!(

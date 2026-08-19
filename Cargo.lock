@@ -46,7 +46,7 @@ dependencies = [
  "mrml-anyhow",
  "mrml-core",
  "mrml-terminal-style",
- "tokio",
+ "mrml-tools",
 ]
 
 [[package]]
@@ -75,7 +75,7 @@ dependencies = [
  "mrml-anyhow",
  "mrml-core",
  "mrml-json",
- "tokio",
+ "mrml-tools",
 ]
 
 [[package]]
