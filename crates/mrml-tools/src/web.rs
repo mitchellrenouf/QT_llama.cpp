@@ -194,7 +194,7 @@ impl Tool for WebSearchTool {
                     let after = &raw_href[pos + 5..];
                     let raw_encoded = after.split('&').next().unwrap_or(after);
                     urlencoding::decode(raw_encoded)
-                        .unwrap_or(std::borrow::Cow::Borrowed(raw_encoded))
+                        .unwrap_or(urlencoding::TextResult::Borrowed(raw_encoded))
                         .to_string()
                 } else if raw_href.starts_with("http") {
                     raw_href.to_string()

@@ -26,6 +26,14 @@ impl Text {
         Ok(text)
     }
 
+    pub fn try_from_utf8(bytes: Vector<u8>) -> Result<Self, Vector<u8>> {
+        if core::str::from_utf8(&bytes).is_ok() {
+            Ok(Self { bytes })
+        } else {
+            Err(bytes)
+        }
+    }
+
     pub fn try_push_str(&mut self, value: &str) -> Result<(), TryReserveError> {
         self.bytes.try_extend_from_slice(value.as_bytes())
     }

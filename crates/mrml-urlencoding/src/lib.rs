@@ -1,14 +1,7 @@
 #![no_std]
 
-#[cfg(feature = "alloc")]
-extern crate alloc;
-
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-#[cfg(feature = "alloc")]
-use alloc::string::String;
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+use core::ops::Deref;
+use mrml_runtime::{Text, Vector};
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
@@ -84,45 +77,77 @@ pub fn decode_to<'a>(input: &str, output: &'a mut [u8]) -> Result<&'a str, Decod
     core::str::from_utf8(&output[..written]).map_err(|_| DecodeToError::InvalidEncoding)
 }
 
-#[cfg(feature = "alloc")]
-pub fn encode(input: &str) -> Cow<'_, str> {
-    if input.bytes().all(is_unreserved) {
-        return Cow::Borrowed(input);
-    }
-    let mut output = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        if is_unreserved(byte) {
-            output.push(byte as char);
-        } else {
-            output.push('%');
-            output.push(HEX[(byte >> 4) as usize] as char);
-            output.push(HEX[(byte & 15) as usize] as char);
-        }
-    }
-    Cow::Owned(output)
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TextResult<'a> {
+    Borrowed(&'a str),
+    Owned(Text),
 }
 
-#[cfg(feature = "alloc")]
-pub fn decode(input: &str) -> Result<Cow<'_, str>, DecodeError> {
+impl Deref for TextResult<'_> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Owned(value) => value,
+        }
+    }
+}
+
+impl core::fmt::Display for TextResult<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(self)
+    }
+}
+
+impl PartialEq<&str> for TextResult<'_> {
+    fn eq(&self, other: &&str) -> bool {
+        &**self == *other
+    }
+}
+
+pub fn encode(input: &str) -> TextResult<'_> {
+    if input.bytes().all(is_unreserved) {
+        return TextResult::Borrowed(input);
+    }
+    let mut output = Text::with_capacity(encoded_len(input)).expect("MRML allocation failed");
+    for byte in input.bytes() {
+        if is_unreserved(byte) {
+            output
+                .try_push(byte as char)
+                .expect("MRML allocation failed");
+        } else {
+            output.try_push('%').expect("MRML allocation failed");
+            output
+                .try_push(HEX[(byte >> 4) as usize] as char)
+                .expect("MRML allocation failed");
+            output
+                .try_push(HEX[(byte & 15) as usize] as char)
+                .expect("MRML allocation failed");
+        }
+    }
+    TextResult::Owned(output)
+}
+
+pub fn decode(input: &str) -> Result<TextResult<'_>, DecodeError> {
     if !input.as_bytes().contains(&b'%') {
-        return Ok(Cow::Borrowed(input));
+        return Ok(TextResult::Borrowed(input));
     }
     let bytes = input.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
+    let mut output = Vector::with_capacity(decoded_len(input)?).map_err(|_| DecodeError)?;
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' {
             let high = hex(*bytes.get(index + 1).ok_or(DecodeError)?)?;
             let low = hex(*bytes.get(index + 2).ok_or(DecodeError)?)?;
-            output.push(high << 4 | low);
+            output.try_push(high << 4 | low).map_err(|_| DecodeError)?;
             index += 3;
         } else {
-            output.push(bytes[index]);
+            output.try_push(bytes[index]).map_err(|_| DecodeError)?;
             index += 1;
         }
     }
-    String::from_utf8(output)
-        .map(Cow::Owned)
+    Text::try_from_utf8(output)
+        .map(TextResult::Owned)
         .map_err(|_| DecodeError)
 }
 
@@ -219,16 +244,17 @@ mod tests {
         assert_eq!(decoded_len("broken%"), Err(DecodeError));
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn preserves_borrowing_and_round_trips_unicode() {
-        assert!(matches!(encode("solar-panels"), Cow::Borrowed(_)));
-        assert!(matches!(decode("solar-panels"), Ok(Cow::Borrowed(_))));
+        assert!(matches!(encode("solar-panels"), TextResult::Borrowed(_)));
+        assert!(matches!(
+            decode("solar-panels"),
+            Ok(TextResult::Borrowed(_))
+        ));
         let encoded = encode("solar panels/效率 + cost");
         assert_eq!(decode(&encoded).unwrap(), "solar panels/效率 + cost");
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn rejects_malformed_and_non_utf8_sequences() {
         assert!(decode("%ZZ").is_err());
