@@ -1,7 +1,9 @@
 use crate::Tool;
 use crate::diff::format_colorized_diff;
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Vector, mrml_print as print};
+use mrml_runtime::{Text, Vector, mrml_print as print};
+#[cfg(not(feature = "std"))]
+use mrml_runtime::{Text as String, Vector as Vec, mrml_format as format};
 use serde_json::json;
 use mrml_runtime::Command;
 
@@ -305,7 +307,7 @@ impl Tool for GrepSearchTool {
                     if pattern.is_match(line) {
                         matches.push(format!("{}:{}: {}", rel, line_no + 1, line.trim()));
                         if matches.len() == 50 {
-                            matches.push("... (results truncated to 50 matches)".to_string());
+                            matches.push("... (results truncated to 50 matches)".into());
                             break;
                         }
                     }
@@ -319,7 +321,12 @@ impl Tool for GrepSearchTool {
         if matches.is_empty() {
             Ok(format!("No matches found for query '{}'", query_str))
         } else {
-            Ok(matches.join("\n"))
+            let mut output = String::new();
+            for (index, item) in matches.iter().enumerate() {
+                if index != 0 { output.push('\n'); }
+                output.push_str(item);
+            }
+            Ok(output)
         }
     }
 }
@@ -377,8 +384,8 @@ impl Tool for RunCommandTool {
             .current_dir(exec_dir.as_str())
             .output()?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = Text::from_utf8_lossy(&output.stdout);
+        let stderr = Text::from_utf8_lossy(&output.stderr);
         let exit_code = output.status.code();
 
         Ok(format!(
@@ -402,11 +409,12 @@ impl Tool for RunCommandTool {
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicU64, Ordering};
+    use std::format as std_format;
 
     static WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn test_workspace() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().join(std_format!(
             "mrml-tools-editor-{}-{}-{}",
             std::process::id(),
             crate::platform::unix_timestamp_millis(),

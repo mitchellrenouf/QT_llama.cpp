@@ -9,7 +9,7 @@ pub mod fixed_encoding;
 pub mod browser;
 #[cfg(feature = "runtime")]
 pub mod desktop;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod editor;
 #[cfg(feature = "runtime")]
 pub mod git;

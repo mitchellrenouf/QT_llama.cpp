@@ -174,15 +174,22 @@ impl Text {
     }
 
     pub fn replace(&self, needle: &str, replacement: &str) -> Self {
+        self.replacen(needle, replacement, usize::MAX)
+    }
+
+    pub fn replacen(&self, needle: &str, replacement: &str, count: usize) -> Self {
         if needle.is_empty() {
             return self.clone();
         }
         let mut output = Self::with_capacity(self.len()).expect("MRML allocation failed");
         let mut remainder = self.as_str();
-        while let Some(index) = remainder.find(needle) {
+        let mut replaced = 0usize;
+        while replaced < count {
+            let Some(index) = remainder.find(needle) else { break };
             output.push_str(&remainder[..index]);
             output.push_str(replacement);
             remainder = &remainder[index + needle.len()..];
+            replaced += 1;
         }
         output.push_str(remainder);
         output
@@ -289,6 +296,8 @@ mod tests {
     #[test]
     fn replaces_substrings_without_rust_alloc() {
         assert_eq!(Text::from("a<>b<>c").replace("<>", "-"), "a-b-c");
+        assert_eq!(Text::from("a<>b<>c").replacen("<>", "-", 1), "a-b<>c");
+        assert_eq!(Text::from("a<>b").replacen("<>", "-", 0), "a<>b");
     }
 
     #[test]
