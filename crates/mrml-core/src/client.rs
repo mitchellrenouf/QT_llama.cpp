@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
-use mrml_runtime::{Instant, Shared};
+use mrml_runtime::{Instant, Shared, Text, Vector};
 use std::path::PathBuf;
 
 use crate::config::Config;
@@ -15,10 +15,10 @@ pub type ToolFunction = FunctionDefinition;
 
 #[derive(Debug, Clone)]
 pub struct ChatCompletionRequest {
-    pub model: String,
-    pub messages: Vec<ChatMessage>,
-    pub tools: Option<Vec<ToolDefinition>>,
-    pub tool_choice: Option<String>,
+    pub model: Text,
+    pub messages: Vector<ChatMessage>,
+    pub tools: Option<Vector<ToolDefinition>>,
+    pub tool_choice: Option<Text>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub stream: Option<bool>,
@@ -28,13 +28,13 @@ pub struct ChatCompletionRequest {
 pub struct ChatCompletionChoice {
     pub index: usize,
     pub message: ChatMessage,
-    pub finish_reason: Option<String>,
+    pub finish_reason: Option<Text>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ChatCompletionResponse {
-    pub id: String,
-    pub choices: Vec<ChatCompletionChoice>,
+    pub id: Text,
+    pub choices: Vector<ChatCompletionChoice>,
 }
 
 #[allow(dead_code)]
@@ -472,12 +472,16 @@ impl MrmlClient {
             .await?;
 
         Ok(ChatCompletionResponse {
-            id: format!("chatcmpl-{}", crate::platform::unix_timestamp_millis()),
-            choices: vec![ChatCompletionChoice {
+            id: Text::from(
+                format!("chatcmpl-{}", crate::platform::unix_timestamp_millis()).as_str(),
+            ),
+            choices: [ChatCompletionChoice {
                 index: 0,
                 message: msg,
-                finish_reason: Some("stop".to_string()),
-            }],
+                finish_reason: Some("stop".into()),
+            }]
+            .into_iter()
+            .collect(),
         })
     }
 

@@ -338,8 +338,8 @@ impl MrmlAgent {
         }
 
         let req = crate::client::ChatCompletionRequest {
-            model: self.config.model.clone(),
-            messages: summary_req_msgs,
+            model: self.config.model.as_str().into(),
+            messages: summary_req_msgs.into_iter().collect(),
             tools: None,
             tool_choice: None,
             temperature: Some(0.3),
@@ -547,9 +547,9 @@ impl MrmlAgent {
             }
 
             let req = crate::client::ChatCompletionRequest {
-                model: self.config.model.clone(),
-                messages: self.history.clone(),
-                tools: Some(tool_defs.clone()),
+                model: self.config.model.as_str().into(),
+                messages: self.history.iter().cloned().collect(),
+                tools: Some(tool_defs.iter().cloned().collect()),
                 tool_choice: None,
                 temperature: Some(self.config.temperature),
                 max_tokens: Some(self.config.max_tokens),
@@ -742,9 +742,9 @@ impl MrmlAgent {
             }
 
             let req = crate::client::ChatCompletionRequest {
-                model: self.config.model.clone(),
-                messages: self.history.clone(),
-                tools: Some(tool_defs.clone()),
+                model: self.config.model.as_str().into(),
+                messages: self.history.iter().cloned().collect(),
+                tools: Some(tool_defs.iter().cloned().collect()),
                 tool_choice: None,
                 temperature: Some(self.config.temperature),
                 max_tokens: Some(self.config.max_tokens),

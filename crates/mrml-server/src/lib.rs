@@ -221,8 +221,10 @@ fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Resul
         let req = ChatCompletionRequest {
             model: chat_req
                 .model
-                .unwrap_or_else(|| "gemma-4-26B-A4B-it".to_string()),
-            messages,
+                .unwrap_or_else(|| "gemma-4-26B-A4B-it".to_string())
+                .as_str()
+                .into(),
+            messages: messages.into_iter().collect(),
             tools: None,
             stream: Some(stream_mode),
             temperature: chat_req.temperature,
