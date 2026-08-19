@@ -2,7 +2,6 @@ use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::sync::atomic::{AtomicBool, Ordering};
 use serde_json::json;
-use std::path::Path;
 use std::process::Command;
 
 pub static SPEECH_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -93,17 +92,14 @@ impl Tool for RecordAudioTool {
 
     async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let duration = args["duration_secs"].as_i64().unwrap_or(5);
-        let workspace_root = Path::new(workspace_root);
-        let audio_dir = workspace_root.join(".mrml").join("audio");
-        mrml_runtime::create_dir_all(
-            audio_dir
-                .to_str()
-                .ok_or_else(|| anyhow!("Audio directory is not valid UTF-8"))?,
-        )?;
+        let audio_dir = mrml_runtime::join_path(
+            &mrml_runtime::join_path(workspace_root, ".mrml"),
+            "audio",
+        );
+        mrml_runtime::create_dir_all(&audio_dir)?;
 
         let timestamp = crate::platform::local_timestamp_string();
-        let file_path = audio_dir.join(format!("audio_{}.wav", timestamp));
-        let path_str = file_path.to_string_lossy().to_string();
+        let path_str = mrml_runtime::join_path(&audio_dir, &format!("audio_{}.wav", timestamp));
 
         let mut recorded = false;
         if crate::desktop::is_executable_in_path("ffmpeg").is_some() {
@@ -120,7 +116,7 @@ impl Tool for RecordAudioTool {
                     "1",
                     "-ar",
                     "44100",
-                    &path_str,
+                    path_str.as_str(),
                 ])
                 .output();
             if let Ok(o) = out {
@@ -132,7 +128,7 @@ impl Tool for RecordAudioTool {
 
         if !recorded && crate::desktop::is_executable_in_path("arecord").is_some() {
             let out = Command::new("arecord")
-                .args(["-d", &duration.to_string(), "-f", "cd", &path_str])
+                .args(["-d", &duration.to_string(), "-f", "cd", path_str.as_str()])
                 .output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&path_str) {
@@ -152,9 +148,7 @@ impl Tool for RecordAudioTool {
         }
 
         let audio_bytes = mrml_runtime::read_file(
-            file_path
-                .to_str()
-                .ok_or_else(|| anyhow!("Audio path is not valid UTF-8"))?,
+            &path_str,
         )?;
         let base64_str = crate::encoding::base64_encode(&audio_bytes);
 

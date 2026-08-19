@@ -1,21 +1,20 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Vector, remove_file, rename_file};
+use mrml_runtime::{Text, Vector, remove_file, rename_file};
 use serde_json::json;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub fn is_executable_in_path(cmd: &str) -> Option<PathBuf> {
+pub fn is_executable_in_path(cmd: &str) -> Option<Text> {
     if let Some(path_var) = mrml_runtime::environment_variable("PATH") {
         let separator = if cfg!(windows) { ';' } else { ':' };
         for dir in path_var.split(separator) {
-            let p = Path::new(dir).join(cmd);
-            if p.to_str().is_some_and(crate::platform::path_is_file) {
+            let p = mrml_runtime::join_path(dir, cmd);
+            if crate::platform::path_is_file(&p) {
                 return Some(p);
             }
             if cfg!(windows) && !cmd.ends_with(".exe") {
-                let p_exe = Path::new(dir).join(format!("{}.exe", cmd));
-                if p_exe.to_str().is_some_and(crate::platform::path_is_file) {
+                let p_exe = mrml_runtime::join_path(dir, &format!("{}.exe", cmd));
+                if crate::platform::path_is_file(&p_exe) {
                     return Some(p_exe);
                 }
             }
@@ -42,25 +41,21 @@ impl Tool for TakeScreenshotTool {
     }
 
     async fn execute(&self, workspace_root: &str, _args: serde_json::Value) -> Result<String> {
-        let workspace_root = Path::new(workspace_root);
-        let shot_dir = workspace_root.join(".mrml").join("screenshots");
-        mrml_runtime::create_dir_all(
-            shot_dir
-                .to_str()
-                .ok_or_else(|| anyhow!("Screenshot directory is not valid UTF-8"))?,
-        )?;
+        let shot_dir = mrml_runtime::join_path(
+            &mrml_runtime::join_path(workspace_root, ".mrml"),
+            "screenshots",
+        );
+        mrml_runtime::create_dir_all(&shot_dir)?;
 
         let timestamp = crate::platform::local_timestamp_string();
-        let file_path = shot_dir.join(format!("screenshot_{}.jpg", timestamp));
-        let path_str = file_path.to_string_lossy().to_string();
+        let path_str = mrml_runtime::join_path(&shot_dir, &format!("screenshot_{}.jpg", timestamp));
 
-        let temp_png = shot_dir.join(format!("temp_screenshot_{}.png", timestamp));
-        let temp_png_str = temp_png.to_string_lossy().to_string();
+        let temp_png_str = mrml_runtime::join_path(&shot_dir, &format!("temp_screenshot_{}.png", timestamp));
 
         let mut captured = false;
         if is_executable_in_path("spectacle").is_some() {
             let out = Command::new("spectacle")
-                .args(["-b", "-n", "-o", &temp_png_str])
+                .args(["-b", "-n", "-o", temp_png_str.as_str()])
                 .output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
@@ -70,7 +65,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("grim").is_some() {
-            let out = Command::new("grim").arg(&temp_png_str).output();
+            let out = Command::new("grim").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -79,7 +74,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("scrot").is_some() {
-            let out = Command::new("scrot").arg(&temp_png_str).output();
+            let out = Command::new("scrot").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -88,7 +83,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("maim").is_some() {
-            let out = Command::new("maim").arg(&temp_png_str).output();
+            let out = Command::new("maim").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -98,7 +93,7 @@ impl Tool for TakeScreenshotTool {
 
         if !captured && is_executable_in_path("import").is_some() {
             let out = Command::new("import")
-                .args(["-window", "root", &temp_png_str])
+                .args(["-window", "root", temp_png_str.as_str()])
                 .output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
@@ -118,12 +113,12 @@ impl Tool for TakeScreenshotTool {
                 .args([
                     "-y",
                     "-i",
-                    &temp_png_str,
+                    temp_png_str.as_str(),
                     "-vf",
                     "scale='min(1024,iw)':-2",
                     "-q:v",
                     "4",
-                    &path_str,
+                    path_str.as_str(),
                 ])
                 .output();
             let _ = remove_file(&temp_png_str);
@@ -136,9 +131,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         let img_bytes = mrml_runtime::read_file(
-            file_path
-                .to_str()
-                .ok_or_else(|| anyhow!("Screenshot path is not valid UTF-8"))?,
+            &path_str,
         )?;
         let base64_str = crate::encoding::base64_encode(&img_bytes);
         let data_uri = format!("data:image/jpeg;base64,{}", base64_str);

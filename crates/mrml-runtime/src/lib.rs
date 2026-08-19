@@ -22,7 +22,7 @@ mod vector;
 pub use channel::{Receiver, RecvError, SendError, Sender, blocking_channel, sync_channel};
 pub use args::command_arguments;
 pub use env::environment_variable;
-pub use file::{DirectoryEntry, File, FileError, canonical_path, create_dir_all, join_path, path_exists, path_is_absolute, path_is_directory, path_is_file, read_directory, read_file, read_file_text, remove_dir_all, remove_file, rename_file, write_file};
+pub use file::{DirectoryEntry, File, FileError, canonical_path, create_dir_all, join_path, parent_path, path_exists, path_is_absolute, path_is_directory, path_is_file, read_directory, read_file, read_file_text, remove_dir_all, remove_file, rename_file, write_file};
 pub use map::OrderedMap;
 pub use owned::Owned;
 pub use output::{write_stderr, write_stdout};

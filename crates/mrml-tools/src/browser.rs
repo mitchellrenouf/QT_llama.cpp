@@ -1,12 +1,11 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::time::Duration;
-use mrml_runtime::{Instant, OnceCell, Shared, SpinMutex};
+use mrml_runtime::{Instant, OnceCell, Shared, SpinMutex, Text, Vector};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    path::PathBuf,
     process::{Child, Command, Stdio},
 };
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
@@ -137,7 +136,7 @@ pub struct EdgeController {
     port: u16,
     browser: CdpSocket,
     page: Option<CdpSocket>,
-    profile: PathBuf,
+    profile: Text,
 }
 impl EdgeController {
     pub fn ensure_latest_and_launch() -> Result<Self> {
@@ -149,30 +148,25 @@ impl EdgeController {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         drop(listener);
-        let profile = PathBuf::from(mrml_runtime::temporary_directory().as_str()).join(format!(
-            "mrml-edge-{}-{}",
-            mrml_runtime::process_id(),
-            port
-        ));
-        mrml_runtime::create_dir_all(
-            profile
-                .to_str()
-                .ok_or_else(|| anyhow!("Browser profile path is not valid UTF-8"))?,
-        )?;
-        let child = Command::new(&exe)
+        let profile = mrml_runtime::join_path(
+            &mrml_runtime::temporary_directory(),
+            &format!("mrml-edge-{}-{}", mrml_runtime::process_id(), port),
+        );
+        mrml_runtime::create_dir_all(&profile)?;
+        let child = Command::new(exe.as_str())
             .args([
                 "--headless=new",
                 "--no-first-run",
                 "--no-default-browser-check",
             ])
             .arg(format!("--remote-debugging-port={}", port))
-            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(format!("--user-data-dir={}", profile))
             .arg("about:blank")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| anyhow!("Failed to launch '{}': {}", exe.display(), e))?;
+            .map_err(|e| anyhow!("Failed to launch '{}': {}", exe, e))?;
         let deadline = Instant::now();
         while deadline.elapsed() < Duration::from_secs(10) {
             if let Ok(version) = http_json(port, "GET", "/json/version") {
@@ -273,20 +267,17 @@ impl Drop for EdgeController {
         let _ = self.browser.command("Browser.close", json!({}));
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(profile) = self.profile.to_str() {
-            let _ = mrml_runtime::remove_dir_all(profile);
-        }
+        let _ = mrml_runtime::remove_dir_all(&self.profile);
     }
 }
 
-fn find_browser() -> Option<PathBuf> {
+fn find_browser() -> Option<Text> {
     if let Some(p) = mrml_runtime::environment_variable("BROWSER_EXE")
-        .map(|value| PathBuf::from(value.as_str()))
-        .filter(|p| p.to_str().is_some_and(crate::platform::path_is_file))
+        .filter(|p| crate::platform::path_is_file(p))
     {
         return Some(p);
     }
-    let mut c = Vec::new();
+    let mut c = Vector::new();
     for root in [
         mrml_runtime::environment_variable("ProgramFiles(x86)"),
         mrml_runtime::environment_variable("ProgramFiles"),
@@ -295,17 +286,16 @@ fn find_browser() -> Option<PathBuf> {
     .into_iter()
     .flatten()
     {
-        let r = PathBuf::from(root.as_str());
-        c.push(r.join("Microsoft/Edge/Application/msedge.exe"));
-        c.push(r.join("Google/Chrome/Application/chrome.exe"))
+        c.push(mrml_runtime::join_path(&root, "Microsoft/Edge/Application/msedge.exe"));
+        c.push(mrml_runtime::join_path(&root, "Google/Chrome/Application/chrome.exe"))
     }
     c.extend([
-        PathBuf::from("/usr/bin/microsoft-edge"),
-        PathBuf::from("/usr/bin/google-chrome"),
-        PathBuf::from("/usr/bin/chromium"),
+        "/usr/bin/microsoft-edge".into(),
+        "/usr/bin/google-chrome".into(),
+        "/usr/bin/chromium".into(),
     ]);
     c.into_iter()
-        .find(|p| p.to_str().is_some_and(crate::platform::path_is_file))
+        .find(|p| crate::platform::path_is_file(p))
 }
 fn read_http_header(s: &mut TcpStream) -> Result<String> {
     let mut v = Vec::new();
@@ -440,22 +430,16 @@ impl Tool for BrowserScreenshotTool {
             .to_string();
         let bytes = crate::encoding::base64_decode(&data)
             .map_err(|e| anyhow!("Invalid screenshot: {}", e))?;
-        let dir = PathBuf::from(r).join(".mrml/screenshots");
-        mrml_runtime::create_dir_all(
-            dir.to_str()
-                .ok_or_else(|| anyhow!("Screenshot directory is not valid UTF-8"))?,
-        )?;
-        let p = dir.join(format!(
+        let dir = mrml_runtime::join_path(r, ".mrml/screenshots");
+        mrml_runtime::create_dir_all(&dir)?;
+        let p = mrml_runtime::join_path(&dir, &format!(
             "browser_screenshot_{}.jpg",
             crate::platform::local_timestamp_string()
         ));
-        mrml_runtime::write_file(
-            p.to_str().ok_or_else(|| anyhow!("Screenshot path is not valid UTF-8"))?,
-            &bytes,
-        )?;
+        mrml_runtime::write_file(&p, &bytes)?;
         Ok(format!(
             "Screenshot captured at '{}' ({} bytes).\nDATA_URI:data:image/jpeg;base64,{}",
-            p.display(),
+            p,
             bytes.len(),
             data
         ))

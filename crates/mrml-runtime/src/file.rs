@@ -136,6 +136,16 @@ pub fn join_path(base: &str, child: &str) -> Text {
     joined
 }
 
+pub fn parent_path(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let split = trimmed.rfind(['/', '\\'])?;
+    if split == 0 {
+        Some(&trimmed[..1])
+    } else {
+        Some(&trimmed[..split])
+    }
+}
+
 pub fn canonical_path(path: &str) -> Result<Text, FileError> {
     #[cfg(windows)]
     {
