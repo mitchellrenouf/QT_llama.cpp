@@ -395,7 +395,7 @@ impl MrmlClient {
     }
 
     pub fn with_config(config: &Config) -> Self {
-        let explicit_model = PathBuf::from(&config.model);
+        let explicit_model = PathBuf::from(config.model.as_str());
         let model_path = if explicit_model.is_file() {
             Some(explicit_model)
         } else if let Some(hf_spec_str) = config.hf.as_deref().filter(|s| !s.trim().is_empty()) {

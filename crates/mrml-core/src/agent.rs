@@ -87,7 +87,10 @@ impl MrmlAgent {
         let system_prompt = if let Some(custom) = &config.system_prompt {
             custom.clone()
         } else {
-            config.get_system_prompt(config.mode, &workspace_rules.combined_instructions)
+            config
+                .get_system_prompt(config.mode, &workspace_rules.combined_instructions)
+                .as_str()
+                .into()
         };
 
         let history = [ChatMessage::system(system_prompt)].into_iter().collect();
@@ -216,7 +219,7 @@ impl MrmlAgent {
             self.config.system_prompt.as_deref().map(Into::into),
             crate::client::thinking_enabled_for_mode(self.config.mode),
         );
-        self.config.model = model_path.display().to_string();
+        self.config.model = model_path.display().to_string().as_str().into();
         Ok(())
     }
 
@@ -227,7 +230,7 @@ impl MrmlAgent {
         let spec = crate::hf::HfModelSpec::parse(spec_str)?;
         let files = crate::hf::resolve_or_fetch_hf_model(&spec, progress_cb).await?;
         self.reload_model(&files.primary_entry_file)?;
-        self.config.hf = Some(spec_str.to_string());
+        self.config.hf = Some(spec_str.into());
         Ok(())
     }
 

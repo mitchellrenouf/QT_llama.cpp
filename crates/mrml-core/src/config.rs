@@ -1,37 +1,39 @@
 pub use crate::modes::{AgentMode, BackendChoice};
 use core::str::FromStr;
+use mrml_runtime::{Text, Vector};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub server_url: String,
-    pub api_key: String,
-    pub model: String,
-    pub hf: Option<String>,
+    pub server_url: Text,
+    pub api_key: Text,
+    pub model: Text,
+    pub hf: Option<Text>,
     pub mode: AgentMode,
     pub workspace_root: PathBuf,
     pub temperature: f32,
     pub max_tokens: u32,
     pub ctx_size: u32,
-    pub cache_type_k: String,
-    pub cache_type_v: String,
+    pub cache_type_k: Text,
+    pub cache_type_v: Text,
     pub max_context_tokens: usize,
     pub auto_approve: bool,
-    pub system_prompt: Option<String>,
-    pub prompt: Option<String>,
+    pub system_prompt: Option<Text>,
+    pub prompt: Option<Text>,
     pub n_gpu_layers: Option<i32>,
     pub backend: BackendChoice,
-    pub browser_exe: Option<String>,
-    pub browser_profile: Option<String>,
+    pub browser_exe: Option<Text>,
+    pub browser_profile: Option<Text>,
     pub serve: bool,
     pub port: u16,
-    pub mcp_servers: Vec<String>,
+    pub mcp_servers: Vector<Text>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        fn env(name: &str, fallback: &str) -> String {
-            std::env::var(name).unwrap_or_else(|_| fallback.to_owned())
+        fn env(name: &str, fallback: &str) -> Text {
+            let value = std::env::var(name).unwrap_or_else(|_| fallback.to_owned());
+            value.as_str().into()
         }
         Self {
             server_url: env("MRML_SERVER_URL", "http://localhost:8080/v1"),
@@ -39,7 +41,7 @@ impl Default for Config {
             model: env("MRML_MODEL", "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0"),
             hf: Some(env("HF_MODEL", "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0")),
             mode: AgentMode::General,
-            workspace_root: PathBuf::from(env("WORKSPACE_ROOT", ".")),
+            workspace_root: PathBuf::from(env("WORKSPACE_ROOT", ".").as_str()),
             temperature: 0.7,
             max_tokens: 8192,
             ctx_size: std::env::var("MRML_CTX_SIZE")
@@ -59,11 +61,15 @@ impl Default for Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(BackendChoice::Auto),
-            browser_exe: std::env::var("BROWSER_EXE").ok(),
-            browser_profile: std::env::var("BROWSER_PROFILE").ok(),
+            browser_exe: std::env::var("BROWSER_EXE")
+                .ok()
+                .map(|value| Text::from(value.as_str())),
+            browser_profile: std::env::var("BROWSER_PROFILE")
+                .ok()
+                .map(|value| Text::from(value.as_str())),
             serve: false,
             port: 8080,
-            mcp_servers: Vec::new(),
+            mcp_servers: Vector::new(),
         }
     }
 }
@@ -122,17 +128,21 @@ impl Config {
                     .ok_or_else(|| format!("{name} requires a value"))
             };
             match name {
-                "--server-url" => config.server_url = value()?,
-                "--api-key" => config.api_key = value()?,
-                "--model" => config.model = value()?,
-                "--hf" => config.hf = Some(value()?),
+                "--server-url" => config.server_url = value()?.as_str().into(),
+                "--api-key" => config.api_key = value()?.as_str().into(),
+                "--model" => config.model = value()?.as_str().into(),
+                "--hf" => config.hf = Some(value()?.as_str().into()),
                 "--mode" => config.mode = parse_value("--mode", &value()?)?,
                 "--workspace-root" => config.workspace_root = value()?.into(),
                 "--temperature" => config.temperature = parse_value(name, &value()?)?,
                 "--max-tokens" => config.max_tokens = parse_value(name, &value()?)?,
                 "--ctx-size" => config.ctx_size = parse_value(name, &value()?)?,
-                "--cache-type-k" => config.cache_type_k = parse_cache_type(name, value()?)?,
-                "--cache-type-v" => config.cache_type_v = parse_cache_type(name, value()?)?,
+                "--cache-type-k" => {
+                    config.cache_type_k = parse_cache_type(name, value()?)?.as_str().into()
+                }
+                "--cache-type-v" => {
+                    config.cache_type_v = parse_cache_type(name, value()?)?.as_str().into()
+                }
                 "--max-context-tokens" => config.max_context_tokens = parse_value(name, &value()?)?,
                 "--auto-approve" => {
                     config.auto_approve = if let Some(value) = inline.as_deref() {
@@ -148,15 +158,15 @@ impl Config {
                     };
                 }
                 "--no-auto-approve" => config.auto_approve = false,
-                "--system-prompt" => config.system_prompt = Some(value()?),
-                "--prompt" | "-p" => config.prompt = Some(value()?),
+                "--system-prompt" => config.system_prompt = Some(value()?.as_str().into()),
+                "--prompt" | "-p" => config.prompt = Some(value()?.as_str().into()),
                 "--gpu-layers" => config.n_gpu_layers = Some(parse_value(name, &value()?)?),
                 "--backend" => config.backend = parse_value("--backend", &value()?)?,
-                "--browser-exe" => config.browser_exe = Some(value()?),
-                "--browser-profile" => config.browser_profile = Some(value()?),
+                "--browser-exe" => config.browser_exe = Some(value()?.as_str().into()),
+                "--browser-profile" => config.browser_profile = Some(value()?.as_str().into()),
                 "--serve" => config.serve = true,
                 "--port" => config.port = parse_value(name, &value()?)?,
-                "--mcp-server" => config.mcp_servers.push(value()?),
+                "--mcp-server" => config.mcp_servers.push(value()?.as_str().into()),
                 _ => return Err(format!("unknown argument '{raw}'")),
             }
         }
@@ -219,7 +229,14 @@ mod parser_tests {
         assert_eq!(config.ctx_size, 4096);
         assert_eq!(config.backend, BackendChoice::Cuda);
         assert!(!config.auto_approve);
-        assert_eq!(config.mcp_servers, ["one", "two"]);
+        assert_eq!(
+            config
+                .mcp_servers
+                .iter()
+                .map(Text::as_str)
+                .collect::<std::vec::Vec<_>>(),
+            ["one", "two"]
+        );
     }
 
     #[test]
