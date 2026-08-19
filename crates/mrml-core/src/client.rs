@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
-use mrml_runtime::{Instant, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
+use mrml_runtime::{Instant, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
 
 type String = Text;
 type Vec<T> = Vector<T>;
@@ -281,9 +281,9 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
             let args_str = if args.is_string() {
-                args.as_str().unwrap().to_string()
+                args.as_str().unwrap().into()
             } else {
-                args.to_string()
+                serde_json::stringify(&args)
             };
             return Some(ToolCall {
                 id: format!("call_{}", crate::platform::unix_timestamp_millis())
@@ -406,7 +406,7 @@ impl MrmlClient {
         let engine = if let Some(path) = model_path {
             println!("Loading in-process GGUF model: {}", path);
             let n_layers = config.n_gpu_layers.unwrap_or(-1);
-            let backend_str = config.backend.to_string();
+            let backend_str = format!("{}", config.backend);
             match ModelEngine::new(
                 &path,
                 n_layers,
@@ -841,9 +841,9 @@ impl MrmlClient {
                                 .cloned()
                                 .unwrap_or(serde_json::json!({}));
                             let args_str = if args.is_string() {
-                                args.as_str().unwrap().to_string()
+                                args.as_str().unwrap().into()
                             } else {
-                                args.to_string()
+                                serde_json::stringify(&args)
                             };
                             let tc = ToolCall {
                                 id: format!("call_{}", crate::platform::unix_timestamp_millis())
@@ -1005,7 +1005,7 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
 
     if let Ok(spec) = crate::hf::HfModelSpec::parse(model_arg) {
         let repo_slug = format!("models--{}--{}", spec.user, spec.model);
-        let target_quant = spec.quant.to_lowercase();
+        let target_quant = spec.quant.to_ascii_lowercase();
 
         // 1. Search for matching repo slug in Hugging Face cache directories
         for root in &cache_roots {
@@ -1013,17 +1013,17 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
             if mrml_runtime::path_is_directory(&repo_dir) {
                 let mut best_match = None;
                 for path in crate::fs_walk::paths(&repo_dir) {
-                    let name = path
+                    let name = Text::from(path
                         .rsplit(['/', '\\'])
                         .next()
-                        .unwrap_or(&path)
-                        .to_lowercase();
+                        .unwrap_or(&path))
+                        .to_ascii_lowercase();
                     if name.ends_with(".gguf")
                         && !name.ends_with(".part")
                         && !name.contains("mmproj")
                         && !name.contains("mtp")
                     {
-                        if name.contains(&target_quant) {
+                        if name.contains(target_quant.as_str()) {
                             return Some(path);
                         }
                         if best_match.is_none() {
@@ -1040,17 +1040,17 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
             let legacy_dir = mrml_runtime::join_path(root, &format!("{}_{}", spec.user, spec.model));
             if mrml_runtime::path_is_directory(&legacy_dir) {
                 for path in crate::fs_walk::paths(&legacy_dir) {
-                    let name = path
+                    let name = Text::from(path
                         .rsplit(['/', '\\'])
                         .next()
-                        .unwrap_or(&path)
-                        .to_lowercase();
+                        .unwrap_or(&path))
+                        .to_ascii_lowercase();
                     if name.ends_with(".gguf")
                         && !name.ends_with(".part")
                         && !name.contains("mmproj")
                         && !name.contains("mtp")
                     {
-                        if name.contains(&target_quant) {
+                        if name.contains(target_quant.as_str()) {
                             return Some(path);
                         }
                     }
@@ -1062,11 +1062,11 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
     // 2. Scan whole cache roots for matching model file
     for root in &cache_roots {
         for path in crate::fs_walk::paths(root) {
-            let name = path
+            let name = Text::from(path
                 .rsplit(['/', '\\'])
                 .next()
-                .unwrap_or(&path)
-                .to_lowercase();
+                .unwrap_or(&path))
+                .to_ascii_lowercase();
             if name.ends_with(".gguf")
                 && !name.ends_with(".part")
                 && !name.contains("mmproj")
@@ -1115,6 +1115,7 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format as std_format;
 
     #[test]
     fn thinking_is_reserved_for_automatic_mode() {
@@ -1129,7 +1130,7 @@ mod tests {
 
     #[test]
     fn test_explicit_model_path_wins_over_hf_default() {
-        let path = std::env::temp_dir().join(format!("mrml-explicit-{}.gguf", std::process::id()));
+        let path = std::env::temp_dir().join(std_format!("mrml-explicit-{}.gguf", std::process::id()));
         std::fs::write(&path, b"test").unwrap();
         assert_eq!(
             find_model_file(path.to_str().unwrap()).as_deref(),

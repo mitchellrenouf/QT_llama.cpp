@@ -7,11 +7,11 @@ pub mod modes;
 
 #[cfg(feature = "std")]
 pub mod agent;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod client;
 #[cfg(feature = "runtime")]
 pub mod config;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod hf;
 #[cfg(feature = "runtime")]
 pub mod rules;

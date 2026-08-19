@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Text, Vector, mrml_println as println, rename_file};
+use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println, rename_file};
 use mrml_runtime::Command;
 
 fn native_file_len(path: &str) -> Option<u64> {
@@ -143,7 +143,7 @@ impl HfModelSpec {
 }
 
 pub fn render_progress_bar(percent: f32, width: usize) -> Text {
-    let filled = ((percent.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    let filled = ((percent.clamp(0.0, 1.0) * width as f32 + 0.5) as usize).min(width);
     let empty = width.saturating_sub(filled);
     let mut output = Text::with_capacity(2 + width * 3).expect("MRML allocation failed");
     output.push('[');
@@ -175,7 +175,7 @@ pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vector<Text>> {
         return Err(anyhow!("Failed to query Hugging Face API at {}", api_url));
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
+    let body = Text::from_utf8_lossy(&output.stdout);
     let val: serde_json::Value = serde_json::from_str(&body)?;
 
     let mut filenames = Vector::new();
@@ -256,7 +256,7 @@ where
         }
     }
 
-    matching_shards.sort();
+    matching_shards[..].sort_unstable();
 
     // Fallbacks if not found via API
     if matching_shards.is_empty() {
