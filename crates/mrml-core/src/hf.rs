@@ -203,7 +203,6 @@ where
         crate::client::find_model_file(&format!("{}:{}", spec.repo_id, spec.quant))
             .or_else(|| crate::client::find_model_file(&spec.model))
     {
-        let existing_primary: Text = existing_primary.to_string_lossy().as_ref().into();
         progress_cb(
             &format!(
                 "✓ Found local cached weights at {}",

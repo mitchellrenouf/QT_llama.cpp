@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
 use mrml_runtime::{Instant, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
-use std::path::PathBuf;
 
 type String = Text;
 type Vec<T> = Vector<T>;
@@ -351,8 +350,7 @@ impl MrmlClient {
     pub fn new(_server_url: &str, _api_key: &str) -> Self {
         let model_path = find_model_file("gemma-4-26b-it-q4_0.gguf");
         let engine = if let Some(path) = model_path {
-            let path_text = path.to_string_lossy();
-            match ModelEngine::new(&path_text, -1, 8192, "auto", "auto", None) {
+            match ModelEngine::new(&path, -1, 8192, "auto", "auto", None) {
                 Ok(eng) => Some(Shared::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: MRML engine init deferred: {}", e);
@@ -397,12 +395,8 @@ impl MrmlClient {
     }
 
     pub fn with_config(config: &Config) -> Self {
-        let explicit_model = PathBuf::from(config.model.as_str());
-        let model_path = if explicit_model
-            .to_str()
-            .is_some_and(crate::platform::path_is_file)
-        {
-            Some(explicit_model)
+        let model_path = if crate::platform::path_is_file(&config.model) {
+            Some(config.model.clone())
         } else if let Some(hf_spec_str) = config.hf.as_deref().filter(|s| !s.trim().is_empty()) {
             find_model_file(hf_spec_str).or_else(|| find_model_file(&config.model))
         } else {
@@ -410,12 +404,11 @@ impl MrmlClient {
         };
 
         let engine = if let Some(path) = model_path {
-            println!("Loading in-process GGUF model: {}", path.display());
-            let path_text = path.to_string_lossy();
+            println!("Loading in-process GGUF model: {}", path);
             let n_layers = config.n_gpu_layers.unwrap_or(-1);
             let backend_str = config.backend.to_string();
             match ModelEngine::new(
-                &path_text,
+                &path,
                 n_layers,
                 config.ctx_size,
                 &config.cache_type_k,
@@ -951,59 +944,61 @@ impl MrmlClient {
     }
 }
 
-pub fn get_model_cache_roots() -> Vec<PathBuf> {
+pub fn get_model_cache_roots() -> Vec<Text> {
     let mut roots = Vec::new();
 
     if let Some(p) = mrml_runtime::environment_variable("HF_HUB_CACHE") {
-        roots.push(PathBuf::from(p.as_str()));
+        roots.push(p);
     }
     if let Some(p) = mrml_runtime::environment_variable("HF_HOME") {
-        roots.push(PathBuf::from(p.as_str()).join("hub"));
+        roots.push(mrml_runtime::join_path(&p, "hub"));
     }
     if let Some(p) = mrml_runtime::environment_variable("MRML_CACHE") {
-        roots.push(PathBuf::from(p.as_str()));
+        roots.push(p);
     }
 
     #[cfg(windows)]
     {
         if let Some(local_appdata) = mrml_runtime::environment_variable("LOCALAPPDATA") {
-            roots.push(
-                PathBuf::from(local_appdata.as_str())
-                    .join("huggingface")
-                    .join("hub"),
-            );
+            roots.push(mrml_runtime::join_path(
+                &mrml_runtime::join_path(&local_appdata, "huggingface"),
+                "hub",
+            ));
         }
         if let Some(userprofile) = mrml_runtime::environment_variable("USERPROFILE") {
-            roots.push(
-                PathBuf::from(userprofile.as_str())
-                    .join(".cache")
-                    .join("huggingface")
-                    .join("hub"),
-            );
+            roots.push(mrml_runtime::join_path(
+                &mrml_runtime::join_path(
+                    &mrml_runtime::join_path(&userprofile, ".cache"),
+                    "huggingface",
+                ),
+                "hub",
+            ));
         }
     }
 
     if let Some(home) = crate::platform::home_dir() {
-        let home = PathBuf::from(home.as_str());
-        roots.push(home.join(".cache").join("huggingface").join("hub"));
-        roots.push(home.join(".cache").join("gemma").join("models"));
+        roots.push(mrml_runtime::join_path(
+            &mrml_runtime::join_path(&mrml_runtime::join_path(&home, ".cache"), "huggingface"),
+            "hub",
+        ));
+        roots.push(mrml_runtime::join_path(
+            &mrml_runtime::join_path(&mrml_runtime::join_path(&home, ".cache"), "gemma"),
+            "models",
+        ));
     }
 
     let mut unique_roots = Vec::new();
     for r in roots {
-        if r.to_str().is_some_and(mrml_runtime::path_is_directory)
-            && !unique_roots.contains(&r)
-        {
+        if mrml_runtime::path_is_directory(&r) && !unique_roots.contains(&r) {
             unique_roots.push(r);
         }
     }
     unique_roots
 }
 
-pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(model_arg);
-    if p.to_str().is_some_and(crate::platform::path_is_file) {
-        return Some(p);
+pub fn find_model_file(model_arg: &str) -> Option<Text> {
+    if crate::platform::path_is_file(model_arg) {
+        return Some(model_arg.into());
     }
 
     let cache_roots = get_model_cache_roots();
@@ -1014,13 +1009,10 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
 
         // 1. Search for matching repo slug in Hugging Face cache directories
         for root in &cache_roots {
-            let repo_dir = root.join(&repo_slug);
-            if repo_dir
-                .to_str()
-                .is_some_and(mrml_runtime::path_is_directory)
-            {
+            let repo_dir = mrml_runtime::join_path(root, &repo_slug);
+            if mrml_runtime::path_is_directory(&repo_dir) {
                 let mut best_match = None;
-                for path in crate::fs_walk::paths(repo_dir.to_str().unwrap_or("")) {
+                for path in crate::fs_walk::paths(&repo_dir) {
                     let name = path
                         .rsplit(['/', '\\'])
                         .next()
@@ -1032,10 +1024,10 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                         && !name.contains("mtp")
                     {
                         if name.contains(&target_quant) {
-                            return Some(PathBuf::from(path.as_str()));
+                            return Some(path);
                         }
                         if best_match.is_none() {
-                            best_match = Some(PathBuf::from(path.as_str()));
+                            best_match = Some(path);
                         }
                     }
                 }
@@ -1045,12 +1037,9 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
             }
 
             // Legacy folder name check (e.g. user_model)
-            let legacy_dir = root.join(format!("{}_{}", spec.user, spec.model));
-            if legacy_dir
-                .to_str()
-                .is_some_and(mrml_runtime::path_is_directory)
-            {
-                for path in crate::fs_walk::paths(legacy_dir.to_str().unwrap_or("")) {
+            let legacy_dir = mrml_runtime::join_path(root, &format!("{}_{}", spec.user, spec.model));
+            if mrml_runtime::path_is_directory(&legacy_dir) {
+                for path in crate::fs_walk::paths(&legacy_dir) {
                     let name = path
                         .rsplit(['/', '\\'])
                         .next()
@@ -1062,7 +1051,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                         && !name.contains("mtp")
                     {
                         if name.contains(&target_quant) {
-                            return Some(PathBuf::from(path.as_str()));
+                            return Some(path);
                         }
                     }
                 }
@@ -1072,7 +1061,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
 
     // 2. Scan whole cache roots for matching model file
     for root in &cache_roots {
-        for path in crate::fs_walk::paths(root.to_str().unwrap_or("")) {
+        for path in crate::fs_walk::paths(root) {
             let name = path
                 .rsplit(['/', '\\'])
                 .next()
@@ -1084,37 +1073,38 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                 && !name.contains("mtp")
             {
                 if name.contains("gemma-4") || name.contains("gemma") {
-                    return Some(PathBuf::from(path.as_str()));
+                    return Some(path);
                 }
             }
         }
     }
 
-    let candidates = [
-        PathBuf::from("models").join(model_arg),
-        PathBuf::from(model_arg).with_extension("gguf"),
-        PathBuf::from(
-            mrml_runtime::join_path(
-                &mrml_runtime::join_path(
-                    &crate::platform::home_dir().unwrap_or_default(),
-                    ".cache/gemma",
-                ),
-                model_arg,
-            )
-            .as_str(),
-        ),
-        PathBuf::from(
-            mrml_runtime::join_path(
+    let separator = model_arg.rfind(['/', '\\']);
+    let extension = model_arg
+        .rfind('.')
+        .filter(|dot| separator.is_none_or(|separator| *dot > separator));
+    let with_gguf = extension
+        .map(|dot| format!("{}.gguf", &model_arg[..dot]))
+        .unwrap_or_else(|| format!("{}.gguf", model_arg));
+    let candidates: [Text; 5] = [
+        mrml_runtime::join_path("models", model_arg),
+        with_gguf.as_str().into(),
+        mrml_runtime::join_path(
+            &mrml_runtime::join_path(
                 &crate::platform::home_dir().unwrap_or_default(),
-                ".cache/gemma/gemma-4-26b-it-q4_0.gguf",
-            )
-            .as_str(),
+                ".cache/gemma",
+            ),
+            model_arg,
         ),
-        PathBuf::from("/models/gemma-4-26b-it-q4_0.gguf"),
+        mrml_runtime::join_path(
+            &crate::platform::home_dir().unwrap_or_default(),
+            ".cache/gemma/gemma-4-26b-it-q4_0.gguf",
+        ),
+        "/models/gemma-4-26b-it-q4_0.gguf".into(),
     ];
 
     for c in candidates {
-        if c.to_str().is_some_and(crate::platform::path_is_file) {
+        if crate::platform::path_is_file(&c) {
             return Some(c);
         }
     }
@@ -1141,7 +1131,10 @@ mod tests {
     fn test_explicit_model_path_wins_over_hf_default() {
         let path = std::env::temp_dir().join(format!("mrml-explicit-{}.gguf", std::process::id()));
         std::fs::write(&path, b"test").unwrap();
-        assert_eq!(find_model_file(path.to_str().unwrap()), Some(path.clone()));
+        assert_eq!(
+            find_model_file(path.to_str().unwrap()).as_deref(),
+            path.to_str()
+        );
         std::fs::remove_file(path).unwrap();
     }
 

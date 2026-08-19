@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use mrml_runtime::{Vector, mrml_eprintln as eprintln, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
 
@@ -241,10 +241,7 @@ impl MrmlAgent {
             crate::client::find_model_file(&self.config.model)
         };
         if let Some(path) = model_path {
-            self.reload_model(
-                path.to_str()
-                    .ok_or_else(|| anyhow!("Model path is not valid UTF-8"))?,
-            )?;
+            self.reload_model(&path)?;
         }
         Ok(())
     }
