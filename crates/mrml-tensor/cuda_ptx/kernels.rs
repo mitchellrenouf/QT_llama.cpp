@@ -1697,3 +1697,58 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4_combined(
         *out.add(token * dim as usize + row) = combined;
     }
 }
+
+// Gemma 4 26B decode uses this exact top-8 expert shape. Keeping the dimensions
+// out of kernel parameters lets LLVM fold the row strides and loop bounds that
+// otherwise sit in the hottest projection of every generated token.
+#[no_mangle]
+pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4_gemma4_26b(
+    down: *const u8,
+    ids: *const i32,
+    weights: *const f32,
+    scales: *const f32,
+    act: *const f32,
+    out: *mut f32,
+) {
+    const DIM: usize = 5_376;
+    const EXP_DIM: usize = 704;
+    const ACTIVE: usize = 8;
+    const BLOCKS: usize = EXP_DIM / 32;
+    const ROW_BYTES: usize = BLOCKS * 18;
+
+    let lane = _thread_idx_x() & 31;
+    let sub = (lane & 15) as usize;
+    let warp = _thread_idx_x() >> 5;
+    let row = (_block_idx_x() * ((_block_dim_x() >> 5) * 2) + warp * 2 + (lane >> 4)) as usize;
+    let active_row = row < DIM;
+    let mut combined = 0.0f32;
+    let mut slot = 0usize;
+    while slot < ACTIVE {
+        let expert = if active_row { *ids.add(slot) as usize } else { 0 };
+        let mut alpha = if active_row { *weights.add(slot) } else { 0.0 };
+        if !scales.is_null() {
+            alpha *= *scales.add(expert);
+        }
+        let row_w = down.add(expert * DIM * ROW_BYTES + if active_row { row * ROW_BYTES } else { 0 });
+        let input = act.add(slot * EXP_DIM);
+        let mut sum = 0.0f32;
+        let mut block = 0usize;
+        while block < BLOCKS {
+            let off = block * 18;
+            let d = f16_to_f32(*row_w.add(off) as u16 | ((*row_w.add(off + 1) as u16) << 8));
+            let q = if active_row { *row_w.add(off + 2 + sub) } else { 0 };
+            sum += d
+                * (((q & 15) as i32 - 8) as f32 * *input.add(block * 32 + sub)
+                    + ((q >> 4) as i32 - 8) as f32 * *input.add(block * 32 + sub + 16));
+            block += 1;
+        }
+        let value = half_warp_sum(sum);
+        if sub == 0 {
+            combined += value * alpha;
+        }
+        slot += 1;
+    }
+    if active_row && sub == 0 {
+        *out.add(row) = combined;
+    }
+}
