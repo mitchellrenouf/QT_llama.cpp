@@ -93,6 +93,14 @@ unsafe extern "system" {
     ) -> *mut c_void;
     fn GetActiveProcessorCount(group_number: u16) -> u32;
     fn SwitchToThread() -> i32;
+    fn WaitOnAddress(
+        address: *const c_void,
+        compare_address: *const c_void,
+        address_size: usize,
+        milliseconds: u32,
+    ) -> i32;
+    fn WakeByAddressSingle(address: *const c_void);
+    fn WakeByAddressAll(address: *const c_void);
     fn ExitProcess(exit_code: u32) -> !;
 }
 
@@ -104,6 +112,28 @@ pub fn processor_count() -> usize {
 #[cfg(windows)]
 pub fn yield_now() {
     let _ = unsafe { SwitchToThread() };
+}
+
+#[cfg(windows)]
+pub fn wait_on_u32(address: *const u32, expected: u32) {
+    let _ = unsafe {
+        WaitOnAddress(
+            address.cast(),
+            (&expected as *const u32).cast(),
+            core::mem::size_of::<u32>(),
+            u32::MAX,
+        )
+    };
+}
+
+#[cfg(windows)]
+pub fn wake_one_u32(address: *const u32) {
+    unsafe { WakeByAddressSingle(address.cast()) };
+}
+
+#[cfg(windows)]
+pub fn wake_all_u32(address: *const u32) {
+    unsafe { WakeByAddressAll(address.cast()) };
 }
 
 #[cfg(windows)]

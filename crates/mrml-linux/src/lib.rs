@@ -79,6 +79,7 @@ unsafe extern "C" {
     fn pthread_detach(thread: usize) -> c_int;
     fn sysconf(name: c_int) -> c_long;
     fn sched_yield() -> c_int;
+    fn syscall(number: c_long, ...) -> c_long;
 }
 
 #[cfg(unix)]
@@ -90,6 +91,37 @@ pub fn processor_count() -> usize {
 #[cfg(unix)]
 pub fn yield_now() {
     let _ = unsafe { sched_yield() };
+}
+
+#[cfg(all(unix, target_arch = "x86_64"))]
+const SYS_FUTEX: c_long = 202;
+#[cfg(all(unix, target_arch = "aarch64"))]
+const SYS_FUTEX: c_long = 98;
+
+#[cfg(unix)]
+pub fn wait_on_u32(address: *const u32, expected: u32) {
+    const FUTEX_WAIT_PRIVATE: c_int = 128;
+    let _ = unsafe {
+        syscall(
+            SYS_FUTEX,
+            address,
+            FUTEX_WAIT_PRIVATE,
+            expected,
+            core::ptr::null::<Timespec>(),
+        )
+    };
+}
+
+#[cfg(unix)]
+pub fn wake_one_u32(address: *const u32) {
+    const FUTEX_WAKE_PRIVATE: c_int = 129;
+    let _ = unsafe { syscall(SYS_FUTEX, address, FUTEX_WAKE_PRIVATE, 1) };
+}
+
+#[cfg(unix)]
+pub fn wake_all_u32(address: *const u32) {
+    const FUTEX_WAKE_PRIVATE: c_int = 129;
+    let _ = unsafe { syscall(SYS_FUTEX, address, FUTEX_WAKE_PRIVATE, i32::MAX) };
 }
 
 #[cfg(unix)]

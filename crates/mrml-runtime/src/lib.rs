@@ -14,7 +14,7 @@ mod thread;
 mod time;
 mod vector;
 
-pub use channel::{Receiver, RecvError, SendError, Sender, sync_channel};
+pub use channel::{Receiver, RecvError, SendError, Sender, blocking_channel, sync_channel};
 pub use file::{File, FileError};
 pub use map::OrderedMap;
 pub use owned::Owned;

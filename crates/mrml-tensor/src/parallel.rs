@@ -1,22 +1,21 @@
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
-use mrml_runtime::{OnceCell, Shared, Vector};
+use mrml_runtime::{OnceCell, Sender, Shared, Vector, blocking_channel};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Mutex, mpsc};
 
 struct Work {
     context: usize,
     start: usize,
     end: usize,
     run: unsafe fn(usize, usize, usize),
-    done: mpsc::SyncSender<()>,
+    done: Sender<()>,
     failed: Shared<AtomicBool>,
 }
 
 unsafe impl Send for Work {}
 
 struct Pool {
-    sender: mpsc::Sender<Work>,
+    sender: Sender<Work>,
     workers: usize,
 }
 
@@ -24,14 +23,13 @@ fn pool() -> &'static Pool {
     static POOL: OnceCell<Pool> = OnceCell::new();
     POOL.get_or_init(|| {
         let workers = mrml_runtime::available_parallelism();
-        let (sender, receiver) = mpsc::channel::<Work>();
-        let receiver = Shared::new(Mutex::new(receiver));
+        let (sender, receiver) = blocking_channel::<Work>(usize::MAX);
         for index in 0..workers {
             let receiver = receiver.clone();
             assert!(
                 mrml_runtime::spawn_detached(move || {
                     loop {
-                        let work = match receiver.lock().unwrap().recv() {
+                        let work = match receiver.recv() {
                             Ok(work) => work,
                             Err(_) => break,
                         };
@@ -69,7 +67,7 @@ where
 
     let jobs = pool.workers.min(len.div_ceil(minimum_chunk));
     let chunk = len.div_ceil(jobs);
-    let (done_tx, done_rx) = mpsc::sync_channel(jobs);
+    let (done_tx, done_rx) = blocking_channel(jobs);
     let failed = Shared::new(AtomicBool::new(false));
     let context = (&operation as *const F) as usize;
     let mut submitted = 0;
