@@ -1,12 +1,11 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use anyhow::{Result, anyhow};
+use mrml_runtime::Vector;
 
 #[derive(Clone)]
 enum Atom {
     Literal(char),
     Any,
-    Class { chars: Vec<char>, negated: bool },
+    Class { chars: Vector<char>, negated: bool },
 }
 
 #[derive(Clone, Copy)]
@@ -24,7 +23,7 @@ struct Piece {
 }
 
 pub struct Regex {
-    pieces: Vec<Piece>,
+    pieces: Vector<Piece>,
     anchored_start: bool,
     anchored_end: bool,
 }
@@ -36,7 +35,7 @@ impl Regex {
         if anchored_start {
             chars.next();
         }
-        let mut pieces: Vec<Piece> = Vec::new();
+        let mut pieces = Vector::new();
         let mut anchored_end = false;
         while let Some(ch) = chars.next() {
             if ch == '$' && chars.peek().is_none() {
@@ -55,7 +54,7 @@ impl Regex {
                     if negated {
                         chars.next();
                     }
-                    let mut class = Vec::new();
+                    let mut class = Vector::new();
                     let mut closed = false;
                     while let Some(item) = chars.next() {
                         if item == ']' {
@@ -118,15 +117,12 @@ impl Regex {
     }
 
     pub fn is_match(&self, text: &str) -> bool {
-        let chars: Vec<char> = text.chars().collect();
-        let starts: Box<dyn Iterator<Item = usize>> = if self.anchored_start {
-            Box::new(core::iter::once(0))
+        let chars: Vector<char> = text.chars().collect();
+        if self.anchored_start {
+            self.matches_from(&chars, 0, 0)
         } else {
-            Box::new(0..=chars.len())
-        };
-        starts
-            .into_iter()
-            .any(|start| self.matches_from(&chars, 0, start))
+            (0..=chars.len()).any(|start| self.matches_from(&chars, 0, start))
+        }
     }
 
     fn matches_from(&self, text: &[char], piece: usize, position: usize) -> bool {
