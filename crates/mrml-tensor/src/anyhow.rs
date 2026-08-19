@@ -51,12 +51,6 @@ impl fmt::Display for SourceError {
 }
 impl StdError for SourceError {}
 
-#[cfg(feature = "std")]
-impl From<std::io::Error> for Error {
-    fn from(error: std::io::Error) -> Self {
-        Self::with_source(error)
-    }
-}
 impl From<core::num::TryFromIntError> for Error {
     fn from(error: core::num::TryFromIntError) -> Self {
         Self::with_source(error)
@@ -95,11 +89,10 @@ mod tests {
         assert_eq!(formatted.to_string(), "CUDA error 7");
     }
 
-    #[cfg(feature = "std")]
     #[test]
-    fn preserves_standard_error_sources() {
-        let io_error = Error::from(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"));
-        assert_eq!(io_error.to_string(), "missing");
-        assert!(std::error::Error::source(&io_error).is_some());
+    fn preserves_platform_file_error_sources() {
+        let file_error = Error::from(mrml_runtime::FileError::OpenFailed);
+        assert_eq!(file_error.to_string(), "failed to open file");
+        assert!(core::error::Error::source(&file_error).is_some());
     }
 }
