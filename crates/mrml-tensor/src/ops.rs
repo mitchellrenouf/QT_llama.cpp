@@ -1,5 +1,5 @@
 use crate::quant::{quantize_f32_to_q8_0, vec_dot_q4_0_q8_0};
-use alloc::vec;
+use mrml_runtime::Vector;
 
 macro_rules! math_fn {
     ($name:ident, $method:ident, $native:path) => {
@@ -184,7 +184,8 @@ pub fn mat_vec_mul_q4_0(
     assert_eq!(x_f32.len(), n_cols);
     assert_eq!(y_out.len(), n_rows);
 
-    let mut x_q8 = vec![0u8; q8_0_size(n_cols)];
+    let mut x_q8 = Vector::new();
+    x_q8.resize(q8_0_size(n_cols), 0u8);
     quantize_f32_to_q8_0(x_f32, &mut x_q8);
 
     mat_vec_mul_q4_0_q8_0(w_q4_bytes, &x_q8, y_out, n_rows, n_cols);
