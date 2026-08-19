@@ -84,6 +84,46 @@ impl Command {
         self
     }
 
+    pub fn spawn_detached(&mut self) -> Result<(), ProcessError> {
+        #[cfg(windows)]
+        {
+            let mut command_line = Vector::new();
+            append_windows_argument(&mut command_line, &self.program);
+            for argument in &self.arguments {
+                command_line.push(' ' as u16);
+                append_windows_argument(&mut command_line, argument);
+            }
+            command_line.push(0);
+            let current_directory = self.current_directory.as_ref().map(|directory| {
+                let mut encoded = Vector::new();
+                encoded.extend(directory.encode_utf16());
+                encoded.push(0);
+                encoded
+            });
+            if mrml_windows::spawn_detached_process(&mut command_line, current_directory.as_deref()) {
+                Ok(())
+            } else {
+                Err(ProcessError::SpawnFailed)
+            }
+        }
+        #[cfg(unix)]
+        {
+            let mut encoded = Vector::new();
+            encoded.push(encode_c_string(&self.program)?);
+            for argument in &self.arguments { encoded.push(encode_c_string(argument)?); }
+            let mut pointers: Vector<*const i8> = encoded.iter().map(|value| value.as_ptr().cast()).collect();
+            pointers.push(core::ptr::null());
+            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0]).map_err(|_| ProcessError::InvalidArgument)?;
+            let directory = self.current_directory.as_ref().map(|value| encode_c_string(value)).transpose()?;
+            let directory = directory.as_ref().map(|value| core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path"));
+            if mrml_linux::spawn_detached_process(program, &pointers, directory) {
+                Ok(())
+            } else {
+                Err(ProcessError::SpawnFailed)
+            }
+        }
+    }
+
     pub fn output(&mut self) -> Result<Output, ProcessError> {
         #[cfg(windows)]
         let mut child = {
@@ -217,5 +257,43 @@ mod tests {
         assert_eq!(output.status.code(), 7);
         assert_eq!(core::str::from_utf8(&output.stdout).unwrap(), "out λ");
         assert_eq!(core::str::from_utf8(&output.stderr).unwrap(), "err 星");
+    }
+
+    #[test]
+    fn detached_process_runs_to_completion() {
+        let marker = crate::join_path(
+            &temporary_directory(),
+            &std::format!("mrml-detached-{}.txt", process_id()),
+        );
+        let _ = crate::remove_file(&marker);
+        #[cfg(windows)]
+        let mut command = {
+            let escaped = marker.replace("'", "''");
+            let mut command = Command::new("powershell.exe");
+            command.args(["-NoProfile", "-Command"]).arg(std::format!(
+                "[IO.File]::WriteAllText('{}','ok')", escaped
+            ));
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let escaped = marker.replace("'", "'\\''");
+            let mut command = Command::new("sh");
+            command.args(["-c", &std::format!("printf ok > '{}'", escaped)]);
+            command
+        };
+        command.spawn_detached().unwrap();
+        for _ in 0..200 {
+            if crate::path_is_file(&marker) {
+                assert_eq!(crate::read_file_text(&marker).unwrap().as_str(), "ok");
+                assert!(crate::remove_file(&marker).is_ok());
+                return;
+            }
+            #[cfg(windows)]
+            mrml_windows::sleep_millis(5);
+            #[cfg(unix)]
+            mrml_linux::sleep_millis(5);
+        }
+        panic!("detached child did not create its marker");
     }
 }

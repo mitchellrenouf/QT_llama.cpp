@@ -121,6 +121,36 @@ pub fn process_id() -> u32 {
 }
 
 #[cfg(unix)]
+pub fn spawn_detached_process(
+    program: &CStr,
+    arguments: &[*const i8],
+    current_directory: Option<&CStr>,
+) -> bool {
+    let process = unsafe { fork() };
+    if process == 0 {
+        let detached = unsafe { fork() };
+        if detached < 0 {
+            unsafe { _exit(125) };
+        }
+        if detached > 0 {
+            unsafe { _exit(0) };
+        }
+        if let Some(directory) = current_directory {
+            if unsafe { chdir(directory.as_ptr()) } != 0 {
+                unsafe { _exit(126) };
+            }
+        }
+        let _ = unsafe { execvp(program.as_ptr(), arguments.as_ptr()) };
+        unsafe { _exit(127) };
+    }
+    if process < 0 {
+        return false;
+    }
+    let mut status = 0;
+    (unsafe { waitpid(process, &mut status, 0) }) == process && status == 0
+}
+
+#[cfg(unix)]
 pub struct NativeChild {
     process: c_int,
     stdout: c_int,

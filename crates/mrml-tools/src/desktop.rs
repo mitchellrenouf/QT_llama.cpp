@@ -1,9 +1,8 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Text, Vector, remove_file, rename_file};
-use mrml_runtime::Command as CaptureCommand;
+use mrml_runtime::Command;
 use serde_json::json;
-use std::process::Command;
 
 pub fn is_executable_in_path(cmd: &str) -> Option<Text> {
     if let Some(path_var) = mrml_runtime::environment_variable("PATH") {
@@ -55,7 +54,7 @@ impl Tool for TakeScreenshotTool {
 
         let mut captured = false;
         if is_executable_in_path("spectacle").is_some() {
-            let out = CaptureCommand::new("spectacle")
+            let out = Command::new("spectacle")
                 .args(["-b", "-n", "-o", temp_png_str.as_str()])
                 .output();
             if let Ok(o) = out {
@@ -66,7 +65,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("grim").is_some() {
-            let out = CaptureCommand::new("grim").arg(temp_png_str.as_str()).output();
+            let out = Command::new("grim").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -75,7 +74,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("scrot").is_some() {
-            let out = CaptureCommand::new("scrot").arg(temp_png_str.as_str()).output();
+            let out = Command::new("scrot").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -84,7 +83,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("maim").is_some() {
-            let out = CaptureCommand::new("maim").arg(temp_png_str.as_str()).output();
+            let out = Command::new("maim").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -93,7 +92,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("import").is_some() {
-            let out = CaptureCommand::new("import")
+            let out = Command::new("import")
                 .args(["-window", "root", temp_png_str.as_str()])
                 .output();
             if let Ok(o) = out {
@@ -110,7 +109,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if is_executable_in_path("ffmpeg").is_some() {
-            let _ = CaptureCommand::new("ffmpeg")
+            let _ = Command::new("ffmpeg")
                 .args([
                     "-y",
                     "-i",
@@ -177,8 +176,8 @@ impl Tool for OpenAppTool {
         if app_name.starts_with("flatpak run ") {
             let parts: Vector<&str> = app_name.split_whitespace().collect();
             Command::new("flatpak")
-                .args(&parts[1..])
-                .spawn()
+                .args(parts[1..].iter().copied())
+                .spawn_detached()
                 .map_err(|e| anyhow!("Failed to launch Flatpak app '{}': {}", app_name, e))?;
             return Ok(format!("Successfully launched Flatpak app '{}'.", app_name));
         }
@@ -187,18 +186,18 @@ impl Tool for OpenAppTool {
             || crate::platform::path_is_file(app_name)
         {
             Command::new(app_name)
-                .spawn()
+                .spawn_detached()
                 .map_err(|e| anyhow!("Failed to spawn application '{}': {}", app_name, e))?;
             Ok(format!("Successfully launched application '{}'.", app_name))
         } else if is_executable_in_path("xdg-open").is_some() {
-            let output = Command::new("xdg-open").arg(app_name).spawn();
+            let output = Command::new("xdg-open").arg(app_name).spawn_detached();
             match output {
                 Ok(_) => Ok(format!("Successfully opened '{}' via xdg-open.", app_name)),
                 Err(e) => Err(anyhow!("Failed to open '{}' via xdg-open: {}", app_name, e)),
             }
         } else {
             Command::new(app_name)
-                .spawn()
+                .spawn_detached()
                 .map_err(|e| anyhow!("Failed to launch application '{}': {}", app_name, e))?;
             Ok(format!("Successfully launched application '{}'.", app_name))
         }

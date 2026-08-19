@@ -335,6 +335,41 @@ pub fn process_id() -> u32 {
 }
 
 #[cfg(windows)]
+pub fn spawn_detached_process(
+    command_line: &mut [u16],
+    current_directory: Option<&[u16]>,
+) -> bool {
+    if command_line.last().copied() != Some(0)
+        || current_directory.is_some_and(|path| path.last().copied() != Some(0))
+    {
+        return false;
+    }
+    let mut startup = unsafe { core::mem::zeroed::<StartupInfoW>() };
+    startup.size = core::mem::size_of::<StartupInfoW>() as u32;
+    let mut information = unsafe { core::mem::zeroed::<ProcessInformation>() };
+    let created = unsafe {
+        CreateProcessW(
+            core::ptr::null(),
+            command_line.as_mut_ptr(),
+            core::ptr::null(),
+            core::ptr::null(),
+            0,
+            0,
+            core::ptr::null(),
+            current_directory.map_or(core::ptr::null(), |path| path.as_ptr()),
+            &mut startup,
+            &mut information,
+        )
+    };
+    if created == 0 {
+        return false;
+    }
+    let _ = unsafe { CloseHandle(information.thread) };
+    let _ = unsafe { CloseHandle(information.process) };
+    true
+}
+
+#[cfg(windows)]
 pub struct NativeChild {
     process: *mut c_void,
     stdout: *mut c_void,
