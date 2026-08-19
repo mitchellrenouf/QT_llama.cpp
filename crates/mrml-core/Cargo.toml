@@ -7,12 +7,17 @@ license.workspace = true
 
 [features]
 default = ["std", "auto"]
-std = [
+runtime = [
     "dep:anyhow",
     "dep:mrml-model",
     "dep:mrml-terminal-style",
     "dep:mrml-tools",
     "dep:serde_json",
+    "mrml-model/runtime",
+    "mrml-tools/runtime",
+]
+std = [
+    "runtime",
     "mrml-model/std",
     "mrml-tools/std",
 ]

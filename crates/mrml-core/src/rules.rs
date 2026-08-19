@@ -53,7 +53,7 @@ impl WorkspaceRules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{format, fs};
 
     #[test]
     fn test_rules_discovery() {

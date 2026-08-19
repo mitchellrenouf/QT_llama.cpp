@@ -1,28 +1,31 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(all(test, not(feature = "std")))]
+extern crate std;
+
 pub mod modes;
 
 #[cfg(feature = "std")]
 pub mod agent;
 #[cfg(feature = "std")]
 pub mod client;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod config;
 #[cfg(feature = "std")]
 pub mod hf;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod rules;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use mrml_tools as tools;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use mrml_tools::{diff, encoding};
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use mrml_tools::{fs_walk, markdown, platform};
 
 #[cfg(feature = "std")]
 pub use agent::MrmlAgent;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use config::Config;
 pub use modes::{AgentMode, BackendChoice};
 
