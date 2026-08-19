@@ -21,6 +21,7 @@ pub struct LocalTime {
 }
 
 #[repr(C)]
+#[cfg(windows)]
 struct FileTime {
     low: u32,
     high: u32,

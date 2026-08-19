@@ -4,7 +4,6 @@ use mrml_core::{Config, MrmlAgent};
 use mrml_json::{Value, object};
 use std::io::{self, BufRead};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
 
@@ -203,7 +202,7 @@ fn emit(value: Value) -> Result<()> {
 async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Result<Value> {
     let capture = Arc::new(Mutex::new(TurnCapture::default()));
     let event_capture = Arc::clone(&capture);
-    let started = Instant::now();
+    let started = mrml_core::tools::platform::monotonic_timestamp_nanos();
     let (content, reasoning) = agent
         .process_user_request_stream(prompt, move |event| {
             let mut state = event_capture.lock().expect("turn capture mutex poisoned");
@@ -232,7 +231,9 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
         token_count: state.token_count,
         generation_seconds: state.generation_seconds,
         tokens_per_second: state.tokens_per_second,
-        wall_seconds: started.elapsed().as_secs_f64(),
+        wall_seconds: mrml_core::tools::platform::monotonic_timestamp_nanos()
+            .saturating_sub(started) as f64
+            / 1_000_000_000.0,
     };
 
     let tools = std::mem::take(&mut state.tools).into_iter().map(|tool| object([

@@ -5,7 +5,6 @@ use mrml_terminal_style::Colorize;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 pub struct OpenAiChatRequest {
@@ -119,10 +118,7 @@ fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<(
     }
 
     if method == "GET" && (path == "/v1/models" || path == "/models") {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = (mrml_tools::platform::unix_timestamp_millis() / 1000) as u64;
         let body = mrml_json::stringify(&object([
             ("object", "list".into()),
             ("data", Value::Array(vec![object([
@@ -207,10 +203,7 @@ fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<(
             let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
             socket.write_all(header.as_bytes())?;
 
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let now = (mrml_tools::platform::unix_timestamp_millis() / 1000) as u64;
 
             let mut disconnected = false;
             let stream_result = mrml_tools::block_on(client.stream_completion(&req, |event| {
@@ -234,10 +227,6 @@ fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<(
             return Ok(());
         } else {
             let res = mrml_tools::block_on(client.chat_completion(&req))?;
-            let _now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
             let choices = res.choices.into_iter().map(|choice| object([
                 ("index", choice.index.into()),
                 ("message", chat_message_value(choice.message)),

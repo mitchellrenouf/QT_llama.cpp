@@ -10,6 +10,17 @@ pub fn unix_timestamp_millis() -> u128 {
     platform_unix_time_millis() as u128
 }
 
+pub fn monotonic_timestamp_nanos() -> u64 {
+    #[cfg(windows)]
+    {
+        mrml_windows::monotonic_nanos()
+    }
+    #[cfg(unix)]
+    {
+        mrml_linux::monotonic_nanos()
+    }
+}
+
 #[cfg(windows)]
 fn platform_unix_time_millis() -> u64 { mrml_windows::unix_time_millis() }
 
