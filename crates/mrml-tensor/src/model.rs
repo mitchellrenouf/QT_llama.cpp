@@ -262,7 +262,7 @@ fn capture_layer_ffn_graph(
     let mut moe_in = layer.gpu_d_moe_in.lock();
     let mut moe_act = layer.gpu_d_moe_act_scratch.lock();
     let mut moe_out = layer.gpu_d_moe_out.lock();
-    dev.capture(|| {
+    let captured = dev.capture(|| {
         dev.enqueue_ffn_compute_for_capture(
             layer
                 .gpu_ffn_gate
@@ -323,8 +323,16 @@ fn capture_layer_ffn_graph(
             704,
         )?;
         Ok(())
-    })
-    .ok()
+    });
+    match captured {
+        Ok(graph) => Some(graph),
+        Err(error) => {
+            if std::env::var_os("MRML_GRAPH_DEBUG").is_some() {
+                eprintln!("[mrml] FFN/MoE CUDA graph capture failed: {error}");
+            }
+            None
+        }
+    }
 }
 
 impl MrmlModel {

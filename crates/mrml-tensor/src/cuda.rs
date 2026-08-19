@@ -94,46 +94,6 @@ extern "C" {
     fn cudaDeviceSynchronize() -> i32;
 
     // Exported custom kernel launches from cuda_kernels.cu
-    fn cuda_op_rms_norm(
-        d_x: *const f32,
-        d_w: *const f32,
-        d_out: *mut f32,
-        dim: i32,
-        eps: f32,
-        stream: CudaStream,
-    );
-    fn cuda_op_rms_norm_batch(
-        d_x: *const f32,
-        d_w: *const f32,
-        d_out: *mut f32,
-        dim: i32,
-        batch: i32,
-        eps: f32,
-        stream: CudaStream,
-    );
-    fn cuda_op_swiglu(
-        d_gate: *const f32,
-        d_up: *const f32,
-        d_out: *mut f32,
-        size: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_geglu(
-        d_gate: *const f32,
-        d_up: *const f32,
-        d_out: *mut f32,
-        size: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_rope_256k(
-        d_vec: *mut f32,
-        pos: i32,
-        head_dim: i32,
-        n_heads: i32,
-        freq_base: f32,
-        freq_scale: f32,
-        stream: CudaStream,
-    );
     fn cuda_op_gemv_q4_0(
         d_w_q4: *const u8,
         d_x: *const f32,
@@ -236,20 +196,6 @@ extern "C" {
         generated_count: i32,
         k: i32,
         partitions: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_add(
-        d_a: *const f32,
-        d_b: *const f32,
-        d_out: *mut f32,
-        size: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_embedding(
-        d_table: *const f32,
-        d_out: *mut f32,
-        token: i32,
-        dim: i32,
         stream: CudaStream,
     );
     fn cuda_op_moe_router(
@@ -1511,10 +1457,16 @@ impl CudaDevice {
                 .into()
             })
             .to_ascii_lowercase();
-        let rust_geglu = matches!(rust_stages.as_str(), "geglu" | "dense" | "all");
-        let rust_down = matches!(rust_stages.as_str(), "down" | "dense" | "all");
-        let rust_router = matches!(rust_stages.as_str(), "router" | "all");
-        let rust_moe = matches!(rust_stages.as_str(), "moe" | "all");
+        let has_stage = |stage: &str| {
+            rust_stages
+                .split(',')
+                .map(str::trim)
+                .any(|value| value == stage || value == "all")
+        };
+        let rust_geglu = has_stage("geglu") || has_stage("dense");
+        let rust_down = has_stage("down") || has_stage("dense");
+        let rust_router = has_stage("router");
+        let rust_moe = has_stage("moe");
         unsafe {
             if rust_geglu {
                 launch_rust_geglu_q4(
@@ -1765,7 +1717,7 @@ impl CudaDevice {
         unsafe { cudaSetDevice(self.device_id) };
         let w_ptr = d_weight.map(|w| w.as_ptr()).unwrap_or(ptr::null());
         unsafe {
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            {
                 let mut x = d_x.as_ptr();
                 let mut weight = w_ptr;
                 let mut out = d_out.as_mut_ptr();
@@ -1788,16 +1740,7 @@ impl CudaDevice {
                     &mut args,
                 )
                 .expect("Rust CUDA RMS norm kernel failed");
-                return;
             }
-            cuda_op_rms_norm(
-                d_x.as_ptr(),
-                w_ptr,
-                d_out.as_mut_ptr(),
-                d_x.len() as i32,
-                eps,
-                self.stream,
-            );
         }
     }
 
@@ -1817,7 +1760,7 @@ impl CudaDevice {
             .unwrap_or(ptr::null());
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            {
                 let mut x = d_x.as_ptr();
                 let mut weight = w_ptr;
                 let mut out = d_out.as_mut_ptr();
@@ -1840,17 +1783,7 @@ impl CudaDevice {
                     &mut args,
                 )
                 .expect("Rust CUDA batched RMS norm kernel failed");
-                return;
             }
-            cuda_op_rms_norm_batch(
-                d_x.as_ptr(),
-                w_ptr,
-                d_out.as_mut_ptr(),
-                dim as i32,
-                batch as i32,
-                eps,
-                self.stream,
-            );
         }
     }
 
@@ -1864,7 +1797,7 @@ impl CudaDevice {
         assert_eq!(d_gate.len(), d_out.len());
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            {
                 let mut gate = d_gate.as_ptr();
                 let mut up = d_up.as_ptr();
                 let mut out = d_out.as_mut_ptr();
@@ -1883,15 +1816,7 @@ impl CudaDevice {
                     &mut args,
                 )
                 .expect("Rust CUDA SwiGLU kernel failed");
-                return;
             }
-            cuda_op_swiglu(
-                d_gate.as_ptr(),
-                d_up.as_ptr(),
-                d_out.as_mut_ptr(),
-                d_gate.len() as i32,
-                self.stream,
-            );
         }
     }
 
@@ -1905,7 +1830,7 @@ impl CudaDevice {
         assert_eq!(d_gate.len(), d_out.len());
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            {
                 let mut gate = d_gate.as_ptr();
                 let mut up = d_up.as_ptr();
                 let mut out = d_out.as_mut_ptr();
@@ -1924,15 +1849,7 @@ impl CudaDevice {
                     &mut args,
                 )
                 .expect("Rust CUDA GeGLU kernel failed");
-                return;
             }
-            cuda_op_geglu(
-                d_gate.as_ptr(),
-                d_up.as_ptr(),
-                d_out.as_mut_ptr(),
-                d_gate.len() as i32,
-                self.stream,
-            );
         }
     }
 
@@ -1947,7 +1864,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            {
                 let mut vec = d_vec.as_mut_ptr();
                 let mut pos_arg = pos as i32;
                 let mut dim = head_dim as i32;
@@ -1970,17 +1887,7 @@ impl CudaDevice {
                     &mut args,
                 )
                 .expect("Rust CUDA RoPE kernel failed");
-                return;
             }
-            cuda_op_rope_256k(
-                d_vec.as_mut_ptr(),
-                pos as i32,
-                head_dim as i32,
-                n_heads as i32,
-                freq_base,
-                freq_scale,
-                self.stream,
-            );
         }
     }
 
@@ -1994,7 +1901,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            if rust_cuda_op_enabled("MATMUL") {
                 launch_rust_gemv_q4(
                     d_w_q4.as_ptr(),
                     d_x.as_ptr(),
@@ -2030,7 +1937,7 @@ impl CudaDevice {
         assert_eq!(d_y.len(), n_rows * batch);
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            if rust_cuda_op_enabled("MATMUL") {
                 launch_rust_gemm_q4(
                     d_w_q4.as_ptr(),
                     d_x.as_ptr(),
@@ -2389,24 +2296,14 @@ impl CudaDevice {
         assert_eq!(d_a.len(), d_out.len());
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                launch_rust_add(
-                    d_a.as_ptr(),
-                    d_b.as_ptr(),
-                    d_out.as_mut_ptr(),
-                    d_a.len() as i32,
-                    self.stream,
-                )
-                .expect("Rust CUDA add kernel failed");
-                return;
-            }
-            cuda_op_add(
+            launch_rust_add(
                 d_a.as_ptr(),
                 d_b.as_ptr(),
                 d_out.as_mut_ptr(),
                 d_a.len() as i32,
                 self.stream,
-            );
+            )
+            .expect("Rust CUDA add kernel failed");
         }
     }
 
@@ -2419,34 +2316,24 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                let mut table = d_table.as_ptr();
-                let mut out = d_out.as_mut_ptr();
-                let mut token_arg = token as i32;
-                let mut dim_arg = dim as i32;
-                let mut args = [
-                    &mut table as *mut _ as *mut c_void,
-                    &mut out as *mut _ as *mut c_void,
-                    &mut token_arg as *mut _ as *mut c_void,
-                    &mut dim_arg as *mut _ as *mut c_void,
-                ];
-                launch_rust_kernel(
-                    "rust_cuda_embedding_f32",
-                    ((dim as u32).div_ceil(256), 1, 1),
-                    (256, 1, 1),
-                    self.stream,
-                    &mut args,
-                )
-                .expect("Rust CUDA embedding kernel failed");
-                return;
-            }
-            cuda_op_embedding(
-                d_table.as_ptr(),
-                d_out.as_mut_ptr(),
-                token as i32,
-                dim as i32,
+            let mut table = d_table.as_ptr();
+            let mut out = d_out.as_mut_ptr();
+            let mut token_arg = token as i32;
+            let mut dim_arg = dim as i32;
+            let mut args = [
+                &mut table as *mut _ as *mut c_void,
+                &mut out as *mut _ as *mut c_void,
+                &mut token_arg as *mut _ as *mut c_void,
+                &mut dim_arg as *mut _ as *mut c_void,
+            ];
+            launch_rust_kernel(
+                "rust_cuda_embedding_f32",
+                ((dim as u32).div_ceil(256), 1, 1),
+                (256, 1, 1),
                 self.stream,
-            );
+                &mut args,
+            )
+            .expect("Rust CUDA embedding kernel failed");
         }
     }
 
@@ -3168,13 +3055,13 @@ mod tests {
             // wrappers select a device defensively before each launch, which
             // CUDA intentionally rejects while a stream is being captured.
             unsafe {
-                cuda_op_add(
+                launch_rust_add(
                     a.as_ptr(),
                     b.as_ptr(),
                     output.as_mut_ptr(),
                     64,
                     device.stream,
-                );
+                )?;
             }
             Ok(())
         })?;

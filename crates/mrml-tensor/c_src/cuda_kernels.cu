@@ -924,18 +924,6 @@ void cuda_pool_clear() {
     mrml_pool_blocks.clear();
 }
 
-void cuda_op_rms_norm(
-    const float* d_x,
-    const float* d_w,
-    float* d_out,
-    int dim,
-    float eps,
-    cudaStream_t stream
-) {
-    int threads = (dim < 1024) ? dim : 1024;
-    k_rms_norm_f32<<<1, threads, 0, stream>>>(d_x, d_w, d_out, dim, eps);
-}
-
 __global__ void k_moe_router_logits_batch_f32(
     const float* weights, const float* input, float* logits,
     int dim, int n_experts, int batch
@@ -1070,50 +1058,6 @@ __global__ void k_attention_prefill_f32(
         }
         out_h[d] = value;
     }
-}
-
-void cuda_op_rms_norm_batch(
-    const float* d_x, const float* d_w, float* d_out,
-    int dim, int batch, float eps, cudaStream_t stream
-) {
-    k_rms_norm_batch_f32<<<batch, 256, 0, stream>>>(d_x, d_w, d_out, dim, batch, eps);
-}
-
-void cuda_op_swiglu(
-    const float* d_gate,
-    const float* d_up,
-    float* d_out,
-    int size,
-    cudaStream_t stream
-) {
-    int threads = 256;
-    int blocks = (size + threads - 1) / threads;
-    k_swiglu_f32<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_out, size);
-}
-
-void cuda_op_geglu(
-    const float* d_gate,
-    const float* d_up,
-    float* d_out,
-    int size,
-    cudaStream_t stream
-) {
-    int threads = 256;
-    int blocks = (size + threads - 1) / threads;
-    k_geglu_f32<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_out, size);
-}
-
-void cuda_op_rope_256k(
-    float* d_vec,
-    int pos,
-    int head_dim,
-    int n_heads,
-    float freq_base,
-    float freq_scale,
-    cudaStream_t stream
-) {
-    int threads = head_dim / 2;
-    k_rope_256k_f32<<<n_heads, threads, 0, stream>>>(d_vec, pos, head_dim, n_heads, freq_base, freq_scale);
 }
 
 void cuda_op_gemv_q4_0(
@@ -1420,30 +1364,6 @@ void cuda_op_vocab_topk(
             vocab_size, n_recent, generated_count, k
         );
     }
-}
-
-void cuda_op_add(
-    const float* d_a,
-    const float* d_b,
-    float* d_out,
-    int size,
-    cudaStream_t stream
-) {
-    int threads = 256;
-    int blocks = (size + threads - 1) / threads;
-    k_add_f32<<<blocks, threads, 0, stream>>>(d_a, d_b, d_out, size);
-}
-
-void cuda_op_embedding(
-    const float* d_table,
-    float* d_out,
-    int token,
-    int dim,
-    cudaStream_t stream
-) {
-    int threads = 256;
-    int blocks = (dim + threads - 1) / threads;
-    k_embedding_f32<<<blocks, threads, 0, stream>>>(d_table, d_out, token, dim);
 }
 
 void cuda_op_moe_router(
