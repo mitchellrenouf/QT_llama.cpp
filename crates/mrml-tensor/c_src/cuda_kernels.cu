@@ -1299,49 +1299,6 @@ void cuda_op_vocab_topk(
     }
 }
 
-void cuda_op_prepare_ffn(
-    const float* d_hidden, const float* d_attn_proj,
-    const float* d_post_attn_norm, const float* d_ffn_norm,
-    const float* d_pre_ffw_norm_2, const float* d_router_scale,
-    float* d_attn_res, float* d_shared_in, float* d_moe_in,
-    float* d_router_in, int dim, cudaStream_t stream
-) {
-    k_prepare_ffn_f32<<<1, 256, 0, stream>>>(
-        d_hidden, d_attn_proj, d_post_attn_norm, d_ffn_norm,
-        d_pre_ffw_norm_2, d_router_scale, d_attn_res, d_shared_in,
-        d_moe_in, d_router_in, dim
-    );
-}
-
-void cuda_op_prepare_ffn_batch(
-    const float* h, const float* a, const float* pan, const float* fn,
-    const float* pfn, const float* rs, float* ar, float* si, float* mi,
-    float* ri, int dim, int batch, cudaStream_t stream
-) {
-    k_prepare_ffn_f32<<<batch, 256, 0, stream>>>(h, a, pan, fn, pfn, rs, ar, si, mi, ri, dim);
-}
-
-void cuda_op_finish_ffn(
-    const float* d_attn_res, float* d_dense, float* d_moe,
-    const float* d_post_ffw_norm_1, const float* d_post_ffw_norm_2,
-    const float* d_post_ffw_norm, float* d_hidden_out,
-    float layer_scale, int dim, cudaStream_t stream
-) {
-    k_finish_ffn_f32<<<1, 256, 0, stream>>>(
-        d_attn_res, d_dense, d_moe, d_post_ffw_norm_1,
-        d_post_ffw_norm_2, d_post_ffw_norm, d_hidden_out,
-        layer_scale, dim
-    );
-}
-
-void cuda_op_finish_ffn_batch(
-    const float* ar, float* dense, float* moe, const float* p1,
-    const float* p2, const float* pf, float* out, float scale,
-    int dim, int batch, cudaStream_t stream
-) {
-    k_finish_ffn_f32<<<batch, 256, 0, stream>>>(ar, dense, moe, p1, p2, pf, out, scale, dim);
-}
-
 void cuda_op_attention(
     const float* d_q,
     const uint8_t* d_k_cache,

@@ -147,60 +147,6 @@ extern "C" {
         partitions: i32,
         stream: CudaStream,
     );
-    fn cuda_op_prepare_ffn(
-        d_hidden: *const f32,
-        d_attn_proj: *const f32,
-        d_post_attn_norm: *const f32,
-        d_ffn_norm: *const f32,
-        d_pre_ffw_norm_2: *const f32,
-        d_router_scale: *const f32,
-        d_attn_res: *mut f32,
-        d_shared_in: *mut f32,
-        d_moe_in: *mut f32,
-        d_router_in: *mut f32,
-        dim: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_prepare_ffn_batch(
-        h: *const f32,
-        a: *const f32,
-        pan: *const f32,
-        ffn: *const f32,
-        pfn: *const f32,
-        rs: *const f32,
-        ar: *mut f32,
-        si: *mut f32,
-        mi: *mut f32,
-        ri: *mut f32,
-        dim: i32,
-        batch: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_finish_ffn(
-        d_attn_res: *const f32,
-        d_dense: *mut f32,
-        d_moe: *mut f32,
-        d_post_ffw_norm_1: *const f32,
-        d_post_ffw_norm_2: *const f32,
-        d_post_ffw_norm: *const f32,
-        d_hidden_out: *mut f32,
-        layer_scale: f32,
-        dim: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_finish_ffn_batch(
-        ar: *const f32,
-        dense: *mut f32,
-        moe: *mut f32,
-        p1: *const f32,
-        p2: *const f32,
-        pf: *const f32,
-        out: *mut f32,
-        scale: f32,
-        dim: i32,
-        batch: i32,
-        stream: CudaStream,
-    );
     fn cuda_op_attention(
         d_q: *const f32,
         d_k_cache: *const u16,
@@ -2443,8 +2389,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("FFN_PIPE") {
-                launch_rust_prepare_ffn(
+            launch_rust_prepare_ffn(
                     hidden.as_ptr(),
                     attn_proj.as_ptr(),
                     post_attn_norm.as_ptr(),
@@ -2459,23 +2404,7 @@ impl CudaDevice {
                     1,
                     self.stream,
                 )
-                .expect("Rust CUDA FFN preparation failed");
-                return;
-            }
-            cuda_op_prepare_ffn(
-                hidden.as_ptr(),
-                attn_proj.as_ptr(),
-                post_attn_norm.as_ptr(),
-                ffn_norm.as_ptr(),
-                pre_ffw_norm_2.as_ptr(),
-                router_scale.as_ptr(),
-                attn_res.as_mut_ptr(),
-                shared_in.as_mut_ptr(),
-                moe_in.as_mut_ptr(),
-                router_in.as_mut_ptr(),
-                dim as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA FFN preparation failed");
         }
     }
 
@@ -2498,8 +2427,7 @@ impl CudaDevice {
         assert_eq!(attn.len(), dim * batch);
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("FFN_PIPE") {
-                launch_rust_prepare_ffn(
+            launch_rust_prepare_ffn(
                     hidden.as_ptr(),
                     attn.as_ptr(),
                     pan.as_ptr(),
@@ -2514,24 +2442,7 @@ impl CudaDevice {
                     batch as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA batched FFN preparation failed");
-                return;
-            }
-            cuda_op_prepare_ffn_batch(
-                hidden.as_ptr(),
-                attn.as_ptr(),
-                pan.as_ptr(),
-                ffn.as_ptr(),
-                pfn.as_ptr(),
-                router_scale.as_ptr(),
-                attn_res.as_mut_ptr(),
-                shared.as_mut_ptr(),
-                moe.as_mut_ptr(),
-                router.as_mut_ptr(),
-                dim as i32,
-                batch as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA batched FFN preparation failed");
         }
     }
 
@@ -2549,8 +2460,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("FFN_PIPE") {
-                launch_rust_finish_ffn(
+            launch_rust_finish_ffn(
                     attn_res.as_ptr(),
                     dense.as_mut_ptr(),
                     moe.as_mut_ptr(),
@@ -2563,21 +2473,7 @@ impl CudaDevice {
                     1,
                     self.stream,
                 )
-                .expect("Rust CUDA FFN finalization failed");
-                return;
-            }
-            cuda_op_finish_ffn(
-                attn_res.as_ptr(),
-                dense.as_mut_ptr(),
-                moe.as_mut_ptr(),
-                post_ffw_norm_1.as_ptr(),
-                post_ffw_norm_2.as_ptr(),
-                post_ffw_norm.as_ptr(),
-                hidden_out.as_mut_ptr(),
-                layer_scale,
-                dim as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA FFN finalization failed");
         }
     }
 
@@ -2598,8 +2494,7 @@ impl CudaDevice {
         assert_eq!(output.len(), dim * batch);
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("FFN_PIPE") {
-                launch_rust_finish_ffn(
+            launch_rust_finish_ffn(
                     attn_res.as_ptr(),
                     dense.as_mut_ptr(),
                     moe.as_mut_ptr(),
@@ -2612,22 +2507,7 @@ impl CudaDevice {
                     batch as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA batched FFN finalization failed");
-                return;
-            }
-            cuda_op_finish_ffn_batch(
-                attn_res.as_ptr(),
-                dense.as_mut_ptr(),
-                moe.as_mut_ptr(),
-                p1.as_ptr(),
-                p2.as_ptr(),
-                pf.as_ptr(),
-                output.as_mut_ptr(),
-                scale,
-                dim as i32,
-                batch as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA batched FFN finalization failed");
         }
     }
 
