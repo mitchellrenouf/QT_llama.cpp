@@ -23,6 +23,17 @@ pub fn sleep_millis(milliseconds: u64) {
     mrml_linux::sleep_millis(milliseconds);
 }
 
+pub fn exit_process(status: i32) -> ! {
+    #[cfg(windows)]
+    {
+        mrml_windows::exit_process(status)
+    }
+    #[cfg(unix)]
+    {
+        mrml_linux::exit_process(status)
+    }
+}
+
 pub fn local_date_string() -> String {
     const WEEKDAYS: [&str; 7] = [
         "Sunday",

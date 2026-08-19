@@ -134,17 +134,17 @@ impl Config {
         let arguments = std::env::args().collect::<Vec<_>>();
         if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
             println!("{}", Self::help());
-            std::process::exit(0);
+            crate::platform::exit_process(0);
         }
         if arguments.iter().any(|argument| argument == "--version" || argument == "-V") {
             println!("{}", env!("CARGO_PKG_VERSION"));
-            std::process::exit(0);
+            crate::platform::exit_process(0);
         }
         match Self::try_parse_from(arguments) {
             Ok(config) => config,
             Err(error) => {
                 eprintln!("error: {error}\n\n{}", Self::help());
-                std::process::exit(2);
+                crate::platform::exit_process(2);
             }
         }
     }

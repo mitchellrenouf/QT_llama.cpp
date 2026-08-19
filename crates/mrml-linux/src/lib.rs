@@ -56,6 +56,12 @@ unsafe extern "C" {
     fn dlclose(module: *mut c_void) -> c_int;
     fn mmap(address: *mut c_void, len: usize, protection: c_int, flags: c_int, file: c_int, offset: isize) -> *mut c_void;
     fn munmap(address: *mut c_void, len: usize) -> c_int;
+    fn _exit(status: c_int) -> !;
+}
+
+#[cfg(unix)]
+pub fn exit_process(status: i32) -> ! {
+    unsafe { _exit(status) }
 }
 
 #[cfg(unix)]

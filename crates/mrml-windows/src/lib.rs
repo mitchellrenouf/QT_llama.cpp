@@ -58,6 +58,12 @@ unsafe extern "system" {
     ) -> *mut c_void;
     fn UnmapViewOfFile(address: *const c_void) -> i32;
     fn CloseHandle(handle: *mut c_void) -> i32;
+    fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[cfg(windows)]
+pub fn exit_process(exit_code: i32) -> ! {
+    unsafe { ExitProcess(exit_code as u32) }
 }
 
 #[cfg(windows)]

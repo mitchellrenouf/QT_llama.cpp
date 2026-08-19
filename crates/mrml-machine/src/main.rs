@@ -22,17 +22,17 @@ impl Args {
         let arguments = std::env::args().collect::<Vec<_>>();
         if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
             println!("Usage: mrml-machine [OPTIONS] <chat|health|session>\n\n{}", Config::help());
-            std::process::exit(0);
+            mrml_core::tools::platform::exit_process(0);
         }
         if arguments.iter().any(|argument| argument == "--version" || argument == "-V") {
             println!("{}", env!("CARGO_PKG_VERSION"));
-            std::process::exit(0);
+            mrml_core::tools::platform::exit_process(0);
         }
         match Self::try_parse_from(arguments) {
             Ok(args) => args,
             Err(error) => {
                 eprintln!("error: {error}\n\nUsage: mrml-machine [OPTIONS] <chat|health|session>");
-                std::process::exit(2);
+                mrml_core::tools::platform::exit_process(2);
             }
         }
     }
