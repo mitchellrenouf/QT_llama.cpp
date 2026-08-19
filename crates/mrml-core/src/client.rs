@@ -746,7 +746,7 @@ impl MrmlClient {
                     }
 
                     if !raw_acc.is_empty() {
-                        let chunk = std::mem::take(&mut raw_acc);
+                        let chunk = core::mem::take(&mut raw_acc);
                         callback(StreamEvent::Content(chunk.clone()));
                         full_content.push_str(&chunk);
                     }
@@ -815,7 +815,7 @@ impl MrmlClient {
                     }
 
                     if !raw_acc.is_empty() {
-                        let chunk = std::mem::take(&mut raw_acc);
+                        let chunk = core::mem::take(&mut raw_acc);
                         let clean = chunk.trim();
                         if !clean.is_empty() && clean != "thought" {
                             callback(StreamEvent::Reasoning(chunk.clone()));

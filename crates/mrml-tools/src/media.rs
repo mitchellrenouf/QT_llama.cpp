@@ -1,10 +1,10 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
+use core::sync::atomic::{AtomicBool, Ordering};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static SPEECH_ENABLED: AtomicBool = AtomicBool::new(false);
 

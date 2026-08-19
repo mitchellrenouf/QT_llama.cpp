@@ -1,6 +1,6 @@
 pub use crate::modes::{AgentMode, BackendChoice};
+use core::str::FromStr;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub struct Config {

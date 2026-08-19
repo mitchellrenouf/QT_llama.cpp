@@ -302,7 +302,7 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
             / 1_000_000_000.0,
     };
 
-    let tools = std::mem::take(&mut state.tools)
+    let tools = core::mem::take(&mut state.tools)
         .into_iter()
         .map(|tool| {
             object([
