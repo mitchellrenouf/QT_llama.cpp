@@ -289,6 +289,75 @@ impl Drop for NativeChild {
 }
 
 #[cfg(unix)]
+pub struct NativePipedChild {
+    process: c_int,
+    stdin: c_int,
+    stdout: c_int,
+    status: Option<i32>,
+}
+
+#[cfg(unix)]
+impl NativePipedChild {
+    pub fn spawn(program: &CStr, arguments: &[*const i8], current_directory: Option<&CStr>) -> Option<Self> {
+        let mut stdin_pipe = [-1; 2];
+        let mut stdout_pipe = [-1; 2];
+        if unsafe { pipe(stdin_pipe.as_mut_ptr()) } != 0 || unsafe { pipe(stdout_pipe.as_mut_ptr()) } != 0 {
+            for file in stdin_pipe.into_iter().chain(stdout_pipe) { if file >= 0 { let _ = unsafe { close(file) }; } }
+            return None;
+        }
+        let process = unsafe { fork() };
+        if process == 0 {
+            let _ = unsafe { close(stdin_pipe[1]) };
+            let _ = unsafe { close(stdout_pipe[0]) };
+            let _ = unsafe { dup2(stdin_pipe[0], 0) };
+            let _ = unsafe { dup2(stdout_pipe[1], 1) };
+            let _ = unsafe { close(stdin_pipe[0]) };
+            let _ = unsafe { close(stdout_pipe[1]) };
+            if let Some(directory) = current_directory {
+                if unsafe { chdir(directory.as_ptr()) } != 0 { unsafe { _exit(126) }; }
+            }
+            let _ = unsafe { execvp(program.as_ptr(), arguments.as_ptr()) };
+            unsafe { _exit(127) };
+        }
+        let _ = unsafe { close(stdin_pipe[0]) };
+        let _ = unsafe { close(stdout_pipe[1]) };
+        if process < 0 {
+            let _ = unsafe { close(stdin_pipe[1]) };
+            let _ = unsafe { close(stdout_pipe[0]) };
+            return None;
+        }
+        Some(Self { process, stdin: stdin_pipe[1], stdout: stdout_pipe[0], status: None })
+    }
+
+    pub fn write_stdin(&mut self, bytes: &[u8]) -> bool { write_descriptor(self.stdin, bytes) }
+
+    pub fn read_stdout(&mut self, buffer: &mut [u8]) -> Option<usize> {
+        let amount = unsafe { read(self.stdout, buffer.as_mut_ptr().cast(), buffer.len()) };
+        (amount >= 0).then_some(amount as usize)
+    }
+
+    pub fn kill(&mut self) -> bool { self.status.is_some() || unsafe { kill(self.process, 9) } == 0 }
+
+    pub fn wait(&mut self) -> Option<i32> {
+        if let Some(status) = self.status { return Some(status); }
+        let mut status = 0;
+        if unsafe { waitpid(self.process, &mut status, 0) } != self.process { return None; }
+        let code = if status & 0x7f == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
+        self.status = Some(code);
+        Some(code)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativePipedChild {
+    fn drop(&mut self) {
+        let _ = unsafe { close(self.stdin) };
+        let _ = unsafe { close(self.stdout) };
+        if self.status.is_none() { let _ = self.kill(); let _ = self.wait(); }
+    }
+}
+
+#[cfg(unix)]
 pub fn yield_now() {
     let _ = unsafe { sched_yield() };
 }

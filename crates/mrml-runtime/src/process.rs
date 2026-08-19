@@ -78,6 +78,34 @@ impl Drop for Child {
     }
 }
 
+pub struct PipedChild {
+    #[cfg(windows)]
+    native: mrml_windows::NativePipedChild,
+    #[cfg(unix)]
+    native: mrml_linux::NativePipedChild,
+}
+
+impl PipedChild {
+    pub fn write_all(&mut self, bytes: &[u8]) -> Result<(), ProcessError> {
+        self.native.write_stdin(bytes).then_some(()).ok_or(ProcessError::OutputFailed)
+    }
+
+    pub fn read_line(&mut self) -> Result<Text, ProcessError> {
+        let mut bytes = Vector::new();
+        let mut byte = [0u8; 1];
+        loop {
+            match self.native.read_stdout(&mut byte) {
+                Some(0) | None => return Err(ProcessError::OutputFailed),
+                Some(_) if byte[0] == b'\n' => break,
+                Some(_) => bytes.try_push(byte[0]).map_err(|_| ProcessError::OutputFailed)?,
+            }
+        }
+        if bytes.last() == Some(&b'\r') { bytes.pop(); }
+        let line = core::str::from_utf8(&bytes).map_err(|_| ProcessError::OutputFailed)?;
+        Ok(line.into())
+    }
+}
+
 pub struct Command {
     program: Text,
     arguments: Vector<Text>,
@@ -176,6 +204,33 @@ impl Command {
             let directory = directory.as_ref().map(|value| core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path"));
             mrml_linux::NativeChild::spawn_silent(program, &pointers, directory)
                 .map(|native| Child { native })
+                .ok_or(ProcessError::SpawnFailed)
+        }
+    }
+
+    pub fn spawn_piped(&mut self) -> Result<PipedChild, ProcessError> {
+        #[cfg(windows)]
+        {
+            let mut command_line = Vector::new();
+            append_windows_argument(&mut command_line, &self.program);
+            for argument in &self.arguments { command_line.push(' ' as u16); append_windows_argument(&mut command_line, argument); }
+            command_line.push(0);
+            let current_directory = self.current_directory.as_ref().map(|directory| { let mut encoded = Vector::new(); encoded.extend(directory.encode_utf16()); encoded.push(0); encoded });
+            mrml_windows::NativePipedChild::spawn(&mut command_line, current_directory.as_deref())
+                .map(|native| PipedChild { native })
+                .ok_or(ProcessError::SpawnFailed)
+        }
+        #[cfg(unix)]
+        {
+            let mut encoded = Vector::new();
+            encoded.push(encode_c_string(&self.program)?);
+            for argument in &self.arguments { encoded.push(encode_c_string(argument)?); }
+            let mut pointers: Vector<*const i8> = encoded.iter().map(|value| value.as_ptr().cast()).collect(); pointers.push(core::ptr::null());
+            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0]).map_err(|_| ProcessError::InvalidArgument)?;
+            let directory = self.current_directory.as_ref().map(|value| encode_c_string(value)).transpose()?;
+            let directory = directory.as_ref().map(|value| core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path"));
+            mrml_linux::NativePipedChild::spawn(program, &pointers, directory)
+                .map(|native| PipedChild { native })
                 .ok_or(ProcessError::SpawnFailed)
         }
     }
@@ -373,5 +428,24 @@ mod tests {
         let status = child.wait().unwrap();
         assert!(!status.success());
         assert_eq!(child.try_wait(), Some(status));
+    }
+
+    #[test]
+    fn piped_child_round_trips_a_utf8_line() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("powershell.exe");
+            command.args(["-NoProfile", "-Command", "$line=[Console]::In.ReadLine(); [Console]::Out.WriteLine($line)"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "IFS= read -r line; printf '%s\\n' \"$line\""]);
+            command
+        };
+        let mut child = command.spawn_piped().unwrap();
+        child.write_all("hello λ 星\n".as_bytes()).unwrap();
+        assert_eq!(child.read_line().unwrap().as_str(), "hello λ 星");
     }
 }

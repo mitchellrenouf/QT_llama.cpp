@@ -543,6 +543,99 @@ impl Drop for NativeChild {
 }
 
 #[cfg(windows)]
+pub struct NativePipedChild {
+    process: *mut c_void,
+    stdin: *mut c_void,
+    stdout: *mut c_void,
+    status: Option<i32>,
+}
+
+#[cfg(windows)]
+unsafe impl Send for NativePipedChild {}
+
+#[cfg(windows)]
+impl NativePipedChild {
+    pub fn spawn(command_line: &mut [u16], current_directory: Option<&[u16]>) -> Option<Self> {
+        if command_line.last().copied() != Some(0)
+            || current_directory.is_some_and(|path| path.last().copied() != Some(0))
+        { return None; }
+        let attributes = SecurityAttributes {
+            length: core::mem::size_of::<SecurityAttributes>() as u32,
+            security_descriptor: core::ptr::null_mut(),
+            inherit_handle: 1,
+        };
+        let mut stdin_read = core::ptr::null_mut();
+        let mut stdin_write = core::ptr::null_mut();
+        let mut stdout_read = core::ptr::null_mut();
+        let mut stdout_write = core::ptr::null_mut();
+        if unsafe { CreatePipe(&mut stdin_read, &mut stdin_write, &attributes, 0) } == 0
+            || unsafe { CreatePipe(&mut stdout_read, &mut stdout_write, &attributes, 0) } == 0
+        {
+            for handle in [stdin_read, stdin_write, stdout_read, stdout_write] {
+                if !handle.is_null() { let _ = unsafe { CloseHandle(handle) }; }
+            }
+            return None;
+        }
+        const HANDLE_FLAG_INHERIT: u32 = 1;
+        let _ = unsafe { SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0) };
+        let _ = unsafe { SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0) };
+        let mut startup = unsafe { core::mem::zeroed::<StartupInfoW>() };
+        startup.size = core::mem::size_of::<StartupInfoW>() as u32;
+        startup.flags = 0x100;
+        startup.stdin = stdin_read;
+        startup.stdout = stdout_write;
+        startup.stderr = unsafe { GetStdHandle(u32::MAX - 11) };
+        let mut information = unsafe { core::mem::zeroed::<ProcessInformation>() };
+        let created = unsafe { CreateProcessW(core::ptr::null(), command_line.as_mut_ptr(), core::ptr::null(), core::ptr::null(), 1, 0, core::ptr::null(), current_directory.map_or(core::ptr::null(), |path| path.as_ptr()), &mut startup, &mut information) };
+        let _ = unsafe { CloseHandle(stdin_read) };
+        let _ = unsafe { CloseHandle(stdout_write) };
+        if created == 0 {
+            let _ = unsafe { CloseHandle(stdin_write) };
+            let _ = unsafe { CloseHandle(stdout_read) };
+            return None;
+        }
+        let _ = unsafe { CloseHandle(information.thread) };
+        Some(Self { process: information.process, stdin: stdin_write, stdout: stdout_read, status: None })
+    }
+
+    pub fn write_stdin(&mut self, mut bytes: &[u8]) -> bool {
+        while !bytes.is_empty() {
+            let mut written = 0;
+            let amount = bytes.len().min(u32::MAX as usize) as u32;
+            if unsafe { WriteFile(self.stdin, bytes.as_ptr().cast(), amount, &mut written, core::ptr::null_mut()) } == 0 || written == 0 { return false; }
+            bytes = &bytes[written as usize..];
+        }
+        true
+    }
+
+    pub fn read_stdout(&mut self, buffer: &mut [u8]) -> Option<usize> {
+        let mut read = 0;
+        let amount = buffer.len().min(u32::MAX as usize) as u32;
+        (unsafe { ReadFile(self.stdout, buffer.as_mut_ptr().cast(), amount, &mut read, core::ptr::null_mut()) } != 0).then_some(read as usize)
+    }
+
+    pub fn kill(&mut self) -> bool { self.status.is_some() || unsafe { TerminateProcess(self.process, 1) } != 0 }
+
+    pub fn wait(&mut self) -> Option<i32> {
+        if self.status.is_none() {
+            if unsafe { WaitForSingleObject(self.process, u32::MAX) } != 0 { return None; }
+            let mut code = 0;
+            if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 { return None; }
+            self.status = Some(code as i32);
+        }
+        self.status
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativePipedChild {
+    fn drop(&mut self) {
+        if self.status.is_none() { let _ = self.kill(); let _ = self.wait(); }
+        for handle in [self.process, self.stdin, self.stdout] { if !handle.is_null() { let _ = unsafe { CloseHandle(handle) }; } }
+    }
+}
+
+#[cfg(windows)]
 pub fn yield_now() {
     let _ = unsafe { SwitchToThread() };
 }

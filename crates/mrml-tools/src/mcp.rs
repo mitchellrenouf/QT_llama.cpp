@@ -1,41 +1,22 @@
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Shared, SpinMutex, Text, Vector};
+use mrml_runtime::{Command, PipedChild, Shared, SpinMutex, Text, Vector};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::{DynTool, Tool};
 
 pub struct McpClient {
-    stdin: SpinMutex<ChildStdin>,
-    reader: SpinMutex<BufReader<ChildStdout>>,
-    _child: SpinMutex<Child>,
+    child: SpinMutex<PipedChild>,
     req_id: SpinMutex<u64>,
 }
 
 impl McpClient {
     pub async fn spawn(command: &str, args: &[&str]) -> Result<Shared<Self>> {
-        let mut child = Command::new(command)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open MCP stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open MCP stdout"))?;
-        let reader = BufReader::new(stdout);
+        let child = Command::new(command)
+            .args(args.iter().copied())
+            .spawn_piped()?;
 
         let client = Shared::new(Self {
-            stdin: SpinMutex::new(stdin),
-            reader: SpinMutex::new(reader),
-            _child: SpinMutex::new(child),
+            child: SpinMutex::new(child),
             req_id: SpinMutex::new(1),
         });
 
@@ -75,17 +56,11 @@ impl McpClient {
         let mut req_str = serde_json::to_string(&request)?;
         req_str.push('\n');
 
-        {
-            let mut stdin_guard = self.stdin.lock();
-            stdin_guard.write_all(req_str.as_bytes())?;
-            stdin_guard.flush()?;
-        }
-
-        let mut line = String::new();
-        {
-            let mut reader_guard = self.reader.lock();
-            reader_guard.read_line(&mut line)?;
-        }
+        let line = {
+            let mut child = self.child.lock();
+            child.write_all(req_str.as_bytes())?;
+            child.read_line()?
+        };
 
         let resp: Value = serde_json::from_str(&line)?;
         if let Some(err) = resp.get("error").filter(|value| !value.is_null()) {
@@ -161,5 +136,36 @@ impl Tool for McpTool {
         } else {
             Ok(res.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_pipes_initialize_and_list_mcp_tools() {
+        #[cfg(windows)]
+        let (program, arguments): (&str, &[&str]) = (
+            "powershell.exe",
+            &[
+                "-NoProfile",
+                "-Command",
+                "$null=[Console]::In.ReadLine(); [Console]::Out.WriteLine('{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'); $null=[Console]::In.ReadLine(); [Console]::Out.WriteLine('{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}')",
+            ],
+        );
+        #[cfg(unix)]
+        let (program, arguments): (&str, &[&str]) = (
+            "sh",
+            &[
+                "-c",
+                "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'; IFS= read -r list; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}'",
+            ],
+        );
+        crate::block_on(async {
+            let client = McpClient::spawn(program, arguments).await.unwrap();
+            let tools = McpClient::list_tools(&client).await.unwrap();
+            assert!(tools.is_empty());
+        });
     }
 }
