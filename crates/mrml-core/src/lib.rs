@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+pub mod modes;
+
 #[cfg(feature = "std")]
 pub mod agent;
 #[cfg(feature = "std")]
@@ -21,7 +23,8 @@ pub use mrml_tools::{fs_walk, markdown, platform};
 #[cfg(feature = "std")]
 pub use agent::MrmlAgent;
 #[cfg(feature = "std")]
-pub use config::{AgentMode, BackendChoice, Config};
+pub use config::Config;
+pub use modes::{AgentMode, BackendChoice};
 
 #[cfg(feature = "cuda")]
 pub fn clear_cuda_allocation_pool() {
