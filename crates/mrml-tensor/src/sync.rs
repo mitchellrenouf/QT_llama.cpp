@@ -1,4 +1,4 @@
-use std::cell::{RefCell, RefMut};
+use core::cell::{RefCell, RefMut};
 
 /// Mutable model state guarded by `MrmlEngine`'s outer model mutex.
 ///

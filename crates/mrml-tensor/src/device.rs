@@ -1,5 +1,6 @@
 #[cfg(feature = "cuda")]
 use crate::cuda::CudaDevice;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceType {
@@ -16,6 +17,7 @@ pub struct DeviceManager {
 impl DeviceManager {
     pub fn new() -> Self {
         let mut devices = Vec::new();
+        #[allow(unused_mut)]
         let mut primary_gpu = None;
 
         #[cfg(feature = "cuda")]
@@ -38,7 +40,12 @@ impl DeviceManager {
     }
 
     /// Plan layer assignment across available devices based on free VRAM
-    pub fn plan_layers(&self, total_layers: usize, estimated_layer_bytes: usize) -> Vec<DeviceType> {
+    #[allow(unused_variables)]
+    pub fn plan_layers(
+        &self,
+        total_layers: usize,
+        estimated_layer_bytes: usize,
+    ) -> Vec<DeviceType> {
         let mut assignments = Vec::with_capacity(total_layers);
 
         #[cfg(feature = "cuda")]
@@ -64,7 +71,8 @@ impl DeviceManager {
                         }
                         if let Ok((g_free, _)) = CudaDevice::get_memory_info(g as i32) {
                             let g_usable = g_free.saturating_sub(1_000_000_000);
-                            let g_layers = (g_usable / estimated_layer_bytes.max(1)).min(total_layers - cur_layer);
+                            let g_layers = (g_usable / estimated_layer_bytes.max(1))
+                                .min(total_layers - cur_layer);
                             for _ in 0..g_layers {
                                 assignments.push(DeviceType::Cuda(g as i32));
                             }

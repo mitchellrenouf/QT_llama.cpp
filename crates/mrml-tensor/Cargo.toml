@@ -7,10 +7,12 @@ license.workspace = true
 description = "MRML Tensor: quantized tensor math, GGUF execution, and CUDA acceleration"
 
 [features]
-default = []
-cuda = []
+default = ["std"]
+std = []
+cuda = ["std"]
 
 [dependencies]
+mrml-math = { path = "../mrml-math" }
 
 [[bench]]
 name = "hot_paths"

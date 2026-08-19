@@ -12,7 +12,7 @@ mrml-tensor = { path = "../mrml-tensor", default-features = false, optional = tr
 
 [features]
 default = ["std", "auto"]
-std = ["dep:mrml-tensor"]
+std = ["dep:mrml-tensor", "mrml-tensor/std"]
 auto = ["std", "mrml-tensor/cuda"]
 cuda = ["std", "mrml-tensor/cuda"]
 vulkan = ["std"]

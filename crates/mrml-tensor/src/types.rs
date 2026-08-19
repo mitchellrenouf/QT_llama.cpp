@@ -1,4 +1,4 @@
-use std::fmt;
+use core::fmt;
 
 /// Supported GGML Tensor Data Types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,7 +33,13 @@ impl DType {
         match self {
             DType::F32 | DType::F16 | DType::BF16 | DType::F64 => 1,
             DType::I8 | DType::I16 | DType::I32 | DType::I64 => 1,
-            DType::Q4_0 | DType::Q4_1 | DType::Q5_0 | DType::Q5_1 | DType::Q8_0 | DType::Q8_1 | DType::IQ4_NL => 32,
+            DType::Q4_0
+            | DType::Q4_1
+            | DType::Q5_0
+            | DType::Q5_1
+            | DType::Q8_0
+            | DType::Q8_1
+            | DType::IQ4_NL => 32,
             DType::Q4_K | DType::Q5_K | DType::Q6_K | DType::IQ4_XS => 256,
         }
     }
@@ -49,11 +55,11 @@ impl DType {
             DType::I16 => 2,
             DType::I32 => 4,
             DType::I64 => 8,
-            DType::Q4_0 => 18,  // 2 bytes (fp16 scale) + 16 bytes (32 nibbles)
-            DType::Q4_1 => 20,  // 2 bytes scale + 2 bytes min + 16 bytes
+            DType::Q4_0 => 18, // 2 bytes (fp16 scale) + 16 bytes (32 nibbles)
+            DType::Q4_1 => 20, // 2 bytes scale + 2 bytes min + 16 bytes
             DType::Q5_0 => 22,
             DType::Q5_1 => 24,
-            DType::Q8_0 => 34,  // 2 bytes (fp16 scale) + 32 bytes (32 int8)
+            DType::Q8_0 => 34, // 2 bytes (fp16 scale) + 32 bytes (32 int8)
             DType::Q8_1 => 36,
             DType::Q4_K => 144, // 256 weights in 144 bytes
             DType::Q5_K => 176, // 256 weights in 176 bytes

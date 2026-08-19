@@ -1,4 +1,6 @@
 use crate::types::Shape;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpType {
@@ -33,7 +35,13 @@ impl CGraph {
         Self { nodes: Vec::new() }
     }
 
-    pub fn add_node(&mut self, name: &str, op: OpType, shape: Shape, src_nodes: Vec<usize>) -> usize {
+    pub fn add_node(
+        &mut self,
+        name: &str,
+        op: OpType,
+        shape: Shape,
+        src_nodes: Vec<usize>,
+    ) -> usize {
         let id = self.nodes.len();
         self.nodes.push(Node {
             id,

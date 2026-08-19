@@ -1,5 +1,22 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
+#[cfg(feature = "std")]
+#[inline]
+fn round(value: f32) -> f32 { value.round() }
+
+#[cfg(not(feature = "std"))]
+#[inline]
+fn round(value: f32) -> f32 { mrml_math::round(value) }
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn avx2_enabled() -> bool {
+    #[cfg(feature = "std")]
+    { std::is_x86_feature_detected!("avx2") }
+    #[cfg(not(feature = "std"))]
+    { cfg!(target_feature = "avx2") }
+}
+
 /// Fast bitwise conversion from IEEE 754 half-precision float (f16) to single-precision float (f32)
 #[inline]
 pub fn f16_to_f32(h: u16) -> f32 {
@@ -77,23 +94,29 @@ pub fn f32_to_bf16(f: f32) -> u16 {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BlockQ4_0 {
-    pub d: u16,          // fp16 delta scale as raw u16
-    pub qs: [u8; 16],    // 32 nibbles (4-bit weights)
+    pub d: u16,       // fp16 delta scale as raw u16
+    pub qs: [u8; 16], // 32 nibbles (4-bit weights)
 }
 
 /// Block structure for Q8_0 quantization (32 weights per 34-byte block)
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BlockQ8_0 {
-    pub d: u16,          // fp16 delta scale as raw u16
-    pub qs: [i8; 32],    // 32 8-bit weights
+    pub d: u16,       // fp16 delta scale as raw u16
+    pub qs: [i8; 32], // 32 8-bit weights
 }
 
 /// Dequantize a contiguous buffer of Q4_0 blocks to F32 output
 pub fn dequantize_q4_0(data: &[u8], output: &mut [f32]) {
-    assert!(data.len() % 18 == 0, "Q4_0 data size must be multiple of 18 bytes");
+    assert!(
+        data.len() % 18 == 0,
+        "Q4_0 data size must be multiple of 18 bytes"
+    );
     let n_blocks = data.len() / 18;
-    assert!(output.len() >= n_blocks * 32, "Output buffer too small for dequantize_q4_0");
+    assert!(
+        output.len() >= n_blocks * 32,
+        "Output buffer too small for dequantize_q4_0"
+    );
 
     for b in 0..n_blocks {
         let block_offset = b * 18;
@@ -116,9 +139,15 @@ pub fn dequantize_q4_0(data: &[u8], output: &mut [f32]) {
 
 /// Dequantize a contiguous buffer of Q8_0 blocks to F32 output
 pub fn dequantize_q8_0(data: &[u8], output: &mut [f32]) {
-    assert!(data.len() % 34 == 0, "Q8_0 data size must be multiple of 34 bytes");
+    assert!(
+        data.len() % 34 == 0,
+        "Q8_0 data size must be multiple of 34 bytes"
+    );
     let n_blocks = data.len() / 34;
-    assert!(output.len() >= n_blocks * 32, "Output buffer too small for dequantize_q8_0");
+    assert!(
+        output.len() >= n_blocks * 32,
+        "Output buffer too small for dequantize_q8_0"
+    );
 
     for b in 0..n_blocks {
         let block_offset = b * 34;
@@ -139,7 +168,10 @@ pub fn dequantize_q8_0(data: &[u8], output: &mut [f32]) {
 pub fn quantize_f32_to_q8_0(src: &[f32], dst: &mut [u8]) {
     assert!(src.len() % 32 == 0, "Source length must be multiple of 32");
     let n_blocks = src.len() / 32;
-    assert!(dst.len() >= n_blocks * 34, "Destination buffer too small for Q8_0");
+    assert!(
+        dst.len() >= n_blocks * 34,
+        "Destination buffer too small for Q8_0"
+    );
 
     for b in 0..n_blocks {
         let src_block = &src[b * 32..(b + 1) * 32];
@@ -163,7 +195,7 @@ pub fn quantize_f32_to_q8_0(src: &[f32], dst: &mut [u8]) {
         dst[dst_offset + 1] = d_bytes[1];
 
         for i in 0..32 {
-            let v = (src_block[i] * id).round();
+            let v = round(src_block[i] * id);
             let q = v.clamp(-128.0, 127.0) as i8;
             dst[dst_offset + 2 + i] = q as u8;
         }
@@ -196,9 +228,11 @@ pub fn vec_dot_q4_0_q8_0(w_q4: &[u8], a_q8: &[u8], n_elements: usize) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         if avx_vnni_enabled() {
-            unsafe { return vec_dot_q4_0_q8_0_avx_vnni(w_q4, a_q8, n_elements); }
+            unsafe {
+                return vec_dot_q4_0_q8_0_avx_vnni(w_q4, a_q8, n_elements);
+            }
         }
-        if is_x86_feature_detected!("avx2") {
+        if avx2_enabled() {
             unsafe {
                 return vec_dot_q4_0_q8_0_avx2(w_q4, a_q8, n_elements);
             }
@@ -221,8 +255,10 @@ unsafe fn vec_dot_q4_0_q8_0_avx2(w_q4: &[u8], a_q8: &[u8], n_elements: usize) ->
         let w_off = b * 18;
         let a_off = b * 34;
 
-        let d_w_raw = u16::from_le_bytes([*w_q4.get_unchecked(w_off), *w_q4.get_unchecked(w_off + 1)]);
-        let d_a_raw = u16::from_le_bytes([*a_q8.get_unchecked(a_off), *a_q8.get_unchecked(a_off + 1)]);
+        let d_w_raw =
+            u16::from_le_bytes([*w_q4.get_unchecked(w_off), *w_q4.get_unchecked(w_off + 1)]);
+        let d_a_raw =
+            u16::from_le_bytes([*a_q8.get_unchecked(a_off), *a_q8.get_unchecked(a_off + 1)]);
 
         let d_w = f16_to_f32(d_w_raw);
         let d_a = f16_to_f32(d_a_raw);
@@ -235,7 +271,10 @@ unsafe fn vec_dot_q4_0_q8_0_avx2(w_q4: &[u8], a_q8: &[u8], n_elements: usize) ->
         let q8_high_128 = _mm_loadu_si128(a_ptr.add(16) as *const __m128i);
 
         let q4_low = _mm_sub_epi8(_mm_and_si128(q4_128, mask_low), offset_eight);
-        let q4_high = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16(q4_128, 4), mask_low), offset_eight);
+        let q4_high = _mm_sub_epi8(
+            _mm_and_si128(_mm_srli_epi16(q4_128, 4), mask_low),
+            offset_eight,
+        );
 
         // Sign-extend 8-bit to 16-bit
         let w_low_lo = _mm_cvtepi8_epi16(q4_low);
@@ -309,14 +348,16 @@ pub fn quantize_f32_to_q4_0(src: &[f32], dst: &mut [u8]) {
     assert_eq!(src.len() % 32, 0);
     assert!(dst.len() >= src.len() / 32 * 18);
     for (block_index, values) in src.chunks_exact(32).enumerate() {
-        let max_abs = values.iter().fold(0.0f32, |max, value| max.max(value.abs()));
+        let max_abs = values
+            .iter()
+            .fold(0.0f32, |max, value| max.max(value.abs()));
         let scale = if max_abs > 0.0 { max_abs / 8.0 } else { 0.0 };
         let offset = block_index * 18;
         dst[offset..offset + 2].copy_from_slice(&f32_to_f16(scale).to_le_bytes());
         let inverse = if scale > 0.0 { 1.0 / scale } else { 0.0 };
         for index in 0..16 {
-            let low = ((values[index] * inverse).round() as i32).clamp(-8, 7) + 8;
-            let high = ((values[index + 16] * inverse).round() as i32).clamp(-8, 7) + 8;
+            let low = (round(values[index] * inverse) as i32).clamp(-8, 7) + 8;
+            let high = (round(values[index + 16] * inverse) as i32).clamp(-8, 7) + 8;
             dst[offset + 2 + index] = low as u8 | ((high as u8) << 4);
         }
     }
@@ -328,17 +369,26 @@ pub fn quantize_f32_to_q4_0(src: &[f32], dst: &mut [u8]) {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn avx_vnni_enabled() -> bool {
-    is_x86_feature_detected!("avxvnni")
+    #[cfg(feature = "std")]
+    { std::is_x86_feature_detected!("avxvnni") }
+    #[cfg(not(feature = "std"))]
+    { cfg!(target_feature = "avxvnni") }
 }
 
 #[cfg(test)]
 mod simd_tests {
     use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     #[test]
     fn dispatched_dots_match_scalar() {
-        let values: Vec<f32> = (0..256).map(|i| ((i * 37 % 101) as f32 - 50.0) / 13.0).collect();
-        let other: Vec<f32> = (0..256).map(|i| ((i * 19 % 89) as f32 - 44.0) / 11.0).collect();
+        let values: Vec<f32> = (0..256)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) / 13.0)
+            .collect();
+        let other: Vec<f32> = (0..256)
+            .map(|i| ((i * 19 % 89) as f32 - 44.0) / 11.0)
+            .collect();
         let mut q4 = vec![0u8; values.len() / 32 * 18];
         let mut q8_a = vec![0u8; values.len() / 32 * 34];
         let mut q8_b = vec![0u8; other.len() / 32 * 34];
@@ -360,16 +410,31 @@ unsafe fn vec_dot_q4_0_q8_0_avx_vnni(w_q4: &[u8], a_q8: &[u8], n_elements: usize
     for block in 0..n_elements / 32 {
         let w_off = block * 18;
         let a_off = block * 34;
-        let scale = f16_to_f32(u16::from_le_bytes([*w_q4.get_unchecked(w_off), *w_q4.get_unchecked(w_off + 1)]))
-            * f16_to_f32(u16::from_le_bytes([*a_q8.get_unchecked(a_off), *a_q8.get_unchecked(a_off + 1)]));
+        let scale = f16_to_f32(u16::from_le_bytes([
+            *w_q4.get_unchecked(w_off),
+            *w_q4.get_unchecked(w_off + 1),
+        ])) * f16_to_f32(u16::from_le_bytes([
+            *a_q8.get_unchecked(a_off),
+            *a_q8.get_unchecked(a_off + 1),
+        ]));
         let packed = _mm_loadu_si128(w_q4.as_ptr().add(w_off + 2) as *const __m128i);
         let low = _mm_sub_epi8(_mm_and_si128(packed, mask), _mm_set1_epi8(8));
-        let high = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16(packed, 4), mask), _mm_set1_epi8(8));
+        let high = _mm_sub_epi8(
+            _mm_and_si128(_mm_srli_epi16(packed, 4), mask),
+            _mm_set1_epi8(8),
+        );
         let q8_low = _mm_loadu_si128(a_q8.as_ptr().add(a_off + 2) as *const __m128i);
         let q8_high = _mm_loadu_si128(a_q8.as_ptr().add(a_off + 18) as *const __m128i);
         let mut dot = avx_vnni_dpwssd(
-            _mm256_setzero_si256(), _mm256_cvtepi8_epi16(low), _mm256_cvtepi8_epi16(q8_low));
-        dot = avx_vnni_dpwssd(dot, _mm256_cvtepi8_epi16(high), _mm256_cvtepi8_epi16(q8_high));
+            _mm256_setzero_si256(),
+            _mm256_cvtepi8_epi16(low),
+            _mm256_cvtepi8_epi16(q8_low),
+        );
+        dot = avx_vnni_dpwssd(
+            dot,
+            _mm256_cvtepi8_epi16(high),
+            _mm256_cvtepi8_epi16(q8_high),
+        );
         let mut lanes = [0i32; 8];
         _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, dot);
         sum += lanes.iter().sum::<i32>() as f32 * scale;
@@ -386,7 +451,7 @@ pub fn vec_dot_q8_0_q8_0(x: &[u8], y: &[u8], n_elements: usize) -> f32 {
         return unsafe { vec_dot_q8_0_q8_0_avx_vnni(x, y, n_elements) };
     }
     #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx2") {
+    if avx2_enabled() {
         return unsafe { vec_dot_q8_0_q8_0_avx2(x, y, n_elements) };
     }
 
@@ -400,15 +465,27 @@ unsafe fn vec_dot_q8_0_q8_0_avx_vnni(x: &[u8], y: &[u8], n_elements: usize) -> f
     for block in 0..n_elements / 32 {
         let x_off = block * 34;
         let y_off = block * 34;
-        let scale = f16_to_f32(u16::from_le_bytes([*x.get_unchecked(x_off), *x.get_unchecked(x_off + 1)]))
-            * f16_to_f32(u16::from_le_bytes([*y.get_unchecked(y_off), *y.get_unchecked(y_off + 1)]));
+        let scale = f16_to_f32(u16::from_le_bytes([
+            *x.get_unchecked(x_off),
+            *x.get_unchecked(x_off + 1),
+        ])) * f16_to_f32(u16::from_le_bytes([
+            *y.get_unchecked(y_off),
+            *y.get_unchecked(y_off + 1),
+        ]));
         let x_low = _mm_loadu_si128(x.as_ptr().add(x_off + 2) as *const __m128i);
         let x_high = _mm_loadu_si128(x.as_ptr().add(x_off + 18) as *const __m128i);
         let y_low = _mm_loadu_si128(y.as_ptr().add(y_off + 2) as *const __m128i);
         let y_high = _mm_loadu_si128(y.as_ptr().add(y_off + 18) as *const __m128i);
         let mut dot = avx_vnni_dpwssd(
-            _mm256_setzero_si256(), _mm256_cvtepi8_epi16(x_low), _mm256_cvtepi8_epi16(y_low));
-        dot = avx_vnni_dpwssd(dot, _mm256_cvtepi8_epi16(x_high), _mm256_cvtepi8_epi16(y_high));
+            _mm256_setzero_si256(),
+            _mm256_cvtepi8_epi16(x_low),
+            _mm256_cvtepi8_epi16(y_low),
+        );
+        dot = avx_vnni_dpwssd(
+            dot,
+            _mm256_cvtepi8_epi16(x_high),
+            _mm256_cvtepi8_epi16(y_high),
+        );
         let mut lanes = [0i32; 8];
         _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, dot);
         sum += lanes.iter().sum::<i32>() as f32 * scale;
@@ -437,14 +514,9 @@ unsafe fn vec_dot_q8_0_q8_0_avx2(x: &[u8], y: &[u8], n_elements: usize) -> f32 {
         let x_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(xv, 1));
         let y_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(yv));
         let y_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(yv, 1));
-        let products = _mm256_add_epi32(
-            _mm256_madd_epi16(x_lo, y_lo),
-            _mm256_madd_epi16(x_hi, y_hi),
-        );
-        let scaled = _mm256_mul_ps(
-            _mm256_cvtepi32_ps(products),
-            _mm256_set1_ps(dx * dy),
-        );
+        let products =
+            _mm256_add_epi32(_mm256_madd_epi16(x_lo, y_lo), _mm256_madd_epi16(x_hi, y_hi));
+        let scaled = _mm256_mul_ps(_mm256_cvtepi32_ps(products), _mm256_set1_ps(dx * dy));
         accum = _mm256_add_ps(accum, scaled);
     }
     let mut lanes = [0.0f32; 8];
@@ -546,7 +618,11 @@ pub fn dequantize_q6_k_to_f32(src: &[u8], dst: &mut [f32]) {
             let l_byte = ql[i];
             let h_byte = qh[i / 2];
 
-            let h_val = if i % 2 == 0 { h_byte & 0x0F } else { (h_byte >> 4) & 0x0F };
+            let h_val = if i % 2 == 0 {
+                h_byte & 0x0F
+            } else {
+                (h_byte >> 4) & 0x0F
+            };
             let q0 = ((l_byte & 0x0F) | ((h_val & 0x03) << 4)) as i32 - 32;
             let q1 = (((l_byte >> 4) & 0x0F) | (((h_val >> 2) & 0x03) << 4)) as i32 - 32;
 
@@ -555,4 +631,3 @@ pub fn dequantize_q6_k_to_f32(src: &[u8], dst: &mut [f32]) {
         }
     }
 }
-

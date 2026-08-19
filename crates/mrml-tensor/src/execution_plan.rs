@@ -1,4 +1,4 @@
-use std::fmt;
+use core::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MatmulBackend {
@@ -86,9 +86,17 @@ impl ExecutionPlan {
 
 impl fmt::Display for ExecutionPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} matmul={:?} moe={:?} attention={:?} graph={} prefill={} kv-page={}",
-            self.device_class, self.matmul, self.moe, self.attention,
-            self.decode_graph, self.prefill_chunk, self.kv_page_tokens)
+        write!(
+            f,
+            "{:?} matmul={:?} moe={:?} attention={:?} graph={} prefill={} kv-page={}",
+            self.device_class,
+            self.matmul,
+            self.moe,
+            self.attention,
+            self.decode_graph,
+            self.prefill_chunk,
+            self.kv_page_tokens
+        )
     }
 }
 

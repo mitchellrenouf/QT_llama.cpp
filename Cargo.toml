@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/mrml-model",
+    "crates/mrml-math",
     "crates/mrml-tensor",
     "crates/mrml-core",
     "crates/mrml-cli",

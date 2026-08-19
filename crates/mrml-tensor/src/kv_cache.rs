@@ -1,6 +1,9 @@
 use crate::anyhow::{self, Result};
-use crate::quant::{f16_to_f32, quantize_f32_to_q4_0, quantize_f32_to_q8_0,
-    vec_dot_q4_0_q8_0, vec_dot_q8_0_q8_0};
+use alloc::vec;
+use alloc::vec::Vec;
+use crate::quant::{
+    f16_to_f32, quantize_f32_to_q4_0, quantize_f32_to_q8_0, vec_dot_q4_0_q8_0, vec_dot_q8_0_q8_0,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum KvCacheFormat {
@@ -12,7 +15,11 @@ pub enum KvCacheFormat {
 
 impl KvCacheFormat {
     pub fn cuda_code(self) -> i32 {
-        match self { Self::F32 => 0, Self::Q8 => 1, Self::Q4 => 2 }
+        match self {
+            Self::F32 => 0,
+            Self::Q8 => 1,
+            Self::Q4 => 2,
+        }
     }
 
     pub fn cuda_bytes_per_token(self, elements: usize) -> usize {
@@ -27,7 +34,9 @@ impl KvCacheFormat {
             "q4" | "q4_0" => Ok(Self::Q4),
             "q8" | "q8_0" => Ok(Self::Q8),
             "f32" | "f16" => Ok(Self::F32),
-            value => anyhow::bail!("unsupported CPU KV cache type '{value}' (use q4_0, q8_0, or f32)"),
+            value => {
+                anyhow::bail!("unsupported CPU KV cache type '{value}' (use q4_0, q8_0, or f32)")
+            }
         }
     }
 }
@@ -60,7 +69,11 @@ impl KvCacheRow {
 
     pub fn dot_head(&self, q: &[f32], q8: &[u8], head_offset: usize) -> f32 {
         match self {
-            Self::F32(row) => q.iter().zip(&row[head_offset..head_offset + q.len()]).map(|(a,b)| a*b).sum(),
+            Self::F32(row) => q
+                .iter()
+                .zip(&row[head_offset..head_offset + q.len()])
+                .map(|(a, b)| a * b)
+                .sum(),
             Self::Q8(row) => {
                 let bytes = q.len() / 32 * 34;
                 let offset = head_offset / 32 * 34;
@@ -78,14 +91,18 @@ impl KvCacheRow {
     pub fn add_head_scaled(&self, out: &mut [f32], head_offset: usize, scale: f32) {
         let head_len = out.len();
         match self {
-            Self::F32(row) => out.iter_mut().zip(&row[head_offset..head_offset + head_len])
+            Self::F32(row) => out
+                .iter_mut()
+                .zip(&row[head_offset..head_offset + head_len])
                 .for_each(|(dst, src)| *dst += scale * src),
             Self::Q8(row) => {
                 let offset = head_offset / 32 * 34;
                 for (block, dst) in out.chunks_exact_mut(32).enumerate() {
                     let base = offset + block * 34;
                     let d = f16_to_f32(u16::from_le_bytes([row[base], row[base + 1]])) * scale;
-                    for i in 0..32 { dst[i] += d * row[base + 2 + i] as i8 as f32; }
+                    for i in 0..32 {
+                        dst[i] += d * row[base + 2 + i] as i8 as f32;
+                    }
                 }
             }
             Self::Q4(row) => {
@@ -111,8 +128,12 @@ mod tests {
 
     #[test]
     fn quantized_rows_preserve_attention_operations() {
-        let values: Vec<f32> = (0..128).map(|i| ((i * 29 % 97) as f32 - 48.0) / 23.0).collect();
-        let query: Vec<f32> = (0..64).map(|i| ((i * 11 % 53) as f32 - 26.0) / 17.0).collect();
+        let values: Vec<f32> = (0..128)
+            .map(|i| ((i * 29 % 97) as f32 - 48.0) / 23.0)
+            .collect();
+        let query: Vec<f32> = (0..64)
+            .map(|i| ((i * 11 % 53) as f32 - 26.0) / 17.0)
+            .collect();
         let mut query_q8 = vec![0; query.len() / 32 * 34];
         quantize_f32_to_q8_0(&query, &mut query_q8);
         let exact_dot: f32 = values[64..].iter().zip(&query).map(|(a, b)| a * b).sum();
@@ -120,11 +141,17 @@ mod tests {
         for (format, tolerance) in [(KvCacheFormat::Q8, 0.03), (KvCacheFormat::Q4, 1.0)] {
             let row = KvCacheRow::from_f32(&values, format);
             let dot = row.dot_head(&query, &query_q8, 64);
-            assert!((dot - exact_dot).abs() < tolerance, "{format:?}: {dot} vs {exact_dot}");
+            assert!(
+                (dot - exact_dot).abs() < tolerance,
+                "{format:?}: {dot} vs {exact_dot}"
+            );
             let mut actual = vec![0.0; 64];
             row.add_head_scaled(&mut actual, 64, 0.37);
-            let max_error = actual.iter().zip(&values[64..])
-                .map(|(a, b)| (a - b * 0.37).abs()).fold(0.0f32, f32::max);
+            let max_error = actual
+                .iter()
+                .zip(&values[64..])
+                .map(|(a, b)| (a - b * 0.37).abs())
+                .fold(0.0f32, f32::max);
             assert!(max_error < tolerance, "{format:?} max error: {max_error}");
         }
     }
@@ -167,7 +194,11 @@ impl LayerKvCache {
     ) -> Result<Self> {
         let is_swa = sliding_window.is_some();
         let sw_size = sliding_window.unwrap_or(max_context);
-        let cap = if is_swa { sw_size.min(max_context) } else { max_context };
+        let cap = if is_swa {
+            sw_size.min(max_context)
+        } else {
+            max_context
+        };
 
         // GenerationState owns the active cache. Keep this manager metadata-only
         // until its storage is wired into the forward pass.
@@ -269,16 +300,24 @@ impl KvCacheManager {
 
         for l in 0..num_layers {
             let is_swa = sliding_window_layers.contains(&l);
-            let sw = if is_swa { Some(sliding_window_size) } else { None };
+            let sw = if is_swa {
+                Some(sliding_window_size)
+            } else {
+                None
+            };
 
-            let dev = layer_devices.get(l).cloned().unwrap_or(crate::device::DeviceType::Cpu);
+            let dev = layer_devices
+                .get(l)
+                .cloned()
+                .unwrap_or(crate::device::DeviceType::Cpu);
             let on_device = matches!(dev, crate::device::DeviceType::Cuda(_));
             let dev_id = match dev {
                 crate::device::DeviceType::Cuda(id) => id,
                 crate::device::DeviceType::Cpu => 0,
             };
 
-            let cache = LayerKvCache::new(n_kv_heads, head_dim, max_context, sw, on_device, dev_id)?;
+            let cache =
+                LayerKvCache::new(n_kv_heads, head_dim, max_context, sw, on_device, dev_id)?;
             layers.push(cache);
         }
 

@@ -46,6 +46,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-math"
+version = "0.4.0"
+
+[[package]]
 name = "mrml-model"
 version = "0.4.0"
 dependencies = [
@@ -68,6 +72,9 @@ dependencies = [
 [[package]]
 name = "mrml-tensor"
 version = "0.4.0"
+dependencies = [
+ "mrml-math",
+]
 
 [[package]]
 name = "mrml-terminal-style"

@@ -1,5 +1,7 @@
-use crate::types::{DType, Shape, Strides};
 use crate::anyhow::{anyhow, Result};
+use crate::types::{DType, Shape, Strides};
+use alloc::vec;
+use alloc::vec::Vec;
 
 pub enum TensorStorage<'a> {
     OwnedF32(Vec<f32>),
@@ -67,8 +69,8 @@ impl<'a> Tensor<'a> {
             TensorStorage::Borrowed(slice) => slice,
             TensorStorage::OwnedF32(vec) => {
                 let ptr = vec.as_ptr() as *const u8;
-                let len = vec.len() * std::mem::size_of::<f32>();
-                unsafe { std::slice::from_raw_parts(ptr, len) }
+                let len = vec.len() * core::mem::size_of::<f32>();
+                unsafe { core::slice::from_raw_parts(ptr, len) }
             }
         }
     }

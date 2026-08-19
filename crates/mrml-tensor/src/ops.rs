@@ -1,4 +1,24 @@
 use crate::quant::{quantize_f32_to_q8_0, vec_dot_q4_0_q8_0};
+use alloc::vec;
+
+macro_rules! math_fn {
+    ($name:ident, $method:ident, $native:path) => {
+        #[cfg(feature = "std")]
+        #[inline] fn $name(value: f32) -> f32 { value.$method() }
+        #[cfg(not(feature = "std"))]
+        #[inline] fn $name(value: f32) -> f32 { $native(value) }
+    };
+}
+math_fn!(sqrt, sqrt, mrml_math::sqrt);
+math_fn!(cos, cos, mrml_math::cos);
+math_fn!(sin, sin, mrml_math::sin);
+math_fn!(tanh, tanh, mrml_math::tanh);
+math_fn!(exp, exp, mrml_math::exp);
+
+#[cfg(feature = "std")]
+#[inline] fn pow(value: f32, exponent: f32) -> f32 { value.powf(exponent) }
+#[cfg(not(feature = "std"))]
+#[inline] fn pow(value: f32, exponent: f32) -> f32 { mrml_math::pow(value, exponent) }
 
 /// In-place or out-of-place RMS Normalization: y = x / sqrt(mean(x^2) + eps) * weight
 pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32, out: &mut [f32]) {
@@ -11,7 +31,7 @@ pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32, out: &mut [f32]) {
     }
 
     let mean_sq = sum_sq / (dim as f32);
-    let scale = 1.0f32 / (mean_sq + eps).sqrt();
+    let scale = 1.0f32 / sqrt(mean_sq + eps);
 
     if let Some(w) = weight {
         let w_slice = if w.len() >= dim { &w[..dim] } else { w };
@@ -41,7 +61,7 @@ pub fn rms_norm_inplace(x: &mut [f32], weight: Option<&[f32]>, eps: f32) {
     }
 
     let mean_sq = sum_sq / (dim as f32);
-    let scale = 1.0f32 / (mean_sq + eps).sqrt();
+    let scale = 1.0f32 / sqrt(mean_sq + eps);
 
     if let Some(w) = weight {
         let w_slice = if w.len() >= dim { &w[..dim] } else { w };
@@ -59,20 +79,14 @@ pub fn rms_norm_inplace(x: &mut [f32], weight: Option<&[f32]>, eps: f32) {
 }
 
 /// Rotary Positional Embedding (RoPE) for query/key vectors
-pub fn rope_1d(
-    vec: &mut [f32],
-    pos: usize,
-    head_dim: usize,
-    freq_base: f32,
-    freq_scale: f32,
-) {
+pub fn rope_1d(vec: &mut [f32], pos: usize, head_dim: usize, freq_base: f32, freq_scale: f32) {
     let half_dim = head_dim / 2;
     let theta_base = freq_base;
 
     for i in 0..half_dim {
-        let theta = (pos as f32) * freq_scale / theta_base.powf((2 * i) as f32 / head_dim as f32);
-        let cos_th = theta.cos();
-        let sin_th = theta.sin();
+        let theta = (pos as f32) * freq_scale / pow(theta_base, (2 * i) as f32 / head_dim as f32);
+        let cos_th = cos(theta);
+        let sin_th = sin(theta);
 
         let v0 = vec[i];
         let v1 = vec[i + half_dim];
@@ -86,7 +100,7 @@ pub fn rope_1d(
 #[inline]
 pub fn gelu_approx(x: f32) -> f32 {
     let sqrt_2_over_pi = 0.7978845608f32;
-    0.5f32 * x * (1.0f32 + (sqrt_2_over_pi * (x + 0.044715f32 * x * x * x)).tanh())
+    0.5f32 * x * (1.0f32 + tanh(sqrt_2_over_pi * (x + 0.044715f32 * x * x * x)))
 }
 
 /// GeGLU forward elementwise: out = gelu_approx(gate) * up
@@ -102,7 +116,7 @@ pub fn geglu(gate: &[f32], up: &[f32], out: &mut [f32]) {
 /// SiLU activation: x / (1 + exp(-x))
 #[inline]
 pub fn silu(x: f32) -> f32 {
-    x / (1.0f32 + (-x).exp())
+    x / (1.0f32 + exp(-x))
 }
 
 /// SwiGLU forward elementwise: out = silu(gate) * up
@@ -130,7 +144,7 @@ pub fn softmax(logits: &mut [f32]) {
 
     let mut sum_exp = 0.0f32;
     for val in logits.iter_mut() {
-        let e = (*val - max_val).exp();
+        let e = exp(*val - max_val);
         *val = e;
         sum_exp += e;
     }
@@ -179,10 +193,9 @@ pub fn rope_1d_batched(
     let half_dim = head_dim / 2;
 
     for i in 0..half_dim {
-        let theta = (pos as f32) * freq_scale
-            / freq_base.powf((2 * i) as f32 / head_dim as f32);
-        let cos_th = theta.cos();
-        let sin_th = theta.sin();
+        let theta = (pos as f32) * freq_scale / pow(freq_base, (2 * i) as f32 / head_dim as f32);
+        let cos_th = cos(theta);
+        let sin_th = sin(theta);
 
         for head in vec.chunks_exact_mut(head_dim) {
             let v0 = head[i];
@@ -246,14 +259,7 @@ pub fn mat_vec_mul_q4_0_q8_0(
 }
 
 /// Dense F32 Matrix-Matrix Multiplication: C = A * B
-pub fn mat_mul_f32(
-    a: &[f32],
-    b: &[f32],
-    c: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) {
+pub fn mat_mul_f32(a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usize, n: usize) {
     assert_eq!(a.len(), m * k);
     assert_eq!(b.len(), k * n);
     assert_eq!(c.len(), m * n);
