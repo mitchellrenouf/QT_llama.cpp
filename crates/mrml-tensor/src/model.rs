@@ -13,6 +13,22 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use mrml_runtime::{File, Instant, OrderedMap, Shared, Text, Vector};
 
+type Vec<T> = Vector<T>;
+
+macro_rules! vec {
+    ($value:expr; $length:expr) => {
+        filled_vector($length, $value)
+    };
+    () => {
+        Vector::new()
+    };
+    ($($value:expr),+ $(,)?) => {{
+        let mut output = Vector::new();
+        $(output.push($value);)+
+        output
+    }};
+}
+
 fn environment_is_set(name: &CStr) -> bool {
     #[cfg(windows)]
     return mrml_windows::environment_variable_is_set(name);
@@ -2755,7 +2771,7 @@ impl MrmlModel {
         // Softmax sampling over top-40 candidates
         let max_logit = all_scored.first().map(|x| x.0).unwrap_or(0.0);
         let temp = temperature.max(0.1);
-        let mut probs = Vec::with_capacity(all_scored.len());
+        let mut probs = Vec::with_capacity(all_scored.len()).expect("MRML allocation failed");
         let mut sum_exp = 0.0f32;
 
         for (logit, _) in &all_scored {
