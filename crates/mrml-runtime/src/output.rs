@@ -8,9 +8,9 @@ impl Write for NativeOutput {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         #[cfg(windows)]
         let written = if self.stderr {
-            mrml_windows::write_stderr(text.as_bytes())
+            mrml_windows::write_stderr_text(text)
         } else {
-            mrml_windows::write_stdout(text.as_bytes())
+            mrml_windows::write_stdout_text(text)
         };
         #[cfg(unix)]
         let written = if self.stderr {

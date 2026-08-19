@@ -199,6 +199,13 @@ unsafe extern "system" {
         written: *mut u32,
         overlapped: *mut c_void,
     ) -> i32;
+    fn WriteConsoleW(
+        console: *mut c_void,
+        buffer: *const c_void,
+        characters: u32,
+        written: *mut u32,
+        reserved: *const c_void,
+    ) -> i32;
     fn SetFilePointerEx(file: *mut c_void, distance: i64, position: *mut i64, method: u32) -> i32;
     fn GetFileSizeEx(file: *mut c_void, size: *mut i64) -> i32;
     fn CreateThread(
@@ -976,13 +983,74 @@ fn write_standard_handle(kind: u32, mut bytes: &[u8]) -> bool {
 }
 
 #[cfg(windows)]
+fn write_console_units(handle: *mut c_void, mut units: &[u16]) -> bool {
+    while !units.is_empty() {
+        let mut written = 0u32;
+        let count = units.len().min(u32::MAX as usize) as u32;
+        if unsafe {
+            WriteConsoleW(
+                handle,
+                units.as_ptr().cast(),
+                count,
+                &mut written,
+                core::ptr::null(),
+            )
+        } == 0
+            || written == 0
+        {
+            return false;
+        }
+        units = &units[written as usize..];
+    }
+    true
+}
+
+#[cfg(windows)]
+fn write_standard_text(kind: u32, text: &str) -> bool {
+    let handle = unsafe { GetStdHandle(kind) };
+    if handle.is_null() || handle == usize::MAX as *mut c_void {
+        return false;
+    }
+    let mut mode = 0;
+    if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+        return write_standard_handle(kind, text.as_bytes());
+    }
+
+    let mut buffer = [0u16; 1024];
+    let mut length = 0;
+    for character in text.chars() {
+        let mut encoded = [0u16; 2];
+        let encoded = character.encode_utf16(&mut encoded);
+        if length + encoded.len() > buffer.len() {
+            if !write_console_units(handle, &buffer[..length]) {
+                return false;
+            }
+            length = 0;
+        }
+        buffer[length..length + encoded.len()].copy_from_slice(encoded);
+        length += encoded.len();
+    }
+    length == 0 || write_console_units(handle, &buffer[..length])
+}
+
+#[cfg(windows)]
 pub fn write_stdout(bytes: &[u8]) -> bool {
     write_standard_handle(u32::MAX - 10, bytes)
 }
 
 #[cfg(windows)]
+pub fn write_stdout_text(text: &str) -> bool {
+    write_standard_text(u32::MAX - 10, text)
+}
+
+#[cfg(windows)]
 pub fn write_stderr(bytes: &[u8]) -> bool {
     write_standard_handle(u32::MAX - 11, bytes)
+}
+
+#[cfg(windows)]
+pub fn write_stderr_text(text: &str) -> bool {
+    write_standard_text(u32::MAX - 11, text)
 }
 
 #[cfg(windows)]

@@ -1,6 +1,7 @@
 //! Low-latency terminal Markdown presentation.
 use mrml_runtime::Text;
 use mrml_runtime::mrml_print as print;
+use mrml_runtime::mrml_println as println;
 
 const RESET: &str = "\x1b[0m";
 
@@ -97,7 +98,11 @@ fn render_markdown(md_text: &str, styled: bool) -> Text {
 }
 
 pub fn print_rich_markdown(md_text: &str) {
-    print!("{}", render_markdown(md_text, colors_enabled()));
+    let rendered = render_markdown(md_text, colors_enabled());
+    print!("{}", rendered);
+    if !rendered.ends_with('\n') {
+        println!();
+    }
 }
 
 pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
