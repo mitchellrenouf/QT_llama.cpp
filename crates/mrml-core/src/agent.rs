@@ -1,7 +1,6 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use mrml_runtime::Vector;
 use mrml_terminal_style::Colorize;
-use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -449,13 +448,13 @@ impl MrmlAgent {
         }
 
         let mut list = Vector::new();
-        for entry in fs::read_dir(sessions_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    list.push(stem.into());
-                }
+        for entry in mrml_runtime::read_directory(
+            sessions_dir
+                .to_str()
+                .ok_or_else(|| anyhow!("Session directory is not valid UTF-8"))?,
+        )? {
+            if !entry.is_directory && entry.name.ends_with(".json") {
+                list.push(entry.name[..entry.name.len() - 5].into());
             }
         }
         Ok(list)

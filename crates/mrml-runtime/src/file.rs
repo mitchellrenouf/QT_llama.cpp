@@ -16,6 +16,11 @@ pub enum FileError {
     RenameFailed,
 }
 
+pub struct DirectoryEntry {
+    pub name: Text,
+    pub is_directory: bool,
+}
+
 pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
     let mut file = File::open(path)?;
     let mut bytes = Vector::new();
@@ -140,6 +145,48 @@ pub fn rename_file(existing: &str, replacement: &str) -> Result<(), FileError> {
         },
     );
     renamed.then_some(()).ok_or(FileError::RenameFailed)
+}
+
+pub fn read_directory(path: &str) -> Result<Vector<DirectoryEntry>, FileError> {
+    let mut entries = Vector::new();
+    #[cfg(windows)]
+    {
+        let mut pattern = encode_windows_path(path).ok_or(FileError::InvalidPath)?;
+        pattern.pop();
+        if !path.ends_with(['/', '\\']) {
+            pattern.push('\\' as u16);
+        }
+        pattern.push('*' as u16);
+        pattern.push(0);
+        let mut directory = mrml_windows::NativeDirectory::open(&pattern)
+            .ok_or(FileError::DirectoryFailed)?;
+        let mut wide_name = [0u16; 260];
+        while let Some((length, is_directory)) = directory.next(&mut wide_name) {
+            let mut name = Text::new();
+            for character in core::char::decode_utf16(wide_name[..length].iter().copied()) {
+                name.push(character.map_err(|_| FileError::InvalidUtf8)?);
+            }
+            if name != "." && name != ".." {
+                entries.push(DirectoryEntry { name, is_directory });
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        let encoded = encode_unix_path(path).ok_or(FileError::InvalidPath)?;
+        let path = core::ffi::CStr::from_bytes_with_nul(&encoded)
+            .map_err(|_| FileError::InvalidPath)?;
+        let mut directory = mrml_linux::NativeDirectory::open(path)
+            .ok_or(FileError::DirectoryFailed)?;
+        let mut name_buffer = [0u8; 256];
+        while let Some((name, is_directory)) = directory.next(&mut name_buffer) {
+            let name = core::str::from_utf8(name).map_err(|_| FileError::InvalidUtf8)?;
+            if name != "." && name != ".." {
+                entries.push(DirectoryEntry { name: name.into(), is_directory });
+            }
+        }
+    }
+    Ok(entries)
 }
 impl core::error::Error for FileError {}
 
@@ -311,6 +358,19 @@ mod tests {
         remove_file(target.to_str().unwrap()).unwrap();
         assert!(!target.exists());
         std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn enumerates_unicode_files_and_directories_natively() {
+        let root = std::env::temp_dir().join(std::format!("mrml-enumerate-{}", std::process::id()));
+        let child = root.join("folder-星");
+        create_dir_all(child.to_str().unwrap()).unwrap();
+        let file = root.join("file-λ.txt");
+        write_file(file.to_str().unwrap(), b"entry").unwrap();
+        let entries = read_directory(root.to_str().unwrap()).unwrap();
+        assert!(entries.iter().any(|entry| entry.name == "folder-星" && entry.is_directory));
+        assert!(entries.iter().any(|entry| entry.name == "file-λ.txt" && !entry.is_directory));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

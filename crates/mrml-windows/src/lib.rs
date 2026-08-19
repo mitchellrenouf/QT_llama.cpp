@@ -27,6 +27,24 @@ struct FileTime {
     high: u32,
 }
 
+#[repr(C)]
+#[cfg(windows)]
+struct FindDataW {
+    attributes: u32,
+    creation_time: FileTime,
+    access_time: FileTime,
+    write_time: FileTime,
+    size_high: u32,
+    size_low: u32,
+    reserved0: u32,
+    reserved1: u32,
+    file_name: [u16; 260],
+    alternate_file_name: [u16; 14],
+    file_type: u32,
+    creator_type: u32,
+    finder_flags: u16,
+}
+
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -52,6 +70,9 @@ unsafe extern "system" {
     fn CreateDirectoryW(name: *const u16, security: *const c_void) -> i32;
     fn DeleteFileW(name: *const u16) -> i32;
     fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    fn FindFirstFileW(pattern: *const u16, data: *mut FindDataW) -> *mut c_void;
+    fn FindNextFileW(find: *mut c_void, data: *mut FindDataW) -> i32;
+    fn FindClose(find: *mut c_void) -> i32;
     fn GetLastError() -> u32;
     fn SetLastError(error: u32);
     fn CreateFileMappingW(
@@ -176,6 +197,44 @@ pub fn rename_file_wide(existing: &[u16], replacement: &[u16]) -> bool {
                 MOVEFILE_REPLACE_EXISTING,
             )
         } != 0
+}
+
+#[cfg(windows)]
+pub struct NativeDirectory {
+    find: *mut c_void,
+    data: FindDataW,
+    first: bool,
+}
+
+#[cfg(windows)]
+impl NativeDirectory {
+    pub fn open(pattern: &[u16]) -> Option<Self> {
+        const INVALID_HANDLE_VALUE: *mut c_void = usize::MAX as *mut c_void;
+        if pattern.last().copied() != Some(0) {
+            return None;
+        }
+        let mut data = unsafe { core::mem::zeroed::<FindDataW>() };
+        let find = unsafe { FindFirstFileW(pattern.as_ptr(), &mut data) };
+        (find != INVALID_HANDLE_VALUE).then_some(Self { find, data, first: true })
+    }
+
+    pub fn next(&mut self, name: &mut [u16; 260]) -> Option<(usize, bool)> {
+        if self.first {
+            self.first = false;
+        } else if unsafe { FindNextFileW(self.find, &mut self.data) } == 0 {
+            return None;
+        }
+        let len = self.data.file_name.iter().position(|unit| *unit == 0)?;
+        name[..len].copy_from_slice(&self.data.file_name[..len]);
+        Some((len, self.data.attributes & 0x10 != 0))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeDirectory {
+    fn drop(&mut self) {
+        let _ = unsafe { FindClose(self.find) };
+    }
 }
 
 #[cfg(windows)]

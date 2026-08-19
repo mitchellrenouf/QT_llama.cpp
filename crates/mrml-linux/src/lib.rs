@@ -74,6 +74,9 @@ unsafe extern "C" {
     fn mkdir(path: *const i8, mode: u32) -> c_int;
     fn unlink(path: *const i8) -> c_int;
     fn rename(existing: *const i8, replacement: *const i8) -> c_int;
+    fn opendir(path: *const i8) -> *mut c_void;
+    fn readdir(directory: *mut c_void) -> *mut Dirent;
+    fn closedir(directory: *mut c_void) -> c_int;
     fn pthread_create(
         thread: *mut usize,
         attributes: *const c_void,
@@ -84,6 +87,16 @@ unsafe extern "C" {
     fn sysconf(name: c_int) -> c_long;
     fn sched_yield() -> c_int;
     fn syscall(number: c_long, ...) -> c_long;
+}
+
+#[repr(C)]
+#[cfg(unix)]
+struct Dirent {
+    inode: u64,
+    offset: i64,
+    record_length: u16,
+    kind: u8,
+    name: [i8; 256],
 }
 
 #[cfg(unix)]
@@ -260,6 +273,33 @@ pub fn delete_file(path: &CStr) -> bool {
 #[cfg(unix)]
 pub fn rename_file(existing: &CStr, replacement: &CStr) -> bool {
     (unsafe { rename(existing.as_ptr(), replacement.as_ptr()) }) == 0
+}
+
+#[cfg(unix)]
+pub struct NativeDirectory(*mut c_void);
+
+#[cfg(unix)]
+impl NativeDirectory {
+    pub fn open(path: &CStr) -> Option<Self> {
+        NonNull::new(unsafe { opendir(path.as_ptr()) }).map(|directory| Self(directory.as_ptr()))
+    }
+
+    pub fn next<'a>(&mut self, name: &'a mut [u8; 256]) -> Option<(&'a [u8], bool)> {
+        let entry = unsafe { readdir(self.0).as_ref()? };
+        let len = entry.name.iter().position(|byte| *byte == 0)?;
+        for (target, source) in name[..len].iter_mut().zip(&entry.name[..len]) {
+            *target = *source as u8;
+        }
+        const DT_DIR: u8 = 4;
+        Some((&name[..len], entry.kind == DT_DIR))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativeDirectory {
+    fn drop(&mut self) {
+        let _ = unsafe { closedir(self.0) };
+    }
 }
 
 #[cfg(unix)]
