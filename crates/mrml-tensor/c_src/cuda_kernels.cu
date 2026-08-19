@@ -1060,34 +1060,6 @@ __global__ void k_attention_prefill_f32(
     }
 }
 
-void cuda_op_gemv_q4_0(
-    const uint8_t* d_w_q4,
-    const float* d_x,
-    float* d_y,
-    int n_rows,
-    int n_cols,
-    cudaStream_t stream
-) {
-    int threads = 128;
-    int rows_per_block = 2 * threads / WARP_SIZE;
-    int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
-    k_gemv_q4_0_f32<<<blocks, threads, 0, stream>>>(d_w_q4, d_x, d_y, n_rows, n_cols);
-}
-
-void cuda_op_gemm_q4_0(
-    const uint8_t* d_w_q4, const float* d_x, float* d_y,
-    int n_rows, int n_cols, int batch, cudaStream_t stream
-) {
-    const int threads = 256;
-    const int rows_per_block = (threads / WARP_SIZE) * 2;
-    constexpr int token_tile = 8;
-    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block,
-              (batch + token_tile - 1) / token_tile);
-    k_gemm_q4_0_f32<<<grid, threads, 0, stream>>>(
-        d_w_q4, d_x, d_y, n_rows, n_cols, batch
-    );
-}
-
 // Exact top-K candidates per disjoint vocabulary partition. The union of each
 // partition's top K necessarily contains the global top K, while avoiding a
 // full-vocabulary device-to-host copy.
@@ -1234,40 +1206,6 @@ __global__ void k_vocab_topk_bitonic_f32(
         out_scores[blockIdx.x * k + rank] = scores[source];
         out_ids[blockIdx.x * k + rank] = ids[source];
     }
-}
-
-void cuda_op_gemv_q4_0_qkv(
-    const uint8_t* d_w_q,
-    const uint8_t* d_w_k,
-    const uint8_t* d_w_v,
-    const float* d_x,
-    float* d_y,
-    int q_rows,
-    int kv_rows,
-    int n_cols,
-    cudaStream_t stream
-) {
-    int threads = 128;
-    int rows_per_block = 2 * threads / WARP_SIZE;
-    int total_rows = q_rows + 2 * kv_rows;
-    int blocks = (total_rows + rows_per_block - 1) / rows_per_block;
-    k_gemv_q4_0_qkv_f32<<<blocks, threads, 0, stream>>>(
-        d_w_q, d_w_k, d_w_v, d_x, d_y, q_rows, kv_rows, n_cols
-    );
-}
-
-void cuda_op_gemm_q4_0_qkv(
-    const uint8_t* d_w_q, const uint8_t* d_w_k, const uint8_t* d_w_v,
-    const float* d_x, float* d_y, int q_rows, int kv_rows, int n_cols,
-    int batch, cudaStream_t stream
-) {
-    int threads = 128, rows_per_block = 2 * threads / WARP_SIZE;
-    int total_rows = q_rows + 2 * kv_rows;
-    constexpr int token_tile = 8;
-    dim3 grid((total_rows + rows_per_block - 1) / rows_per_block,
-              (batch + token_tile - 1) / token_tile);
-    k_gemm_q4_0_qkv_f32<<<grid, threads, 0, stream>>>(
-        d_w_q, d_w_k, d_w_v, d_x, d_y, q_rows, kv_rows, n_cols, batch);
 }
 
 void cuda_op_vocab_topk(

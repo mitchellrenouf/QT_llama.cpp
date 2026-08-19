@@ -94,46 +94,6 @@ extern "C" {
     fn cudaDeviceSynchronize() -> i32;
 
     // Exported custom kernel launches from cuda_kernels.cu
-    fn cuda_op_gemv_q4_0(
-        d_w_q4: *const u8,
-        d_x: *const f32,
-        d_y: *mut f32,
-        n_rows: i32,
-        n_cols: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_gemm_q4_0(
-        d_w_q4: *const u8,
-        d_x: *const f32,
-        d_y: *mut f32,
-        n_rows: i32,
-        n_cols: i32,
-        batch: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_gemv_q4_0_qkv(
-        d_w_q: *const u8,
-        d_w_k: *const u8,
-        d_w_v: *const u8,
-        d_x: *const f32,
-        d_y: *mut f32,
-        q_rows: i32,
-        kv_rows: i32,
-        n_cols: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_gemm_q4_0_qkv(
-        d_w_q: *const u8,
-        d_w_k: *const u8,
-        d_w_v: *const u8,
-        d_x: *const f32,
-        d_y: *mut f32,
-        q_rows: i32,
-        kv_rows: i32,
-        n_cols: i32,
-        batch: i32,
-        stream: CudaStream,
-    );
     fn cuda_op_vocab_topk(
         d_logits: *const f32,
         d_valid: *const u8,
@@ -299,19 +259,6 @@ fn env_flag_enabled(name: &str) -> bool {
             "" | "0" | "false" | "off" | "no"
         )
     })
-}
-
-fn rust_cuda_op_enabled(op: &str) -> bool {
-    let override_name = format!("MRML_RUST_CUDA_{op}");
-    if std::env::var_os(&override_name).is_some() {
-        env_flag_enabled(&override_name)
-    } else if matches!(op, "QKV_PROJ" | "FFN_PIPE") {
-        // The Rust fused decode projection is still slower than NVCC at the
-        // Gemma shape. Keep it opt-in until its direct benchmark reaches parity.
-        false
-    } else {
-        env_flag_enabled("MRML_RUST_CUDA")
-    }
 }
 
 unsafe fn launch_rust_kernel(
@@ -1294,47 +1241,15 @@ impl CudaDevice {
         ffn_dim: usize,
         exp_dim: usize,
     ) -> Result<()> {
-        let rust_stages = std::env::var("MRML_RUST_CUDA_FFN_GRAPH")
-            .unwrap_or_else(|_| {
-                if env_flag_enabled("MRML_RUST_CUDA") {
-                    "all"
-                } else {
-                    "none"
-                }
-                .into()
-            })
-            .to_ascii_lowercase();
-        let has_stage = |stage: &str| {
-            rust_stages
-                .split(',')
-                .map(str::trim)
-                .any(|value| value == stage || value == "all")
-        };
-        let rust_down = has_stage("down") || has_stage("dense");
         unsafe {
             launch_rust_geglu_q4(
                 gate.as_ptr(), up.as_ptr(), shared_in.as_ptr(), dense_act.as_mut_ptr(),
                 ffn_dim as i32, dim as i32, 1, self.stream,
             )?;
-            if rust_down {
-                launch_rust_gemv_q4(
-                    down.as_ptr(),
-                    dense_act.as_ptr(),
-                    dense_out.as_mut_ptr(),
-                    dim as i32,
-                    ffn_dim as i32,
-                    self.stream,
-                )?;
-            } else {
-                cuda_op_gemv_q4_0(
-                    down.as_ptr(),
-                    dense_act.as_ptr(),
-                    dense_out.as_mut_ptr(),
-                    dim as i32,
-                    ffn_dim as i32,
-                    self.stream,
-                );
-            }
+            launch_rust_gemv_q4(
+                down.as_ptr(), dense_act.as_ptr(), dense_out.as_mut_ptr(), dim as i32,
+                ffn_dim as i32, self.stream,
+            )?;
             launch_rust_moe_router(
                 router_weights.as_ptr(), router_in.as_ptr(), router_logits.as_mut_ptr(),
                 expert_ids.as_mut_ptr(), expert_weights.as_mut_ptr(), dim as i32, 128, 1,
@@ -1682,8 +1597,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("MATMUL") {
-                launch_rust_gemv_q4(
+            launch_rust_gemv_q4(
                     d_w_q4.as_ptr(),
                     d_x.as_ptr(),
                     d_y.as_mut_ptr(),
@@ -1691,17 +1605,7 @@ impl CudaDevice {
                     n_cols as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA Q4 GEMV kernel failed");
-                return;
-            }
-            cuda_op_gemv_q4_0(
-                d_w_q4.as_ptr(),
-                d_x.as_ptr(),
-                d_y.as_mut_ptr(),
-                n_rows as i32,
-                n_cols as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA Q4 GEMV kernel failed");
         }
     }
 
@@ -1718,8 +1622,7 @@ impl CudaDevice {
         assert_eq!(d_y.len(), n_rows * batch);
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("MATMUL") {
-                launch_rust_gemm_q4(
+            launch_rust_gemm_q4(
                     d_w_q4.as_ptr(),
                     d_x.as_ptr(),
                     d_y.as_mut_ptr(),
@@ -1728,18 +1631,7 @@ impl CudaDevice {
                     batch as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA Q4 GEMM kernel failed");
-                return;
-            }
-            cuda_op_gemm_q4_0(
-                d_w_q4.as_ptr(),
-                d_x.as_ptr(),
-                d_y.as_mut_ptr(),
-                n_rows as i32,
-                n_cols as i32,
-                batch as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA Q4 GEMM kernel failed");
         }
     }
 
@@ -1800,24 +1692,10 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("QKV_PROJ") {
-                launch_rust_qkv_q4_gemv(
+            launch_rust_qkv_q4_gemv(
                     d_w_q.as_ptr(),d_w_k.as_ptr(),d_w_v.as_ptr(),d_x.as_ptr(),d_y.as_mut_ptr(),
                     q_rows as i32,kv_rows as i32,n_cols as i32,self.stream,
-                ).expect("Rust CUDA fused QKV GEMV kernel failed");
-                return;
-            }
-            cuda_op_gemv_q4_0_qkv(
-                d_w_q.as_ptr(),
-                d_w_k.as_ptr(),
-                d_w_v.as_ptr(),
-                d_x.as_ptr(),
-                d_y.as_mut_ptr(),
-                q_rows as i32,
-                kv_rows as i32,
-                n_cols as i32,
-                self.stream,
-            );
+            ).expect("Rust CUDA fused QKV GEMV kernel failed");
         }
     }
 
@@ -1837,8 +1715,7 @@ impl CudaDevice {
         assert_eq!(d_y.len(), (q_rows + 2 * kv_rows) * batch);
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("QKV_PROJ") {
-                launch_rust_qkv_q4(
+            launch_rust_qkv_q4(
                     d_w_q.as_ptr(),
                     d_w_k.as_ptr(),
                     d_w_v.as_ptr(),
@@ -1850,21 +1727,7 @@ impl CudaDevice {
                     batch as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA fused QKV GEMM kernel failed");
-                return;
-            }
-            cuda_op_gemm_q4_0_qkv(
-                d_w_q.as_ptr(),
-                d_w_k.as_ptr(),
-                d_w_v.as_ptr(),
-                d_x.as_ptr(),
-                d_y.as_mut_ptr(),
-                q_rows as i32,
-                kv_rows as i32,
-                n_cols as i32,
-                batch as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA fused QKV GEMM kernel failed");
         }
     }
 
