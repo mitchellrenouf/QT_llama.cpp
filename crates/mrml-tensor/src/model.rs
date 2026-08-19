@@ -181,7 +181,7 @@ pub struct GenerationState {
     pub current_token: i32,
     pub pos: usize,
     pub generated_count: usize,
-    pub history_tokens: Vec<i32>,
+    pub history_tokens: Vector<i32>,
     pub hidden: Vec<f32>,
     pub k_cache: Vec<Vec<KvCacheRow>>, // [n_layers][seq_len]
     pub v_cache: Vec<Vec<KvCacheRow>>, // [n_layers][seq_len]
@@ -2532,7 +2532,7 @@ impl MrmlModel {
                 current_token: *prompt_tokens.last().unwrap_or(&1),
                 pos: prompt_tokens.len(),
                 generated_count: 0,
-                history_tokens: prompt_tokens.to_vec(),
+                history_tokens: prompt_tokens.iter().copied().collect(),
                 hidden,
                 k_cache,
                 v_cache,
@@ -2558,7 +2558,7 @@ impl MrmlModel {
             current_token: last_token,
             pos: prompt_tokens.len(),
             generated_count: 0,
-            history_tokens: prompt_tokens.to_vec(),
+            history_tokens: prompt_tokens.iter().copied().collect(),
             hidden,
             k_cache,
             v_cache,
