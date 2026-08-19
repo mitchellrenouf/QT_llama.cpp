@@ -109,6 +109,7 @@ dependencies = [
  "mrml-anyhow",
  "mrml-json",
  "mrml-linux",
+ "mrml-runtime",
  "mrml-terminal-style",
  "mrml-urlencoding",
  "mrml-windows",

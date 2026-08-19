@@ -224,6 +224,11 @@ impl<T> DerefMut for Vector<T> {
         unsafe { core::slice::from_raw_parts_mut(self.pointer.as_ptr(), self.length) }
     }
 }
+impl<T> AsRef<[T]> for Vector<T> {
+    fn as_ref(&self) -> &[T] {
+        self
+    }
+}
 impl<T: fmt::Debug> fmt::Debug for Vector<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.iter()).finish()
@@ -232,6 +237,16 @@ impl<T: fmt::Debug> fmt::Debug for Vector<T> {
 impl<T: PartialEq> PartialEq for Vector<T> {
     fn eq(&self, other: &Self) -> bool {
         self[..] == other[..]
+    }
+}
+impl<T: PartialEq> PartialEq<[T]> for Vector<T> {
+    fn eq(&self, other: &[T]) -> bool {
+        self[..] == *other
+    }
+}
+impl<T: PartialEq> PartialEq<&[T]> for Vector<T> {
+    fn eq(&self, other: &&[T]) -> bool {
+        self[..] == **other
     }
 }
 impl<T: Eq> Eq for Vector<T> {}

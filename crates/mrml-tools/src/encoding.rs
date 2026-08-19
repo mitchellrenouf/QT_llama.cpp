@@ -1,11 +1,11 @@
 //! Encoding primitives used by media and browser tools.
-use alloc::string::String;
-use alloc::vec::Vec;
+use mrml_runtime::{Text as String, Vector as Vec};
 #[cold]
 #[inline(never)]
 pub fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    let mut output =
+        String::with_capacity(input.len().div_ceil(3) * 4).expect("MRML allocation failed");
     for chunk in input.chunks(3) {
         let bits = (chunk[0] as u32) << 16
             | (chunk.get(1).copied().unwrap_or(0) as u32) << 8
@@ -41,7 +41,7 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
     if bytes.len() % 4 != 0 {
         return Err("invalid base64 length");
     }
-    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
+    let mut output = Vec::with_capacity(bytes.len() / 4 * 3).expect("MRML allocation failed");
     for chunk in bytes.chunks_exact(4) {
         let a = value(chunk[0]).ok_or("invalid base64 character")? as u32;
         let b = value(chunk[1]).ok_or("invalid base64 character")? as u32;
