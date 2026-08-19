@@ -781,16 +781,18 @@ unsafe fn launch_rust_moe_topk(
     batch: i32,
     stream: CudaStream,
 ) -> Result<()> {
-    let clear = cudaMemsetAsync(
-        out as *mut c_void,
-        0,
-        batch as usize * dim as usize * std::mem::size_of::<f32>(),
-        stream,
-    );
-    if clear != 0 {
-        return Err(anyhow!(
-            "clearing Rust CUDA MoE output failed with code {clear}"
-        ));
+    if batch != 1 {
+        let clear = cudaMemsetAsync(
+            out as *mut c_void,
+            0,
+            batch as usize * dim as usize * std::mem::size_of::<f32>(),
+            stream,
+        );
+        if clear != 0 {
+            return Err(anyhow!(
+                "clearing Rust CUDA MoE output failed with code {clear}"
+            ));
+        }
     }
     let (mut a0, mut a1, mut a2, mut a3) = (gate_up, ids, input, act);
     let (mut ed, mut d, mut na, mut b) = (exp_dim, dim, n_active, batch);
@@ -824,9 +826,14 @@ unsafe fn launch_rust_moe_topk(
         &mut na as *mut _ as *mut c_void,
         &mut b as *mut _ as *mut c_void,
     ];
+    let (kernel, grid_y) = if batch == 1 {
+        ("rust_cuda_moe_down_q4_combined", 1)
+    } else {
+        ("rust_cuda_moe_down_q4", n_active as u32)
+    };
     launch_rust_kernel(
-        "rust_cuda_moe_down_q4",
-        ((dim as u32).div_ceil(8), n_active as u32, batch as u32),
+        kernel,
+        ((dim as u32).div_ceil(8), grid_y, batch as u32),
         (128, 1, 1),
         stream,
         &mut down_args,
