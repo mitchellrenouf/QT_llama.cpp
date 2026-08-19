@@ -54,6 +54,135 @@ pub enum StreamEvent {
     Finish(String),
 }
 
+fn quote_relaxed_keys(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len() + 8);
+    let mut index = 0;
+    let mut quote = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(delimiter) = quote {
+            output.push(byte as char);
+            if byte == delimiter && (index == 0 || bytes[index - 1] != b'\\') {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' || byte == b'\'' {
+            quote = Some(byte);
+            output.push(byte as char);
+            index += 1;
+            continue;
+        }
+        output.push(byte as char);
+        index += 1;
+        if byte != b'{' && byte != b',' {
+            continue;
+        }
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            output.push(bytes[index] as char);
+            index += 1;
+        }
+        let start = index;
+        if index < bytes.len() && (bytes[index].is_ascii_alphabetic() || bytes[index] == b'_') {
+            index += 1;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
+                index += 1;
+            }
+            let end = index;
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index < bytes.len() && bytes[index] == b':' {
+                output.push('"');
+                output.push_str(&input[start..end]);
+                output.push('"');
+                output.push_str(&input[end..index]);
+                output.push(':');
+                index += 1;
+            } else {
+                output.push_str(&input[start..index]);
+            }
+        }
+    }
+    output
+}
+
+fn quote_relaxed_values(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len() + 8);
+    let mut index = 0;
+    let mut quote = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        output.push(byte as char);
+        if let Some(delimiter) = quote {
+            if byte == delimiter && (index == 0 || bytes[index - 1] != b'\\') {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' || byte == b'\'' {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if byte != b':' {
+            continue;
+        }
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            output.push(bytes[index] as char);
+            index += 1;
+        }
+        if index >= bytes.len() || !bytes[index].is_ascii_alphabetic() {
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && !matches!(bytes[index], b',' | b'}') {
+            if matches!(bytes[index], b'"' | b'{' | b'[' | b']' | b':') {
+                break;
+            }
+            index += 1;
+        }
+        if index < bytes.len() && matches!(bytes[index], b',' | b'}') {
+            let value = input[start..index].trim();
+            if matches!(value, "true" | "false" | "null") || value.parse::<f64>().is_ok() {
+                output.push_str(value);
+            } else {
+                output.push('"');
+                output.push_str(value);
+                output.push('"');
+            }
+        }
+    }
+    output
+}
+
+fn split_kwargs(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    for (index, byte) in input.bytes().enumerate() {
+        if let Some(delimiter) = quote {
+            if byte == delimiter && (index == 0 || input.as_bytes()[index - 1] != b'\\') {
+                quote = None;
+            }
+        } else if byte == b'"' || byte == b'\'' {
+            quote = Some(byte);
+        } else if byte == b',' {
+            parts.push(input[start..index].trim());
+            start = index + 1;
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
+}
+
 pub fn normalize_relaxed_json(raw: &str) -> String {
     let mut s = raw
         .trim()
@@ -71,25 +200,14 @@ pub fn normalize_relaxed_json(raw: &str) -> String {
     }
 
     // Replace unquoted key names: {query: "foo"} -> {"query": "foo"}
-    let re_keys = regex::Regex::new(r#"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:"#).unwrap();
-    s = re_keys.replace_all(&s, r#"$1"$2":"#).to_string();
+    s = quote_relaxed_keys(&s);
 
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
         return v.to_string();
     }
 
     // Quote unquoted string values: {"text": Hello world} -> {"text": "Hello world"}
-    let re_vals = regex::Regex::new(r#":\s*([a-zA-Z][^"{}\[\]:,]+?)(\s*[},])"#).unwrap();
-    let s2 = re_vals
-        .replace_all(&s, |caps: &regex::Captures| {
-            let val = caps.get(1).unwrap().as_str().trim();
-            if val == "true" || val == "false" || val == "null" || val.parse::<f64>().is_ok() {
-                format!(": {}{}", val, caps.get(2).unwrap().as_str())
-            } else {
-                format!(": \"{}\"{}", val, caps.get(2).unwrap().as_str())
-            }
-        })
-        .to_string();
+    let s2 = quote_relaxed_values(&s);
 
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s2) {
         return v.to_string();
@@ -100,19 +218,28 @@ pub fn normalize_relaxed_json(raw: &str) -> String {
 
 pub fn parse_kwargs_to_json(args: &str) -> String {
     let mut map = serde_json::Map::new();
-    let re = regex::Regex::new(r#"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^,)]+))"#).unwrap();
-    for cap in re.captures_iter(args) {
-        let key = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let val_str = cap.get(2).or_else(|| cap.get(3)).map(|m| m.as_str());
-        if let Some(s) = val_str {
-            map.insert(key.to_string(), serde_json::Value::String(s.to_string()));
-        } else if let Some(raw_val) = cap.get(4).map(|m| m.as_str().trim()) {
+    for part in split_kwargs(args) {
+        if let Some((key, raw_value)) = part.split_once('=') {
+            let key = key.trim();
+            if key.is_empty() || !key.bytes().enumerate().all(|(index, byte)| {
+                byte == b'_' || if index == 0 { byte.is_ascii_alphabetic() } else { byte.is_ascii_alphanumeric() }
+            }) {
+                continue;
+            }
+            let raw_val = raw_value.trim().trim_end_matches(')');
+            if raw_val.len() >= 2
+                && ((raw_val.starts_with('"') && raw_val.ends_with('"'))
+                    || (raw_val.starts_with('\'') && raw_val.ends_with('\'')))
+            {
+                map.insert(key.to_string(), serde_json::Value::String(raw_val[1..raw_val.len() - 1].to_string()));
+            } else {
             if let Ok(n) = raw_val.parse::<i64>() {
                 map.insert(key.to_string(), serde_json::json!(n));
             } else if let Ok(b) = raw_val.parse::<bool>() {
                 map.insert(key.to_string(), serde_json::json!(b));
             } else {
                 map.insert(key.to_string(), serde_json::Value::String(raw_val.to_string()));
+            }
             }
         }
     }
@@ -628,10 +755,9 @@ impl MrmlClient {
 
             // Tool Call detection in markdown codeblocks
             if full_content.contains("```tool_call") && full_content.ends_with("```") {
-                let re = regex::Regex::new(r"```tool_call\s*(\{[\s\S]*?\})\s*```").unwrap();
-                for cap in re.captures_iter(&full_content) {
-                    if let Some(json_match) = cap.get(1) {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_match.as_str()) {
+                for block in full_content.split("```tool_call").skip(1) {
+                    if let Some(json_match) = block.split("```").next().map(str::trim) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_match) {
                             let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
                             let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
                             let args_str = if args.is_string() {

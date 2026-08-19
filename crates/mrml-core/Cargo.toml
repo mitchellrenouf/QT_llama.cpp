@@ -19,7 +19,6 @@ mrml-terminal-style = { path = "../mrml-terminal-style" }
 mrml-tools = { path = "../mrml-tools" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 clap.workspace = true
-regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
