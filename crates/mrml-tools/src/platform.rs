@@ -1,7 +1,7 @@
 //! Native platform paths and timestamps shared by tools and the agent.
 use core::fmt::Write as _;
 use mrml_runtime::Text;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn path_is_file(path: &Path) -> bool {
     path.to_str().is_some_and(mrml_runtime::path_is_file)
@@ -138,18 +138,16 @@ fn local_time() -> LocalTime {
     })
 }
 
-pub fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<Text> {
     #[cfg(windows)]
     {
         mrml_runtime::environment_variable("USERPROFILE")
             .filter(|value| !value.is_empty())
-            .map(|value| PathBuf::from(value.as_str()))
+            .map(|value| value)
             .or_else(|| {
                 let drive = mrml_runtime::environment_variable("HOMEDRIVE")?;
                 let path = mrml_runtime::environment_variable("HOMEPATH")?;
-                let mut home = PathBuf::from(drive.as_str());
-                home.push(path.as_str());
-                Some(home)
+                Some(mrml_runtime::join_path(&drive, &path))
             })
     }
 
@@ -157,29 +155,30 @@ pub fn home_dir() -> Option<PathBuf> {
     {
         mrml_runtime::environment_variable("HOME")
             .filter(|value| !value.is_empty())
-            .map(|value| PathBuf::from(value.as_str()))
+            .map(|value| value)
     }
 }
 
-pub fn cache_dir() -> Option<PathBuf> {
+pub fn cache_dir() -> Option<Text> {
     #[cfg(windows)]
     {
         mrml_runtime::environment_variable("LOCALAPPDATA")
             .filter(|value| !value.is_empty())
-            .map(|value| PathBuf::from(value.as_str()))
+            .map(|value| value)
     }
 
     #[cfg(target_os = "macos")]
     {
-        home_dir().map(|home| home.join("Library").join("Caches"))
+        home_dir().map(|home| {
+            mrml_runtime::join_path(&mrml_runtime::join_path(&home, "Library"), "Caches")
+        })
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         mrml_runtime::environment_variable("XDG_CACHE_HOME")
             .filter(|value| !value.is_empty())
-            .map(|value| PathBuf::from(value.as_str()))
-            .or_else(|| home_dir().map(|home| home.join(".cache")))
+            .or_else(|| home_dir().map(|home| mrml_runtime::join_path(&home, ".cache")))
     }
 }
 
@@ -187,8 +186,8 @@ pub fn cache_dir() -> Option<PathBuf> {
 mod tests {
     #[test]
     fn discovered_directories_are_absolute() {
-        assert!(super::home_dir().is_none_or(|path| path.is_absolute()));
-        assert!(super::cache_dir().is_none_or(|path| path.is_absolute()));
+        assert!(super::home_dir().is_none_or(|path| mrml_runtime::path_is_absolute(&path)));
+        assert!(super::cache_dir().is_none_or(|path| mrml_runtime::path_is_absolute(&path)));
     }
 
     #[test]

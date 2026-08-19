@@ -981,6 +981,7 @@ pub fn get_model_cache_roots() -> Vec<PathBuf> {
     }
 
     if let Some(home) = crate::platform::home_dir() {
+        let home = PathBuf::from(home.as_str());
         roots.push(home.join(".cache").join("huggingface").join("hub"));
         roots.push(home.join(".cache").join("gemma").join("models"));
     }
@@ -1089,13 +1090,23 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     let candidates = [
         PathBuf::from("models").join(model_arg),
         PathBuf::from(model_arg).with_extension("gguf"),
-        crate::platform::home_dir()
-            .unwrap_or_default()
-            .join(".cache/gemma")
-            .join(model_arg),
-        crate::platform::home_dir()
-            .unwrap_or_default()
-            .join(".cache/gemma/gemma-4-26b-it-q4_0.gguf"),
+        PathBuf::from(
+            mrml_runtime::join_path(
+                &mrml_runtime::join_path(
+                    &crate::platform::home_dir().unwrap_or_default(),
+                    ".cache/gemma",
+                ),
+                model_arg,
+            )
+            .as_str(),
+        ),
+        PathBuf::from(
+            mrml_runtime::join_path(
+                &crate::platform::home_dir().unwrap_or_default(),
+                ".cache/gemma/gemma-4-26b-it-q4_0.gguf",
+            )
+            .as_str(),
+        ),
         PathBuf::from("/models/gemma-4-26b-it-q4_0.gguf"),
     ];
 

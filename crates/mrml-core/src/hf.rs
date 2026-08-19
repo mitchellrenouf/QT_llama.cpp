@@ -96,7 +96,10 @@ impl HfModelSpec {
         }
 
         if let Some(home) = crate::platform::home_dir() {
-            return home.join(".cache").join("huggingface").join("hub");
+            return PathBuf::from(home.as_str())
+                .join(".cache")
+                .join("huggingface")
+                .join("hub");
         }
 
         PathBuf::from(".cache").join("huggingface").join("hub")

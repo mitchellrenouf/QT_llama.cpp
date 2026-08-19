@@ -114,6 +114,28 @@ pub fn path_exists(path: &str) -> bool {
     path_is_directory(path) || path_is_file(path)
 }
 
+pub fn path_is_absolute(path: &str) -> bool {
+    if cfg!(windows) {
+        path.starts_with(['/', '\\'])
+            || (path.as_bytes().get(1) == Some(&b':')
+                && path.as_bytes().get(2).is_some_and(|byte| matches!(byte, b'/' | b'\\')))
+    } else {
+        path.starts_with('/')
+    }
+}
+
+pub fn join_path(base: &str, child: &str) -> Text {
+    if path_is_absolute(child) || base.is_empty() {
+        return child.into();
+    }
+    let mut joined = Text::from(base.trim_end_matches(['/', '\\']));
+    if !joined.is_empty() {
+        joined.push(if cfg!(windows) { '\\' } else { '/' });
+    }
+    joined.push_str(child.trim_start_matches(['/', '\\']));
+    joined
+}
+
 pub fn canonical_path(path: &str) -> Result<Text, FileError> {
     #[cfg(windows)]
     {
