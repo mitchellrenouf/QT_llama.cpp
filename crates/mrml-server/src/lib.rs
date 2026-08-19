@@ -1,10 +1,10 @@
 use anyhow::Result;
 use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use mrml_json::{Value, object};
+use mrml_runtime::Shared;
 use mrml_terminal_style::Colorize;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct OpenAiChatRequest {
@@ -65,12 +65,12 @@ impl OpenAiChatRequest {
 }
 
 pub struct ApiServer {
-    client: Arc<MrmlClient>,
+    client: Shared<MrmlClient>,
     port: u16,
 }
 
 impl ApiServer {
-    pub fn new(client: Arc<MrmlClient>, port: u16) -> Self {
+    pub fn new(client: Shared<MrmlClient>, port: u16) -> Self {
         Self { client, port }
     }
 
@@ -107,7 +107,7 @@ impl ApiServer {
     }
 }
 
-fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<()> {
+fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Result<()> {
     let mut buf = vec![0u8; 8192];
     let mut total_read = 0;
 
@@ -394,7 +394,7 @@ mod json_tests {
     fn serves_models_over_standard_tcp() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let client = Arc::new(MrmlClient::new("", ""));
+        let client = Shared::new(MrmlClient::new("", ""));
         let server = std::thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
             handle_connection(socket, client).unwrap();

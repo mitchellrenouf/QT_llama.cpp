@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
 use mrml_json::{Value, object};
+use mrml_runtime::{Shared, SpinMutex};
 use std::io::{self, BufRead};
-use std::sync::{Arc, Mutex};
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
 
@@ -266,12 +266,12 @@ fn emit(value: Value) -> Result<()> {
 }
 
 async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Result<Value> {
-    let capture = Arc::new(Mutex::new(TurnCapture::default()));
-    let event_capture = Arc::clone(&capture);
+    let capture = Shared::new(SpinMutex::new(TurnCapture::default()));
+    let event_capture = capture.clone();
     let started = mrml_core::tools::platform::monotonic_timestamp_nanos();
     let (content, reasoning) = agent
         .process_user_request_stream(prompt, move |event| {
-            let mut state = event_capture.lock().expect("turn capture mutex poisoned");
+            let mut state = event_capture.lock();
             match event {
                 StreamEvent::ToolExecuted { name, result } => {
                     state.tools.push(ToolEvent { name, result });
@@ -292,7 +292,7 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
             }
         })
         .await?;
-    let mut state = capture.lock().expect("turn capture mutex poisoned");
+    let mut state = capture.lock();
     let metrics = TurnMetrics {
         token_count: state.token_count,
         generation_seconds: state.generation_seconds,

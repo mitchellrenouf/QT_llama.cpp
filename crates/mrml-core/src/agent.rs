@@ -138,8 +138,8 @@ impl MrmlAgent {
         &self.workspace_rules
     }
 
-    pub fn get_client_arc(&self) -> std::sync::Arc<MrmlClient> {
-        std::sync::Arc::new(self.client.clone())
+    pub fn get_client_arc(&self) -> mrml_runtime::Shared<MrmlClient> {
+        mrml_runtime::Shared::new(self.client.clone())
     }
 
     pub fn loaded_rules_count(&self) -> usize {
@@ -208,7 +208,7 @@ impl MrmlAgent {
         )
         .map_err(anyhow::Error::with_source)?;
         self.client = crate::client::MrmlClient::with_engine(
-            std::sync::Arc::new(engine),
+            mrml_runtime::Shared::new(engine),
             self.config.system_prompt.clone(),
             crate::client::thinking_enabled_for_mode(self.config.mode),
         );

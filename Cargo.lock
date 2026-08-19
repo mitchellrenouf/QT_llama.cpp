@@ -50,6 +50,7 @@ dependencies = [
  "mrml-anyhow",
  "mrml-core",
  "mrml-json",
+ "mrml-runtime",
  "mrml-tools",
 ]
 
@@ -82,6 +83,7 @@ dependencies = [
  "mrml-core",
  "mrml-json",
  "mrml-model",
+ "mrml-runtime",
  "mrml-terminal-style",
  "mrml-tools",
 ]

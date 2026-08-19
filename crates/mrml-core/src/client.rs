@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
-use mrml_runtime::Instant;
+use mrml_runtime::{Instant, Shared};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::config::Config;
 pub use mrml_tools::{FunctionDefinition, ToolDefinition};
@@ -340,7 +339,7 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
 
 #[derive(Clone)]
 pub struct MrmlClient {
-    engine: Option<Arc<ModelEngine>>,
+    engine: Option<Shared<ModelEngine>>,
     system_prompt: Option<String>,
     enable_thinking: bool,
 }
@@ -351,7 +350,7 @@ impl MrmlClient {
         let model_path = find_model_file("gemma-4-26b-it-q4_0.gguf");
         let engine = if let Some(path) = model_path {
             match ModelEngine::new(&path, -1, 8192, "auto", "auto", None) {
-                Ok(eng) => Some(Arc::new(eng)),
+                Ok(eng) => Some(Shared::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: MRML engine init deferred: {}", e);
                     None
@@ -379,7 +378,7 @@ impl MrmlClient {
     }
 
     pub fn with_engine(
-        engine: Arc<ModelEngine>,
+        engine: Shared<ModelEngine>,
         system_prompt: Option<String>,
         enable_thinking: bool,
     ) -> Self {
@@ -416,7 +415,7 @@ impl MrmlClient {
                 &config.cache_type_v,
                 Some(&backend_str),
             ) {
-                Ok(eng) => Some(Arc::new(eng)),
+                Ok(eng) => Some(Shared::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: MRML engine init deferred: {}", e);
                     None

@@ -23,3 +23,4 @@ mrml-core = { path = "../mrml-core", default-features = false }
 mrml-json = { path = "../mrml-json" }
 mrml-tools = { path = "../mrml-tools" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
+mrml-runtime = { path = "../mrml-runtime" }
