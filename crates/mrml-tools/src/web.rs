@@ -6,9 +6,7 @@ use std::path::Path;
 pub async fn fetch_http_text(url: &str) -> Result<String> {
     // 1. Try headless Chromium if browser controller is available
     if let Ok(browser_ctrl) = crate::browser::get_browser_controller().await {
-        let mut guard = browser_ctrl
-            .lock()
-            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut guard = browser_ctrl.lock();
         if let Ok(page) = guard.get_or_create_page(Some(url)) {
             crate::platform::sleep_millis(1200);
             if let Ok(html) = page.content() {

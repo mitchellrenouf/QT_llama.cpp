@@ -1,5 +1,6 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
+use mrml_runtime::{OnceCell, Shared, SpinMutex};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -7,10 +8,9 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
-static BROWSER_INSTANCE: OnceLock<Arc<Mutex<EdgeController>>> = OnceLock::new();
+static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
 
 struct CdpSocket {
     stream: TcpStream,
@@ -338,11 +338,11 @@ fn http_json(port: u16, method: &str, path: &str) -> Result<Value> {
     s.read_exact(&mut body)?;
     Ok(serde_json::from_slice(&body)?)
 }
-pub async fn get_browser_controller() -> Result<Arc<Mutex<EdgeController>>> {
+pub async fn get_browser_controller() -> Result<Shared<SpinMutex<EdgeController>>> {
     if let Some(controller) = BROWSER_INSTANCE.get() {
         return Ok(controller.clone());
     }
-    let controller = Arc::new(Mutex::new(EdgeController::ensure_latest_and_launch()?));
+    let controller = Shared::new(SpinMutex::new(EdgeController::ensure_latest_and_launch()?));
     let _ = BROWSER_INSTANCE.set(controller.clone());
     Ok(BROWSER_INSTANCE.get().cloned().unwrap_or(controller))
 }
@@ -361,9 +361,7 @@ impl Tool for BrowserOpenTool {
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let u = a["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
         let x = get_browser_controller().await?;
-        let mut c = x
-            .lock()
-            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x.lock();
         c.get_or_create_page(Some(u))?;
         Ok(format!(
             "Opened '{}' in headless Edge (Title: '{}', URL: '{}').",
@@ -386,9 +384,7 @@ impl Tool for BrowserGetContentTool {
     }
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let x = get_browser_controller().await?;
-        let mut c = x
-            .lock()
-            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x.lock();
         c.get_or_create_page(a["url"].as_str())?;
         let title = c.title()?;
         let text = crate::html::visible_text(&c.content()?);
@@ -424,9 +420,7 @@ impl Tool for BrowserScreenshotTool {
     }
     async fn execute(&self, r: &Path, _: Value) -> Result<String> {
         let x = get_browser_controller().await?;
-        let mut c = x
-            .lock()
-            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x.lock();
         c.get_or_create_page(None)?;
         let data = c.cdp(
             "Page.captureScreenshot",
@@ -468,9 +462,7 @@ impl Tool for BrowserClickElementTool {
             .as_str()
             .ok_or_else(|| anyhow!("Missing target"))?;
         let x = get_browser_controller().await?;
-        let mut c = x
-            .lock()
-            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x.lock();
         c.get_or_create_page(None)?;
         let q = serde_json::string(t);
         let js = format!(
@@ -498,9 +490,7 @@ impl Tool for BrowserClickTool {
         let x = a["x"].as_f64().ok_or_else(|| anyhow!("Missing x"))?;
         let y = a["y"].as_f64().ok_or_else(|| anyhow!("Missing y"))?;
         let ctl = get_browser_controller().await?;
-        let mut c = ctl
-            .lock()
-            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = ctl.lock();
         c.get_or_create_page(None)?;
         for (k, b) in [
             ("mouseMoved", false),
@@ -531,9 +521,7 @@ impl Tool for BrowserTypeTool {
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let t = a["text"].as_str().ok_or_else(|| anyhow!("Missing text"))?;
         let x = get_browser_controller().await?;
-        let mut c = x
-            .lock()
-            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x.lock();
         c.get_or_create_page(None)?;
         c.cdp("Input.insertText", json!({"text":t}))?;
         Ok(format!("Typed '{}' into the browser page.", t))
