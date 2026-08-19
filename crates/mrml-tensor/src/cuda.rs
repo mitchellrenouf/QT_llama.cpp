@@ -93,41 +93,6 @@ extern "C" {
     fn cudaGraphExecDestroy(exec: CudaGraphExecHandle) -> i32;
     fn cudaDeviceSynchronize() -> i32;
 
-    // Exported custom kernel launches from cuda_kernels.cu
-    fn cuda_op_attention(
-        d_q: *const f32,
-        d_k_cache: *const u16,
-        d_v_cache: *const u16,
-        d_out: *mut f32,
-        n_past: i32,
-        n_heads: i32,
-        n_kv_heads: i32,
-        head_dim: i32,
-        scale: f32,
-        sliding_window: i32,
-        cache_capacity: i32,
-        k_format: i32,
-        v_format: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_attention_prefill(
-        d_q: *const f32,
-        d_k_cache: *const u16,
-        d_v_cache: *const u16,
-        d_out: *mut f32,
-        cache_start: i32,
-        batch: i32,
-        n_heads: i32,
-        n_kv_heads: i32,
-        head_dim: i32,
-        q_stride: i32,
-        scale: f32,
-        sliding_window: i32,
-        cache_capacity: i32,
-        k_format: i32,
-        v_format: i32,
-        stream: CudaStream,
-    );
 }
 
 pub fn clear_cuda_allocation_pool() {
@@ -783,20 +748,30 @@ unsafe fn launch_rust_attention(
     } else {
         cache_start + batch
     };
-    if max_keys > 8192 {
-        return Err(anyhow!(
-            "Rust CUDA attention supports at most 8192 score entries, requested {max_keys}"
-        ));
+    if max_keys <= 8192
+        && capacity > 0
+        && capacity & (capacity - 1) == 0
+        && k_format == 0
+        && v_format == 0
+    {
+        let shared_bytes = max_keys as u32 * std::mem::size_of::<f32>() as u32;
+        launch_rust_kernel_shared(
+            "rust_cuda_attention",
+            (n_heads as u32, batch as u32, 1),
+            (128, 1, 1),
+            shared_bytes,
+            stream,
+            &mut args,
+        )
+    } else {
+        launch_rust_kernel(
+            "rust_cuda_attention_streaming",
+            (n_heads as u32, batch as u32, 1),
+            (128, 1, 1),
+            stream,
+            &mut args,
+        )
     }
-    let shared_bytes = max_keys as u32 * std::mem::size_of::<f32>() as u32;
-    launch_rust_kernel_shared(
-        "rust_cuda_attention",
-        (n_heads as u32, batch as u32, 1),
-        (128, 1, 1),
-        shared_bytes,
-        stream,
-        &mut args,
-    )
 }
 
 unsafe fn launch_rust_moe_topk(
@@ -1924,19 +1899,7 @@ impl CudaDevice {
         let sw = sliding_window.map(|w| w as i32).unwrap_or(-1);
         unsafe {
             cudaSetDevice(self.device_id);
-            let score_count = if sw > 0 {
-                (n_past + 1).min(sw as usize)
-            } else {
-                n_past + 1
-            };
-            if env_flag_enabled("MRML_RUST_CUDA_ATTENTION")
-                && score_count <= 8192
-                && cache_capacity.is_power_of_two()
-                && head_dim % 2 == 0
-                && k_format == 0
-                && v_format == 0
-            {
-                launch_rust_attention(
+            launch_rust_attention(
                     d_q.as_ptr(),
                     d_k_cache.as_ptr(),
                     d_v_cache.as_ptr(),
@@ -1954,25 +1917,7 @@ impl CudaDevice {
                     v_format,
                     self.stream,
                 )
-                .expect("experimental Rust CUDA causal attention failed");
-                return;
-            }
-            cuda_op_attention(
-                d_q.as_ptr(),
-                d_k_cache.as_ptr(),
-                d_v_cache.as_ptr(),
-                d_out.as_mut_ptr(),
-                n_past as i32,
-                n_heads as i32,
-                n_kv_heads as i32,
-                head_dim as i32,
-                scale,
-                sw,
-                cache_capacity as i32,
-                k_format,
-                v_format,
-                self.stream,
-            );
+            .expect("Rust CUDA causal attention failed");
         }
     }
 
@@ -2027,19 +1972,7 @@ impl CudaDevice {
         let window = sliding_window.map(|value| value as i32).unwrap_or(-1);
         unsafe {
             cudaSetDevice(self.device_id);
-            let max_keys = if window > 0 {
-                (cache_start + batch).min(window as usize)
-            } else {
-                cache_start + batch
-            };
-            if env_flag_enabled("MRML_RUST_CUDA_ATTENTION")
-                && max_keys <= 8192
-                && cache_capacity.is_power_of_two()
-                && head_dim % 2 == 0
-                && k_format == 0
-                && v_format == 0
-            {
-                launch_rust_attention(
+            launch_rust_attention(
                     d_q.as_ptr(),
                     d_k_cache.as_ptr(),
                     d_v_cache.as_ptr(),
@@ -2057,27 +1990,7 @@ impl CudaDevice {
                     v_format,
                     self.stream,
                 )
-                .expect("experimental Rust CUDA prefill attention failed");
-                return;
-            }
-            cuda_op_attention_prefill(
-                d_q.as_ptr(),
-                d_k_cache.as_ptr(),
-                d_v_cache.as_ptr(),
-                d_out.as_mut_ptr(),
-                cache_start as i32,
-                batch as i32,
-                n_heads as i32,
-                n_kv_heads as i32,
-                head_dim as i32,
-                q_stride as i32,
-                scale,
-                window,
-                cache_capacity as i32,
-                k_format,
-                v_format,
-                self.stream,
-            );
+            .expect("Rust CUDA prefill attention failed");
         }
     }
 

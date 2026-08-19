@@ -292,6 +292,16 @@ unsafe fn load_cache(
     }
 }
 #[inline(always)]
+unsafe fn cache_token(token: i32, capacity: i32) -> usize {
+    if capacity <= 0 {
+        token as usize
+    } else if capacity & (capacity - 1) == 0 {
+        (token & (capacity - 1)) as usize
+    } else {
+        ptx_rem_i32(token, capacity) as usize
+    }
+}
+#[inline(always)]
 unsafe fn cache_token_pow2(token: i32, capacity: i32) -> usize {
     (token & (capacity - 1)) as usize
 }
@@ -1376,15 +1386,29 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_attention(
     while p < count {
         let mut dot = 0.0;
         let mut d = 0;
-        let cache_row = k_cache.add(
-            (cache_token_pow2(start + p, cache_capacity) * n_kv_heads as usize + kv_head)
-                * head_dim as usize,
-        );
-        while d + 1 < head_dim as usize {
-            let packed = *(cache_row.add(d) as *const u32);
-            dot += *qh.add(d) * f16_to_f32(packed as u16)
-                + *qh.add(d + 1) * f16_to_f32((packed >> 16) as u16);
-            d += 2
+        if k_format == 0 {
+            let cache_row = k_cache.add(
+                (cache_token_pow2(start + p, cache_capacity) * n_kv_heads as usize + kv_head)
+                    * head_dim as usize,
+            );
+            while d + 1 < head_dim as usize {
+                let packed = *(cache_row.add(d) as *const u32);
+                dot += *qh.add(d) * f16_to_f32(packed as u16)
+                    + *qh.add(d + 1) * f16_to_f32((packed >> 16) as u16);
+                d += 2
+            }
+            if d < head_dim as usize {
+                dot += *qh.add(d) * f16_to_f32(*cache_row.add(d));
+            }
+        } else {
+            while d < head_dim as usize {
+                dot += *qh.add(d)
+                    * load_cache(
+                        k_cache, start + p, kv_head, d, n_kv_heads as usize,
+                        head_dim as usize, cache_capacity, k_format,
+                    );
+                d += 1
+            }
         }
         attention_store(p as u32, dot * scale);
         p += _block_dim_x() as i32
@@ -1407,24 +1431,152 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_attention(
     }
     let inv = ptx_div(1.0, block_sum(local_sum));
     let target = out.add(token * n_heads as usize * head_dim as usize + head * head_dim as usize);
-    let mut d = tid * 2;
-    while d + 1 < head_dim as usize {
-        let mut value0 = 0.0;
-        let mut value1 = 0.0;
-        p = 0;
-        while p < count {
-            let cache_row = v_cache.add(
-                (cache_token_pow2(start + p, cache_capacity) * n_kv_heads as usize + kv_head)
-                    * head_dim as usize,
-            );
-            let probability = attention_load(p as u32) * inv;
-            value0 += probability * f16_to_f32(*cache_row.add(d));
-            value1 += probability * f16_to_f32(*cache_row.add(d + 1));
-            p += 1
+    if v_format == 0 {
+        let mut d = tid * 2;
+        while d + 1 < head_dim as usize {
+            let mut value0 = 0.0;
+            let mut value1 = 0.0;
+            p = 0;
+            while p < count {
+                let cache_row = v_cache.add(
+                    (cache_token_pow2(start + p, cache_capacity) * n_kv_heads as usize + kv_head)
+                        * head_dim as usize,
+                );
+                let probability = attention_load(p as u32) * inv;
+                value0 += probability * f16_to_f32(*cache_row.add(d));
+                value1 += probability * f16_to_f32(*cache_row.add(d + 1));
+                p += 1
+            }
+            *target.add(d) = value0;
+            *target.add(d + 1) = value1;
+            d += _block_dim_x() as usize * 2
         }
-        *target.add(d) = value0;
-        *target.add(d + 1) = value1;
-        d += _block_dim_x() as usize * 2
+        if head_dim & 1 != 0 && tid == 0 {
+            let d = head_dim as usize - 1;
+            let mut value = 0.0;
+            p = 0;
+            while p < count {
+                value += attention_load(p as u32) * inv
+                    * load_cache(v_cache, start + p, kv_head, d, n_kv_heads as usize,
+                        head_dim as usize, cache_capacity, v_format);
+                p += 1;
+            }
+            *target.add(d) = value;
+        }
+    } else {
+        let mut d = tid;
+        while d < head_dim as usize {
+            let mut value = 0.0;
+            p = 0;
+            while p < count {
+                value += attention_load(p as u32) * inv
+                    * load_cache(v_cache, start + p, kv_head, d, n_kv_heads as usize,
+                        head_dim as usize, cache_capacity, v_format);
+                p += 1;
+            }
+            *target.add(d) = value;
+            d += _block_dim_x() as usize
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "ptx-kernel" fn rust_cuda_attention_streaming(
+    q: *const f32,
+    k_cache: *const u16,
+    v_cache: *const u16,
+    out: *mut f32,
+    cache_start: i32,
+    batch: i32,
+    n_heads: i32,
+    n_kv_heads: i32,
+    head_dim: i32,
+    q_stride: i32,
+    scale: f32,
+    sliding_window: i32,
+    cache_capacity: i32,
+    k_format: i32,
+    v_format: i32,
+) {
+    let head = _block_idx_x() as usize;
+    let token = _block_idx_y() as usize;
+    if head >= n_heads as usize || token >= batch as usize {
+        return;
+    }
+    let tid = _thread_idx_x() as usize;
+    let n_past = cache_start + token as i32;
+    let start = if sliding_window > 0 && n_past >= sliding_window {
+        n_past - sliding_window + 1
+    } else {
+        0
+    };
+    let count = n_past - start + 1;
+    let kv_head = ptx_div_i32(head as i32, ptx_div_i32(n_heads, n_kv_heads)) as usize;
+    let qh = q.add(token * q_stride as usize + head * head_dim as usize);
+    let target = out.add(token * n_heads as usize * head_dim as usize + head * head_dim as usize);
+    let mut d = tid;
+    while d < head_dim as usize {
+        *target.add(d) = 0.0;
+        d += _block_dim_x() as usize;
+    }
+    block_sync();
+    let mut maximum = f32::NEG_INFINITY;
+    let mut normalizer = 0.0;
+    let mut p = 0;
+    while p < count {
+        let mut partial = 0.0;
+        d = tid;
+        while d < head_dim as usize {
+            partial += *qh.add(d)
+                * load_cache(
+                    k_cache,
+                    start + p,
+                    kv_head,
+                    d,
+                    n_kv_heads as usize,
+                    head_dim as usize,
+                    cache_capacity,
+                    k_format,
+                );
+            d += _block_dim_x() as usize;
+        }
+        let score = block_sum(partial) * scale;
+        if tid == 0 {
+            let next_maximum = ptx_max(maximum, score);
+            let rescale = fast_exp(maximum - next_maximum);
+            let probability = fast_exp(score - next_maximum);
+            shared_store(0, next_maximum);
+            shared_store(1, rescale);
+            shared_store(2, probability);
+            shared_store(3, normalizer * rescale + probability);
+        }
+        block_sync();
+        maximum = shared_load(0);
+        let rescale = shared_load(1);
+        let probability = shared_load(2);
+        normalizer = shared_load(3);
+        d = tid;
+        while d < head_dim as usize {
+            let value = load_cache(
+                v_cache,
+                start + p,
+                kv_head,
+                d,
+                n_kv_heads as usize,
+                head_dim as usize,
+                cache_capacity,
+                v_format,
+            );
+            *target.add(d) = *target.add(d) * rescale + value * probability;
+            d += _block_dim_x() as usize;
+        }
+        block_sync();
+        p += 1;
+    }
+    d = tid;
+    while d < head_dim as usize {
+        *target.add(d) = ptx_div(*target.add(d), normalizer);
+        d += _block_dim_x() as usize;
     }
 }
 

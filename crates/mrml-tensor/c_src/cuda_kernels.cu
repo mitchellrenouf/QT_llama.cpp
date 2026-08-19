@@ -1208,46 +1208,6 @@ __global__ void k_vocab_topk_bitonic_f32(
     }
 }
 
-void cuda_op_attention(
-    const float* d_q,
-    const uint8_t* d_k_cache,
-    const uint8_t* d_v_cache,
-    float* d_out,
-    int n_past,
-    int n_heads,
-    int n_kv_heads,
-    int head_dim,
-    float scale,
-    int sliding_window, int cache_capacity, int k_format, int v_format,
-    cudaStream_t stream
-) {
-    int score_count = sliding_window > 0 ? min(n_past + 1, sliding_window) : n_past + 1;
-    int shared_mem = score_count * sizeof(float);
-#define MRML_LAUNCH_ATTN(K, V, C) k_attention_causal_swa_f32<K, V, C><<<n_heads, 128, shared_mem, stream>>>(d_q, d_k_cache, d_v_cache, d_out, n_past, n_heads, n_kv_heads, head_dim, scale, sliding_window, cache_capacity)
-#define MRML_DISPATCH_ATTN(C) \
-    if (k_format == 0) { if (v_format == 0) MRML_LAUNCH_ATTN(0,0,C); else if (v_format == 1) MRML_LAUNCH_ATTN(0,1,C); else MRML_LAUNCH_ATTN(0,2,C); } \
-    else if (k_format == 1) { if (v_format == 0) MRML_LAUNCH_ATTN(1,0,C); else if (v_format == 1) MRML_LAUNCH_ATTN(1,1,C); else MRML_LAUNCH_ATTN(1,2,C); } \
-    else { if (v_format == 0) MRML_LAUNCH_ATTN(2,0,C); else if (v_format == 1) MRML_LAUNCH_ATTN(2,1,C); else MRML_LAUNCH_ATTN(2,2,C); }
-    if (sliding_window > 0) { MRML_DISPATCH_ATTN(true) }
-    else { MRML_DISPATCH_ATTN(false) }
-#undef MRML_DISPATCH_ATTN
-#undef MRML_LAUNCH_ATTN
-}
-
-void cuda_op_attention_prefill(
-    const float* d_q, const uint8_t* d_k_cache, const uint8_t* d_v_cache,
-    float* d_out, int cache_start, int batch, int n_heads, int n_kv_heads,
-    int head_dim, int q_stride, float scale, int sliding_window,
-    int cache_capacity, int k_format, int v_format, cudaStream_t stream
-) {
-    dim3 grid(n_heads, batch);
-    int max_keys = sliding_window > 0 ? min(cache_start + batch, sliding_window) : cache_start + batch;
-    k_attention_prefill_f32<<<grid, 128, max_keys * sizeof(float), stream>>>(
-        d_q, d_k_cache, d_v_cache, d_out, cache_start, batch, n_heads,
-        n_kv_heads, head_dim, q_stride, scale, sliding_window, cache_capacity,
-        k_format, v_format);
-}
-
 // Fused MoE Top-K Gate+Up GEMV + GeGLU Kernel
 // gridDim = (exp_ffn_dim, n_active), blockDim = 128
 __global__ void k_moe_gate_up_topk_q4_0_f32(
