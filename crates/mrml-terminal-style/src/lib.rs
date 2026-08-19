@@ -24,6 +24,73 @@ impl AnsiCode {
     }
 }
 
+/// Allocation-free ANSI styling over a borrowed display value.
+///
+/// The caller decides whether ANSI output is enabled because terminal and
+/// environment detection belong to a platform or application crate.
+#[derive(Clone, Copy, Debug)]
+pub struct BorrowedStyle<'a, T: ?Sized> {
+    value: &'a T,
+    codes: [AnsiCode; 8],
+    code_count: u8,
+    ansi: bool,
+}
+
+impl<'a, T: core::fmt::Display + ?Sized> BorrowedStyle<'a, T> {
+    pub const fn new(value: &'a T, ansi: bool) -> Self {
+        Self {
+            value,
+            codes: [AnsiCode::Bold; 8],
+            code_count: 0,
+            ansi,
+        }
+    }
+
+    pub const fn with(mut self, code: AnsiCode) -> Self {
+        let mut index = 0;
+        while index < self.code_count as usize {
+            if self.codes[index] as u8 == code as u8 {
+                return self;
+            }
+            index += 1;
+        }
+        if (self.code_count as usize) < self.codes.len() {
+            self.codes[self.code_count as usize] = code;
+            self.code_count += 1;
+        }
+        self
+    }
+
+    pub const fn ansi_enabled(mut self, enabled: bool) -> Self {
+        self.ansi = enabled;
+        self
+    }
+}
+
+impl<T: core::fmt::Display + ?Sized> core::fmt::Display for BorrowedStyle<'_, T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if !self.ansi || self.code_count == 0 {
+            return self.value.fmt(formatter);
+        }
+        formatter.write_str("\x1b[")?;
+        for index in 0..self.code_count as usize {
+            if index != 0 {
+                formatter.write_str(";")?;
+            }
+            write!(formatter, "{}", self.codes[index].value())?;
+        }
+        write!(formatter, "m{}\x1b[0m", self.value)
+    }
+}
+
+pub const fn style<T: core::fmt::Display + ?Sized>(
+    value: &T,
+    code: AnsiCode,
+    ansi: bool,
+) -> BorrowedStyle<'_, T> {
+    BorrowedStyle::new(value, ansi).with(code)
+}
+
 #[cfg(feature = "alloc")]
 mod allocated {
     extern crate alloc;
@@ -176,9 +243,45 @@ pub use allocated::*;
 
 #[cfg(test)]
 mod portable_tests {
+    use core::fmt::Write;
+
+    struct Buffer {
+        bytes: [u8; 64],
+        len: usize,
+    }
+
+    impl Write for Buffer {
+        fn write_str(&mut self, value: &str) -> core::fmt::Result {
+            let end = self.len + value.len();
+            if end > self.bytes.len() {
+                return Err(core::fmt::Error);
+            }
+            self.bytes[self.len..end].copy_from_slice(value.as_bytes());
+            self.len = end;
+            Ok(())
+        }
+    }
+
     #[test]
     fn ansi_codes_have_protocol_values_without_allocation() {
         assert_eq!(super::AnsiCode::Bold.value(), 1);
         assert_eq!(super::AnsiCode::BrightWhite.value(), 97);
+    }
+
+    #[test]
+    fn borrowed_styles_format_into_caller_storage() {
+        let mut output = Buffer {
+            bytes: [0; 64],
+            len: 0,
+        };
+        write!(
+            output,
+            "{}",
+            super::style(&"hello", super::AnsiCode::Green, true)
+                .with(super::AnsiCode::Bold)
+                .with(super::AnsiCode::Green)
+        )
+        .unwrap();
+        assert_eq!(&output.bytes[..output.len], b"\x1b[32;1mhello\x1b[0m");
     }
 }
