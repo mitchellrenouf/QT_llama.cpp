@@ -7,12 +7,13 @@ license.workspace = true
 description = "MRML model and chat adapter for native in-process GGUF inference"
 
 [dependencies]
-serde_json = { package = "mrml-json", path = "../mrml-json" }
+serde_json = { package = "mrml-json", path = "../mrml-json", default-features = false, optional = true }
 mrml-tensor = { path = "../mrml-tensor", default-features = false, optional = true }
 
 [features]
 default = ["std", "auto"]
-std = ["dep:mrml-tensor", "mrml-tensor/std"]
+alloc = ["dep:serde_json", "serde_json/alloc"]
+std = ["alloc", "dep:mrml-tensor", "mrml-tensor/std"]
 auto = ["std", "mrml-tensor/cuda"]
 cuda = ["std", "mrml-tensor/cuda"]
 vulkan = ["std"]
