@@ -182,7 +182,7 @@ pub struct GenerationState {
     pub pos: usize,
     pub generated_count: usize,
     pub history_tokens: Vector<i32>,
-    pub hidden: Vec<f32>,
+    pub hidden: Vector<f32>,
     pub k_cache: Vector<Vector<KvCacheRow>>, // [n_layers][seq_len]
     pub v_cache: Vector<Vector<KvCacheRow>>, // [n_layers][seq_len]
 }
@@ -1118,7 +1118,7 @@ impl MrmlModel {
         pos: usize,
         k_cache: &mut [Vector<KvCacheRow>],
         v_cache: &mut [Vector<KvCacheRow>],
-    ) -> Vec<f32> {
+    ) -> Vector<f32> {
         #[cfg(feature = "cuda")]
         self.gpu_normalized_ready.store(false, Ordering::Release);
         let dim = self.config.dim;
@@ -1128,7 +1128,7 @@ impl MrmlModel {
         let mut profile_output = Duration::ZERO;
         let mut profile_ffn = Duration::ZERO;
 
-        let mut hidden = vec![0.0f32; dim];
+        let mut hidden = filled_vector(dim, 0.0f32);
         let _ = self.read_token_embedding(token_id, &mut hidden);
 
         let scale = (dim as f32).sqrt();
@@ -1963,7 +1963,7 @@ impl MrmlModel {
                                 layer.layer_output_scale,
                                 dim,
                             );
-                            Some(Vec::new())
+                            Some(Vector::new())
                         } else {
                             dev.finish_ffn(
                                 d_attn_res,
@@ -1976,7 +1976,7 @@ impl MrmlModel {
                                 layer.layer_output_scale,
                                 dim,
                             );
-                            let mut result = vec![0.0f32; dim];
+                            let mut result = filled_vector(dim, 0.0f32);
                             if d_hidden.copy_to_host(&mut result).is_ok() {
                                 Some(result)
                             } else {
@@ -1993,7 +1993,7 @@ impl MrmlModel {
                 None
             };
             #[cfg(not(feature = "cuda"))]
-            let resident_hidden: Option<Vec<f32>> = None;
+            let resident_hidden: Option<Vector<f32>> = None;
 
             if !mlp_queued {
                 let mut gate = vec![0.0f32; ffn_dim];
@@ -2103,7 +2103,7 @@ impl MrmlModel {
             profile_ffn += profile_start.elapsed();
         }
 
-        let mut final_hidden = vec![0.0f32; dim];
+        let mut final_hidden = filled_vector(dim, 0.0f32);
         #[cfg(feature = "cuda")]
         let normalized_on_gpu = if resident_model {
             if let (Some(dev), Some(weights)) = (&self.cuda_dev, &self.gpu_output_norm) {
@@ -2141,7 +2141,7 @@ impl MrmlModel {
                     .copy_to_host(&mut hidden)
                     .is_err()
             {
-                return vec![0.0; dim];
+                return filled_vector(dim, 0.0);
             }
             ops::rms_norm(
                 &hidden,
@@ -2261,7 +2261,7 @@ impl MrmlModel {
         &self,
         prompt_tokens: &[i32],
     ) -> Option<(
-        Vec<f32>,
+        Vector<f32>,
         Vector<Vector<KvCacheRow>>,
         Vector<Vector<KvCacheRow>>,
     )> {
@@ -2298,7 +2298,7 @@ impl MrmlModel {
         }
 
         let dim = self.config.dim;
-        let mut last_hidden = vec![0.0f32; dim];
+        let mut last_hidden = filled_vector(dim, 0.0f32);
         const CHUNK: usize = 128;
         for (chunk_index, tokens) in prompt_tokens.chunks(CHUNK).enumerate() {
             let batch = tokens.len();
@@ -2551,7 +2551,7 @@ impl MrmlModel {
             (0..n_layers).map(|_| Vector::new()).collect();
         let mut v_cache: Vector<Vector<KvCacheRow>> =
             (0..n_layers).map(|_| Vector::new()).collect();
-        let mut hidden = vec![0.0f32; self.config.dim];
+        let mut hidden = filled_vector(self.config.dim, 0.0f32);
 
         let window = 32.min(prompt_tokens.len());
         let start = prompt_tokens.len().saturating_sub(window);
