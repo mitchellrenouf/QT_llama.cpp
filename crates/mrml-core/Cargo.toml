@@ -19,7 +19,6 @@ runtime = [
 std = [
     "runtime",
     "mrml-model/std",
-    "mrml-tools/std",
 ]
 auto = ["runtime", "mrml-model/auto"]
 cuda = ["runtime", "mrml-model/cuda"]

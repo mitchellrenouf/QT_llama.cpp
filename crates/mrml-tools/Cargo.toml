@@ -16,9 +16,6 @@ runtime = [
     "dep:mrml-linux",
     "dep:mrml-windows",
 ]
-std = [
-    "runtime",
-]
 
 [dependencies]
 mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false, optional = true }

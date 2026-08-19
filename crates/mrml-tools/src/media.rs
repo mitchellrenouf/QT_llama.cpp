@@ -2,7 +2,6 @@ use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::sync::atomic::{AtomicBool, Ordering};
 use mrml_runtime::{Command, Vector};
-#[cfg(not(feature = "std"))]
 use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::json;
 

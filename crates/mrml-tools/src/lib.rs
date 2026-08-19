@@ -1,6 +1,6 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
-#[cfg(all(test, not(feature = "std")))]
+#[cfg(test)]
 extern crate std;
 
 pub mod fixed_encoding;
@@ -45,10 +45,8 @@ use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 #[cfg(feature = "runtime")]
 use mrml_runtime::{Owned, Text};
-#[cfg(all(feature = "runtime", not(feature = "std")))]
+#[cfg(feature = "runtime")]
 use mrml_runtime::Text as String;
-#[cfg(feature = "std")]
-use std::string::String;
 #[cfg(feature = "runtime")]
 use mrml_runtime::{Shared, Vector};
 #[cfg(feature = "runtime")]

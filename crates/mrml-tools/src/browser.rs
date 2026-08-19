@@ -2,7 +2,6 @@ use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::time::Duration;
 use mrml_runtime::{Child, Command, Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector};
-#[cfg(not(feature = "std"))]
 use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::{Value, json};
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
@@ -11,12 +10,6 @@ fn owned_string(value: &str) -> String {
     value.into()
 }
 
-#[cfg(feature = "std")]
-fn text_string(value: Text) -> String {
-    value.as_str().into()
-}
-
-#[cfg(not(feature = "std"))]
 fn text_string(value: Text) -> String {
     value
 }
