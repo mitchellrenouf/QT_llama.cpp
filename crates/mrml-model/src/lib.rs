@@ -5,16 +5,16 @@ extern crate std;
 
 #[cfg(feature = "runtime")]
 pub mod chat;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod engine;
 pub mod error;
 pub mod portable;
 
 #[cfg(feature = "runtime")]
 pub use chat::*;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use engine::*;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use mrml_tensor;
 pub use portable::*;
 
