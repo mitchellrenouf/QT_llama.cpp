@@ -1167,6 +1167,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-anyhow"
+version = "0.4.0"
+
+[[package]]
 name = "mrml-cli"
 version = "0.4.0"
 dependencies = [
@@ -1245,10 +1249,10 @@ version = "0.4.0"
 name = "mrml-tools"
 version = "0.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "chromiumoxide",
  "futures-util",
+ "mrml-anyhow",
  "mrml-terminal-style",
  "mrml-urlencoding",
  "regex",

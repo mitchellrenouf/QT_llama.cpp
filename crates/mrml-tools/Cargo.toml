@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 mrml-terminal-style = { path = "../mrml-terminal-style" }
-anyhow.workspace = true
+anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 async-trait.workspace = true
 futures-util.workspace = true
 regex.workspace = true

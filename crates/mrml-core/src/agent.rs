@@ -577,7 +577,7 @@ impl MrmlAgent {
                 let tool_opt = self.registry.get(name);
                 let tool_result = match tool_opt {
                     Some(tool) => tool.execute(&self.config.workspace_root, parsed_args).await,
-                    None => Err(anyhow::anyhow!("Unknown tool requested: {}", name)),
+                    None => Err(mrml_tools::tool_error(format!("Unknown tool requested: {}", name))),
                 };
 
                 match tool_result {
@@ -868,7 +868,7 @@ impl MrmlAgent {
                         println!("⚡ Executing {}", name.cyan());
                         tool.execute(&self.config.workspace_root, parsed_args).await
                     }
-                    None => Err(anyhow::anyhow!("Unknown tool requested: {}", name)),
+                    None => Err(mrml_tools::tool_error(format!("Unknown tool requested: {}", name))),
                 };
 
                 match tool_result {

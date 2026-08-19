@@ -21,6 +21,12 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+pub type ToolError = anyhow::Error;
+
+pub fn tool_error(message: impl Into<String>) -> ToolError {
+    anyhow::message(message)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionDefinition {
     pub name: String,

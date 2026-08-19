@@ -6,6 +6,7 @@ members = [
     "crates/mrml-core",
     "crates/mrml-cli",
     "crates/mrml-machine",
+    "crates/mrml-anyhow",
     "crates/mrml-server",
     "crates/mrml-terminal-style",
     "crates/mrml-tools",
