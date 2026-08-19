@@ -91,27 +91,22 @@ pub const fn style<T: core::fmt::Display + ?Sized>(
     BorrowedStyle::new(value, ansi).with(code)
 }
 
-#[cfg(feature = "alloc")]
 mod allocated {
-    extern crate alloc;
-
-    use alloc::string::{String, ToString};
-    use alloc::vec;
-    use alloc::vec::Vec;
-    use core::fmt::{self, Display};
+    use core::fmt::{self, Display, Write};
+    use mrml_runtime::{Text, Vector};
     #[cfg(feature = "std")]
     use std::io::IsTerminal;
 
     #[derive(Clone, Debug)]
     pub struct StyledContent {
-        text: String,
-        codes: Vec<u8>,
+        text: Text,
+        codes: Vector<u8>,
     }
 
     impl StyledContent {
         fn with_code(mut self, code: u8) -> Self {
             if !self.codes.contains(&code) {
-                self.codes.push(code);
+                self.codes.try_push(code).expect("MRML allocation failed");
             }
             self
         }
@@ -149,10 +144,11 @@ mod allocated {
 
     pub trait Colorize: Display {
         fn style(&self, code: u8) -> StyledContent {
-            StyledContent {
-                text: self.to_string(),
-                codes: vec![code],
-            }
+            let mut text = Text::new();
+            write!(text, "{self}").expect("MRML allocation failed");
+            let mut codes = Vector::new();
+            codes.try_push(code).expect("MRML allocation failed");
+            StyledContent { text, codes }
         }
 
         fn bold(&self) -> StyledContent {
@@ -228,17 +224,24 @@ mod allocated {
 
         #[test]
         fn styling_preserves_plain_text_when_colors_are_disabled() {
+            #[cfg(feature = "std")]
             // SAFETY: this crate has a single unit test, so no sibling test thread
             // can read or mutate NO_COLOR concurrently.
-            unsafe { std::env::set_var("NO_COLOR", "1") };
-            assert_eq!("hello".green().bold().to_string(), "hello");
+            unsafe {
+                std::env::set_var("NO_COLOR", "1")
+            };
+            let mut output = Text::new();
+            write!(output, "{}", "hello".green().bold()).unwrap();
+            assert_eq!(output, "hello");
+            #[cfg(feature = "std")]
             // SAFETY: paired with the serialized mutation above.
-            unsafe { std::env::remove_var("NO_COLOR") };
+            unsafe {
+                std::env::remove_var("NO_COLOR")
+            };
         }
     }
 }
 
-#[cfg(feature = "alloc")]
 pub use allocated::*;
 
 #[cfg(test)]

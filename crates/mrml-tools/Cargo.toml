@@ -12,7 +12,6 @@ alloc = [
     "dep:mrml-terminal-style",
     "dep:serde_json",
     "dep:urlencoding",
-    "mrml-terminal-style/alloc",
 ]
 std = [
     "alloc",

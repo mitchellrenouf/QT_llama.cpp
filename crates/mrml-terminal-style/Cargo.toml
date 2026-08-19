@@ -7,5 +7,7 @@ license.workspace = true
 
 [features]
 default = ["std"]
-alloc = []
-std = ["alloc"]
+std = []
+
+[dependencies]
+mrml-runtime = { path = "../mrml-runtime" }
