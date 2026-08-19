@@ -400,31 +400,6 @@ extern "C" {
         batch: i32,
         stream: CudaStream,
     );
-    fn cuda_op_ffn_compute_launches(
-        gate: *const u8,
-        up: *const u8,
-        down: *const u8,
-        shared_in: *const f32,
-        dense_act: *mut f32,
-        dense_out: *mut f32,
-        router_weights: *const f32,
-        router_in: *const f32,
-        router_logits: *mut f32,
-        expert_ids: *mut i32,
-        expert_weights: *mut f32,
-        gate_up_exps: *const u8,
-        down_exps: *const u8,
-        down_scales: *const f32,
-        moe_in: *const f32,
-        moe_act: *mut f32,
-        moe_out: *mut f32,
-        dim: i32,
-        ffn_dim: i32,
-        exp_dim: i32,
-        n_experts: i32,
-        n_active: i32,
-        stream: CudaStream,
-    );
 }
 
 pub fn clear_cuda_allocation_pool() {
@@ -1525,34 +1500,121 @@ impl CudaDevice {
         dim: usize,
         ffn_dim: usize,
         exp_dim: usize,
-    ) {
+    ) -> Result<()> {
+        let rust_stages = std::env::var("MRML_RUST_CUDA_FFN_GRAPH")
+            .unwrap_or_else(|_| {
+                if env_flag_enabled("MRML_RUST_CUDA") {
+                    "all"
+                } else {
+                    "none"
+                }
+                .into()
+            })
+            .to_ascii_lowercase();
+        let rust_geglu = matches!(rust_stages.as_str(), "geglu" | "dense" | "all");
+        let rust_down = matches!(rust_stages.as_str(), "down" | "dense" | "all");
+        let rust_router = matches!(rust_stages.as_str(), "router" | "all");
+        let rust_moe = matches!(rust_stages.as_str(), "moe" | "all");
         unsafe {
-            cuda_op_ffn_compute_launches(
-                gate.as_ptr(),
-                up.as_ptr(),
-                down.as_ptr(),
-                shared_in.as_ptr(),
-                dense_act.as_mut_ptr(),
-                dense_out.as_mut_ptr(),
-                router_weights.as_ptr(),
-                router_in.as_ptr(),
-                router_logits.as_mut_ptr(),
-                expert_ids.as_mut_ptr(),
-                expert_weights.as_mut_ptr(),
-                gate_up_exps.as_ptr(),
-                down_exps.as_ptr(),
-                down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
-                moe_in.as_ptr(),
-                moe_act.as_mut_ptr(),
-                moe_out.as_mut_ptr(),
-                dim as i32,
-                ffn_dim as i32,
-                exp_dim as i32,
-                128,
-                8,
-                self.stream,
-            );
+            if rust_geglu {
+                launch_rust_geglu_q4(
+                    gate.as_ptr(),
+                    up.as_ptr(),
+                    shared_in.as_ptr(),
+                    dense_act.as_mut_ptr(),
+                    ffn_dim as i32,
+                    dim as i32,
+                    1,
+                    self.stream,
+                )?;
+            } else {
+                cuda_op_gemv_q4_0_geglu(
+                    gate.as_ptr(),
+                    up.as_ptr(),
+                    shared_in.as_ptr(),
+                    dense_act.as_mut_ptr(),
+                    ffn_dim as i32,
+                    dim as i32,
+                    self.stream,
+                );
+            }
+            if rust_down {
+                launch_rust_gemv_q4(
+                    down.as_ptr(),
+                    dense_act.as_ptr(),
+                    dense_out.as_mut_ptr(),
+                    dim as i32,
+                    ffn_dim as i32,
+                    self.stream,
+                )?;
+            } else {
+                cuda_op_gemv_q4_0(
+                    down.as_ptr(),
+                    dense_act.as_ptr(),
+                    dense_out.as_mut_ptr(),
+                    dim as i32,
+                    ffn_dim as i32,
+                    self.stream,
+                );
+            }
+            if rust_router {
+                launch_rust_moe_router(
+                    router_weights.as_ptr(),
+                    router_in.as_ptr(),
+                    router_logits.as_mut_ptr(),
+                    expert_ids.as_mut_ptr(),
+                    expert_weights.as_mut_ptr(),
+                    dim as i32,
+                    128,
+                    1,
+                    self.stream,
+                )?;
+            } else {
+                cuda_op_moe_router(
+                    router_weights.as_ptr(),
+                    router_in.as_ptr(),
+                    router_logits.as_mut_ptr(),
+                    expert_ids.as_mut_ptr(),
+                    expert_weights.as_mut_ptr(),
+                    dim as i32,
+                    128,
+                    self.stream,
+                );
+            }
+            if rust_moe {
+                launch_rust_moe_topk(
+                    gate_up_exps.as_ptr(),
+                    down_exps.as_ptr(),
+                    expert_ids.as_ptr(),
+                    expert_weights.as_ptr(),
+                    down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
+                    moe_in.as_ptr(),
+                    moe_act.as_mut_ptr(),
+                    moe_out.as_mut_ptr(),
+                    dim as i32,
+                    exp_dim as i32,
+                    8,
+                    1,
+                    self.stream,
+                )?;
+            } else {
+                cuda_op_moe_topk_q4_0(
+                    gate_up_exps.as_ptr(),
+                    down_exps.as_ptr(),
+                    expert_ids.as_ptr(),
+                    expert_weights.as_ptr(),
+                    down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
+                    moe_in.as_ptr(),
+                    moe_act.as_mut_ptr(),
+                    moe_out.as_mut_ptr(),
+                    dim as i32,
+                    exp_dim as i32,
+                    8,
+                    self.stream,
+                );
+            }
         }
+        Ok(())
     }
 
     pub fn capture<F>(&self, launches: F) -> Result<CudaGraphExec>

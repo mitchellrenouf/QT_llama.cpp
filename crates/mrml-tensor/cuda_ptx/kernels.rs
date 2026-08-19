@@ -301,8 +301,14 @@ unsafe fn fast_exp(value: f32) -> f32 {
 }
 #[inline(always)]
 unsafe fn fast_tanh(value: f32) -> f32 {
-    let e = fast_exp(value * 2.0);
-    ptx_div(e - 1.0, e + 1.0)
+    // Using exp(2*x) directly produces inf/inf for the large positive gate
+    // activations seen in Gemma's GeGLU. This form has the same value but its
+    // exponential is always in [0, 1], so tanh saturates instead of becoming
+    // NaN.
+    let magnitude = if value < 0.0 { -value } else { value };
+    let e = fast_exp(-2.0 * magnitude);
+    let saturated = ptx_div(1.0 - e, 1.0 + e);
+    if value < 0.0 { -saturated } else { saturated }
 }
 #[inline(always)]
 unsafe fn global_index() -> usize {

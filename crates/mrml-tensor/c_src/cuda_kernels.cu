@@ -1796,25 +1796,4 @@ void cuda_op_moe_topk_batch_q4_0(
         down, ids, weights, scales, act, out, dim, exp_dim, n_active, batch);
 }
 
-// Position-independent decode segment used for CUDA graph capture. All
-// pointers are persistent arena/weight addresses and remain valid for the
-// lifetime of the instantiated graph.
-void cuda_op_ffn_compute_launches(
-    const uint8_t* gate, const uint8_t* up, const uint8_t* down,
-    const float* shared_in, float* dense_act, float* dense_out,
-    const float* router_weights, const float* router_in, float* router_logits,
-    int32_t* expert_ids, float* expert_weights,
-    const uint8_t* gate_up_exps, const uint8_t* down_exps,
-    const float* down_scales, const float* moe_in, float* moe_act, float* moe_out,
-    int dim, int ffn_dim, int exp_dim, int n_experts, int n_active,
-    cudaStream_t stream
-) {
-    cuda_op_gemv_q4_0_geglu(gate, up, shared_in, dense_act, ffn_dim, dim, stream);
-    cuda_op_gemv_q4_0(down, dense_act, dense_out, dim, ffn_dim, stream);
-    cuda_op_moe_router(router_weights, router_in, router_logits, expert_ids,
-        expert_weights, dim, n_experts, stream);
-    cuda_op_moe_topk_q4_0(gate_up_exps, down_exps, expert_ids, expert_weights,
-        down_scales, moe_in, moe_act, moe_out, dim, exp_dim, n_active, stream);
-}
-
 }

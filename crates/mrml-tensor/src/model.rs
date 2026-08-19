@@ -321,7 +321,7 @@ fn capture_layer_ffn_graph(
             dim,
             2112,
             704,
-        );
+        )?;
         Ok(())
     })
     .ok()
