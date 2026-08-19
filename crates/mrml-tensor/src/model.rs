@@ -183,8 +183,8 @@ pub struct GenerationState {
     pub generated_count: usize,
     pub history_tokens: Vector<i32>,
     pub hidden: Vec<f32>,
-    pub k_cache: Vec<Vec<KvCacheRow>>, // [n_layers][seq_len]
-    pub v_cache: Vec<Vec<KvCacheRow>>, // [n_layers][seq_len]
+    pub k_cache: Vector<Vector<KvCacheRow>>, // [n_layers][seq_len]
+    pub v_cache: Vector<Vector<KvCacheRow>>, // [n_layers][seq_len]
 }
 
 pub struct MrmlModel {
@@ -1116,8 +1116,8 @@ impl MrmlModel {
         &self,
         token_id: i32,
         pos: usize,
-        k_cache: &mut [Vec<KvCacheRow>],
-        v_cache: &mut [Vec<KvCacheRow>],
+        k_cache: &mut [Vector<KvCacheRow>],
+        v_cache: &mut [Vector<KvCacheRow>],
     ) -> Vec<f32> {
         #[cfg(feature = "cuda")]
         self.gpu_normalized_ready.store(false, Ordering::Release);
@@ -2260,7 +2260,11 @@ impl MrmlModel {
     fn prefill_cuda(
         &self,
         prompt_tokens: &[i32],
-    ) -> Option<(Vec<f32>, Vec<Vec<KvCacheRow>>, Vec<Vec<KvCacheRow>>)> {
+    ) -> Option<(
+        Vec<f32>,
+        Vector<Vector<KvCacheRow>>,
+        Vector<Vector<KvCacheRow>>,
+    )> {
         let device = self.cuda_dev.as_ref()?;
         let capacity = self
             .layers
@@ -2487,11 +2491,13 @@ impl MrmlModel {
             hidden.copy_to_host(&mut chunk_hidden).ok()?;
             last_hidden.copy_from_slice(&chunk_hidden[(batch - 1) * dim..batch * dim]);
         }
-        let mut k_cache = vec![Vec::new(); self.config.n_layers];
-        let mut v_cache = vec![Vec::new(); self.config.n_layers];
+        let mut k_cache: Vector<Vector<KvCacheRow>> =
+            (0..self.config.n_layers).map(|_| Vector::new()).collect();
+        let mut v_cache: Vector<Vector<KvCacheRow>> =
+            (0..self.config.n_layers).map(|_| Vector::new()).collect();
         for layer in 0..self.config.n_layers {
-            k_cache[layer].resize_with(prompt_tokens.len(), || KvCacheRow::Empty);
-            v_cache[layer].resize_with(prompt_tokens.len(), || KvCacheRow::Empty);
+            k_cache[layer].resize(prompt_tokens.len(), KvCacheRow::Empty);
+            v_cache[layer].resize(prompt_tokens.len(), KvCacheRow::Empty);
         }
         Some((last_hidden, k_cache, v_cache))
     }
@@ -2541,8 +2547,10 @@ impl MrmlModel {
             return state;
         }
         let n_layers = self.config.n_layers;
-        let mut k_cache = vec![Vec::new(); n_layers];
-        let mut v_cache = vec![Vec::new(); n_layers];
+        let mut k_cache: Vector<Vector<KvCacheRow>> =
+            (0..n_layers).map(|_| Vector::new()).collect();
+        let mut v_cache: Vector<Vector<KvCacheRow>> =
+            (0..n_layers).map(|_| Vector::new()).collect();
         let mut hidden = vec![0.0f32; self.config.dim];
 
         let window = 32.min(prompt_tokens.len());
