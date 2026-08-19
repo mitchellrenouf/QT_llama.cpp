@@ -1,18 +1,17 @@
 use anyhow::{Result, anyhow};
-use mrml_runtime::Shared;
+use mrml_runtime::{Shared, SpinMutex};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
 
 use crate::{DynTool, Tool};
 
 pub struct McpClient {
-    stdin: Mutex<ChildStdin>,
-    reader: Mutex<BufReader<ChildStdout>>,
-    _child: Mutex<Child>,
-    req_id: Mutex<u64>,
+    stdin: SpinMutex<ChildStdin>,
+    reader: SpinMutex<BufReader<ChildStdout>>,
+    _child: SpinMutex<Child>,
+    req_id: SpinMutex<u64>,
 }
 
 impl McpClient {
@@ -35,10 +34,10 @@ impl McpClient {
         let reader = BufReader::new(stdout);
 
         let client = Shared::new(Self {
-            stdin: Mutex::new(stdin),
-            reader: Mutex::new(reader),
-            _child: Mutex::new(child),
-            req_id: Mutex::new(1),
+            stdin: SpinMutex::new(stdin),
+            reader: SpinMutex::new(reader),
+            _child: SpinMutex::new(child),
+            req_id: SpinMutex::new(1),
         });
 
         // Initialize MCP connection
@@ -60,10 +59,7 @@ impl McpClient {
 
     pub async fn call_method(&self, method: &str, params: Option<Value>) -> Result<Value> {
         let id = {
-            let mut id_guard = self
-                .req_id
-                .lock()
-                .map_err(|_| anyhow!("MCP request ID lock poisoned"))?;
+            let mut id_guard = self.req_id.lock();
             let current = *id_guard;
             *id_guard += 1;
             current
@@ -81,20 +77,14 @@ impl McpClient {
         req_str.push('\n');
 
         {
-            let mut stdin_guard = self
-                .stdin
-                .lock()
-                .map_err(|_| anyhow!("MCP stdin lock poisoned"))?;
+            let mut stdin_guard = self.stdin.lock();
             stdin_guard.write_all(req_str.as_bytes())?;
             stdin_guard.flush()?;
         }
 
         let mut line = String::new();
         {
-            let mut reader_guard = self
-                .reader
-                .lock()
-                .map_err(|_| anyhow!("MCP stdout lock poisoned"))?;
+            let mut reader_guard = self.reader.lock();
             reader_guard.read_line(&mut line)?;
         }
 
