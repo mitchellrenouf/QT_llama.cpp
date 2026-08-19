@@ -67,6 +67,17 @@ pub fn exit_process(status: i32) -> ! {
     }
 }
 
+pub fn stdout_is_terminal() -> bool {
+    #[cfg(windows)]
+    {
+        mrml_windows::stdout_is_terminal()
+    }
+    #[cfg(unix)]
+    {
+        mrml_linux::stdout_is_terminal()
+    }
+}
+
 pub fn local_date_string() -> Text {
     const WEEKDAYS: [&str; 7] = [
         "Sunday",
@@ -142,32 +153,32 @@ fn local_time() -> LocalTime {
 pub fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        std::env::var_os("USERPROFILE")
+        mrml_runtime::environment_variable("USERPROFILE")
             .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
+            .map(|value| PathBuf::from(value.as_str()))
             .or_else(|| {
-                let drive = std::env::var_os("HOMEDRIVE")?;
-                let path = std::env::var_os("HOMEPATH")?;
-                let mut home = PathBuf::from(drive);
-                home.push(path);
+                let drive = mrml_runtime::environment_variable("HOMEDRIVE")?;
+                let path = mrml_runtime::environment_variable("HOMEPATH")?;
+                let mut home = PathBuf::from(drive.as_str());
+                home.push(path.as_str());
                 Some(home)
             })
     }
 
     #[cfg(not(windows))]
     {
-        std::env::var_os("HOME")
+        mrml_runtime::environment_variable("HOME")
             .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
+            .map(|value| PathBuf::from(value.as_str()))
     }
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        std::env::var_os("LOCALAPPDATA")
+        mrml_runtime::environment_variable("LOCALAPPDATA")
             .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
+            .map(|value| PathBuf::from(value.as_str()))
     }
 
     #[cfg(target_os = "macos")]
@@ -177,9 +188,9 @@ pub fn cache_dir() -> Option<PathBuf> {
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        std::env::var_os("XDG_CACHE_HOME")
+        mrml_runtime::environment_variable("XDG_CACHE_HOME")
             .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
+            .map(|value| PathBuf::from(value.as_str()))
             .or_else(|| home_dir().map(|home| home.join(".cache")))
     }
 }

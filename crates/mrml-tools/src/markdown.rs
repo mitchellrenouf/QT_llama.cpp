@@ -1,13 +1,12 @@
 //! Low-latency terminal Markdown presentation.
 use mrml_runtime::Text;
-use std::io::IsTerminal;
 
 const RESET: &str = "\x1b[0m";
 
 fn colors_enabled() -> bool {
-    std::env::var_os("NO_COLOR").is_none()
-        && std::env::var("CLICOLOR").map_or(true, |value| value != "0")
-        && std::io::stdout().is_terminal()
+    mrml_runtime::environment_variable("NO_COLOR").is_none()
+        && mrml_runtime::environment_variable("CLICOLOR").is_none_or(|value| value != "0")
+        && crate::platform::stdout_is_terminal()
 }
 
 fn push_styled(output: &mut Text, text: &str, code: &str, styled: bool) {

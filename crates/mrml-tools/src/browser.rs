@@ -272,22 +272,22 @@ impl Drop for EdgeController {
 }
 
 fn find_browser() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("BROWSER_EXE")
-        .map(PathBuf::from)
-        .filter(|p| p.is_file())
+    if let Some(p) = mrml_runtime::environment_variable("BROWSER_EXE")
+        .map(|value| PathBuf::from(value.as_str()))
+        .filter(|p| crate::platform::path_is_file(p))
     {
         return Some(p);
     }
     let mut c = Vec::new();
     for root in [
-        std::env::var_os("ProgramFiles(x86)"),
-        std::env::var_os("ProgramFiles"),
-        std::env::var_os("LOCALAPPDATA"),
+        mrml_runtime::environment_variable("ProgramFiles(x86)"),
+        mrml_runtime::environment_variable("ProgramFiles"),
+        mrml_runtime::environment_variable("LOCALAPPDATA"),
     ]
     .into_iter()
     .flatten()
     {
-        let r = PathBuf::from(root);
+        let r = PathBuf::from(root.as_str());
         c.push(r.join("Microsoft/Edge/Application/msedge.exe"));
         c.push(r.join("Google/Chrome/Application/chrome.exe"))
     }
@@ -296,7 +296,7 @@ fn find_browser() -> Option<PathBuf> {
         PathBuf::from("/usr/bin/google-chrome"),
         PathBuf::from("/usr/bin/chromium"),
     ]);
-    c.into_iter().find(|p| p.is_file())
+    c.into_iter().find(|p| crate::platform::path_is_file(p))
 }
 fn read_http_header(s: &mut TcpStream) -> Result<String> {
     let mut v = Vec::new();

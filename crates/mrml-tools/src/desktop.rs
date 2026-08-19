@@ -7,16 +7,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn is_executable_in_path(cmd: &str) -> Option<PathBuf> {
-    if let Ok(path_var) = std::env::var("PATH") {
+    if let Some(path_var) = mrml_runtime::environment_variable("PATH") {
         let separator = if cfg!(windows) { ';' } else { ':' };
         for dir in path_var.split(separator) {
             let p = Path::new(dir).join(cmd);
-            if p.is_file() {
+            if crate::platform::path_is_file(&p) {
                 return Some(p);
             }
             if cfg!(windows) && !cmd.ends_with(".exe") {
                 let p_exe = Path::new(dir).join(format!("{}.exe", cmd));
-                if p_exe.is_file() {
+                if crate::platform::path_is_file(&p_exe) {
                     return Some(p_exe);
                 }
             }
