@@ -10,7 +10,7 @@ description = "MRML Tensor: quantized tensor math, GGUF execution, and CUDA acce
 default = ["runtime"]
 runtime = []
 std = ["runtime"]
-cuda = ["std"]
+cuda = ["runtime"]
 
 [dependencies]
 mrml-math = { path = "../mrml-math" }

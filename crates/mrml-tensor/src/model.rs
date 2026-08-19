@@ -2356,7 +2356,7 @@ impl MrmlModel {
             let batch = tokens.len();
             let cache_start = chunk_index * CHUNK;
             let mut embeddings = vec![0.0f32; batch * dim];
-            let embedding_scale = (dim as f32).sqrt();
+            let embedding_scale = float_sqrt(dim as f32);
             for (token_index, &token) in tokens.iter().enumerate() {
                 let row = &mut embeddings[token_index * dim..(token_index + 1) * dim];
                 self.read_token_embedding(token, row).ok()?;

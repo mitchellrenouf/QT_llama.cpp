@@ -21,11 +21,11 @@ std = [
     "mrml-model/std",
     "mrml-tools/std",
 ]
-auto = ["std", "mrml-model/auto"]
-cuda = ["std", "mrml-model/cuda"]
-vulkan = ["std", "mrml-model/vulkan"]
-hipblas = ["std", "mrml-model/hipblas"]
-sycl = ["std", "mrml-model/sycl"]
+auto = ["runtime", "mrml-model/auto"]
+cuda = ["runtime", "mrml-model/cuda"]
+vulkan = ["runtime", "mrml-model/vulkan"]
+hipblas = ["runtime", "mrml-model/hipblas"]
+sycl = ["runtime", "mrml-model/sycl"]
 
 [dependencies]
 mrml-model = { path = "../mrml-model", default-features = false, optional = true }

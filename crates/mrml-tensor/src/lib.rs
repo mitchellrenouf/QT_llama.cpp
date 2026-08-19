@@ -37,7 +37,7 @@ pub mod sync;
 pub mod tensor;
 pub mod types;
 
-#[cfg(all(feature = "std", feature = "cuda"))]
+#[cfg(feature = "cuda")]
 pub mod cuda;
 
 // Re-export common types
