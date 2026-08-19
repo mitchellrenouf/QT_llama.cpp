@@ -150,7 +150,7 @@ impl MrmlAgent {
         self.workspace_rules.rule_sources.len()
     }
 
-    pub async fn health_check(&self) -> Result<String> {
+    pub async fn health_check(&self) -> Result<mrml_runtime::Text> {
         self.client.health_check().await
     }
 
@@ -510,8 +510,8 @@ impl MrmlAgent {
                     self.history
                         .push(ChatMessage::tool(call_id, "run_command", output.clone()));
                     event_sink(StreamEvent::ToolExecuted {
-                        name: "run_command".to_string(),
-                        result: output.clone(),
+                        name: "run_command".into(),
+                        result: output.as_str().into(),
                     });
                     if is_clock_request {
                         if let Some(answer) = verified_time_answer(&output) {
@@ -626,8 +626,8 @@ impl MrmlAgent {
                 match tool_result {
                     Ok(output) => {
                         event_sink(StreamEvent::ToolExecuted {
-                            name: name.to_string(),
-                            result: output.clone(),
+                                    name: name.as_str().into(),
+                                    result: output.as_str().into(),
                         });
                         self.history.push(ChatMessage::tool(
                             tool_call.id.clone(),
@@ -638,8 +638,8 @@ impl MrmlAgent {
                     Err(e) => {
                         let err_msg = format!("Tool execution failed: {}", e);
                         event_sink(StreamEvent::ToolExecuted {
-                            name: name.to_string(),
-                            result: err_msg.clone(),
+                                    name: name.as_str().into(),
+                                    result: err_msg.as_str().into(),
                         });
                         self.history
                             .push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));

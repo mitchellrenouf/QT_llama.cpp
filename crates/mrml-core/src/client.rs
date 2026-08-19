@@ -3,6 +3,9 @@ pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_ge
 use mrml_runtime::{Instant, Shared, Text, Vector};
 use std::path::PathBuf;
 
+type String = Text;
+type Vec<T> = Vector<T>;
+
 use crate::config::Config;
 pub use mrml_tools::{FunctionDefinition, ToolDefinition};
 
@@ -44,8 +47,8 @@ pub enum StreamEvent {
     Content(Text),
     ToolCallAssembled(ToolCall),
     ToolExecuted {
-        name: String,
-        result: String,
+        name: Text,
+        result: Text,
     },
     Metrics {
         token_count: usize,
@@ -57,7 +60,7 @@ pub enum StreamEvent {
 
 fn quote_relaxed_keys(input: &str) -> String {
     let bytes = input.as_bytes();
-    let mut output = String::with_capacity(input.len() + 8);
+    let mut output = String::with_capacity(input.len() + 8).expect("MRML allocation failed");
     let mut index = 0;
     let mut quote = None;
     while index < bytes.len() {
@@ -114,7 +117,7 @@ fn quote_relaxed_keys(input: &str) -> String {
 
 fn quote_relaxed_values(input: &str) -> String {
     let bytes = input.as_bytes();
-    let mut output = String::with_capacity(input.len() + 8);
+    let mut output = String::with_capacity(input.len() + 8).expect("MRML allocation failed");
     let mut index = 0;
     let mut quote = None;
     while index < bytes.len() {
@@ -185,8 +188,7 @@ fn split_kwargs(input: &str) -> Vec<&str> {
 }
 
 pub fn normalize_relaxed_json(raw: &str) -> String {
-    let mut s = raw
-        .trim()
+    let mut s = Text::from(raw.trim())
         .replace("<|\"|>", "\"")
         .replace("<|\"|", "\"")
         .replace("|\">", "\"")
@@ -197,21 +199,21 @@ pub fn normalize_relaxed_json(raw: &str) -> String {
         .replace("|>", "");
 
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-        return v.to_string();
+        return serde_json::stringify(&v);
     }
 
     // Replace unquoted key names: {query: "foo"} -> {"query": "foo"}
     s = quote_relaxed_keys(&s);
 
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-        return v.to_string();
+        return serde_json::stringify(&v);
     }
 
     // Quote unquoted string values: {"text": Hello world} -> {"text": "Hello world"}
     let s2 = quote_relaxed_values(&s);
 
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s2) {
-        return v.to_string();
+        return serde_json::stringify(&v);
     }
 
     s
@@ -254,7 +256,7 @@ pub fn parse_kwargs_to_json(args: &str) -> String {
             }
         }
     }
-    serde_json::Value::Object(map).to_string()
+    serde_json::stringify(&serde_json::Value::Object(map))
 }
 
 pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
@@ -444,7 +446,7 @@ impl MrmlClient {
 
     pub async fn health_check(&self) -> Result<String> {
         if self.engine.is_some() {
-            Ok("Native MRML Engine Active".to_string())
+            Ok("Native MRML Engine Active".into())
         } else {
             Err(anyhow!(
                 "No active native MRML engine loaded. (Place a .gguf model in .cache/gemma or pass --model <path>)"
