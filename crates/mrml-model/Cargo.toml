@@ -12,7 +12,7 @@ mrml-tensor = { path = "../mrml-tensor", default-features = false, optional = tr
 mrml-runtime = { path = "../mrml-runtime" }
 
 [features]
-default = ["std", "auto"]
+default = ["runtime"]
 runtime = ["dep:serde_json", "dep:mrml-tensor", "mrml-tensor/runtime"]
 std = ["runtime", "mrml-tensor/std"]
 auto = ["std", "mrml-tensor/cuda"]
