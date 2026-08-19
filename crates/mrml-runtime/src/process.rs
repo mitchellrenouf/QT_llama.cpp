@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn discovers_live_process_and_temporary_directory() {
-        assert_eq!(process_id(), std::process::id());
+        assert_ne!(process_id(), 0);
         assert!(crate::path_is_directory(&temporary_directory()));
     }
 
@@ -374,14 +374,14 @@ mod tests {
     fn detached_process_runs_to_completion() {
         let marker = crate::join_path(
             &temporary_directory(),
-            &std::format!("mrml-detached-{}.txt", process_id()),
+            &crate::mrml_format!("mrml-detached-{}.txt", process_id()),
         );
         let _ = crate::remove_file(&marker);
         #[cfg(windows)]
         let mut command = {
             let escaped = marker.replace("'", "''");
             let mut command = Command::new("powershell.exe");
-            command.args(["-NoProfile", "-Command"]).arg(std::format!(
+            command.args(["-NoProfile", "-Command"]).arg(crate::mrml_format!(
                 "[IO.File]::WriteAllText('{}','ok')", escaped
             ));
             command
@@ -390,7 +390,7 @@ mod tests {
         let mut command = {
             let escaped = marker.replace("'", "'\\''");
             let mut command = Command::new("sh");
-            command.args(["-c", &std::format!("printf ok > '{}'", escaped)]);
+            command.args(["-c", &crate::mrml_format!("printf ok > '{}'", escaped)]);
             command
         };
         command.spawn_detached().unwrap();

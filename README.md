@@ -15,8 +15,9 @@ tuning.
 
 MRML is a self-contained local inference runtime. Every library, application,
 example, benchmark, CUDA kernel, and build script is compiled with `#![no_std]`
-and does not import Rust's global `alloc` crate. Rust's test harness still links
-`std`, and test-only modules may use it as an interoperability oracle. This does not
+and does not import Rust's global `alloc` crate. Repository source—including
+test modules—contains no direct `std` or `alloc` crate imports. Cargo's external
+test harness still supplies its own host runtime when executing `#[test]`. This does not
 mean inference uses no dynamic memory. MRML instead makes allocation explicit
 through its own platform and accelerator layers:
 

@@ -73,17 +73,17 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use core::error::Error as _;
-    use std::string::ToString;
+    use mrml_runtime::mrml_format as format;
 
     #[test]
     fn preserves_message_text_and_sources_without_boxing() {
         let plain = super::Error::message("model failed");
-        assert_eq!(plain.to_string(), "model failed");
+        assert_eq!(format!("{plain}"), "model failed");
         assert!(plain.source().is_none());
 
         let sourced = super::Error::with_source(TestError);
-        assert_eq!(sourced.to_string(), "source failed");
-        assert_eq!(sourced.source().unwrap().to_string(), "source failed");
+        assert_eq!(format!("{sourced}"), "source failed");
+        assert_eq!(format!("{}", sourced.source().unwrap()), "source failed");
     }
 
     #[derive(Debug)]

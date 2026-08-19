@@ -427,79 +427,86 @@ impl File {
 mod tests {
     use super::*;
 
+    fn test_path(name: &str) -> Text {
+        crate::join_path(
+            &crate::temporary_directory(),
+            &crate::mrml_format!("{name}-{}", crate::process_id()),
+        )
+    }
+
     #[test]
     fn native_file_reads_seeks_and_reports_length() {
-        let path = std::env::temp_dir().join(std::format!("mrml-file-{}.bin", std::process::id()));
-        write_file(path.to_str().unwrap(), b"native file").unwrap();
+        let path = test_path("mrml-file.bin");
+        write_file(&path, b"native file").unwrap();
 
-        let mut file = File::open(path.to_str().unwrap()).unwrap();
+        let mut file = File::open(&path).unwrap();
         assert_eq!(file.len().unwrap(), 11);
         file.seek(7).unwrap();
         let mut suffix = [0; 4];
         file.read_exact(&mut suffix).unwrap();
         assert_eq!(&suffix, b"file");
         drop(file);
-        std::fs::remove_file(path).unwrap();
+        remove_file(&path).unwrap();
     }
     #[test]
     fn writes_truncates_and_reads_utf8_text_through_native_file() {
-        let path = std::env::temp_dir().join(std::format!("mrml-text-{}.txt", std::process::id()));
-        write_file(path.to_str().unwrap(), b"a longer discarded value").unwrap();
-        write_file(path.to_str().unwrap(), "observatory λ".as_bytes()).unwrap();
-        assert_eq!(read_file_text(path.to_str().unwrap()).unwrap(), "observatory λ");
-        remove_file(path.to_str().unwrap()).unwrap();
+        let path = test_path("mrml-text.txt");
+        write_file(&path, b"a longer discarded value").unwrap();
+        write_file(&path, "observatory λ".as_bytes()).unwrap();
+        assert_eq!(read_file_text(&path).unwrap(), "observatory λ");
+        remove_file(&path).unwrap();
     }
 
     #[test]
     fn renames_replaces_and_removes_files_natively() {
-        let root = std::env::temp_dir().join(std::format!("mrml-rename-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let source = root.join("source-λ.txt");
-        let target = root.join("target-λ.txt");
-        write_file(source.to_str().unwrap(), b"new").unwrap();
-        write_file(target.to_str().unwrap(), b"old").unwrap();
-        rename_file(source.to_str().unwrap(), target.to_str().unwrap()).unwrap();
-        assert_eq!(&*read_file(target.to_str().unwrap()).unwrap(), b"new");
-        assert!(!source.exists());
-        remove_file(target.to_str().unwrap()).unwrap();
-        assert!(!target.exists());
-        std::fs::remove_dir(root).unwrap();
+        let root = test_path("mrml-rename");
+        create_dir_all(&root).unwrap();
+        let source = join_path(&root, "source-λ.txt");
+        let target = join_path(&root, "target-λ.txt");
+        write_file(&source, b"new").unwrap();
+        write_file(&target, b"old").unwrap();
+        rename_file(&source, &target).unwrap();
+        assert_eq!(&*read_file(&target).unwrap(), b"new");
+        assert!(!path_exists(&source));
+        remove_file(&target).unwrap();
+        assert!(!path_exists(&target));
+        remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn enumerates_unicode_files_and_directories_natively() {
-        let root = std::env::temp_dir().join(std::format!("mrml-enumerate-{}", std::process::id()));
-        let child = root.join("folder-星");
-        create_dir_all(child.to_str().unwrap()).unwrap();
-        let file = root.join("file-λ.txt");
-        write_file(file.to_str().unwrap(), b"entry").unwrap();
-        let entries = read_directory(root.to_str().unwrap()).unwrap();
+        let root = test_path("mrml-enumerate");
+        let child = join_path(&root, "folder-星");
+        create_dir_all(&child).unwrap();
+        let file = join_path(&root, "file-λ.txt");
+        write_file(&file, b"entry").unwrap();
+        let entries = read_directory(&root).unwrap();
         assert!(entries.iter().any(|entry| entry.name == "folder-星" && entry.is_directory));
         assert!(entries.iter().any(|entry| entry.name == "file-λ.txt" && !entry.is_directory));
-        remove_dir_all(root.to_str().unwrap()).unwrap();
-        assert!(!root.exists());
+        remove_dir_all(&root).unwrap();
+        assert!(!path_exists(&root));
     }
 
     #[test]
     fn resolves_existing_paths_natively() {
-        let root = std::env::temp_dir().join(std::format!("mrml-canonical-{}", std::process::id()));
-        create_dir_all(root.to_str().unwrap()).unwrap();
-        let resolved = canonical_path(root.to_str().unwrap()).unwrap();
+        let root = test_path("mrml-canonical");
+        create_dir_all(&root).unwrap();
+        let resolved = canonical_path(&root).unwrap();
         assert!(path_is_directory(&resolved));
         assert!(resolved.contains("mrml-canonical-"));
-        remove_dir_all(root.to_str().unwrap()).unwrap();
+        remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn recursively_creates_unicode_directories_and_rejects_file_conflicts() {
-        let root = std::env::temp_dir().join(std::format!("mrml-dir-{}", std::process::id()));
-        let nested = root.join("observatory-λ").join("deep");
-        create_dir_all(nested.to_str().unwrap()).unwrap();
-        assert!(path_is_directory(nested.to_str().unwrap()));
-        let file = nested.join("conflict");
-        write_file(file.to_str().unwrap(), b"not a directory").unwrap();
-        assert!(create_dir_all(file.to_str().unwrap()).is_err());
-        remove_dir_all(root.to_str().unwrap()).unwrap();
-        assert!(!root.exists());
+        let root = test_path("mrml-dir");
+        let nested = join_path(&join_path(&root, "observatory-λ"), "deep");
+        create_dir_all(&nested).unwrap();
+        assert!(path_is_directory(&nested));
+        let file = join_path(&nested, "conflict");
+        write_file(&file, b"not a directory").unwrap();
+        assert!(create_dir_all(&file).is_err());
+        remove_dir_all(&root).unwrap();
+        assert!(!path_exists(&root));
     }
 }

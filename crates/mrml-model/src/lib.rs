@@ -1,8 +1,5 @@
 #![no_std]
 
-#[cfg(test)]
-extern crate std;
-
 #[cfg(feature = "runtime")]
 pub mod chat;
 #[cfg(feature = "runtime")]

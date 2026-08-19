@@ -1,9 +1,6 @@
 #![no_std]
 #![feature(coerce_unsized, pin_coerce_unsized_trait, unsize)]
 
-#[cfg(test)]
-extern crate std;
-
 mod channel;
 mod args;
 mod env;

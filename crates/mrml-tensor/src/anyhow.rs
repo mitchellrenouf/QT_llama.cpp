@@ -81,18 +81,18 @@ pub use crate::tensor_bail as bail;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::string::ToString;
+    use mrml_runtime::mrml_format as format;
 
     #[test]
     fn preserves_formatted_messages_and_sources() {
         let formatted = anyhow!("CUDA error {}", 7);
-        assert_eq!(formatted.to_string(), "CUDA error 7");
+        assert_eq!(format!("{formatted}"), "CUDA error 7");
     }
 
     #[test]
     fn preserves_platform_file_error_sources() {
         let file_error = Error::from(mrml_runtime::FileError::OpenFailed);
-        assert_eq!(file_error.to_string(), "failed to open file");
+        assert_eq!(format!("{file_error}"), "failed to open file");
         assert!(core::error::Error::source(&file_error).is_some());
     }
 }

@@ -53,24 +53,21 @@ impl WorkspaceRules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{format, fs};
+    use mrml_runtime::{join_path, mrml_format as format, process_id, temporary_directory};
 
     #[test]
     fn test_rules_discovery() {
         let unique_id = format!(
             "gemma_rules_test_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
+            process_id(),
+            mrml_tools::platform::monotonic_timestamp_nanos()
         );
-        let temp_dir = std::env::temp_dir().join(unique_id);
-        let _ = fs::create_dir_all(&temp_dir);
-        let rule_file = temp_dir.join("MRML.md");
-        fs::write(&rule_file, "Always write unit tests for new code.").unwrap();
+        let temp_dir = join_path(&temporary_directory(), &unique_id);
+        let _ = mrml_runtime::create_dir_all(&temp_dir);
+        let rule_file = join_path(&temp_dir, "MRML.md");
+        mrml_runtime::write_file(&rule_file, b"Always write unit tests for new code.").unwrap();
 
-        let rules = WorkspaceRules::discover(temp_dir.to_str().unwrap());
+        let rules = WorkspaceRules::discover(&temp_dir);
         assert!(rules.has_rules());
         assert!(
             rules
@@ -78,7 +75,6 @@ mod tests {
                 .contains("Always write unit tests")
         );
 
-        let _ = fs::remove_file(rule_file);
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = mrml_runtime::remove_dir_all(&temp_dir);
     }
 }

@@ -132,8 +132,8 @@ mod tests {
         assert_eq!(
             map.iter()
                 .map(|(key, _)| *key)
-                .collect::<std::vec::Vec<_>>(),
-            [1, 2, 3]
+                .collect::<crate::Vector<_>>(),
+            &[1, 2, 3][..]
         );
     }
 }

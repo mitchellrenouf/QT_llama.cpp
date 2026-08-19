@@ -1115,7 +1115,7 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::format as std_format;
+    use mrml_runtime::{join_path, mrml_format as format, process_id, temporary_directory};
 
     #[test]
     fn thinking_is_reserved_for_automatic_mode() {
@@ -1130,13 +1130,13 @@ mod tests {
 
     #[test]
     fn test_explicit_model_path_wins_over_hf_default() {
-        let path = std::env::temp_dir().join(std_format!("mrml-explicit-{}.gguf", std::process::id()));
-        std::fs::write(&path, b"test").unwrap();
+        let path = join_path(&temporary_directory(), &format!("mrml-explicit-{}.gguf", process_id()));
+        mrml_runtime::write_file(&path, b"test").unwrap();
         assert_eq!(
-            find_model_file(path.to_str().unwrap()).as_deref(),
-            path.to_str()
+            find_model_file(&path).as_deref(),
+            Some(path.as_str())
         );
-        std::fs::remove_file(path).unwrap();
+        mrml_runtime::remove_file(&path).unwrap();
     }
 
     #[test]

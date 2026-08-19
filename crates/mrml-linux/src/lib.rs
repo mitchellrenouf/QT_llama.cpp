@@ -829,8 +829,6 @@ pub fn unix_time_millis() -> u64 {
 
 #[cfg(all(test, unix))]
 mod tests {
-    extern crate std;
-
     use core::alloc::{GlobalAlloc, Layout};
 
     #[test]
@@ -865,22 +863,18 @@ mod tests {
 
     #[test]
     fn maps_native_file_descriptor_read_only() {
-        use std::io::Write;
-        use std::os::fd::AsRawFd;
-
-        let path =
-            std::env::temp_dir().join(std::format!("mrml-linux-map-{}.bin", std::process::id()));
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all(b"native mapping").unwrap();
+        let path = c"mrml-linux-map-test.bin";
+        let file = super::NativeFile::create_write(path).unwrap();
+        assert_eq!(file.write(b"native mapping"), Some(14));
         drop(file);
-        let file = std::fs::File::open(&path).unwrap();
-        let mapping = unsafe { super::map_file_read_only(file.as_raw_fd(), 14) }.unwrap();
+        let file = super::NativeFile::open_read(path).unwrap();
+        let mapping = unsafe { super::map_file_read_only(file.raw_fd(), 14) }.unwrap();
         assert_eq!(
             unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) },
             b"native mapping"
         );
         assert!(unsafe { super::unmap_file(mapping, 14) });
         drop(file);
-        std::fs::remove_file(path).unwrap();
+        assert!(super::delete_file(path));
     }
 }

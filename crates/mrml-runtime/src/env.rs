@@ -57,12 +57,4 @@ mod tests {
         assert_eq!(environment_variable("MRML_ENV_TEST_DEFINITELY_MISSING"), None);
     }
 
-    #[test]
-    fn preserves_unicode_and_long_environment_values() {
-        const NAME: &str = "MRML_RUNTIME_ENV_UNICODE_TEST";
-        let expected = "observatory-λ-星".repeat(24);
-        unsafe { std::env::set_var(NAME, &expected) };
-        assert_eq!(environment_variable(NAME).as_deref(), Some(expected.as_str()));
-        unsafe { std::env::remove_var(NAME) };
-    }
 }

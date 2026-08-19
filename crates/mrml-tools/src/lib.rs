@@ -1,8 +1,5 @@
 #![no_std]
 
-#[cfg(test)]
-extern crate std;
-
 pub mod fixed_encoding;
 
 #[cfg(feature = "runtime")]

@@ -37,21 +37,20 @@ impl Iterator for Paths {
 
 #[cfg(test)]
 mod tests {
-    use std::format;
+    use mrml_runtime::{Vector, join_path, mrml_format as format, process_id, temporary_directory};
 
     #[test]
     fn includes_root_and_skips_missing_children() {
-        let root = std::env::temp_dir().join(format!("mrml-walk-{}", std::process::id()));
-        let nested = root.join("nested");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(nested.join("file.txt"), b"test").unwrap();
+        let root = join_path(&temporary_directory(), &format!("mrml-walk-{}", process_id()));
+        let nested = join_path(&root, "nested");
+        mrml_runtime::create_dir_all(&nested).unwrap();
+        let file = join_path(&nested, "file.txt");
+        mrml_runtime::write_file(&file, b"test").unwrap();
 
-        let found = super::paths(root.to_str().unwrap()).collect::<std::vec::Vec<_>>();
-        assert!(found.iter().any(|path| path == root.to_str().unwrap()));
-        assert!(found
-            .iter()
-            .any(|path| path == nested.join("file.txt").to_str().unwrap()));
+        let found = super::paths(&root).collect::<Vector<_>>();
+        assert!(found.iter().any(|path| path == &root));
+        assert!(found.iter().any(|path| path == &file));
 
-        std::fs::remove_dir_all(root).unwrap();
+        mrml_runtime::remove_dir_all(&root).unwrap();
     }
 }

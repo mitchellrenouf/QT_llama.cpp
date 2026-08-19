@@ -1194,8 +1194,6 @@ pub fn local_time() -> LocalTime {
 
 #[cfg(all(test, windows))]
 mod tests {
-    extern crate std;
-
     use core::alloc::{GlobalAlloc, Layout};
 
     #[test]
@@ -1242,23 +1240,23 @@ mod tests {
 
     #[test]
     fn maps_native_file_handle_read_only() {
-        use std::io::Write;
-        use std::os::windows::io::AsRawHandle;
-
-        let path =
-            std::env::temp_dir().join(std::format!("mrml-windows-map-{}.bin", std::process::id()));
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all(b"native mapping").unwrap();
+        let mut path = [0u16; 64];
+        let name = b"mrml-windows-map-test.bin";
+        for (output, input) in path.iter_mut().zip(name) {
+            *output = *input as u16;
+        }
+        let path = &path[..name.len() + 1];
+        let file = super::NativeFile::create_write(path).unwrap();
+        assert_eq!(file.write(b"native mapping"), Some(14));
         drop(file);
-        let file = std::fs::File::open(&path).unwrap();
-        let mapping =
-            unsafe { super::map_file_read_only(file.as_raw_handle().cast(), 14) }.unwrap();
+        let file = super::NativeFile::open_read(path).unwrap();
+        let mapping = unsafe { super::map_file_read_only(file.raw_handle(), 14) }.unwrap();
         assert_eq!(
             unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) },
             b"native mapping"
         );
         assert!(unsafe { super::unmap_file(mapping, 14) });
         drop(file);
-        std::fs::remove_file(path).unwrap();
+        assert!(super::delete_file_wide(path));
     }
 }

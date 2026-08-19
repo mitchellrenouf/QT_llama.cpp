@@ -1,35 +1,37 @@
-use std::path::PathBuf;
+#![no_std]
 
-fn local_data_dir() -> PathBuf {
+use mrml_runtime::{Text, environment_variable, join_path, mrml_print as print, mrml_println as println};
+
+fn local_data_dir() -> Text {
     if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-    } else if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
-        PathBuf::from(path)
+        environment_variable("LOCALAPPDATA").unwrap_or_else(|| Text::from("."))
+    } else if let Some(path) = environment_variable("XDG_DATA_HOME") {
+        path
     } else {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local")
-            .join("share")
+        let home = environment_variable("HOME").unwrap_or_else(|| Text::from("."));
+        join_path(&join_path(&home, ".local"), "share")
     }
 }
 
 #[test]
 fn test_generation_outputs() {
-    let mut path = local_data_dir();
-    path.push("huggingface");
-    path.push("hub");
-    path.push("models--ggml-org--gemma-4-26B-A4B-it-GGUF");
-    path.push("gemma-4-26B-A4B-it-Q4_0.gguf");
+    let path = join_path(
+        &join_path(
+            &join_path(
+                &join_path(&local_data_dir(), "huggingface"),
+                "hub",
+            ),
+            "models--ggml-org--gemma-4-26B-A4B-it-GGUF",
+        ),
+        "gemma-4-26B-A4B-it-Q4_0.gguf",
+    );
 
-    if !path.exists() {
+    if !mrml_runtime::path_is_file(&path) {
         println!("Model file not found at {:?}, skipping", path);
         return;
     }
 
-    let model = mrml_tensor::model::MrmlModel::load_from_gguf(path.to_str().unwrap(), 8192)
+    let model = mrml_tensor::model::MrmlModel::load_from_gguf(&path, 8192)
         .expect("Load model");
 
     let prompts = [

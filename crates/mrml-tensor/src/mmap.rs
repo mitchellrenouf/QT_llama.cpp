@@ -81,28 +81,20 @@ impl Drop for Mmap {
 #[cfg(test)]
 mod tests {
     use super::Mmap;
-    use std::{fs::File, io::Write};
+    use mrml_runtime::{File, join_path, mrml_format as format, process_id, temporary_directory};
 
     #[test]
     fn maps_complete_file_read_only() {
-        let path = std::env::temp_dir().join(std::format!("mrml-mmap-{}.bin", std::process::id()));
-        let mut file = File::create(&path).unwrap();
-        file.write_all(b"MRML native mapping").unwrap();
-        drop(file);
+        let path = join_path(&temporary_directory(), &format!("mrml-mmap-{}.bin", process_id()));
+        mrml_runtime::write_file(&path, b"MRML native mapping").unwrap();
         let file = File::open(&path).unwrap();
         #[cfg(windows)]
-        let map = {
-            use std::os::windows::io::AsRawHandle;
-            unsafe { Mmap::map_raw(file.as_raw_handle().cast(), 19) }.unwrap()
-        };
+        let map = unsafe { Mmap::map_raw(file.raw_handle(), 19) }.unwrap();
         #[cfg(unix)]
-        let map = {
-            use std::os::fd::AsRawFd;
-            unsafe { Mmap::map_raw(file.as_raw_fd(), 19) }.unwrap()
-        };
+        let map = unsafe { Mmap::map_raw(file.raw_fd(), 19) }.unwrap();
         assert_eq!(&*map, b"MRML native mapping");
         drop(map);
         drop(file);
-        std::fs::remove_file(path).unwrap();
+        mrml_runtime::remove_file(&path).unwrap();
     }
 }

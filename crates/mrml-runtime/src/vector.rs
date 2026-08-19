@@ -415,7 +415,7 @@ fn allocator() -> mrml_linux::SystemAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::string::String;
+    use crate::Text as String;
 
     #[test]
     fn grows_preserves_and_drops_values() {

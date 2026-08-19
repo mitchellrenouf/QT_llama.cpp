@@ -408,18 +408,17 @@ impl Tool for RunCommandTool {
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicU64, Ordering};
-    use std::format as std_format;
 
     static WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    fn test_workspace() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(std_format!(
+    fn test_workspace() -> Text {
+        let path = mrml_runtime::join_path(&mrml_runtime::temporary_directory(), &mrml_runtime::mrml_format!(
             "mrml-tools-editor-{}-{}-{}",
-            std::process::id(),
+            mrml_runtime::process_id(),
             crate::platform::unix_timestamp_millis(),
             WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir_all(&path).unwrap();
+        mrml_runtime::create_dir_all(&path).unwrap();
         path
     }
 
@@ -429,7 +428,7 @@ mod tests {
             let root = test_workspace();
             let write = WriteFileTool
                 .execute(
-                    root.to_str().unwrap(),
+                    &root,
                     json!({"path":"src/note.txt", "content":"alpha\nbeta\n"}),
                 )
                 .await
@@ -438,7 +437,7 @@ mod tests {
 
             let viewed = ViewFileTool
                 .execute(
-                    root.to_str().unwrap(),
+                    &root,
                     json!({"path":"src/note.txt", "start_line":2, "end_line":2}),
                 )
                 .await
@@ -447,7 +446,7 @@ mod tests {
 
             ReplaceFileContentTool
             .execute(
-                root.to_str().unwrap(),
+                &root,
                 json!({
                     "path":"src/note.txt", "target_content":"beta", "replacement_content":"gamma"
                 }),
@@ -455,16 +454,16 @@ mod tests {
             .await
             .unwrap();
             let listed = ListDirTool
-                .execute(root.to_str().unwrap(), json!({"path":"src"}))
+                .execute(&root, json!({"path":"src"}))
                 .await
                 .unwrap();
             assert!(listed.contains("note.txt"));
             let matches = GrepSearchTool
-                .execute(root.to_str().unwrap(), json!({"query":"g.mm.", "path":"src"}))
+                .execute(&root, json!({"query":"g.mm.", "path":"src"}))
                 .await
                 .unwrap();
             assert!(matches.contains("gamma"));
-            let _ = std::fs::remove_dir_all(root);
+            let _ = mrml_runtime::remove_dir_all(&root);
         });
     }
 
@@ -477,12 +476,12 @@ mod tests {
             #[cfg(not(windows))]
             let command = "printf tool-ok";
             let output = RunCommandTool
-                .execute(root.to_str().unwrap(), json!({"command_line": command}))
+                .execute(&root, json!({"command_line": command}))
                 .await
                 .unwrap();
             assert!(output.contains("Exit Code: 0"));
             assert!(output.contains("tool-ok"));
-            let _ = std::fs::remove_dir_all(root);
+            let _ = mrml_runtime::remove_dir_all(&root);
         });
     }
 }

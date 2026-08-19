@@ -1,8 +1,5 @@
 #![no_std]
 
-#[cfg(test)]
-extern crate std;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Token<'a> {
     Null,
@@ -853,7 +850,7 @@ mod portable_tests {
     #[test]
     fn tokenizes_without_allocating() {
         let tokens = Tokens::new(r#"{"name":"MRML\n","fast":true,"rate":60.2}"#)
-            .collect::<std::vec::Vec<_>>();
+            .collect::<mrml_runtime::Vector<_>>();
         assert_eq!(tokens.len(), 13);
         assert_eq!(tokens[0], Ok(Token::ObjectStart));
         assert_eq!(tokens[2], Ok(Token::Colon));

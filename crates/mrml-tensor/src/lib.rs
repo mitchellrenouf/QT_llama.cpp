@@ -1,9 +1,6 @@
 #![no_std]
 #![cfg_attr(feature = "cuda", feature(thread_local))]
 
-#[cfg(test)]
-extern crate std;
-
 #[cfg(feature = "runtime")]
 pub mod anyhow;
 #[cfg(feature = "runtime")]

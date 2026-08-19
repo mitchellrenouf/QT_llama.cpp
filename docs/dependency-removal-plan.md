@@ -2,8 +2,9 @@
 
 > Status: complete. The lockfile contains only local `mrml-*` packages, and
 > production, example, benchmark, CUDA, and build-script targets are `no_std`
-> without Rust's global `alloc` crate. Test-only modules may use `std` through
-> the Rust test harness to compare native behavior.
+> without Rust's global `alloc` crate. Test modules also use MRML runtime and
+> platform APIs rather than importing `std`; only Cargo's external test harness
+> supplies a host runtime while executing `#[test]`.
 
 ## Goal and boundary
 
@@ -38,7 +39,7 @@ replacements require focused ownership and error-path tests.
 | Group | Crates | Replacement direction |
 |---|---|---|
 | Errors | `anyhow`, `thiserror` | Workspace error enum, boxed source errors, local context helpers |
-| Synchronization and parallelism | `parking_lot`, `crossbeam-channel`, `rayon` | `std::sync`, `std::sync::mpsc`, scoped worker pool |
+| Synchronization and parallelism | `parking_lot`, `crossbeam-channel`, `rayon` | MRML spin locks, native channels, scoped worker pool |
 | Files and platform paths | `memmap2`, `dirs`, `walkdir`, `chrono` | Small Windows/Unix FFI modules, iterative directory walk, `SystemTime` formatting |
 | Build | `cc`, `cmake`, build-time `walkdir` | Direct `Command` invocation of NVCC/CMake/compiler plus rerun directives |
 | Data model | `serde`, `serde_json` | Local bounded JSON value/parser/writer and explicit protocol codecs |
@@ -65,7 +66,7 @@ ground. Replace, in order:
 
 1. `thiserror` and `anyhow` with concrete tensor/GGUF/CUDA errors.
 2. `dirs` and `chrono` with the local platform/time modules.
-3. `parking_lot` with poison-tolerant `std::sync` wrappers.
+3. `parking_lot` with MRML synchronization primitives backed by native waits.
 4. `crossbeam-channel` and the limited `tokio::mpsc` use with standard channels.
 5. `rayon` with a persistent scoped CPU worker pool; benchmark CPU fallback
    before and after.
@@ -129,7 +130,7 @@ performance matrix before declaring the migration complete.
 
 ## Recommended first implementation slice
 
-Start with `mrml-tensor`: local error types, `std::sync` migration, and native
+Start with `mrml-tensor`: local error types, MRML synchronization, and native
 read-only file mapping. These changes are isolated from public JSON/network
 protocols and expose performance regressions early. Do not begin with
 `serde_json`, `tokio`, templates, or Chromium; those need dedicated

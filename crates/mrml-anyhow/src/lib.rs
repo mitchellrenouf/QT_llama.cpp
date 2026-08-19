@@ -1,8 +1,5 @@
 #![no_std]
 
-#[cfg(test)]
-extern crate std;
-
 use core::error::Error as StdError;
 use core::fmt::{self, Display, Write};
 use mrml_runtime::Text;
@@ -152,22 +149,22 @@ macro_rules! bail {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::string::ToString;
+    use mrml_runtime::mrml_format as format;
 
     #[test]
     fn formats_messages_context_and_sources() {
-        assert_eq!(anyhow!("bad {}", 7).to_string(), "bad 7");
+        assert_eq!(format!("{}", anyhow!("bad {}", 7)), "bad 7");
         let error = Err::<(), _>(TestError)
             .context("operation failed")
             .unwrap_err();
-        assert_eq!(error.to_string(), "operation failed: source failed");
+        assert_eq!(format!("{error}"), "operation failed: source failed");
         assert_eq!(
-            None::<u8>.context("value missing").unwrap_err().to_string(),
+            format!("{}", None::<u8>.context("value missing").unwrap_err()),
             "value missing"
         );
 
         let sourced = Error::with_source(TestError);
-        assert_eq!(sourced.source().unwrap().to_string(), "source failed");
+        assert_eq!(format!("{}", sourced.source().unwrap()), "source failed");
     }
 
     #[derive(Debug)]
