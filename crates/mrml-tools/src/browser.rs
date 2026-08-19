@@ -1,13 +1,9 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::time::Duration;
-use mrml_runtime::{Instant, OnceCell, Shared, SpinMutex, Text, Vector};
+use mrml_runtime::{Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector};
 use serde_json::{Value, json};
-use std::{
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-    process::{Child, Command, Stdio},
-};
+use std::process::{Child, Command, Stdio};
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
 
 struct CdpSocket {
@@ -20,15 +16,16 @@ impl CdpSocket {
             .strip_prefix("ws://")
             .ok_or_else(|| anyhow!("Unsupported DevTools URL: {}", url))?;
         let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-        let stream = TcpStream::connect(authority)?;
-        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(15)))?;
+        let (ip, port) = parse_ipv4_authority(authority)?;
+        let stream = TcpStream::connect(ip, port)?;
+        stream.set_read_timeout_millis(15_000)?;
+        stream.set_write_timeout_millis(15_000)?;
         let mut s = Self { stream, next_id: 1 };
-        write!(
-            s.stream,
+        let request = format!(
             "GET /{} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: bXJtbC1lZGdlLWNkcA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
             path, authority
-        )?;
+        );
+        s.stream.write_all(request.as_bytes())?;
         let h = read_http_header(&mut s.stream)?;
         if !h.starts_with("HTTP/1.1 101") {
             return Err(anyhow!(
@@ -145,8 +142,8 @@ impl EdgeController {
     fn launch() -> Result<Self> {
         let exe = find_browser()
             .ok_or_else(|| anyhow!("No installed Edge/Chrome/Chromium found; set BROWSER_EXE"))?;
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
+        let listener = TcpListener::bind([127, 0, 0, 1], 0)?;
+        let port = listener.local_port()?;
         drop(listener);
         let profile = mrml_runtime::join_path(
             &mrml_runtime::temporary_directory(),
@@ -297,6 +294,19 @@ fn find_browser() -> Option<Text> {
     c.into_iter()
         .find(|p| crate::platform::path_is_file(p))
 }
+fn parse_ipv4_authority(authority: &str) -> Result<([u8; 4], u16)> {
+    let (host, port) = authority.rsplit_once(':').ok_or_else(|| anyhow!("Invalid TCP authority: {}", authority))?;
+    let mut ip = [0u8; 4];
+    let mut count = 0usize;
+    for part in host.split('.') {
+        if count == 4 { return Err(anyhow!("Invalid IPv4 host: {}", host)); }
+        ip[count] = part.parse().map_err(|_| anyhow!("Invalid IPv4 host: {}", host))?;
+        count += 1;
+    }
+    if count != 4 { return Err(anyhow!("Invalid IPv4 host: {}", host)); }
+    let port = port.parse().map_err(|_| anyhow!("Invalid TCP port: {}", port))?;
+    Ok((ip, port))
+}
 fn read_http_header(s: &mut TcpStream) -> Result<String> {
     let mut v = Vec::new();
     let mut b = [0];
@@ -310,13 +320,13 @@ fn read_http_header(s: &mut TcpStream) -> Result<String> {
     Err(anyhow!("HTTP header too large"))
 }
 fn http_json(port: u16, method: &str, path: &str) -> Result<Value> {
-    let mut s = TcpStream::connect(("127.0.0.1", port))?;
-    s.set_read_timeout(Some(Duration::from_secs(2)))?;
-    write!(
-        s,
+    let mut s = TcpStream::connect([127, 0, 0, 1], port)?;
+    s.set_read_timeout_millis(2_000)?;
+    let request = format!(
         "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         method, path, port
-    )?;
+    );
+    s.write_all(request.as_bytes())?;
     let h = read_http_header(&mut s)?;
     if !h.starts_with("HTTP/1.1 200") {
         return Err(anyhow!(
@@ -543,6 +553,53 @@ mod tests {
         if cfg!(windows) {
             assert!(find_browser().is_some())
         }
+    }
+
+    #[test]
+    fn native_http_reads_cdp_json_and_parses_authorities() {
+        assert_eq!(parse_ipv4_authority("127.0.0.1:9222").unwrap(), ([127, 0, 0, 1], 9222));
+        assert!(parse_ipv4_authority("localhost:9222").is_err());
+        let listener = TcpListener::bind([127, 0, 0, 1], 0).unwrap();
+        let port = listener.local_port().unwrap();
+        assert!(mrml_runtime::spawn_detached(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut request = [0u8; 256];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}").unwrap();
+        }).is_ok());
+        let value = http_json(port, "GET", "/json/version").unwrap();
+        assert_eq!(value.get("ok").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn native_websocket_exchanges_a_cdp_command() {
+        let listener = TcpListener::bind([127, 0, 0, 1], 0).unwrap();
+        let port = listener.local_port().unwrap();
+        assert!(mrml_runtime::spawn_detached(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut header = Vector::new();
+            let mut byte = [0u8; 1];
+            while !header.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: test\r\n\r\n").unwrap();
+            let mut frame_header = [0u8; 2];
+            stream.read_exact(&mut frame_header).unwrap();
+            let payload_len = (frame_header[1] & 0x7f) as usize;
+            let mut mask = [0u8; 4];
+            stream.read_exact(&mut mask).unwrap();
+            let mut payload = Vector::with_capacity(payload_len).unwrap();
+            payload.resize(payload_len, 0);
+            stream.read_exact(&mut payload).unwrap();
+            let response = b"{\"id\":1,\"result\":{\"value\":7}}";
+            stream.write_all(&[0x81, response.len() as u8]).unwrap();
+            stream.write_all(response).unwrap();
+        }).is_ok());
+        let url = format!("ws://127.0.0.1:{}/devtools/page/test", port);
+        let mut socket = CdpSocket::connect(&url).unwrap();
+        let result = socket.command("Test.command", json!({})).unwrap();
+        assert_eq!(result.get("value").and_then(Value::as_u64), Some(7));
     }
 
     #[test]
