@@ -1,4 +1,5 @@
 use anyhow::Result;
+use mrml_runtime::Vector;
 use mrml_terminal_style::Colorize;
 use std::fs;
 use std::io::Write;
@@ -14,14 +15,14 @@ use crate::tools::ToolRegistry;
 #[derive(Debug)]
 pub struct SessionState {
     pub mode: AgentMode,
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vector<ChatMessage>,
 }
 
 pub struct MrmlAgent {
     config: Config,
     client: MrmlClient,
     registry: ToolRegistry,
-    history: Vec<ChatMessage>,
+    history: Vector<ChatMessage>,
     workspace_rules: WorkspaceRules,
 }
 
@@ -89,7 +90,7 @@ impl MrmlAgent {
             config.get_system_prompt(config.mode, &workspace_rules.combined_instructions)
         };
 
-        let history = vec![ChatMessage::system(system_prompt)];
+        let history = [ChatMessage::system(system_prompt)].into_iter().collect();
 
         crate::tools::media::set_speech_enabled(false);
 
@@ -130,7 +131,7 @@ impl MrmlAgent {
             self.config.mode,
             &self.workspace_rules.combined_instructions,
         );
-        self.history = vec![ChatMessage::system(system_prompt)];
+        self.history = [ChatMessage::system(system_prompt)].into_iter().collect();
         println!("{}", "Context cleared.".green());
     }
 
@@ -363,7 +364,7 @@ impl MrmlAgent {
                         new_history.push(summary_msg);
                         new_history.extend(recent_msgs);
 
-                        self.history = new_history;
+                        self.history = new_history.into_iter().collect();
                         println!(
                             "Context compacted successfully! New token count: ~{}",
                             self.estimated_tokens()
@@ -416,7 +417,7 @@ impl MrmlAgent {
             .map(ChatMessage::from_json)
             .collect::<mrml_model::error::Result<Vec<_>>>()
             .map_err(anyhow::Error::with_source)?;
-        self.history = history;
+        self.history = history.into_iter().collect();
         println!("Loaded session: {}", name.cyan());
         Ok(file_path)
     }
