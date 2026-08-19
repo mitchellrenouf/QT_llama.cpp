@@ -7,16 +7,28 @@ license.workspace = true
 
 [features]
 default = ["std"]
-std = ["mrml-terminal-style/std"]
+alloc = [
+    "dep:anyhow",
+    "dep:mrml-terminal-style",
+    "dep:serde_json",
+    "dep:urlencoding",
+    "mrml-terminal-style/alloc",
+]
+std = [
+    "alloc",
+    "dep:mrml-linux",
+    "dep:mrml-windows",
+    "mrml-terminal-style/std",
+]
 
 [dependencies]
-mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false, features = ["alloc"] }
-anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
-serde_json = { package = "mrml-json", path = "../mrml-json" }
-urlencoding = { package = "mrml-urlencoding", path = "../mrml-urlencoding" }
+mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false, optional = true }
+anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow", optional = true }
+serde_json = { package = "mrml-json", path = "../mrml-json", optional = true }
+urlencoding = { package = "mrml-urlencoding", path = "../mrml-urlencoding", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-mrml-windows = { path = "../mrml-windows" }
+mrml-windows = { path = "../mrml-windows", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-mrml-linux = { path = "../mrml-linux" }
+mrml-linux = { path = "../mrml-linux", optional = true }

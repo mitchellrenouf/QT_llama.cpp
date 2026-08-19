@@ -1,6 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
+
+pub mod fixed_encoding;
 
 #[cfg(feature = "std")]
 pub mod browser;
@@ -10,6 +13,7 @@ pub mod desktop;
 pub mod editor;
 #[cfg(feature = "std")]
 pub mod git;
+#[cfg(feature = "alloc")]
 pub mod html;
 #[cfg(feature = "std")]
 pub mod mcp;
@@ -18,7 +22,9 @@ pub mod media;
 #[cfg(feature = "std")]
 pub mod web;
 
+#[cfg(feature = "alloc")]
 pub mod diff;
+#[cfg(feature = "alloc")]
 pub mod encoding;
 #[cfg(feature = "std")]
 pub mod fs_walk;
@@ -26,6 +32,7 @@ pub mod fs_walk;
 pub mod markdown;
 #[cfg(feature = "std")]
 pub mod platform;
+#[cfg(feature = "alloc")]
 pub mod simple_regex;
 
 #[cfg(feature = "std")]
