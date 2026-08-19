@@ -131,6 +131,35 @@ pub fn remove_file(path: &str) -> Result<(), FileError> {
     removed.then_some(()).ok_or(FileError::RemoveFailed)
 }
 
+fn remove_directory(path: &str) -> Result<(), FileError> {
+    #[cfg(windows)]
+    let removed = encode_windows_path(path)
+        .is_some_and(|path| mrml_windows::remove_directory_wide(&path));
+    #[cfg(unix)]
+    let removed = encode_unix_path(path).is_some_and(|path| {
+        core::ffi::CStr::from_bytes_with_nul(&path).is_ok_and(mrml_linux::remove_directory)
+    });
+    removed.then_some(()).ok_or(FileError::RemoveFailed)
+}
+
+pub fn remove_dir_all(path: &str) -> Result<(), FileError> {
+    for entry in read_directory(path)? {
+        let mut child = Text::from(path.trim_end_matches(['/', '\\']));
+        if !child.is_empty() && !child.ends_with(['/', '\\']) {
+            child.push(if cfg!(windows) { '\\' } else { '/' });
+        }
+        child.push_str(&entry.name);
+        if entry.is_directory && !entry.is_symlink {
+            remove_dir_all(&child)?;
+        } else if entry.is_directory {
+            remove_directory(&child)?;
+        } else {
+            remove_file(&child)?;
+        }
+    }
+    remove_directory(path)
+}
+
 pub fn rename_file(existing: &str, replacement: &str) -> Result<(), FileError> {
     #[cfg(windows)]
     let renamed = encode_windows_path(existing).zip(encode_windows_path(replacement)).is_some_and(
@@ -371,7 +400,8 @@ mod tests {
         let entries = read_directory(root.to_str().unwrap()).unwrap();
         assert!(entries.iter().any(|entry| entry.name == "folder-星" && entry.is_directory));
         assert!(entries.iter().any(|entry| entry.name == "file-λ.txt" && !entry.is_directory));
-        std::fs::remove_dir_all(root).unwrap();
+        remove_dir_all(root.to_str().unwrap()).unwrap();
+        assert!(!root.exists());
     }
 
     #[test]
@@ -383,6 +413,7 @@ mod tests {
         let file = nested.join("conflict");
         write_file(file.to_str().unwrap(), b"not a directory").unwrap();
         assert!(create_dir_all(file.to_str().unwrap()).is_err());
-        std::fs::remove_dir_all(root).unwrap();
+        remove_dir_all(root.to_str().unwrap()).unwrap();
+        assert!(!root.exists());
     }
 }

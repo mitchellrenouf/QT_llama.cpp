@@ -20,7 +20,7 @@ mod vector;
 pub use channel::{Receiver, RecvError, SendError, Sender, blocking_channel, sync_channel};
 pub use args::command_arguments;
 pub use env::environment_variable;
-pub use file::{DirectoryEntry, File, FileError, create_dir_all, path_is_directory, read_directory, read_file, read_file_text, remove_file, rename_file, write_file};
+pub use file::{DirectoryEntry, File, FileError, create_dir_all, path_is_directory, read_directory, read_file, read_file_text, remove_dir_all, remove_file, rename_file, write_file};
 pub use map::OrderedMap;
 pub use owned::Owned;
 pub use stdin::{StdinError, read_stdin_line, read_stdin_to_end};

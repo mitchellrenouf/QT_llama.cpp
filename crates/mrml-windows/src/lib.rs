@@ -69,6 +69,7 @@ unsafe extern "system" {
     fn GetFileAttributesW(name: *const u16) -> u32;
     fn CreateDirectoryW(name: *const u16, security: *const c_void) -> i32;
     fn DeleteFileW(name: *const u16) -> i32;
+    fn RemoveDirectoryW(name: *const u16) -> i32;
     fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
     fn FindFirstFileW(pattern: *const u16, data: *mut FindDataW) -> *mut c_void;
     fn FindNextFileW(find: *mut c_void, data: *mut FindDataW) -> i32;
@@ -183,6 +184,11 @@ pub fn create_directory_wide(name: &[u16]) -> bool {
 #[cfg(windows)]
 pub fn delete_file_wide(name: &[u16]) -> bool {
     name.last().copied() == Some(0) && unsafe { DeleteFileW(name.as_ptr()) } != 0
+}
+
+#[cfg(windows)]
+pub fn remove_directory_wide(name: &[u16]) -> bool {
+    name.last().copied() == Some(0) && unsafe { RemoveDirectoryW(name.as_ptr()) } != 0
 }
 
 #[cfg(windows)]

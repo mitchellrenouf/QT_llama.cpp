@@ -3,7 +3,6 @@ use anyhow::{Result, anyhow};
 use mrml_runtime::{OnceCell, Shared, SpinMutex};
 use serde_json::{Value, json};
 use std::{
-    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -271,7 +270,9 @@ impl Drop for EdgeController {
         let _ = self.browser.command("Browser.close", json!({}));
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = fs::remove_dir_all(&self.profile);
+        if let Some(profile) = self.profile.to_str() {
+            let _ = mrml_runtime::remove_dir_all(profile);
+        }
     }
 }
 

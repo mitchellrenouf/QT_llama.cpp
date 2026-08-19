@@ -73,6 +73,7 @@ unsafe extern "C" {
     fn close(file: c_int) -> c_int;
     fn mkdir(path: *const i8, mode: u32) -> c_int;
     fn unlink(path: *const i8) -> c_int;
+    fn rmdir(path: *const i8) -> c_int;
     fn rename(existing: *const i8, replacement: *const i8) -> c_int;
     fn opendir(path: *const i8) -> *mut c_void;
     fn readdir(directory: *mut c_void) -> *mut Dirent;
@@ -268,6 +269,11 @@ pub fn create_directory(path: &CStr) -> bool {
 #[cfg(unix)]
 pub fn delete_file(path: &CStr) -> bool {
     (unsafe { unlink(path.as_ptr()) }) == 0
+}
+
+#[cfg(unix)]
+pub fn remove_directory(path: &CStr) -> bool {
+    (unsafe { rmdir(path.as_ptr()) }) == 0
 }
 
 #[cfg(unix)]
