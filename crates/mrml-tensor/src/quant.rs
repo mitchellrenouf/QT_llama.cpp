@@ -3,13 +3,6 @@
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::{AtomicU8, Ordering};
 
-#[cfg(feature = "std")]
-#[inline]
-fn round(value: f32) -> f32 {
-    value.round()
-}
-
-#[cfg(not(feature = "std"))]
 #[inline]
 fn round(value: f32) -> f32 {
     mrml_math::round(value)
@@ -436,13 +429,6 @@ mod simd_tests {
         let q8_scalar = vec_dot_q8_0_q8_0_scalar(&q8_a, &q8_b, values.len());
         assert!((vec_dot_q4_0_q8_0(&q4, &q8_b, values.len()) - q4_scalar).abs() < 1e-3);
         assert!((vec_dot_q8_0_q8_0(&q8_a, &q8_b, values.len()) - q8_scalar).abs() < 1e-3);
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn core_cpuid_matches_standard_feature_detection() {
-        assert_eq!(avx2_enabled(), std::is_x86_feature_detected!("avx2"));
-        assert_eq!(avx_vnni_enabled(), std::is_x86_feature_detected!("avxvnni"));
     }
 
     #[test]

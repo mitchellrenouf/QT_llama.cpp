@@ -1,6 +1,6 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
-#[cfg(all(test, not(feature = "std")))]
+#[cfg(test)]
 extern crate std;
 
 pub mod modes;

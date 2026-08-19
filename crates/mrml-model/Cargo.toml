@@ -14,7 +14,6 @@ mrml-runtime = { path = "../mrml-runtime" }
 [features]
 default = ["runtime"]
 runtime = ["dep:serde_json", "dep:mrml-tensor", "mrml-tensor/runtime"]
-std = ["runtime", "mrml-tensor/std"]
 auto = ["runtime", "mrml-tensor/cuda"]
 cuda = ["runtime", "mrml-tensor/cuda"]
 vulkan = ["runtime"]

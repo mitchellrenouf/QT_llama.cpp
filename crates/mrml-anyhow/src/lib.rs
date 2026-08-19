@@ -1,6 +1,6 @@
 #![no_std]
 
-#[cfg(any(feature = "std", test))]
+#[cfg(test)]
 extern crate std;
 
 use core::error::Error as StdError;
@@ -78,12 +78,6 @@ impl From<mrml_runtime::NetError> for Error {
     }
 }
 
-#[cfg(feature = "std")]
-impl From<std::io::Error> for Error {
-    fn from(error: std::io::Error) -> Self {
-        Self::with_source(error)
-    }
-}
 
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
@@ -174,15 +168,6 @@ mod tests {
 
         let sourced = Error::with_source(TestError);
         assert_eq!(sourced.source().unwrap().to_string(), "source failed");
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn converts_standard_io_errors() {
-        fn io_failure() -> Result<()> {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))?
-        }
-        assert_eq!(io_failure().unwrap_err().to_string(), "missing");
     }
 
     #[derive(Debug)]

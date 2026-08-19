@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 #![cfg_attr(feature = "cuda", feature(thread_local))]
 
 #[cfg(test)]
@@ -23,9 +23,7 @@ pub mod mmap;
 pub mod model;
 #[cfg(feature = "runtime")]
 pub mod ops;
-#[cfg(all(feature = "std", feature = "runtime"))]
-pub mod parallel;
-#[cfg(all(not(feature = "std"), feature = "runtime"))]
+#[cfg(feature = "runtime")]
 #[path = "parallel_nostd.rs"]
 pub mod parallel;
 pub mod quant;

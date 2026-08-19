@@ -14,22 +14,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use mrml_runtime::{File, Instant, OrderedMap, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_format as format};
 
-#[cfg(feature = "std")]
-#[inline(always)]
-fn float_sqrt(value: f32) -> f32 { value.sqrt() }
-#[cfg(not(feature = "std"))]
 #[inline(always)]
 fn float_sqrt(value: f32) -> f32 { mrml_math::sqrt(value) }
-#[cfg(feature = "std")]
-#[inline(always)]
-fn float_exp(value: f32) -> f32 { value.exp() }
-#[cfg(not(feature = "std"))]
 #[inline(always)]
 fn float_exp(value: f32) -> f32 { mrml_math::exp(value) }
-#[cfg(feature = "std")]
-#[inline(always)]
-fn float_tanh(value: f32) -> f32 { value.tanh() }
-#[cfg(not(feature = "std"))]
 #[inline(always)]
 fn float_tanh(value: f32) -> f32 { mrml_math::tanh(value) }
 
@@ -1756,9 +1744,6 @@ impl MrmlModel {
                         expert_logits[e] = (dot, e);
                     }
 
-                    #[cfg(feature = "std")]
-                    expert_logits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal));
-                    #[cfg(not(feature = "std"))]
                     expert_logits[..].sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal));
                     let max_l = expert_logits[0].0;
                     let mut sum_exp = 0.0f32;

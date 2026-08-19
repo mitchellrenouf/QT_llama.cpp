@@ -16,10 +16,6 @@ runtime = [
     "mrml-model/runtime",
     "mrml-tools/runtime",
 ]
-std = [
-    "runtime",
-    "mrml-model/std",
-]
 auto = ["runtime", "mrml-model/auto"]
 cuda = ["runtime", "mrml-model/cuda"]
 vulkan = ["runtime", "mrml-model/vulkan"]

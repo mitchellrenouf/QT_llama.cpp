@@ -3,12 +3,6 @@ use mrml_runtime::Vector;
 
 macro_rules! math_fn {
     ($name:ident, $method:ident, $native:path) => {
-        #[cfg(feature = "std")]
-        #[inline]
-        fn $name(value: f32) -> f32 {
-            value.$method()
-        }
-        #[cfg(not(feature = "std"))]
         #[inline]
         fn $name(value: f32) -> f32 {
             $native(value)
@@ -21,12 +15,6 @@ math_fn!(sin, sin, mrml_math::sin);
 math_fn!(tanh, tanh, mrml_math::tanh);
 math_fn!(exp, exp, mrml_math::exp);
 
-#[cfg(feature = "std")]
-#[inline]
-fn pow(value: f32, exponent: f32) -> f32 {
-    value.powf(exponent)
-}
-#[cfg(not(feature = "std"))]
 #[inline]
 fn pow(value: f32, exponent: f32) -> f32 {
     mrml_math::pow(value, exponent)
