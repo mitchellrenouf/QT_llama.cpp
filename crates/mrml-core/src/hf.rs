@@ -361,7 +361,7 @@ where
                 }
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            crate::platform::sleep_millis(500);
             if let Ok(meta) = part_path.metadata() {
                 let cur_len = meta.len();
                 let mb = cur_len as f64 / (1024.0 * 1024.0);

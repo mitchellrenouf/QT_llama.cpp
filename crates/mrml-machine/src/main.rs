@@ -121,7 +121,7 @@ fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
         drop(agent);
         #[cfg(feature = "cuda")]
         mrml_core::clear_cuda_allocation_pool();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        mrml_core::tools::platform::sleep_millis(500);
     }
     unreachable!()
 }
