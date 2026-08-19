@@ -433,6 +433,42 @@ pub fn stdout_is_terminal() -> bool {
 }
 
 #[cfg(windows)]
+fn write_standard_handle(kind: u32, mut bytes: &[u8]) -> bool {
+    let handle = unsafe { GetStdHandle(kind) };
+    if handle.is_null() || handle == usize::MAX as *mut c_void {
+        return false;
+    }
+    while !bytes.is_empty() {
+        let mut written = 0u32;
+        let count = bytes.len().min(u32::MAX as usize) as u32;
+        if unsafe {
+            WriteFile(
+                handle,
+                bytes.as_ptr().cast(),
+                count,
+                &mut written,
+                core::ptr::null_mut(),
+            )
+        } == 0 || written == 0
+        {
+            return false;
+        }
+        bytes = &bytes[written as usize..];
+    }
+    true
+}
+
+#[cfg(windows)]
+pub fn write_stdout(bytes: &[u8]) -> bool {
+    write_standard_handle(u32::MAX - 10, bytes)
+}
+
+#[cfg(windows)]
+pub fn write_stderr(bytes: &[u8]) -> bool {
+    write_standard_handle(u32::MAX - 11, bytes)
+}
+
+#[cfg(windows)]
 pub fn read_stdin(buffer: &mut [u8]) -> Option<usize> {
     const STD_INPUT_HANDLE: u32 = -10i32 as u32;
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };

@@ -1,5 +1,6 @@
 //! Low-latency terminal Markdown presentation.
 use mrml_runtime::Text;
+use mrml_runtime::mrml_print as print;
 
 const RESET: &str = "\x1b[0m";
 

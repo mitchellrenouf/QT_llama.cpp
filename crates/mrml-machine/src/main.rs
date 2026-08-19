@@ -3,7 +3,7 @@ use core::fmt::Write as _;
 use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, SpinMutex, Text, Vector};
+use mrml_runtime::{Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
 

@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Text, Vector, rename_file};
+use mrml_runtime::{Text, Vector, mrml_println as println, rename_file};
 use std::path::{Path, PathBuf};
 
 fn native_file_len(path: &Path) -> Option<u64> {

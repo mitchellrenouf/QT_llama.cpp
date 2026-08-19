@@ -216,6 +216,28 @@ pub fn stdout_is_terminal() -> bool {
 }
 
 #[cfg(unix)]
+fn write_descriptor(file: c_int, mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        let written = unsafe { write(file, bytes.as_ptr().cast(), bytes.len()) };
+        if written <= 0 {
+            return false;
+        }
+        bytes = &bytes[written as usize..];
+    }
+    true
+}
+
+#[cfg(unix)]
+pub fn write_stdout(bytes: &[u8]) -> bool {
+    write_descriptor(1, bytes)
+}
+
+#[cfg(unix)]
+pub fn write_stderr(bytes: &[u8]) -> bool {
+    write_descriptor(2, bytes)
+}
+
+#[cfg(unix)]
 pub fn read_stdin(buffer: &mut [u8]) -> Option<usize> {
     let result = unsafe { read(0, buffer.as_mut_ptr().cast(), buffer.len()) };
     (result >= 0).then_some(result as usize)

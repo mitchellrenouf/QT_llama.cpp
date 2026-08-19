@@ -1,8 +1,7 @@
 pub use mrml_core::config;
 use mrml_core::{AgentMode, Config, MrmlAgent};
-use mrml_runtime::{Text, Vector};
+use mrml_runtime::{Text, Vector, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
-use std::io::{self, Write};
 
 fn main() -> anyhow::Result<()> {
     mrml_tools::block_on(async_main())
@@ -99,7 +98,6 @@ async fn async_main() -> anyhow::Result<()> {
                 "{} Download & load model weights now? [Y/n]: ",
                 "❓".yellow()
             );
-            io::stdout().flush()?;
             if let Ok(Some(ans)) = mrml_runtime::read_stdin_line() {
                 let trimmed = Text::from(ans.trim()).to_ascii_lowercase();
                 if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
@@ -151,7 +149,6 @@ async fn async_main() -> anyhow::Result<()> {
             mode_str.yellow(),
             est_tokens.to_string().dimmed()
         );
-        io::stdout().flush()?;
 
         let Some(line) = mrml_runtime::read_stdin_line()
             .map_err(|_| anyhow::anyhow!("failed reading standard input"))?

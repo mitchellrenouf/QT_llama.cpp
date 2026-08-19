@@ -1,7 +1,7 @@
 use anyhow::Result;
 use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, Text, Vector};
+use mrml_runtime::{Shared, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
 use mrml_terminal_style::Colorize;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

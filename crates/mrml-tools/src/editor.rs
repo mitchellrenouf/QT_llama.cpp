@@ -1,7 +1,7 @@
 use crate::Tool;
 use crate::diff::format_colorized_diff;
 use anyhow::{Result, anyhow};
-use mrml_runtime::Vector;
+use mrml_runtime::{Vector, mrml_print as print};
 use serde_json::json;
 use std::path::Path;
 use std::process::Command;

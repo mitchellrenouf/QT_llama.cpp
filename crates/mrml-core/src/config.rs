@@ -1,7 +1,7 @@
 pub use crate::modes::{AgentMode, BackendChoice};
 use core::fmt::Write as _;
 use core::str::FromStr;
-use mrml_runtime::{Text, Vector};
+use mrml_runtime::{Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
 use std::path::PathBuf;
 
 macro_rules! text_format {

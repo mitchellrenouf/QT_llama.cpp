@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
-use mrml_runtime::{Instant, Shared, Text, Vector};
+use mrml_runtime::{Instant, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
 use std::path::PathBuf;
 
 type String = Text;

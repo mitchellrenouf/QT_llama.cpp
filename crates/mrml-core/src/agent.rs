@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
-use mrml_runtime::Vector;
+use mrml_runtime::{Vector, mrml_eprintln as eprintln, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
-use std::io::Write;
 use std::path::PathBuf;
 
 use crate::client::{ChatMessage, MrmlClient, StreamEvent};
@@ -799,7 +798,6 @@ impl MrmlAgent {
                         if reasoning_header_printed {
                             print!("{}", text.yellow().dimmed());
                             if text.ends_with(' ') || text.ends_with('\n') {
-                                let _ = std::io::stdout().flush();
                             }
                             last_was_reasoning = true;
                         }
@@ -813,12 +811,10 @@ impl MrmlAgent {
                                     .dimmed()
                             );
                             print!("\n{}: ", "🤖 MRML".bold().green());
-                            let _ = std::io::stdout().flush();
                             last_was_reasoning = false;
                             content_header_printed = true;
                         } else if !content_header_printed {
                             print!("\n{}: ", "🤖 MRML".bold().green());
-                            let _ = std::io::stdout().flush();
                             content_header_printed = true;
                         }
                         print!("{}", text);
@@ -827,7 +823,6 @@ impl MrmlAgent {
                             || text.ends_with('?')
                             || text.ends_with('.')
                         {
-                            let _ = std::io::stdout().flush();
                         }
                     }
                     StreamEvent::ToolCallAssembled(tc) => {
