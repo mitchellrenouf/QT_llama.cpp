@@ -1,7 +1,18 @@
 #![no_std]
 
 #[cfg(unix)]
+use core::alloc::{GlobalAlloc, Layout};
+#[cfg(unix)]
+use core::ffi::c_void;
+#[cfg(unix)]
 use core::ffi::{c_int, c_long};
+
+#[repr(C)]
+#[cfg(unix)]
+struct Timespec {
+    seconds: c_long,
+    nanoseconds: c_long,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LocalTime {
@@ -33,6 +44,47 @@ struct Tm {
 #[cfg(unix)]
 unsafe extern "C" {
     fn localtime_r(clock: *const c_long, result: *mut Tm) -> *mut Tm;
+    fn malloc(bytes: usize) -> *mut c_void;
+    fn realloc(memory: *mut c_void, bytes: usize) -> *mut c_void;
+    fn free(memory: *mut c_void);
+    fn nanosleep(request: *const Timespec, remaining: *mut Timespec) -> c_int;
+    fn clock_gettime(clock: c_int, time: *mut Timespec) -> c_int;
+}
+
+pub struct SystemAllocator;
+
+#[cfg(unix)]
+unsafe impl GlobalAlloc for SystemAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { malloc(layout.size().max(1)) }.cast()
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, _: Layout) {
+        unsafe { free(pointer.cast()) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, _: Layout, size: usize) -> *mut u8 {
+        unsafe { realloc(pointer.cast(), size.max(1)) }.cast()
+    }
+}
+
+#[cfg(unix)]
+pub fn sleep_millis(milliseconds: u64) {
+    let request = Timespec {
+        seconds: (milliseconds / 1000) as c_long,
+        nanoseconds: ((milliseconds % 1000) * 1_000_000) as c_long,
+    };
+    let _ = unsafe { nanosleep(&request, core::ptr::null_mut()) };
+}
+
+#[cfg(unix)]
+pub fn monotonic_nanos() -> u64 {
+    const CLOCK_MONOTONIC: c_int = 1;
+    let mut value = Timespec { seconds: 0, nanoseconds: 0 };
+    if unsafe { clock_gettime(CLOCK_MONOTONIC, &mut value) } != 0 {
+        return 0;
+    }
+    value.seconds as u64 * 1_000_000_000 + value.nanoseconds as u64
 }
 
 #[cfg(unix)]
@@ -60,4 +112,31 @@ pub fn local_time(epoch_seconds: i64) -> Option<LocalTime> {
 #[cfg(not(unix))]
 pub fn local_time(_: i64) -> Option<LocalTime> {
     None
+}
+
+#[cfg(not(unix))]
+pub fn sleep_millis(_: u64) {}
+
+#[cfg(not(unix))]
+pub fn monotonic_nanos() -> u64 { 0 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    #[test]
+    fn native_allocator_and_clock_work() {
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let pointer = unsafe { GlobalAlloc::alloc(&super::SystemAllocator, layout) };
+        assert!(!pointer.is_null());
+        unsafe {
+            pointer.write(0x5a);
+            assert_eq!(pointer.read(), 0x5a);
+            GlobalAlloc::dealloc(&super::SystemAllocator, pointer, layout);
+        }
+
+        let before = super::monotonic_nanos();
+        super::sleep_millis(2);
+        assert!(super::monotonic_nanos() > before);
+    }
 }
