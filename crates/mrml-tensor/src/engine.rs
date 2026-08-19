@@ -51,7 +51,10 @@ impl MrmlEngine {
 
     pub fn chat_template(&self) -> Option<String> {
         let guard = self.model.lock();
-        guard.chat_template.clone()
+        guard
+            .chat_template
+            .as_ref()
+            .map(|template| template.to_string())
     }
 
     pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {

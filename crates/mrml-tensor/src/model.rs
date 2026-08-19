@@ -192,10 +192,10 @@ pub struct MrmlModel {
     pub device_manager: DeviceManager,
     pub kv_cache: KvCacheManager,
     pub layer_devices: Vector<DeviceType>,
-    pub vocab: Vec<String>,
+    pub vocab: Vector<Text>,
     pub vocab_to_id: OrderedMap<Text, i32>,
-    pub valid_vocab_token: Vec<bool>,
-    pub chat_template: Option<String>,
+    pub valid_vocab_token: Vector<bool>,
+    pub chat_template: Option<Text>,
     pub gguf_path: Text,
     pub cache_type_k: KvCacheFormat,
     pub cache_type_v: KvCacheFormat,
@@ -362,7 +362,7 @@ impl MrmlModel {
         let chat_template = gguf
             .get_meta("tokenizer.chat_template")
             .and_then(|value| value.as_str())
-            .map(str::to_owned);
+            .map(Text::from);
 
         if gguf
             .get_meta("general.architecture")
@@ -390,7 +390,7 @@ impl MrmlModel {
             .unwrap_or(30) as usize;
 
         // Load Vocabulary from GGUF metadata
-        let mut vocab = Vec::new();
+        let mut vocab = Vector::new();
         let mut vocab_to_id = OrderedMap::new();
         let mut vocab_entries = Vector::new();
 
@@ -400,8 +400,9 @@ impl MrmlModel {
         {
             for (id, val) in tokens_meta.iter().enumerate() {
                 if let Some(s) = val.as_str() {
-                    vocab.push(s.to_string());
-                    vocab_entries.push((Text::from(s), id as i32));
+                    let token = Text::from(s);
+                    vocab.push(token.clone());
+                    vocab_entries.push((token, id as i32));
                 }
             }
         }
@@ -416,7 +417,7 @@ impl MrmlModel {
         } else {
             262144
         };
-        let valid_vocab_token: Vec<bool> = (0..vocab_size)
+        let valid_vocab_token: Vector<bool> = (0..vocab_size)
             .map(|tid| {
                 vocab.get(tid).map_or(true, |piece| {
                     !piece.starts_with("<unused")
@@ -2230,7 +2231,7 @@ impl MrmlModel {
                     return String::from_utf8_lossy(&[byte_val]).to_string();
                 }
             }
-            return piece.replace('\u{2581}', " ").replace(' ', " ");
+            return piece.as_str().replace('\u{2581}', " ");
         }
 
         if token_id >= 100 && token_id <= 355 {
