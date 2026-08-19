@@ -1,5 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(thread_local)]
+#![cfg_attr(feature = "cuda", feature(thread_local))]
 
 #[cfg(test)]
 extern crate std;
@@ -17,7 +17,7 @@ pub mod gguf;
 pub mod graph;
 #[cfg(feature = "runtime")]
 pub mod kv_cache;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod mmap;
 #[cfg(feature = "std")]
 pub mod model;

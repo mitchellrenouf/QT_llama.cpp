@@ -10,6 +10,10 @@ use mrml_runtime::Vector;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "cuda")]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -463,7 +467,15 @@ impl MrmlModel {
 
         let mmap = File::open(&gguf_path)
             .ok()
-            .and_then(|file| crate::mmap::Mmap::map(&file).ok())
+            .and_then(|file| {
+                let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
+                #[cfg(windows)]
+                let mapped =
+                    unsafe { crate::mmap::Mmap::map_raw(file.as_raw_handle().cast(), len) };
+                #[cfg(unix)]
+                let mapped = unsafe { crate::mmap::Mmap::map_raw(file.as_raw_fd(), len) };
+                mapped.ok()
+            })
             .map(std::sync::Arc::new);
 
         #[cfg(feature = "cuda")]
