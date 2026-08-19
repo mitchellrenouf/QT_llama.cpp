@@ -81,6 +81,7 @@ unsafe extern "C" {
     fn execvp(program: *const i8, arguments: *const *const i8) -> c_int;
     fn chdir(path: *const i8) -> c_int;
     fn waitpid(process: c_int, status: *mut c_int, options: c_int) -> c_int;
+    fn kill(process: c_int, signal: c_int) -> c_int;
     fn fcntl(file: c_int, command: c_int, ...) -> c_int;
     fn rename(existing: *const i8, replacement: *const i8) -> c_int;
     fn opendir(path: *const i8) -> *mut c_void;
@@ -160,6 +161,30 @@ pub struct NativeChild {
 
 #[cfg(unix)]
 impl NativeChild {
+    pub fn spawn_silent(
+        program: &CStr,
+        arguments: &[*const i8],
+        current_directory: Option<&CStr>,
+    ) -> Option<Self> {
+        const O_RDWR: c_int = 2;
+        let null_file = unsafe { open(c"/dev/null".as_ptr(), O_RDWR) };
+        if null_file < 0 { return None; }
+        let process = unsafe { fork() };
+        if process == 0 {
+            let _ = unsafe { dup2(null_file, 0) };
+            let _ = unsafe { dup2(null_file, 1) };
+            let _ = unsafe { dup2(null_file, 2) };
+            let _ = unsafe { close(null_file) };
+            if let Some(directory) = current_directory {
+                if unsafe { chdir(directory.as_ptr()) } != 0 { unsafe { _exit(126) }; }
+            }
+            let _ = unsafe { execvp(program.as_ptr(), arguments.as_ptr()) };
+            unsafe { _exit(127) };
+        }
+        let _ = unsafe { close(null_file) };
+        (process > 0).then_some(Self { process, stdout: -1, stderr: -1, status: None })
+    }
+
     pub fn spawn_captured(
         program: &CStr,
         arguments: &[*const i8],
@@ -236,13 +261,26 @@ impl NativeChild {
         }
         self.status
     }
+
+    pub fn kill(&mut self) -> bool {
+        self.status.is_some() || unsafe { kill(self.process, 9) } == 0
+    }
+
+    pub fn wait(&mut self) -> Option<i32> {
+        if let Some(status) = self.status { return Some(status); }
+        let mut status = 0;
+        if unsafe { waitpid(self.process, &mut status, 0) } != self.process { return None; }
+        let code = if status & 0x7f == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
+        self.status = Some(code);
+        Some(code)
+    }
 }
 
 #[cfg(unix)]
 impl Drop for NativeChild {
     fn drop(&mut self) {
-        let _ = unsafe { close(self.stdout) };
-        let _ = unsafe { close(self.stderr) };
+        if self.stdout >= 0 { let _ = unsafe { close(self.stdout) }; }
+        if self.stderr >= 0 { let _ = unsafe { close(self.stderr) }; }
         if self.status.is_none() {
             let mut status = 0;
             let _ = unsafe { waitpid(self.process, &mut status, 0) };

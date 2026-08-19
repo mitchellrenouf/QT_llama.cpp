@@ -26,7 +26,7 @@ pub use file::{DirectoryEntry, File, FileError, canonical_path, create_dir_all, 
 pub use map::OrderedMap;
 pub use owned::Owned;
 pub use output::{write_stderr, write_stdout};
-pub use process::{Command, ExitStatus, Output, ProcessError, process_id, temporary_directory};
+pub use process::{Child, Command, ExitStatus, Output, ProcessError, process_id, temporary_directory};
 pub use stdin::{StdinError, read_stdin_line, read_stdin_to_end};
 pub use sync::{OnceCell, Shared, SpinMutex, SpinMutexGuard};
 pub use text::Text;

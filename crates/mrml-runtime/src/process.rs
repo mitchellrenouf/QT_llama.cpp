@@ -58,6 +58,26 @@ pub struct Output {
     pub stderr: Vector<u8>,
 }
 
+pub struct Child {
+    #[cfg(windows)]
+    native: mrml_windows::NativeChild,
+    #[cfg(unix)]
+    native: mrml_linux::NativeChild,
+}
+
+impl Child {
+    pub fn try_wait(&mut self) -> Option<ExitStatus> { self.native.try_wait().map(ExitStatus) }
+    pub fn kill(&mut self) -> bool { self.native.kill() }
+    pub fn wait(&mut self) -> Option<ExitStatus> { self.native.wait().map(ExitStatus) }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        if self.try_wait().is_none() { let _ = self.kill(); }
+        let _ = self.wait();
+    }
+}
+
 pub struct Command {
     program: Text,
     arguments: Vector<Text>,
@@ -121,6 +141,42 @@ impl Command {
             } else {
                 Err(ProcessError::SpawnFailed)
             }
+        }
+    }
+
+    pub fn spawn_silent(&mut self) -> Result<Child, ProcessError> {
+        #[cfg(windows)]
+        {
+            let mut command_line = Vector::new();
+            append_windows_argument(&mut command_line, &self.program);
+            for argument in &self.arguments {
+                command_line.push(' ' as u16);
+                append_windows_argument(&mut command_line, argument);
+            }
+            command_line.push(0);
+            let current_directory = self.current_directory.as_ref().map(|directory| {
+                let mut encoded = Vector::new();
+                encoded.extend(directory.encode_utf16());
+                encoded.push(0);
+                encoded
+            });
+            mrml_windows::NativeChild::spawn_silent(&mut command_line, current_directory.as_deref())
+                .map(|native| Child { native })
+                .ok_or(ProcessError::SpawnFailed)
+        }
+        #[cfg(unix)]
+        {
+            let mut encoded = Vector::new();
+            encoded.push(encode_c_string(&self.program)?);
+            for argument in &self.arguments { encoded.push(encode_c_string(argument)?); }
+            let mut pointers: Vector<*const i8> = encoded.iter().map(|value| value.as_ptr().cast()).collect();
+            pointers.push(core::ptr::null());
+            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0]).map_err(|_| ProcessError::InvalidArgument)?;
+            let directory = self.current_directory.as_ref().map(|value| encode_c_string(value)).transpose()?;
+            let directory = directory.as_ref().map(|value| core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path"));
+            mrml_linux::NativeChild::spawn_silent(program, &pointers, directory)
+                .map(|native| Child { native })
+                .ok_or(ProcessError::SpawnFailed)
         }
     }
 
@@ -295,5 +351,27 @@ mod tests {
             mrml_linux::sleep_millis(5);
         }
         panic!("detached child did not create its marker");
+    }
+
+    #[test]
+    fn silent_child_can_be_polled_killed_and_waited() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("powershell.exe");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 10"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 10"]);
+            command
+        };
+        let mut child = command.spawn_silent().unwrap();
+        assert!(child.try_wait().is_none());
+        assert!(child.kill());
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+        assert_eq!(child.try_wait(), Some(status));
     }
 }

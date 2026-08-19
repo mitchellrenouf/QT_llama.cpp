@@ -110,6 +110,7 @@ unsafe extern "system" {
     fn PeekNamedPipe(handle: *mut c_void, buffer: *mut c_void, size: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
     fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
     fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
+    fn TerminateProcess(process: *mut c_void, exit_code: u32) -> i32;
     fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
     fn HeapReAlloc(heap: *mut c_void, flags: u32, memory: *mut c_void, bytes: usize)
     -> *mut c_void;
@@ -378,7 +379,45 @@ pub struct NativeChild {
 }
 
 #[cfg(windows)]
+unsafe impl Send for NativeChild {}
+
+#[cfg(windows)]
 impl NativeChild {
+    pub fn spawn_silent(command_line: &mut [u16], current_directory: Option<&[u16]>) -> Option<Self> {
+        if command_line.last().copied() != Some(0)
+            || current_directory.is_some_and(|path| path.last().copied() != Some(0))
+        { return None; }
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const OPEN_EXISTING: u32 = 3;
+        let null_name = [b'N' as u16, b'U' as u16, b'L' as u16, 0];
+        let attributes = SecurityAttributes {
+            length: core::mem::size_of::<SecurityAttributes>() as u32,
+            security_descriptor: core::ptr::null_mut(),
+            inherit_handle: 1,
+        };
+        let open_null = || unsafe { CreateFileW(null_name.as_ptr(), GENERIC_READ | GENERIC_WRITE, 3, (&attributes as *const SecurityAttributes).cast(), OPEN_EXISTING, 0x80, core::ptr::null_mut()) };
+        let stdin = open_null();
+        let stdout = open_null();
+        let stderr = open_null();
+        if [stdin, stdout, stderr].iter().any(|handle| *handle as isize == -1) {
+            for handle in [stdin, stdout, stderr] { if handle as isize != -1 { let _ = unsafe { CloseHandle(handle) }; } }
+            return None;
+        }
+        let mut startup = unsafe { core::mem::zeroed::<StartupInfoW>() };
+        startup.size = core::mem::size_of::<StartupInfoW>() as u32;
+        startup.flags = 0x100;
+        startup.stdin = stdin;
+        startup.stdout = stdout;
+        startup.stderr = stderr;
+        let mut information = unsafe { core::mem::zeroed::<ProcessInformation>() };
+        let created = unsafe { CreateProcessW(core::ptr::null(), command_line.as_mut_ptr(), core::ptr::null(), core::ptr::null(), 1, 0, core::ptr::null(), current_directory.map_or(core::ptr::null(), |path| path.as_ptr()), &mut startup, &mut information) };
+        for handle in [stdin, stdout, stderr] { let _ = unsafe { CloseHandle(handle) }; }
+        if created == 0 { return None; }
+        let _ = unsafe { CloseHandle(information.thread) };
+        Some(Self { process: information.process, stdout: core::ptr::null_mut(), stderr: core::ptr::null_mut(), status: None })
+    }
+
     pub fn spawn_captured(command_line: &mut [u16], current_directory: Option<&[u16]>) -> Option<Self> {
         if command_line.last().copied() != Some(0)
             || current_directory.is_some_and(|path| path.last().copied() != Some(0))
@@ -475,6 +514,20 @@ impl NativeChild {
         }
         self.status
     }
+
+    pub fn kill(&mut self) -> bool {
+        self.status.is_some() || unsafe { TerminateProcess(self.process, 1) } != 0
+    }
+
+    pub fn wait(&mut self) -> Option<i32> {
+        if self.status.is_none() {
+            if unsafe { WaitForSingleObject(self.process, u32::MAX) } != 0 { return None; }
+            let mut code = 0;
+            if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 { return None; }
+            self.status = Some(code as i32);
+        }
+        self.status
+    }
 }
 
 #[cfg(windows)]
@@ -484,7 +537,7 @@ impl Drop for NativeChild {
             let _ = unsafe { WaitForSingleObject(self.process, u32::MAX) };
         }
         for handle in [self.process, self.stdout, self.stderr] {
-            let _ = unsafe { CloseHandle(handle) };
+            if !handle.is_null() { let _ = unsafe { CloseHandle(handle) }; }
         }
     }
 }
