@@ -97,6 +97,14 @@ impl<'a, K, V> IntoIterator for &'a OrderedMap<K, V> {
     }
 }
 
+impl<K, V> IntoIterator for OrderedMap<K, V> {
+    type Item = (K, V);
+    type IntoIter = crate::vector::IntoIter<(K, V)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
 impl<K: Ord, V> core::iter::FromIterator<(K, V)> for OrderedMap<K, V> {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(entries: I) -> Self {
         let iterator = entries.into_iter();

@@ -2,14 +2,12 @@
 #![allow(non_snake_case)]
 
 use crate::anyhow::{Result, anyhow};
-use core::cell::Cell;
 use core::ffi::{CStr, c_void};
 use core::marker::PhantomData;
 use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use mrml_runtime::{OnceCell, OrderedMap, Shared, SpinMutex, Text, Vector};
 
 #[cfg(unix)]
 use mrml_linux::DynamicLibrary;
@@ -24,10 +22,11 @@ type CuFunction = *mut c_void;
 type CuContext = *mut c_void;
 type CuDevicePtr = u64;
 
-static RUST_PTX_MODULE: OnceLock<usize> = OnceLock::new();
-static RUST_FUNCTIONS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
-static CUDA_DRIVER: OnceLock<CudaDriverApi> = OnceLock::new();
-static CUDA_ALLOCATION_POOL: OnceLock<Mutex<HashMap<(i32, usize), Vec<usize>>>> = OnceLock::new();
+static RUST_PTX_MODULE: OnceCell<usize> = OnceCell::new();
+static RUST_FUNCTIONS: OnceCell<SpinMutex<OrderedMap<Text, usize>>> = OnceCell::new();
+static CUDA_DRIVER: OnceCell<CudaDriverApi> = OnceCell::new();
+static CUDA_ALLOCATION_POOL: OnceCell<SpinMutex<OrderedMap<(i32, usize), Vector<usize>>>> =
+    OnceCell::new();
 const RUST_CUDA_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rust_cuda_kernels.ptx"));
 
 struct CudaDriverApi {
@@ -80,7 +79,7 @@ struct CudaDriverApi {
     ) -> i32,
 }
 
-static CUDA_PRIMARY_CONTEXTS: OnceLock<Mutex<HashMap<i32, usize>>> = OnceLock::new();
+static CUDA_PRIMARY_CONTEXTS: OnceCell<SpinMutex<OrderedMap<i32, usize>>> = OnceCell::new();
 
 #[allow(dead_code)]
 #[repr(C)]
@@ -94,7 +93,7 @@ pub enum CudaMemcpyKind {
 }
 
 fn cuda_driver_library() -> Result<&'static DynamicLibrary> {
-    static LIBRARY: OnceLock<DynamicLibrary> = OnceLock::new();
+    static LIBRARY: OnceCell<DynamicLibrary> = OnceCell::new();
     if let Some(library) = LIBRARY.get() {
         return Ok(library);
     }
@@ -121,15 +120,15 @@ unsafe fn cuda_driver_symbol(name: &str) -> Result<*mut c_void> {
 }
 
 pub fn clear_cuda_allocation_pool() {
-    let allocations = CUDA_ALLOCATION_POOL
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .expect("CUDA allocation pool mutex poisoned")
-        .drain()
-        .flat_map(|((device, _), pointers)| {
-            pointers.into_iter().map(move |pointer| (device, pointer))
-        })
-        .collect::<Vec<_>>();
+    let allocations = {
+        let mut pool = CUDA_ALLOCATION_POOL
+            .get_or_init(|| SpinMutex::new(OrderedMap::new()))
+            .lock();
+        core::mem::take(&mut *pool)
+    }
+    .into_iter()
+    .flat_map(|((device, _), pointers)| pointers.into_iter().map(move |pointer| (device, pointer)))
+    .collect::<Vector<_>>();
     for (device, pointer) in allocations {
         unsafe {
             cudaSetDevice(device);
@@ -140,11 +139,10 @@ pub fn clear_cuda_allocation_pool() {
 
 fn pooled_cuda_alloc(device_id: i32, bytes: usize) -> (*mut c_void, i32) {
     if let Some(pointer) = CUDA_ALLOCATION_POOL
-        .get_or_init(|| Mutex::new(HashMap::new()))
+        .get_or_init(|| SpinMutex::new(OrderedMap::new()))
         .lock()
-        .expect("CUDA allocation pool mutex poisoned")
         .get_mut(&(device_id, bytes))
-        .and_then(Vec::pop)
+        .and_then(Vector::pop)
     {
         return (pointer as *mut c_void, 0);
     }
@@ -154,13 +152,14 @@ fn pooled_cuda_alloc(device_id: i32, bytes: usize) -> (*mut c_void, i32) {
 }
 
 fn pooled_cuda_release(device_id: i32, pointer: *mut c_void, bytes: usize) {
-    CUDA_ALLOCATION_POOL
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .expect("CUDA allocation pool mutex poisoned")
-        .entry((device_id, bytes))
-        .or_default()
-        .push(pointer as usize);
+    let mut pool = CUDA_ALLOCATION_POOL
+        .get_or_init(|| SpinMutex::new(OrderedMap::new()))
+        .lock();
+    if let Some(pointers) = pool.get_mut(&(device_id, bytes)) {
+        pointers.push(pointer as usize);
+    } else {
+        pool.insert((device_id, bytes), [pointer as usize].into());
+    }
 }
 
 fn cuda_driver() -> Result<&'static CudaDriverApi> {
@@ -216,9 +215,8 @@ unsafe fn cuda_set_device_raw(device_id: i32) -> i32 {
     }
     let context = {
         let mut contexts = CUDA_PRIMARY_CONTEXTS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .expect("CUDA primary-context mutex poisoned");
+            .get_or_init(|| SpinMutex::new(OrderedMap::new()))
+            .lock();
         if let Some(context) = contexts.get(&device_id) {
             *context as CuContext
         } else {
@@ -411,16 +409,19 @@ unsafe fn cudaGraphExecDestroy(exec: CudaGraphExecHandle) -> i32 {
 
 fn rust_ptx_function(name: &str) -> Result<CuFunction> {
     let api = cuda_driver()?;
-    let functions = RUST_FUNCTIONS.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(function) = functions.lock().unwrap().get(name).copied() {
+    let functions = RUST_FUNCTIONS.get_or_init(|| SpinMutex::new(OrderedMap::new()));
+    if let Some(function) = functions.lock().get(name).copied() {
         return Ok(function as CuFunction);
     }
     let module = if let Some(module) = RUST_PTX_MODULE.get() {
         *module as CuModule
     } else {
         let mut module = ptr::null_mut();
-        let mut image = Vec::with_capacity(RUST_CUDA_PTX.len() + 1);
-        image.extend_from_slice(RUST_CUDA_PTX);
+        let mut image =
+            Vector::with_capacity(RUST_CUDA_PTX.len() + 1).expect("MRML allocation failed");
+        image
+            .try_extend_from_slice(RUST_CUDA_PTX)
+            .expect("MRML allocation failed");
         image.push(0);
         let init = unsafe { (api.init)(0) };
         let loaded =
@@ -447,10 +448,7 @@ fn rust_ptx_function(name: &str) -> Result<CuFunction> {
             "Rust CUDA kernel '{name}' lookup failed with code {status}"
         ));
     }
-    functions
-        .lock()
-        .unwrap()
-        .insert(name.to_string(), function as usize);
+    functions.lock().insert(Text::from(name), function as usize);
     Ok(function)
 }
 
@@ -1133,22 +1131,19 @@ unsafe fn launch_rust_moe_topk(
 // device. ggml avoids that repeated runtime/driver dispatch by remembering the
 // active device on the submitting thread. Keep the existing call sites behind
 // this shim so allocations, copies, graphs, and launches share the policy.
-thread_local! {
-    static ACTIVE_CUDA_DEVICE: Cell<i32> = const { Cell::new(-1) };
-}
+#[thread_local]
+static mut ACTIVE_CUDA_DEVICE: i32 = -1;
 
 #[allow(non_snake_case)]
 unsafe fn cudaSetDevice(device: i32) -> i32 {
-    ACTIVE_CUDA_DEVICE.with(|active| {
-        if active.get() == device {
-            return 0;
-        }
-        let status = cuda_set_device_raw(device);
-        if status == 0 {
-            active.set(device);
-        }
-        status
-    })
+    if ACTIVE_CUDA_DEVICE == device {
+        return 0;
+    }
+    let status = cuda_set_device_raw(device);
+    if status == 0 {
+        ACTIVE_CUDA_DEVICE = device;
+    }
+    status
 }
 
 /// RAII wrapper for GPU Device Memory
@@ -1163,7 +1158,7 @@ pub struct CudaBuffer<T> {
 enum CudaAllocation {
     Owned,
     Pooled,
-    Arena(Arc<CudaArenaAllocation>),
+    Arena(Shared<CudaArenaAllocation>),
 }
 
 struct CudaArenaAllocation {
@@ -1188,8 +1183,8 @@ impl Drop for CudaArenaAllocation {
 
 #[derive(Clone)]
 pub struct CudaArena {
-    allocation: Arc<CudaArenaAllocation>,
-    next: Arc<AtomicUsize>,
+    allocation: Shared<CudaArenaAllocation>,
+    next: Shared<AtomicUsize>,
 }
 
 impl CudaArena {
@@ -1203,12 +1198,12 @@ impl CudaArena {
             ));
         }
         Ok(Self {
-            allocation: Arc::new(CudaArenaAllocation {
+            allocation: Shared::new(CudaArenaAllocation {
                 ptr,
                 bytes,
                 device_id,
             }),
-            next: Arc::new(AtomicUsize::new(0)),
+            next: Shared::new(AtomicUsize::new(0)),
         })
     }
 
@@ -2672,11 +2667,19 @@ impl Drop for CudaDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    static CUDA_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    type Vec<T> = Vector<T>;
+    macro_rules! vec {
+        [$value:expr; $length:expr] => {{
+            let mut values = Vector::new();
+            values.resize($length, $value);
+            values
+        }};
+    }
+    static CUDA_TEST_LOCK: SpinMutex<()> = SpinMutex::new(());
 
     #[test]
     fn arena_returns_stable_aligned_non_overlapping_views() -> Result<()> {
-        let _serial = CUDA_TEST_LOCK.lock().unwrap();
+        let _serial = CUDA_TEST_LOCK.lock();
         if !CudaDevice::is_available() {
             return Ok(());
         }
@@ -2693,7 +2696,7 @@ mod tests {
 
     #[test]
     fn captured_kernel_graph_replays_with_stable_arena_buffers() -> Result<()> {
-        let _serial = CUDA_TEST_LOCK.lock().unwrap();
+        let _serial = CUDA_TEST_LOCK.lock();
         if !CudaDevice::is_available() {
             return Ok(());
         }
@@ -2730,7 +2733,7 @@ mod tests {
 
     #[test]
     fn moe_router_matches_cpu_top8_and_softmax() -> Result<()> {
-        let _serial = CUDA_TEST_LOCK.lock().unwrap();
+        let _serial = CUDA_TEST_LOCK.lock();
         if !CudaDevice::is_available() {
             return Ok(());
         }
@@ -2796,7 +2799,7 @@ mod tests {
 
     #[test]
     fn fused_ffn_residual_pipeline_matches_cpu() -> Result<()> {
-        let _serial = CUDA_TEST_LOCK.lock().unwrap();
+        let _serial = CUDA_TEST_LOCK.lock();
         if !CudaDevice::is_available() {
             return Ok(());
         }

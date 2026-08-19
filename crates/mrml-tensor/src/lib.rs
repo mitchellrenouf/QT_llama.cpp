@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![feature(thread_local)]
 
 #[cfg(test)]
 extern crate std;
