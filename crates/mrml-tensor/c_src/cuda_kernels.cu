@@ -1270,42 +1270,6 @@ void cuda_op_gemm_q4_0_qkv(
         d_w_q, d_w_k, d_w_v, d_x, d_y, q_rows, kv_rows, n_cols, batch);
 }
 
-void cuda_op_qkv_postprocess(
-    float* d_qkv,
-    const float* d_q_norm,
-    const float* d_k_norm,
-    uint8_t* d_k_cache,
-    uint8_t* d_v_cache,
-    int pos,
-    int cache_pos,
-    int n_heads,
-    int n_kv_heads,
-    int head_dim,
-    float freq_base, int k_format, int v_format,
-    cudaStream_t stream
-) {
-    int blocks = n_heads + 2 * n_kv_heads;
-    int threads = head_dim >= 512 ? 256 : 128;
-    k_qkv_postprocess_f32<<<blocks, threads, 0, stream>>>(
-        d_qkv, d_q_norm, d_k_norm, d_k_cache, d_v_cache,
-        pos, cache_pos, n_heads, n_kv_heads, head_dim, freq_base, k_format, v_format
-    );
-}
-
-void cuda_op_qkv_postprocess_batch(
-    float* d_qkv, const float* d_q_norm, const float* d_k_norm,
-    uint8_t* d_k_cache, uint8_t* d_v_cache, int start_pos, int cache_start,
-    int n_heads, int n_kv_heads, int head_dim, float freq_base,
-    int batch, int cache_capacity, int k_format, int v_format, cudaStream_t stream
-) {
-    dim3 grid(n_heads + 2 * n_kv_heads, batch);
-    int threads = head_dim >= 512 ? 256 : 128;
-    k_qkv_postprocess_batch_f32<<<grid, threads, 0, stream>>>(
-        d_qkv, d_q_norm, d_k_norm, d_k_cache, d_v_cache,
-        start_pos, cache_start, n_heads, n_kv_heads, head_dim, freq_base, batch,
-        cache_capacity, k_format, v_format);
-}
-
 void cuda_op_gemv_q4_0_geglu(
     const uint8_t* d_w_gate,
     const uint8_t* d_w_up,
