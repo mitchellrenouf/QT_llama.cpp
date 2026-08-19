@@ -1,8 +1,7 @@
 use crate::error::{Error, Result};
 use core::sync::atomic::AtomicBool;
-use mrml_runtime::{Shared, Text, Vector};
+use mrml_runtime::{Receiver, Shared, Text, Vector, sync_channel};
 use mrml_tensor::MrmlEngine;
-use std::sync::mpsc;
 
 #[derive(Clone)]
 pub struct ModelEngine {
@@ -46,8 +45,8 @@ impl ModelEngine {
         prompt: &str,
         max_tokens: usize,
         temperature: f32,
-    ) -> (mpsc::Receiver<Result<GenerationChunk>>, Shared<AtomicBool>) {
-        let (tx, rx) = mpsc::sync_channel(4096);
+    ) -> (Receiver<Result<GenerationChunk>>, Shared<AtomicBool>) {
+        let (tx, rx) = sync_channel(4096);
         let cancel = self
             .inner
             .generate_stream(prompt, max_tokens, temperature, move |piece| {
