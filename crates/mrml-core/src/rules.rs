@@ -1,10 +1,12 @@
+use core::fmt::Write as _;
+use mrml_runtime::{Text, Vector};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceRules {
-    pub rule_sources: Vec<PathBuf>,
-    pub combined_instructions: String,
+    pub rule_sources: Vector<PathBuf>,
+    pub combined_instructions: Text,
 }
 
 impl WorkspaceRules {
@@ -18,8 +20,8 @@ impl WorkspaceRules {
             ".cursorrules",
         ];
 
-        let mut sources = Vec::new();
-        let mut instructions = String::new();
+        let mut sources = Vector::new();
+        let mut instructions = Text::new();
 
         for name in &candidate_names {
             let candidate_path = workspace_root.join(name);
@@ -27,11 +29,13 @@ impl WorkspaceRules {
                 if let Ok(content) = fs::read_to_string(&candidate_path) {
                     if !content.trim().is_empty() {
                         sources.push(candidate_path.clone());
-                        instructions.push_str(&format!(
+                        write!(
+                            instructions,
                             "\n--- PROJECT RULE ({}) ---\n{}\n",
                             name,
                             content.trim()
-                        ));
+                        )
+                        .expect("MRML rule text allocation failed");
                     }
                 }
             }
