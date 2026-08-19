@@ -17,7 +17,7 @@ sycl = ["mrml-model/sycl"]
 mrml-model = { path = "../mrml-model" }
 mrml-terminal-style = { path = "../mrml-terminal-style" }
 mrml-tools = { path = "../mrml-tools" }
-anyhow.workspace = true
+anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 clap.workspace = true
 regex.workspace = true
 serde.workspace = true

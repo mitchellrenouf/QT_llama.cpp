@@ -19,7 +19,7 @@ vulkan = ["mrml-core/vulkan"]
 [dependencies]
 mrml-core = { path = "../mrml-core", default-features = false }
 mrml-terminal-style = { path = "../mrml-terminal-style" }
-anyhow.workspace = true
+anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 clap.workspace = true
 futures-util.workspace = true
 mrml-model = { path = "../mrml-model" }

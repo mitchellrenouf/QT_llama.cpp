@@ -62,12 +62,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -368,8 +362,8 @@ version = "0.4.0"
 name = "mrml-cli"
 version = "0.4.0"
 dependencies = [
- "anyhow",
  "clap",
+ "mrml-anyhow",
  "mrml-core",
  "mrml-terminal-style",
  "tokio",
@@ -379,8 +373,8 @@ dependencies = [
 name = "mrml-core"
 version = "0.4.0"
 dependencies = [
- "anyhow",
  "clap",
+ "mrml-anyhow",
  "mrml-model",
  "mrml-terminal-style",
  "mrml-tools",
@@ -394,8 +388,8 @@ dependencies = [
 name = "mrml-machine"
 version = "0.4.0"
 dependencies = [
- "anyhow",
  "clap",
+ "mrml-anyhow",
  "mrml-core",
  "serde",
  "serde_json",
@@ -418,9 +412,9 @@ dependencies = [
 name = "mrml-server"
 version = "0.4.0"
 dependencies = [
- "anyhow",
  "clap",
  "futures-util",
+ "mrml-anyhow",
  "mrml-core",
  "mrml-model",
  "mrml-terminal-style",
