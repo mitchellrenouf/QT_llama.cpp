@@ -153,6 +153,22 @@ impl Text {
         output.push_str(remainder);
         output
     }
+
+    pub fn to_ascii_lowercase(&self) -> Self {
+        let mut output = Self::with_capacity(self.len()).expect("MRML allocation failed");
+        for byte in self.as_bytes() {
+            output.push((*byte).to_ascii_lowercase() as char);
+        }
+        output
+    }
+
+    pub fn to_ascii_uppercase(&self) -> Self {
+        let mut output = Self::with_capacity(self.len()).expect("MRML allocation failed");
+        for byte in self.as_bytes() {
+            output.push((*byte).to_ascii_uppercase() as char);
+        }
+        output
+    }
 }
 
 impl Deref for Text {
@@ -265,5 +281,11 @@ mod tests {
         assert_eq!(inline, promoted);
         assert_eq!(inline.cmp(&promoted), core::cmp::Ordering::Equal);
         assert!(Text::from("a") < Text::from("z"));
+    }
+
+    #[test]
+    fn changes_ascii_case_without_global_allocation() {
+        assert_eq!(Text::from("Gemma-Q4_0").to_ascii_lowercase(), "gemma-q4_0");
+        assert_eq!(Text::from("Gemma-Q4_0").to_ascii_uppercase(), "GEMMA-Q4_0");
     }
 }

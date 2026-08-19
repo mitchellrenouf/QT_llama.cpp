@@ -31,7 +31,7 @@ impl HfModelSpec {
             (trimmed, "Q4_0")
         };
 
-        let parts: Vec<&str> = repo_part.split('/').collect();
+        let parts: Vector<&str> = repo_part.split('/').collect();
         let (user, model) = match parts.len() {
             1 => ("ggml-org", parts[0]),
             2 => (parts[0], parts[1]),
@@ -44,16 +44,16 @@ impl HfModelSpec {
 
         let repo_id = format!("{}/{}", user, model);
         let quant = if quant_part.is_empty() {
-            "Q4_0".to_string()
+            Text::from("Q4_0")
         } else {
-            quant_part.to_uppercase()
+            Text::from(quant_part).to_ascii_uppercase()
         };
 
         Ok(Self {
             repo_id: repo_id.as_str().into(),
             user: user.into(),
             model: model.into(),
-            quant: quant.as_str().into(),
+            quant,
         })
     }
 
@@ -103,15 +103,18 @@ impl HfModelSpec {
             return false;
         }
 
-        let target_quant_lower = self.quant.to_lowercase();
+        let target_quant_lower = self.quant.to_ascii_lowercase();
         for path in crate::fs_walk::paths(&model_dir) {
-            let name = path
+            let name = Text::from(
+                path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
-                .to_lowercase();
+                .as_ref(),
+            )
+            .to_ascii_lowercase();
             if name.ends_with(".gguf")
-                && name.contains(&target_quant_lower)
+                && name.contains(target_quant_lower.as_str())
                 && !name.ends_with(".part")
                 && !name.contains("mmproj")
                 && !name.contains("mtp")
@@ -128,13 +131,22 @@ impl HfModelSpec {
     }
 }
 
-pub fn render_progress_bar(percent: f32, width: usize) -> String {
+pub fn render_progress_bar(percent: f32, width: usize) -> Text {
     let filled = ((percent.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
     let empty = width.saturating_sub(filled);
-    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+    let mut output = Text::with_capacity(2 + width * 3).expect("MRML allocation failed");
+    output.push('[');
+    for _ in 0..filled {
+        output.push('█');
+    }
+    for _ in 0..empty {
+        output.push('░');
+    }
+    output.push(']');
+    output
 }
 
-pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vec<String>> {
+pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vector<Text>> {
     let api_url = format!(
         "https://huggingface.co/api/models/{}/{}",
         spec.user, spec.model
@@ -155,12 +167,12 @@ pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vec<String>> {
     let body = String::from_utf8_lossy(&output.stdout);
     let val: serde_json::Value = serde_json::from_str(&body)?;
 
-    let mut filenames = Vec::new();
+    let mut filenames = Vector::new();
     if let Some(siblings) = val.get("siblings").and_then(|s| s.as_array()) {
         for item in siblings {
             if let Some(rfilename) = item.get("rfilename").and_then(|r| r.as_str()) {
                 if rfilename.ends_with(".gguf") {
-                    filenames.push(rfilename.to_string());
+                    filenames.push(rfilename.into());
                 }
             }
         }
@@ -216,22 +228,22 @@ where
 
     let siblings = query_hf_api_siblings(spec).await.unwrap_or_default();
 
-    let target_quant_lower = spec.quant.to_lowercase();
-    let mut matching_shards = Vec::new();
+    let target_quant_lower = spec.quant.to_ascii_lowercase();
+    let mut matching_shards = Vector::new();
     let mut mmproj_file_opt = None;
     let mut speedup_file_opt = None;
 
     for fname in &siblings {
-        let fname_lower = fname.to_lowercase();
+        let fname_lower = fname.to_ascii_lowercase();
         if fname_lower.contains("mmproj") {
-            if mmproj_file_opt.is_none() || fname_lower.contains(&target_quant_lower) {
+            if mmproj_file_opt.is_none() || fname_lower.contains(target_quant_lower.as_str()) {
                 mmproj_file_opt = Some(fname.clone());
             }
         } else if fname_lower.contains("mtp") || fname_lower.contains("dflash") {
-            if speedup_file_opt.is_none() || fname_lower.contains(&target_quant_lower) {
+            if speedup_file_opt.is_none() || fname_lower.contains(target_quant_lower.as_str()) {
                 speedup_file_opt = Some(fname.clone());
             }
-        } else if fname_lower.contains(&target_quant_lower) {
+        } else if fname_lower.contains(target_quant_lower.as_str()) {
             matching_shards.push(fname.clone());
         }
     }
@@ -242,19 +254,27 @@ where
     if matching_shards.is_empty() {
         if spec.quant.eq_ignore_ascii_case("Q8_0") {
             for shard_idx in 1..=4 {
-                matching_shards.push(format!(
-                    "{}-{}-{:05}-of-00004.gguf",
-                    spec.model.to_lowercase(),
-                    spec.quant.to_lowercase(),
-                    shard_idx
-                ));
+                matching_shards.push(
+                    format!(
+                        "{}-{}-{:05}-of-00004.gguf",
+                        spec.model.to_ascii_lowercase(),
+                        spec.quant.to_ascii_lowercase(),
+                        shard_idx
+                    )
+                    .as_str()
+                    .into(),
+                );
             }
         } else {
-            matching_shards.push(format!(
-                "{}-{}.gguf",
-                spec.model.to_lowercase(),
-                spec.quant.to_lowercase()
-            ));
+            matching_shards.push(
+                format!(
+                    "{}-{}.gguf",
+                    spec.model.to_ascii_lowercase(),
+                    spec.quant.to_ascii_lowercase()
+                )
+                .as_str()
+                .into(),
+            );
         }
     }
 
@@ -271,13 +291,13 @@ where
     }
 
     let total_files = download_queue.len();
-    let mut downloaded_shard_paths = Vec::new();
+    let mut downloaded_shard_paths = Vector::new();
     let mut resolved_mmproj_path = None;
     let mut resolved_speedup_path = None;
 
     for (idx, filename) in download_queue.iter().enumerate() {
         let file_num = idx + 1;
-        let dest_path = model_dir.join(filename);
+        let dest_path = model_dir.join(filename.as_str());
         let part_path = model_dir.join(format!("{}.part", filename));
 
         if dest_path.exists()
@@ -408,8 +428,8 @@ where
     let primary_entry_file = downloaded_shard_paths.first().cloned().unwrap_or_else(|| {
         model_dir.join(format!(
             "{}-{}.gguf",
-            spec.model.to_lowercase(),
-            spec.quant.to_lowercase()
+            spec.model.to_ascii_lowercase(),
+            spec.quant.to_ascii_lowercase()
         ))
     });
 
