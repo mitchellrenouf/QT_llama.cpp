@@ -41,7 +41,7 @@ use core::pin::Pin;
 #[cfg(feature = "std")]
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 #[cfg(feature = "std")]
-use mrml_runtime::{Shared, Text, Vector};
+use mrml_runtime::{Owned, Shared, Text, Vector};
 #[cfg(feature = "std")]
 use serde_json::Value;
 #[cfg(feature = "std")]
@@ -114,7 +114,7 @@ pub trait Tool: Send + Sync {
 }
 
 #[cfg(feature = "std")]
-type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
+type ToolFuture<'a> = Pin<Owned<dyn Future<Output = Result<String>> + Send + 'a>>;
 
 #[cfg(feature = "std")]
 pub trait DynTool: Send + Sync {
@@ -140,7 +140,7 @@ impl<T: Tool> DynTool for T {
     }
 
     fn execute<'a>(&'a self, workspace_root: &'a Path, args: Value) -> ToolFuture<'a> {
-        Box::pin(Tool::execute(self, workspace_root, args))
+        unsafe { Pin::new_unchecked(Owned::new(Tool::execute(self, workspace_root, args))) }
     }
 
     fn to_tool_definition(&self) -> ToolDefinition {
