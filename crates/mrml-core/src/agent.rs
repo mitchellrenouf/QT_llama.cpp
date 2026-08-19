@@ -62,18 +62,6 @@ fn explicitly_requested_command(input: &str) -> Option<String> {
     (!command.is_empty()).then(|| command.to_string())
 }
 
-fn relevant_tool_definitions(
-    registry: &ToolRegistry,
-    user_input: &str,
-) -> Vec<crate::client::ToolDefinition> {
-    let definitions = registry.definitions();
-    let normalized = user_input.to_ascii_lowercase();
-    let selected: Vec<_> = definitions.iter()
-        .filter(|definition| normalized.contains(&definition.function.name.to_ascii_lowercase()))
-        .cloned().collect();
-    if selected.is_empty() { definitions } else { selected }
-}
-
 impl MrmlAgent {
     pub fn new(config: Config) -> Self {
         let client = MrmlClient::with_config(&config);
@@ -435,7 +423,10 @@ impl MrmlAgent {
         }
 
         self.history.push(ChatMessage::user(user_input));
-        let tool_defs = relevant_tool_definitions(&self.registry, user_input);
+        // Keep the model prompt stable. Explicit commands are routed below without
+        // inference, so changing the advertised schema set only perturbs ordinary
+        // Gemma completions and cannot improve that fast path.
+        let tool_defs = self.registry.definitions();
 
         // Live clock queries have one unambiguous tool dependency. Route them
         // deterministically instead of asking the language model to decide
@@ -615,7 +606,7 @@ impl MrmlAgent {
         }
 
         self.history.push(ChatMessage::user(user_input));
-        let tool_defs = relevant_tool_definitions(&self.registry, user_input);
+        let tool_defs = self.registry.definitions();
 
         let is_clock_request = requests_live_local_time(user_input);
         let explicit_command = explicitly_requested_command(user_input);
@@ -904,7 +895,7 @@ impl MrmlAgent {
 
 #[cfg(test)]
 mod tests {
-    use super::{explicitly_requested_command, relevant_tool_definitions, requests_live_local_time, verified_command_answer, verified_time_answer};
+    use super::{explicitly_requested_command, requests_live_local_time, verified_command_answer, verified_time_answer};
 
     #[test]
     fn routes_only_live_clock_questions() {
@@ -920,16 +911,6 @@ mod tests {
         assert_eq!(verified_time_answer(output).as_deref(),
             Some("The current local time is **2026-08-18 12:49:24 -02:30**."));
         assert!(verified_time_answer("Tool execution failed").is_none());
-    }
-
-    #[test]
-    fn narrows_explicit_tool_requests_without_hiding_tools_from_general_requests() {
-        let registry = mrml_tools::ToolRegistry::new();
-        let selected = relevant_tool_definitions(&registry, "Use run_command to print hello");
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].function.name, "run_command");
-        assert_eq!(relevant_tool_definitions(&registry, "Help me inspect this project").len(),
-            registry.definitions().len());
     }
 
     #[test]
