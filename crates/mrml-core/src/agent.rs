@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mrml_runtime::{Vector, mrml_eprintln as eprintln, mrml_print as print, mrml_println as println};
+use mrml_runtime::{Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
 
 use crate::client::{ChatMessage, MrmlClient, StreamEvent};
@@ -24,7 +24,7 @@ pub struct MrmlAgent {
 }
 
 fn requests_live_local_time(input: &str) -> bool {
-    let normalized = input.trim().to_ascii_lowercase();
+    let normalized = Text::from(input.trim()).to_ascii_lowercase();
     normalized.contains("what time is it")
         || normalized.contains("what's the time")
         || normalized.contains("current time")
@@ -64,15 +64,16 @@ fn verified_command_answer(tool_output: &str) -> Option<mrml_runtime::Text> {
 }
 
 fn explicitly_requested_command(input: &str) -> Option<mrml_runtime::Text> {
-    let normalized = input.to_ascii_lowercase();
+    let normalized = Text::from(input).to_ascii_lowercase();
     if !normalized.contains("run_command") {
         return None;
     }
     let start = normalized.find("execute ")? + "execute ".len();
     let remainder = &input[start..];
+    let remainder_lower = Text::from(remainder).to_ascii_lowercase();
     let end = [", then", ", and then", " then tell", " and tell"]
         .iter()
-        .filter_map(|marker| remainder.to_ascii_lowercase().find(marker))
+        .filter_map(|marker| remainder_lower.find(marker))
         .min()
         .unwrap_or(remainder.len());
     let command = remainder[..end].trim().trim_matches(['`', '\'', '"']);
@@ -126,7 +127,7 @@ impl MrmlAgent {
         self.config.mode = mode;
         self.client
             .set_thinking_enabled(crate::client::thinking_enabled_for_mode(mode));
-        println!("Switched to mode: {}", mode.to_string().cyan());
+        println!("Switched to mode: {}", format!("{}", mode).cyan());
         self.reset_context();
     }
 
@@ -169,7 +170,7 @@ impl MrmlAgent {
                     Ok(tools) => {
                         println!(
                             "   Loaded {} MCP tool(s):",
-                            tools.len().to_string().bright_green().bold()
+                            format!("{}", tools.len()).bright_green().bold()
                         );
                         for t in tools {
                             println!(
@@ -202,7 +203,7 @@ impl MrmlAgent {
 
     pub fn reload_model(&mut self, model_path: &str) -> Result<()> {
         let n_layers = self.config.n_gpu_layers.unwrap_or(-1);
-        let backend_str = self.config.backend.to_string();
+        let backend_str = format!("{}", self.config.backend);
         let engine = mrml_model::ModelEngine::new(
             model_path,
             n_layers,
@@ -278,7 +279,7 @@ impl MrmlAgent {
         println!("\n{}", "=== MRML AGENT SYSTEM TELEMETRY ===".bold().cyan());
         println!(
             " Mode           : {}",
-            self.config.mode.to_string().bright_yellow().bold()
+            format!("{}", self.config.mode).bright_yellow().bold()
         );
         println!(
             " Speech Output  : {}",
@@ -299,7 +300,7 @@ impl MrmlAgent {
         );
         println!(
             " Current Tokens : ~{} (max: {})",
-            self.estimated_tokens().to_string().bold(),
+            format!("{}", self.estimated_tokens()).bold(),
             self.config.max_context_tokens
         );
         println!(" History Messages: {}", self.history.len());
@@ -490,14 +491,14 @@ impl MrmlAgent {
                 tool_type: "function".into(),
                 function: crate::client::FunctionCall {
                     name: "run_command".into(),
-                    arguments: args.to_string().as_str().into(),
+                    arguments: serde_json::stringify(&args),
                 },
             };
             println!(
                 "\n{} Requesting tool {} with args: {}",
                 "🔧 [Tool Call]".bold().yellow(),
                 "run_command".cyan(),
-                args.to_string().dimmed()
+                serde_json::stringify(&args).dimmed()
             );
             self.history
                 .push(ChatMessage::assistant(None, Some([tool_call].into())));
@@ -578,17 +579,17 @@ impl MrmlAgent {
                 })
                 .await?;
 
-            let content = assistant_msg
+            let content: Text = assistant_msg
                 .get_text_content()
                 .unwrap_or_default()
                 .trim()
-                .to_string();
-            let thought = assistant_msg
+                .into();
+            let thought: Text = assistant_msg
                 .reasoning_content
                 .clone()
                 .unwrap_or_default()
                 .trim()
-                .to_string();
+                .into();
 
             if !content.is_empty() {
                 final_content = content.as_str().into();
@@ -688,14 +689,14 @@ impl MrmlAgent {
                 tool_type: "function".into(),
                 function: crate::client::FunctionCall {
                     name: "run_command".into(),
-                    arguments: args.to_string().as_str().into(),
+                    arguments: serde_json::stringify(&args),
                 },
             };
             println!(
                 "\n{} Requesting tool {} with args: {}",
                 "🔧 [Tool Call]".bold().yellow(),
                 "run_command".cyan(),
-                args.to_string().dimmed()
+                serde_json::stringify(&args).dimmed()
             );
             self.history
                 .push(ChatMessage::assistant(None, Some([tool_call].into())));
@@ -864,14 +865,14 @@ impl MrmlAgent {
                 }
             };
 
-            let current_output_text = assistant_msg
+            let current_output_text: Text = assistant_msg
                 .get_text_content()
                 .unwrap_or_default()
                 .trim()
-                .to_string();
+                .into();
             if !current_output_text.is_empty() {
                 if let Some(ref prev) = last_model_output {
-                    if prev.as_str() == current_output_text {
+                    if current_output_text == prev.as_str() {
                         model_output_repeat_count += 1;
                     } else {
                         model_output_repeat_count = 1;
@@ -952,7 +953,7 @@ impl MrmlAgent {
                                 crate::markdown::truncate_utf8(&output, 1000)
                             )
                         } else {
-                            output.clone()
+                            Text::from(output.as_str())
                         };
                         println!("📥 Tool Output:\n{}", display_output.dimmed());
                         self.history.push(ChatMessage::tool(

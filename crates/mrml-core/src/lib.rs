@@ -5,7 +5,7 @@ extern crate std;
 
 pub mod modes;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod agent;
 #[cfg(feature = "runtime")]
 pub mod client;
@@ -23,7 +23,7 @@ pub use mrml_tools::{diff, encoding};
 #[cfg(feature = "runtime")]
 pub use mrml_tools::{fs_walk, markdown, platform};
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use agent::MrmlAgent;
 #[cfg(feature = "runtime")]
 pub use config::Config;
