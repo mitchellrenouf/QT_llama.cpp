@@ -1,6 +1,12 @@
 # Workspace build configuration intentionally stays toolchain-native. CUDA PTX
 # is compiled by nightly rustc in mrml-tensor/build.rs and requires no C++ shim.
 
+[unstable]
+panic-abort-tests = true
+
 [target.x86_64-pc-windows-gnullvm]
 linker = "rust-lld"
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "panic=abort", "-C", "target-feature=+crt-static"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "panic=abort"]
