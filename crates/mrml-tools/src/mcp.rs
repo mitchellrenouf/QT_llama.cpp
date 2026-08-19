@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Shared, SpinMutex};
+use mrml_runtime::{Shared, SpinMutex, Text, Vector};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -97,9 +97,9 @@ impl McpClient {
             .ok_or_else(|| anyhow!("Empty result from MCP server"))
     }
 
-    pub async fn list_tools(client: &Shared<Self>) -> Result<Vec<Shared<dyn DynTool>>> {
+    pub async fn list_tools(client: &Shared<Self>) -> Result<Vector<Shared<dyn DynTool>>> {
         let res = client.call_method("tools/list", None).await?;
-        let mut tools: Vec<Shared<dyn DynTool>> = Vec::new();
+        let mut tools: Vector<Shared<dyn DynTool>> = Vector::new();
 
         if let Some(tools_arr) = res.get("tools").and_then(|t| t.as_array()) {
             for t in tools_arr {
@@ -114,8 +114,8 @@ impl McpClient {
 
                     let mcp_tool = McpTool {
                         client: client.clone(),
-                        name: name.to_string(),
-                        description: desc.to_string(),
+                        name: name.into(),
+                        description: desc.into(),
                         parameters: schema,
                     };
                     tools.push(Shared::new(mcp_tool));
@@ -129,8 +129,8 @@ impl McpClient {
 
 pub struct McpTool {
     client: Shared<McpClient>,
-    name: String,
-    description: String,
+    name: Text,
+    description: Text,
     parameters: Value,
 }
 
