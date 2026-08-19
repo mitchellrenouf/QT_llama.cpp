@@ -71,6 +71,10 @@ impl Value {
         if let Self::Number(value) = self { value.parse().ok() } else { None }
     }
 
+    pub fn as_f64(&self) -> Option<f64> {
+        if let Self::Number(value) = self { value.parse().ok() } else { None }
+    }
+
     pub fn is_null(&self) -> bool { matches!(self, Self::Null) }
 }
 

@@ -1,14 +1,14 @@
-use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use anyhow::Result;
+use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
+use mrml_json::{Value, object};
 use mrml_terminal_style::Colorize;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct OpenAiChatRequest {
     pub model: Option<String>,
     pub messages: Vec<OpenAiMessage>,
@@ -17,24 +17,30 @@ pub struct OpenAiChatRequest {
     pub max_tokens: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct OpenAiMessage {
     pub role: String,
     pub content: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct OpenAiModelList {
-    pub object: String,
-    pub data: Vec<OpenAiModelItem>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct OpenAiModelItem {
-    pub id: String,
-    pub object: String,
-    pub created: u64,
-    pub owned_by: String,
+impl OpenAiChatRequest {
+    fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let source = core::str::from_utf8(bytes).map_err(|error| error.to_string())?;
+        let value = mrml_json::parse(source).map_err(|error| error.to_string())?;
+        let messages = value.get("messages").and_then(Value::as_array)
+            .ok_or_else(|| "messages must be an array".to_owned())?
+            .iter().map(|message| Ok(OpenAiMessage {
+                role: message.get("role").and_then(Value::as_str).ok_or_else(|| "message role must be a string".to_owned())?.to_owned(),
+                content: message.get("content").and_then(Value::as_str).ok_or_else(|| "message content must be a string".to_owned())?.to_owned(),
+            })).collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            model: value.get("model").and_then(Value::as_str).map(str::to_owned),
+            messages,
+            stream: value.get("stream").and_then(Value::as_bool),
+            temperature: value.get("temperature").and_then(Value::as_f64).map(|value| value as f32),
+            max_tokens: value.get("max_tokens").and_then(Value::as_u64).map(|value| value as u32),
+        })
+    }
 }
 
 pub struct ApiServer {
@@ -50,7 +56,15 @@ impl ApiServer {
     pub async fn run(&self) -> Result<()> {
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
-        println!("{}", format!("🌐 OpenAI-Compatible API Server listening on http://127.0.0.1:{}", self.port).bright_green().bold());
+        println!(
+            "{}",
+            format!(
+                "🌐 OpenAI-Compatible API Server listening on http://127.0.0.1:{}",
+                self.port
+            )
+            .bright_green()
+            .bold()
+        );
         println!("   - Endpoints: /v1/models, /v1/chat/completions (supports SSE stream: true)");
 
         loop {
@@ -106,17 +120,19 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
     }
 
     if method == "GET" && (path == "/v1/models" || path == "/models") {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let models = OpenAiModelList {
-            object: "list".to_string(),
-            data: vec![OpenAiModelItem {
-                id: "gemma-4-26B-A4B-it".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "mrml".to_string(),
-            }],
-        };
-        let body = serde_json::to_string(&models)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let body = mrml_json::stringify(&object([
+            ("object", "list".into()),
+            ("data", Value::Array(vec![object([
+                ("id", "gemma-4-26B-A4B-it".into()),
+                ("object", "model".into()),
+                ("created", now.into()),
+                ("owned_by", "mrml".into()),
+            ])])),
+        ]));
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
@@ -146,10 +162,12 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
         }
 
         let body_bytes = &buf[body_start..body_start + content_length];
-        let chat_req: OpenAiChatRequest = match serde_json::from_slice(body_bytes) {
+        let chat_req = match OpenAiChatRequest::parse(body_bytes) {
             Ok(r) => r,
             Err(e) => {
-                let err_body = format!("{{\"error\":\"Invalid JSON: {}\"}}", e);
+                let err_body = mrml_json::stringify(&object([
+                    ("error", format!("Invalid JSON: {e}").into()),
+                ]));
                 let resp = format!(
                     "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
                     err_body.len(),
@@ -161,17 +179,23 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
         };
 
         let stream_mode = chat_req.stream.unwrap_or(false);
-        let messages: Vec<ChatMessage> = chat_req.messages.into_iter().map(|m| ChatMessage {
-            role: m.role,
-            content: Some(mrml_model::MessageContent::Text(m.content)),
-            name: None,
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning_content: None,
-        }).collect();
+        let messages: Vec<ChatMessage> = chat_req
+            .messages
+            .into_iter()
+            .map(|m| ChatMessage {
+                role: m.role,
+                content: Some(mrml_model::MessageContent::Text(m.content)),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                reasoning_content: None,
+            })
+            .collect();
 
         let req = ChatCompletionRequest {
-            model: chat_req.model.unwrap_or_else(|| "gemma-4-26B-A4B-it".to_string()),
+            model: chat_req
+                .model
+                .unwrap_or_else(|| "gemma-4-26B-A4B-it".to_string()),
             messages,
             tools: None,
             stream: Some(stream_mode),
@@ -189,8 +213,8 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
             let req_clone = req.clone();
 
             tokio::spawn(async move {
-                let _ = client_clone.stream_completion(&req_clone, |event| {
-                    match event {
+                let _ = client_clone
+                    .stream_completion(&req_clone, |event| match event {
                         StreamEvent::Content(c) => {
                             let _ = tx.blocking_send(c);
                         }
@@ -198,49 +222,42 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
                             let _ = tx.blocking_send(r);
                         }
                         _ => {}
-                    }
-                }).await;
+                    })
+                    .await;
             });
 
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
 
             while let Some(piece) = rx.recv().await {
-                let sse_obj = serde_json::json!({
-                    "id": "chatcmpl-mrml",
-                    "object": "chat.completion.chunk",
-                    "created": now,
-                    "model": "gemma-4-26B-A4B-it",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {
-                            "content": piece
-                        },
-                        "finish_reason": null
-                    }]
-                });
-                let sse_line = format!("data: {}\n\n", sse_obj);
+                let sse_line = format!("data: {}\n\n", sse_chunk(now, Some(piece), None));
                 if socket.write_all(sse_line.as_bytes()).await.is_err() {
                     break;
                 }
             }
 
-            let done_obj = serde_json::json!({
-                "id": "chatcmpl-mrml",
-                "object": "chat.completion.chunk",
-                "created": now,
-                "model": "gemma-4-26B-A4B-it",
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop"
-                }]
-            });
-            let _ = socket.write_all(format!("data: {}\n\ndata: [DONE]\n\n", done_obj).as_bytes()).await;
+            let done_obj = sse_chunk(now, None, Some("stop"));
+            let _ = socket
+                .write_all(format!("data: {}\n\ndata: [DONE]\n\n", done_obj).as_bytes())
+                .await;
             return Ok(());
         } else {
             let res = client.chat_completion(&req).await?;
-            let _now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-            let body = serde_json::to_string(&res)?;
+            let _now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let choices = res.choices.into_iter().map(|choice| object([
+                ("index", choice.index.into()),
+                ("message", chat_message_value(choice.message)),
+                ("finish_reason", choice.finish_reason.into()),
+            ])).collect();
+            let body = mrml_json::stringify(&object([
+                ("id", res.id.into()),
+                ("choices", Value::Array(choices)),
+            ]));
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
@@ -257,5 +274,79 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn sse_chunk(created: u64, content: Option<String>, finish_reason: Option<&str>) -> String {
+    let delta = content.map(|content| object([("content", content.into())]))
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    mrml_json::stringify(&object([
+        ("id", "chatcmpl-mrml".into()),
+        ("object", "chat.completion.chunk".into()),
+        ("created", created.into()),
+        ("model", "gemma-4-26B-A4B-it".into()),
+        ("choices", Value::Array(vec![object([
+            ("index", 0usize.into()),
+            ("delta", delta),
+            ("finish_reason", finish_reason.map(str::to_owned).into()),
+        ])])),
+    ]))
+}
+
+fn chat_message_value(message: ChatMessage) -> Value {
+    let content = match message.content {
+        Some(mrml_model::MessageContent::Text(text)) => text.into(),
+        Some(mrml_model::MessageContent::Parts(parts)) => Value::Array(parts.into_iter().map(|part| match part {
+            mrml_model::ContentPart::Text { text } => object([("type", "text".into()), ("text", text.into())]),
+            mrml_model::ContentPart::ImageUrl { image_url } => object([
+                ("type", "image_url".into()),
+                ("image_url", object([("url", image_url.url.into())])),
+            ]),
+        }).collect()),
+        None => Value::Null,
+    };
+    let mut fields = [
+        ("role", message.role.into()),
+        ("content", content),
+        ("name", message.name.into()),
+        ("tool_call_id", message.tool_call_id.into()),
+        ("reasoning_content", message.reasoning_content.into()),
+        ("tool_calls", Value::Null),
+    ];
+    if let Some(calls) = message.tool_calls {
+        fields[5].1 = Value::Array(calls.into_iter().map(|call| object([
+            ("id", call.id.into()),
+            ("type", call.tool_type.into()),
+            ("function", object([
+                ("name", call.function.name.into()),
+                ("arguments", call.function.arguments.into()),
+            ])),
+        ])).collect());
+    }
+    Value::Object(fields.into_iter().filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.into(), value)).collect())
+}
+
+#[cfg(test)]
+mod json_tests {
+    use super::*;
+
+    #[test]
+    fn parses_openai_request_and_rejects_invalid_messages() {
+        let request = OpenAiChatRequest::parse(br#"{"model":"gemma","messages":[{"role":"user","content":"hello"}],"stream":true,"temperature":0.25,"max_tokens":32}"#).unwrap();
+        assert_eq!(request.model.as_deref(), Some("gemma"));
+        assert_eq!(request.messages[0].content, "hello");
+        assert_eq!(request.stream, Some(true));
+        assert!(OpenAiChatRequest::parse(br#"{"messages":[{"role":"user"}]}"#).is_err());
+    }
+
+    #[test]
+    fn emits_valid_sse_chunks_with_escaped_content() {
+        let chunk = sse_chunk(7, Some("hello\n\"world\"".into()), None);
+        let value = mrml_json::parse(&chunk).unwrap();
+        assert_eq!(value.get("created").and_then(Value::as_u64), Some(7));
+        assert!(chunk.contains(r#"hello\n\"world\""#));
+    }
 }

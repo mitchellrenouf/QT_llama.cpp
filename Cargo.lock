@@ -108,10 +108,9 @@ version = "0.4.0"
 dependencies = [
  "mrml-anyhow",
  "mrml-core",
+ "mrml-json",
  "mrml-model",
  "mrml-terminal-style",
- "serde",
- "serde_json",
  "tokio",
 ]
 

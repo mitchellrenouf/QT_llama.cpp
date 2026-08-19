@@ -21,6 +21,5 @@ mrml-core = { path = "../mrml-core", default-features = false }
 mrml-terminal-style = { path = "../mrml-terminal-style" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 mrml-model = { path = "../mrml-model" }
-serde.workspace = true
-serde_json.workspace = true
+mrml-json = { path = "../mrml-json" }
 tokio.workspace = true
