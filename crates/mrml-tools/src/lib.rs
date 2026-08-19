@@ -12,6 +12,7 @@ pub mod encoding;
 pub mod fs_walk;
 pub mod markdown;
 pub mod platform;
+mod simple_regex;
 
 use anyhow::Result;
 use async_trait::async_trait;
