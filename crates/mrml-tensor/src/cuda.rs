@@ -1,9 +1,10 @@
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(non_snake_case)]
 
-use crate::anyhow::{anyhow, Result};
+use crate::anyhow::{Result, anyhow};
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 use std::marker::PhantomData;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,6 +15,8 @@ type CudaGraphHandle = *mut c_void;
 type CudaGraphExecHandle = *mut c_void;
 type CuModule = *mut c_void;
 type CuFunction = *mut c_void;
+type CuContext = *mut c_void;
+type CuDevicePtr = u64;
 
 static RUST_PTX_MODULE: OnceLock<usize> = OnceLock::new();
 static RUST_FUNCTIONS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
@@ -23,6 +26,37 @@ const RUST_CUDA_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rust_cuda
 
 struct CudaDriverApi {
     init: unsafe extern "C" fn(u32) -> i32,
+    device_get: unsafe extern "C" fn(*mut i32, i32) -> i32,
+    device_get_count: unsafe extern "C" fn(*mut i32) -> i32,
+    device_get_attribute: unsafe extern "C" fn(*mut i32, i32, i32) -> i32,
+    driver_get_version: unsafe extern "C" fn(*mut i32) -> i32,
+    primary_ctx_retain: unsafe extern "C" fn(*mut CuContext, i32) -> i32,
+    ctx_set_current: unsafe extern "C" fn(CuContext) -> i32,
+    mem_get_info: unsafe extern "C" fn(*mut usize, *mut usize) -> i32,
+    mem_alloc: unsafe extern "C" fn(*mut CuDevicePtr, usize) -> i32,
+    mem_free: unsafe extern "C" fn(CuDevicePtr) -> i32,
+    memcpy_htod: unsafe extern "C" fn(CuDevicePtr, *const c_void, usize) -> i32,
+    memcpy_dtoh: unsafe extern "C" fn(*mut c_void, CuDevicePtr, usize) -> i32,
+    memcpy_dtod: unsafe extern "C" fn(CuDevicePtr, CuDevicePtr, usize) -> i32,
+    memcpy_htod_async: unsafe extern "C" fn(CuDevicePtr, *const c_void, usize, CudaStream) -> i32,
+    memcpy_dtoh_async: unsafe extern "C" fn(*mut c_void, CuDevicePtr, usize, CudaStream) -> i32,
+    memcpy_dtod_async: unsafe extern "C" fn(CuDevicePtr, CuDevicePtr, usize, CudaStream) -> i32,
+    memset_d8_async: unsafe extern "C" fn(CuDevicePtr, u8, usize, CudaStream) -> i32,
+    stream_create: unsafe extern "C" fn(*mut CudaStream, u32) -> i32,
+    stream_destroy: unsafe extern "C" fn(CudaStream) -> i32,
+    stream_synchronize: unsafe extern "C" fn(CudaStream) -> i32,
+    stream_begin_capture: unsafe extern "C" fn(CudaStream, i32) -> i32,
+    stream_end_capture: unsafe extern "C" fn(CudaStream, *mut CudaGraphHandle) -> i32,
+    graph_instantiate: unsafe extern "C" fn(
+        *mut CudaGraphExecHandle,
+        CudaGraphHandle,
+        *mut *mut c_void,
+        *mut i8,
+        usize,
+    ) -> i32,
+    graph_launch: unsafe extern "C" fn(CudaGraphExecHandle, CudaStream) -> i32,
+    graph_destroy: unsafe extern "C" fn(CudaGraphHandle) -> i32,
+    graph_exec_destroy: unsafe extern "C" fn(CudaGraphExecHandle) -> i32,
     module_load_data: unsafe extern "C" fn(*mut CuModule, *const c_void) -> i32,
     module_get_function: unsafe extern "C" fn(*mut CuFunction, CuModule, *const i8) -> i32,
     launch_kernel: unsafe extern "C" fn(
@@ -40,6 +74,8 @@ struct CudaDriverApi {
     ) -> i32,
 }
 
+static CUDA_PRIMARY_CONTEXTS: OnceLock<Mutex<HashMap<i32, usize>>> = OnceLock::new();
+
 #[allow(dead_code)]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -51,50 +87,48 @@ pub enum CudaMemcpyKind {
     Default = 4,
 }
 
-#[allow(dead_code)]
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn LoadLibraryA(name: *const i8) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
+}
+
+#[cfg(unix)]
+#[link(name = "dl")]
 unsafe extern "C" {
-    #[link_name = "cudaSetDevice"]
-    fn cuda_set_device_raw(device: i32) -> i32;
-    fn cudaGetDevice(device: *mut i32) -> i32;
-    fn cudaGetDeviceCount(count: *mut i32) -> i32;
-    fn cudaDeviceGetAttribute(value: *mut i32, attr: i32, device: i32) -> i32;
-    fn cudaRuntimeGetVersion(version: *mut i32) -> i32;
-    fn cudaGetDriverEntryPoint(
-        symbol: *const i8,
-        function: *mut *mut c_void,
-        flags: u64,
-        driver_status: *mut i32,
-    ) -> i32;
-    fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> i32;
+    fn dlopen(name: *const i8, flags: i32) -> *mut c_void;
+    fn dlsym(module: *mut c_void, name: *const i8) -> *mut c_void;
+}
 
-    fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32;
-    fn cudaFree(dev_ptr: *mut c_void) -> i32;
-    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: CudaMemcpyKind) -> i32;
-    fn cudaMemcpyAsync(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: CudaMemcpyKind,
-        stream: CudaStream,
-    ) -> i32;
-    fn cudaMemsetAsync(dst: *mut c_void, value: i32, count: usize, stream: CudaStream) -> i32;
-    fn cudaStreamCreate(stream: *mut CudaStream) -> i32;
-    fn cudaStreamDestroy(stream: CudaStream) -> i32;
-    fn cudaStreamSynchronize(stream: CudaStream) -> i32;
-    fn cudaStreamBeginCapture(stream: CudaStream, mode: i32) -> i32;
-    fn cudaStreamEndCapture(stream: CudaStream, graph: *mut CudaGraphHandle) -> i32;
-    fn cudaGraphInstantiate(
-        exec: *mut CudaGraphExecHandle,
-        graph: CudaGraphHandle,
-        error_node: *mut *mut c_void,
-        log_buffer: *mut i8,
-        buffer_size: usize,
-    ) -> i32;
-    fn cudaGraphLaunch(exec: CudaGraphExecHandle, stream: CudaStream) -> i32;
-    fn cudaGraphDestroy(graph: CudaGraphHandle) -> i32;
-    fn cudaGraphExecDestroy(exec: CudaGraphExecHandle) -> i32;
-    fn cudaDeviceSynchronize() -> i32;
+fn cuda_driver_library() -> Result<usize> {
+    static LIBRARY: OnceLock<usize> = OnceLock::new();
+    if let Some(library) = LIBRARY.get() {
+        return Ok(*library);
+    }
+    #[cfg(windows)]
+    let library = unsafe { LoadLibraryA(c"nvcuda.dll".as_ptr()) };
+    #[cfg(unix)]
+    let library = unsafe { dlopen(c"libcuda.so.1".as_ptr(), 2) };
+    if library.is_null() {
+        return Err(anyhow!("NVIDIA CUDA driver library is not installed"));
+    }
+    let _ = LIBRARY.set(library as usize);
+    Ok(*LIBRARY.get().unwrap())
+}
 
+unsafe fn cuda_driver_symbol(name: &str) -> Result<*mut c_void> {
+    let library = cuda_driver_library()? as *mut c_void;
+    let name = CString::new(name).map_err(|_| anyhow!("invalid CUDA driver symbol"))?;
+    #[cfg(windows)]
+    let function = GetProcAddress(library, name.as_ptr());
+    #[cfg(unix)]
+    let function = dlsym(library, name.as_ptr());
+    if function.is_null() {
+        Err(anyhow!("CUDA driver symbol {name:?} is unavailable"))
+    } else {
+        Ok(function)
+    }
 }
 
 pub fn clear_cuda_allocation_pool() {
@@ -103,7 +137,9 @@ pub fn clear_cuda_allocation_pool() {
         .lock()
         .expect("CUDA allocation pool mutex poisoned")
         .drain()
-        .flat_map(|((device, _), pointers)| pointers.into_iter().map(move |pointer| (device, pointer)))
+        .flat_map(|((device, _), pointers)| {
+            pointers.into_iter().map(move |pointer| (device, pointer))
+        })
         .collect::<Vec<_>>();
     for (device, pointer) in allocations {
         unsafe {
@@ -142,29 +178,250 @@ fn cuda_driver() -> Result<&'static CudaDriverApi> {
     if let Some(api) = CUDA_DRIVER.get() {
         return Ok(api);
     }
-    unsafe fn resolve(name: &str) -> Result<*mut c_void> {
-        let name = CString::new(name).map_err(|_| anyhow!("invalid CUDA driver symbol"))?;
-        let mut function = ptr::null_mut();
-        let mut driver_status = 0;
-        let status = cudaGetDriverEntryPoint(name.as_ptr(), &mut function, 0, &mut driver_status);
-        if status != 0 || driver_status != 0 || function.is_null() {
-            Err(anyhow!(
-                "CUDA driver symbol lookup failed (runtime={status}, driver={driver_status})"
-            ))
-        } else {
-            Ok(function)
-        }
-    }
     let api = unsafe {
         CudaDriverApi {
-            init: std::mem::transmute(resolve("cuInit")?),
-            module_load_data: std::mem::transmute(resolve("cuModuleLoadData")?),
-            module_get_function: std::mem::transmute(resolve("cuModuleGetFunction")?),
-            launch_kernel: std::mem::transmute(resolve("cuLaunchKernel")?),
+            init: std::mem::transmute(cuda_driver_symbol("cuInit")?),
+            device_get: std::mem::transmute(cuda_driver_symbol("cuDeviceGet")?),
+            device_get_count: std::mem::transmute(cuda_driver_symbol("cuDeviceGetCount")?),
+            device_get_attribute: std::mem::transmute(cuda_driver_symbol("cuDeviceGetAttribute")?),
+            driver_get_version: std::mem::transmute(cuda_driver_symbol("cuDriverGetVersion")?),
+            primary_ctx_retain: std::mem::transmute(cuda_driver_symbol(
+                "cuDevicePrimaryCtxRetain",
+            )?),
+            ctx_set_current: std::mem::transmute(cuda_driver_symbol("cuCtxSetCurrent")?),
+            mem_get_info: std::mem::transmute(cuda_driver_symbol("cuMemGetInfo_v2")?),
+            mem_alloc: std::mem::transmute(cuda_driver_symbol("cuMemAlloc_v2")?),
+            mem_free: std::mem::transmute(cuda_driver_symbol("cuMemFree_v2")?),
+            memcpy_htod: std::mem::transmute(cuda_driver_symbol("cuMemcpyHtoD_v2")?),
+            memcpy_dtoh: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoH_v2")?),
+            memcpy_dtod: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoD_v2")?),
+            memcpy_htod_async: std::mem::transmute(cuda_driver_symbol("cuMemcpyHtoDAsync_v2")?),
+            memcpy_dtoh_async: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoHAsync_v2")?),
+            memcpy_dtod_async: std::mem::transmute(cuda_driver_symbol("cuMemcpyDtoDAsync_v2")?),
+            memset_d8_async: std::mem::transmute(cuda_driver_symbol("cuMemsetD8Async")?),
+            stream_create: std::mem::transmute(cuda_driver_symbol("cuStreamCreate")?),
+            stream_destroy: std::mem::transmute(cuda_driver_symbol("cuStreamDestroy_v2")?),
+            stream_synchronize: std::mem::transmute(cuda_driver_symbol("cuStreamSynchronize")?),
+            stream_begin_capture: std::mem::transmute(cuda_driver_symbol(
+                "cuStreamBeginCapture_v2",
+            )?),
+            stream_end_capture: std::mem::transmute(cuda_driver_symbol("cuStreamEndCapture")?),
+            graph_instantiate: std::mem::transmute(cuda_driver_symbol("cuGraphInstantiate_v2")?),
+            graph_launch: std::mem::transmute(cuda_driver_symbol("cuGraphLaunch")?),
+            graph_destroy: std::mem::transmute(cuda_driver_symbol("cuGraphDestroy")?),
+            graph_exec_destroy: std::mem::transmute(cuda_driver_symbol("cuGraphExecDestroy")?),
+            module_load_data: std::mem::transmute(cuda_driver_symbol("cuModuleLoadData")?),
+            module_get_function: std::mem::transmute(cuda_driver_symbol("cuModuleGetFunction")?),
+            launch_kernel: std::mem::transmute(cuda_driver_symbol("cuLaunchKernel")?),
         }
     };
     let _ = CUDA_DRIVER.set(api);
     Ok(CUDA_DRIVER.get().unwrap())
+}
+
+const CUDA_DRIVER_ERROR: i32 = 999;
+
+unsafe fn cuda_set_device_raw(device_id: i32) -> i32 {
+    let Ok(api) = cuda_driver() else {
+        return CUDA_DRIVER_ERROR;
+    };
+    let init = (api.init)(0);
+    if init != 0 {
+        return init;
+    }
+    let context = {
+        let mut contexts = CUDA_PRIMARY_CONTEXTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("CUDA primary-context mutex poisoned");
+        if let Some(context) = contexts.get(&device_id) {
+            *context as CuContext
+        } else {
+            let mut device = 0;
+            let status = (api.device_get)(&mut device, device_id);
+            if status != 0 {
+                return status;
+            }
+            let mut context = ptr::null_mut();
+            let status = (api.primary_ctx_retain)(&mut context, device);
+            if status != 0 {
+                return status;
+            }
+            contexts.insert(device_id, context as usize);
+            context
+        }
+    };
+    (api.ctx_set_current)(context)
+}
+
+unsafe fn cudaGetDeviceCount(count: *mut i32) -> i32 {
+    let Ok(api) = cuda_driver() else {
+        return CUDA_DRIVER_ERROR;
+    };
+    let status = (api.init)(0);
+    if status == 0 {
+        (api.device_get_count)(count)
+    } else {
+        status
+    }
+}
+
+unsafe fn cudaDeviceGetAttribute(value: *mut i32, attr: i32, device: i32) -> i32 {
+    cuda_driver()
+        .map(|api| (api.device_get_attribute)(value, attr, device))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaRuntimeGetVersion(version: *mut i32) -> i32 {
+    cuda_driver()
+        .map(|api| (api.driver_get_version)(version))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> i32 {
+    cuda_driver()
+        .map(|api| (api.mem_get_info)(free, total))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32 {
+    let Ok(api) = cuda_driver() else {
+        return CUDA_DRIVER_ERROR;
+    };
+    let mut pointer = 0;
+    let status = (api.mem_alloc)(&mut pointer, size);
+    if status == 0 {
+        *dev_ptr = pointer as usize as *mut c_void;
+    }
+    status
+}
+
+unsafe fn cudaFree(dev_ptr: *mut c_void) -> i32 {
+    cuda_driver()
+        .map(|api| (api.mem_free)(dev_ptr as usize as CuDevicePtr))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaMemcpy(
+    dst: *mut c_void,
+    src: *const c_void,
+    count: usize,
+    kind: CudaMemcpyKind,
+) -> i32 {
+    let Ok(api) = cuda_driver() else {
+        return CUDA_DRIVER_ERROR;
+    };
+    match kind {
+        CudaMemcpyKind::HostToHost => {
+            ptr::copy_nonoverlapping(src.cast::<u8>(), dst.cast::<u8>(), count);
+            0
+        }
+        CudaMemcpyKind::HostToDevice => (api.memcpy_htod)(dst as usize as CuDevicePtr, src, count),
+        CudaMemcpyKind::DeviceToHost => (api.memcpy_dtoh)(dst, src as usize as CuDevicePtr, count),
+        CudaMemcpyKind::DeviceToDevice => (api.memcpy_dtod)(
+            dst as usize as CuDevicePtr,
+            src as usize as CuDevicePtr,
+            count,
+        ),
+        CudaMemcpyKind::Default => CUDA_DRIVER_ERROR,
+    }
+}
+
+unsafe fn cudaMemcpyAsync(
+    dst: *mut c_void,
+    src: *const c_void,
+    count: usize,
+    kind: CudaMemcpyKind,
+    stream: CudaStream,
+) -> i32 {
+    let Ok(api) = cuda_driver() else {
+        return CUDA_DRIVER_ERROR;
+    };
+    match kind {
+        CudaMemcpyKind::HostToHost => {
+            ptr::copy_nonoverlapping(src.cast::<u8>(), dst.cast::<u8>(), count);
+            0
+        }
+        CudaMemcpyKind::HostToDevice => {
+            (api.memcpy_htod_async)(dst as usize as CuDevicePtr, src, count, stream)
+        }
+        CudaMemcpyKind::DeviceToHost => {
+            (api.memcpy_dtoh_async)(dst, src as usize as CuDevicePtr, count, stream)
+        }
+        CudaMemcpyKind::DeviceToDevice => (api.memcpy_dtod_async)(
+            dst as usize as CuDevicePtr,
+            src as usize as CuDevicePtr,
+            count,
+            stream,
+        ),
+        CudaMemcpyKind::Default => CUDA_DRIVER_ERROR,
+    }
+}
+
+unsafe fn cudaMemsetAsync(dst: *mut c_void, value: i32, count: usize, stream: CudaStream) -> i32 {
+    cuda_driver()
+        .map(|api| (api.memset_d8_async)(dst as usize as CuDevicePtr, value as u8, count, stream))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaStreamCreate(stream: *mut CudaStream) -> i32 {
+    cuda_driver()
+        .map(|api| (api.stream_create)(stream, 0))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaStreamDestroy(stream: CudaStream) -> i32 {
+    cuda_driver()
+        .map(|api| (api.stream_destroy)(stream))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaStreamSynchronize(stream: CudaStream) -> i32 {
+    cuda_driver()
+        .map(|api| (api.stream_synchronize)(stream))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaStreamBeginCapture(stream: CudaStream, mode: i32) -> i32 {
+    cuda_driver()
+        .map(|api| (api.stream_begin_capture)(stream, mode))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaStreamEndCapture(stream: CudaStream, graph: *mut CudaGraphHandle) -> i32 {
+    cuda_driver()
+        .map(|api| (api.stream_end_capture)(stream, graph))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaGraphInstantiate(
+    exec: *mut CudaGraphExecHandle,
+    graph: CudaGraphHandle,
+    error_node: *mut *mut c_void,
+    log_buffer: *mut i8,
+    buffer_size: usize,
+) -> i32 {
+    cuda_driver()
+        .map(|api| (api.graph_instantiate)(exec, graph, error_node, log_buffer, buffer_size))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaGraphLaunch(exec: CudaGraphExecHandle, stream: CudaStream) -> i32 {
+    cuda_driver()
+        .map(|api| (api.graph_launch)(exec, stream))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaGraphDestroy(graph: CudaGraphHandle) -> i32 {
+    cuda_driver()
+        .map(|api| (api.graph_destroy)(graph))
+        .unwrap_or(CUDA_DRIVER_ERROR)
+}
+
+unsafe fn cudaGraphExecDestroy(exec: CudaGraphExecHandle) -> i32 {
+    cuda_driver()
+        .map(|api| (api.graph_exec_destroy)(exec))
+        .unwrap_or(CUDA_DRIVER_ERROR)
 }
 
 fn rust_ptx_function(name: &str) -> Result<CuFunction> {
@@ -424,17 +681,36 @@ unsafe fn launch_rust_qkv_q4(
 }
 
 unsafe fn launch_rust_qkv_q4_gemv(
-    wq:*const u8,wk:*const u8,wv:*const u8,input:*const f32,output:*mut f32,
-    q_rows:i32,kv_rows:i32,cols:i32,stream:CudaStream,
-)->Result<()> {
-    let(mut a0,mut a1,mut a2,mut a3,mut a4)=(wq,wk,wv,input,output);
-    let(mut qr,mut kr,mut c)=(q_rows,kv_rows,cols);
-    let mut args=[&mut a0 as *mut _ as *mut c_void,&mut a1 as *mut _ as *mut c_void,
-        &mut a2 as *mut _ as *mut c_void,&mut a3 as *mut _ as *mut c_void,
-        &mut a4 as *mut _ as *mut c_void,&mut qr as *mut _ as *mut c_void,
-        &mut kr as *mut _ as *mut c_void,&mut c as *mut _ as *mut c_void];
-    let total=(q_rows+2*kv_rows).max(0)as u32;
-    launch_rust_kernel("rust_cuda_gemv_q4_0_qkv_f32",(total.div_ceil(8).max(1),1,1),(128,1,1),stream,&mut args)
+    wq: *const u8,
+    wk: *const u8,
+    wv: *const u8,
+    input: *const f32,
+    output: *mut f32,
+    q_rows: i32,
+    kv_rows: i32,
+    cols: i32,
+    stream: CudaStream,
+) -> Result<()> {
+    let (mut a0, mut a1, mut a2, mut a3, mut a4) = (wq, wk, wv, input, output);
+    let (mut qr, mut kr, mut c) = (q_rows, kv_rows, cols);
+    let mut args = [
+        &mut a0 as *mut _ as *mut c_void,
+        &mut a1 as *mut _ as *mut c_void,
+        &mut a2 as *mut _ as *mut c_void,
+        &mut a3 as *mut _ as *mut c_void,
+        &mut a4 as *mut _ as *mut c_void,
+        &mut qr as *mut _ as *mut c_void,
+        &mut kr as *mut _ as *mut c_void,
+        &mut c as *mut _ as *mut c_void,
+    ];
+    let total = (q_rows + 2 * kv_rows).max(0) as u32;
+    launch_rust_kernel(
+        "rust_cuda_gemv_q4_0_qkv_f32",
+        (total.div_ceil(8).max(1), 1, 1),
+        (128, 1, 1),
+        stream,
+        &mut args,
+    )
 }
 
 unsafe fn launch_rust_geglu_q4(
@@ -1136,7 +1412,9 @@ impl<T> Drop for CudaBuffer<T> {
                 cudaSetDevice(self.device_id);
                 match &self.allocation {
                     CudaAllocation::Pooled => pooled_cuda_release(
-                        self.device_id,self.ptr as *mut c_void,self.len * std::mem::size_of::<T>(),
+                        self.device_id,
+                        self.ptr as *mut c_void,
+                        self.len * std::mem::size_of::<T>(),
                     ),
                     CudaAllocation::Owned => {
                         cudaFree(self.ptr as *mut c_void);
@@ -1225,23 +1503,48 @@ impl CudaDevice {
     ) -> Result<()> {
         unsafe {
             launch_rust_geglu_q4(
-                gate.as_ptr(), up.as_ptr(), shared_in.as_ptr(), dense_act.as_mut_ptr(),
-                ffn_dim as i32, dim as i32, 1, self.stream,
+                gate.as_ptr(),
+                up.as_ptr(),
+                shared_in.as_ptr(),
+                dense_act.as_mut_ptr(),
+                ffn_dim as i32,
+                dim as i32,
+                1,
+                self.stream,
             )?;
             launch_rust_gemv_q4(
-                down.as_ptr(), dense_act.as_ptr(), dense_out.as_mut_ptr(), dim as i32,
-                ffn_dim as i32, self.stream,
+                down.as_ptr(),
+                dense_act.as_ptr(),
+                dense_out.as_mut_ptr(),
+                dim as i32,
+                ffn_dim as i32,
+                self.stream,
             )?;
             launch_rust_moe_router(
-                router_weights.as_ptr(), router_in.as_ptr(), router_logits.as_mut_ptr(),
-                expert_ids.as_mut_ptr(), expert_weights.as_mut_ptr(), dim as i32, 128, 1,
+                router_weights.as_ptr(),
+                router_in.as_ptr(),
+                router_logits.as_mut_ptr(),
+                expert_ids.as_mut_ptr(),
+                expert_weights.as_mut_ptr(),
+                dim as i32,
+                128,
+                1,
                 self.stream,
             )?;
             launch_rust_moe_topk(
-                gate_up_exps.as_ptr(), down_exps.as_ptr(), expert_ids.as_ptr(),
-                expert_weights.as_ptr(), down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
-                moe_in.as_ptr(), moe_act.as_mut_ptr(), moe_out.as_mut_ptr(), dim as i32,
-                exp_dim as i32, 8, 1, self.stream,
+                gate_up_exps.as_ptr(),
+                down_exps.as_ptr(),
+                expert_ids.as_ptr(),
+                expert_weights.as_ptr(),
+                down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
+                moe_in.as_ptr(),
+                moe_act.as_mut_ptr(),
+                moe_out.as_mut_ptr(),
+                dim as i32,
+                exp_dim as i32,
+                8,
+                1,
+                self.stream,
             )?;
         }
         Ok(())
@@ -1297,7 +1600,7 @@ impl CudaDevice {
 
     pub fn device_info(device_id: i32) -> Result<CudaDeviceInfo> {
         // cudaDevAttrMultiProcessorCount=16, ComputeCapabilityMajor=75,
-        // ComputeCapabilityMinor=76. These ABI values are stable in cudart.
+        // ComputeCapabilityMinor=76. These ABI values are stable in the CUDA driver API.
         unsafe { cudaSetDevice(device_id) };
         let mut major = 0;
         let mut minor = 0;
@@ -1580,13 +1883,13 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_gemv_q4(
-                    d_w_q4.as_ptr(),
-                    d_x.as_ptr(),
-                    d_y.as_mut_ptr(),
-                    n_rows as i32,
-                    n_cols as i32,
-                    self.stream,
-                )
+                d_w_q4.as_ptr(),
+                d_x.as_ptr(),
+                d_y.as_mut_ptr(),
+                n_rows as i32,
+                n_cols as i32,
+                self.stream,
+            )
             .expect("Rust CUDA Q4 GEMV kernel failed");
         }
     }
@@ -1605,14 +1908,14 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_gemm_q4(
-                    d_w_q4.as_ptr(),
-                    d_x.as_ptr(),
-                    d_y.as_mut_ptr(),
-                    n_rows as i32,
-                    n_cols as i32,
-                    batch as i32,
-                    self.stream,
-                )
+                d_w_q4.as_ptr(),
+                d_x.as_ptr(),
+                d_y.as_mut_ptr(),
+                n_rows as i32,
+                n_cols as i32,
+                batch as i32,
+                self.stream,
+            )
             .expect("Rust CUDA Q4 GEMM kernel failed");
         }
     }
@@ -1675,9 +1978,17 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_qkv_q4_gemv(
-                    d_w_q.as_ptr(),d_w_k.as_ptr(),d_w_v.as_ptr(),d_x.as_ptr(),d_y.as_mut_ptr(),
-                    q_rows as i32,kv_rows as i32,n_cols as i32,self.stream,
-            ).expect("Rust CUDA fused QKV GEMV kernel failed");
+                d_w_q.as_ptr(),
+                d_w_k.as_ptr(),
+                d_w_v.as_ptr(),
+                d_x.as_ptr(),
+                d_y.as_mut_ptr(),
+                q_rows as i32,
+                kv_rows as i32,
+                n_cols as i32,
+                self.stream,
+            )
+            .expect("Rust CUDA fused QKV GEMV kernel failed");
         }
     }
 
@@ -1698,17 +2009,17 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_qkv_q4(
-                    d_w_q.as_ptr(),
-                    d_w_k.as_ptr(),
-                    d_w_v.as_ptr(),
-                    d_x.as_ptr(),
-                    d_y.as_mut_ptr(),
-                    q_rows as i32,
-                    kv_rows as i32,
-                    n_cols as i32,
-                    batch as i32,
-                    self.stream,
-                )
+                d_w_q.as_ptr(),
+                d_w_k.as_ptr(),
+                d_w_v.as_ptr(),
+                d_x.as_ptr(),
+                d_y.as_mut_ptr(),
+                q_rows as i32,
+                kv_rows as i32,
+                n_cols as i32,
+                batch as i32,
+                self.stream,
+            )
             .expect("Rust CUDA fused QKV GEMM kernel failed");
         }
     }
@@ -1732,23 +2043,23 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_qkv_postprocess(
-                    qkv.as_mut_ptr(),
-                    q_norm.as_ptr(),
-                    k_norm.as_ptr(),
-                    k_cache.as_mut_ptr(),
-                    v_cache.as_mut_ptr(),
-                    pos as i32,
-                    cache_pos as i32,
-                    n_heads as i32,
-                    n_kv_heads as i32,
-                    head_dim as i32,
-                    freq_base,
-                    1,
-                    0,
-                    k_format,
-                    v_format,
-                    self.stream,
-                )
+                qkv.as_mut_ptr(),
+                q_norm.as_ptr(),
+                k_norm.as_ptr(),
+                k_cache.as_mut_ptr(),
+                v_cache.as_mut_ptr(),
+                pos as i32,
+                cache_pos as i32,
+                n_heads as i32,
+                n_kv_heads as i32,
+                head_dim as i32,
+                freq_base,
+                1,
+                0,
+                k_format,
+                v_format,
+                self.stream,
+            )
             .expect("Rust CUDA QKV postprocessing failed");
         }
     }
@@ -1775,23 +2086,23 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_qkv_postprocess(
-                    qkv.as_mut_ptr(),
-                    q_norm.as_ptr(),
-                    k_norm.as_ptr(),
-                    k_cache.as_mut_ptr(),
-                    v_cache.as_mut_ptr(),
-                    start_pos as i32,
-                    cache_start as i32,
-                    n_heads as i32,
-                    n_kv_heads as i32,
-                    head_dim as i32,
-                    freq_base,
-                    batch as i32,
-                    cache_capacity as i32,
-                    k_format,
-                    v_format,
-                    self.stream,
-                )
+                qkv.as_mut_ptr(),
+                q_norm.as_ptr(),
+                k_norm.as_ptr(),
+                k_cache.as_mut_ptr(),
+                v_cache.as_mut_ptr(),
+                start_pos as i32,
+                cache_start as i32,
+                n_heads as i32,
+                n_kv_heads as i32,
+                head_dim as i32,
+                freq_base,
+                batch as i32,
+                cache_capacity as i32,
+                k_format,
+                v_format,
+                self.stream,
+            )
             .expect("Rust CUDA batched QKV postprocessing failed");
         }
     }
@@ -1808,15 +2119,15 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_geglu_q4(
-                    d_w_gate.as_ptr(),
-                    d_w_up.as_ptr(),
-                    d_x.as_ptr(),
-                    d_act.as_mut_ptr(),
-                    n_rows as i32,
-                    n_cols as i32,
-                    1,
-                    self.stream,
-                )
+                d_w_gate.as_ptr(),
+                d_w_up.as_ptr(),
+                d_x.as_ptr(),
+                d_act.as_mut_ptr(),
+                n_rows as i32,
+                n_cols as i32,
+                1,
+                self.stream,
+            )
             .expect("Rust CUDA fused Q4 GeGLU GEMV kernel failed");
         }
     }
@@ -1832,24 +2143,24 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             let mut weights = d_w_q8.as_ptr();
-                let mut input = d_x.as_ptr();
-                let mut output = d_y.as_mut_ptr();
-                let mut rows = n_rows as i32;
-                let mut cols = n_cols as i32;
-                let mut args = [
-                    &mut weights as *mut _ as *mut c_void,
-                    &mut input as *mut _ as *mut c_void,
-                    &mut output as *mut _ as *mut c_void,
-                    &mut rows as *mut _ as *mut c_void,
-                    &mut cols as *mut _ as *mut c_void,
-                ];
-                launch_rust_kernel(
-                    "rust_cuda_gemv_q8_0_f32",
-                    ((n_rows as u32).div_ceil(8), 1, 1),
-                    (128, 1, 1),
-                    self.stream,
-                    &mut args,
-                )
+            let mut input = d_x.as_ptr();
+            let mut output = d_y.as_mut_ptr();
+            let mut rows = n_rows as i32;
+            let mut cols = n_cols as i32;
+            let mut args = [
+                &mut weights as *mut _ as *mut c_void,
+                &mut input as *mut _ as *mut c_void,
+                &mut output as *mut _ as *mut c_void,
+                &mut rows as *mut _ as *mut c_void,
+                &mut cols as *mut _ as *mut c_void,
+            ];
+            launch_rust_kernel(
+                "rust_cuda_gemv_q8_0_f32",
+                ((n_rows as u32).div_ceil(8), 1, 1),
+                (128, 1, 1),
+                self.stream,
+                &mut args,
+            )
             .expect("Rust CUDA Q8 GEMV kernel failed");
         }
     }
@@ -1920,23 +2231,23 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_attention(
-                    d_q.as_ptr(),
-                    d_k_cache.as_ptr(),
-                    d_v_cache.as_ptr(),
-                    d_out.as_mut_ptr(),
-                    n_past as i32,
-                    1,
-                    n_heads as i32,
-                    n_kv_heads as i32,
-                    head_dim as i32,
-                    (n_heads * head_dim) as i32,
-                    scale,
-                    sw,
-                    cache_capacity as i32,
-                    k_format,
-                    v_format,
-                    self.stream,
-                )
+                d_q.as_ptr(),
+                d_k_cache.as_ptr(),
+                d_v_cache.as_ptr(),
+                d_out.as_mut_ptr(),
+                n_past as i32,
+                1,
+                n_heads as i32,
+                n_kv_heads as i32,
+                head_dim as i32,
+                (n_heads * head_dim) as i32,
+                scale,
+                sw,
+                cache_capacity as i32,
+                k_format,
+                v_format,
+                self.stream,
+            )
             .expect("Rust CUDA causal attention failed");
         }
     }
@@ -1956,15 +2267,15 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_geglu_q4(
-                    d_w_gate.as_ptr(),
-                    d_w_up.as_ptr(),
-                    d_x.as_ptr(),
-                    d_act.as_mut_ptr(),
-                    n_rows as i32,
-                    n_cols as i32,
-                    batch as i32,
-                    self.stream,
-                )
+                d_w_gate.as_ptr(),
+                d_w_up.as_ptr(),
+                d_x.as_ptr(),
+                d_act.as_mut_ptr(),
+                n_rows as i32,
+                n_cols as i32,
+                batch as i32,
+                self.stream,
+            )
             .expect("Rust CUDA fused Q4 GeGLU GEMM kernel failed");
         }
     }
@@ -1993,23 +2304,23 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_attention(
-                    d_q.as_ptr(),
-                    d_k_cache.as_ptr(),
-                    d_v_cache.as_ptr(),
-                    d_out.as_mut_ptr(),
-                    cache_start as i32,
-                    batch as i32,
-                    n_heads as i32,
-                    n_kv_heads as i32,
-                    head_dim as i32,
-                    q_stride as i32,
-                    scale,
-                    window,
-                    cache_capacity as i32,
-                    k_format,
-                    v_format,
-                    self.stream,
-                )
+                d_q.as_ptr(),
+                d_k_cache.as_ptr(),
+                d_v_cache.as_ptr(),
+                d_out.as_mut_ptr(),
+                cache_start as i32,
+                batch as i32,
+                n_heads as i32,
+                n_kv_heads as i32,
+                head_dim as i32,
+                q_stride as i32,
+                scale,
+                window,
+                cache_capacity as i32,
+                k_format,
+                v_format,
+                self.stream,
+            )
             .expect("Rust CUDA prefill attention failed");
         }
     }
@@ -2032,20 +2343,20 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_moe_topk(
-                    d_gate_up_exps.as_ptr(),
-                    d_down_exps.as_ptr(),
-                    d_active_exp_ids.as_ptr(),
-                    d_active_exp_weights.as_ptr(),
-                    scale_ptr,
-                    d_x_in.as_ptr(),
-                    d_act_scratch.as_mut_ptr(),
-                    d_out_moe.as_mut_ptr(),
-                    dim as i32,
-                    exp_ffn_dim as i32,
-                    n_active as i32,
-                    1,
-                    self.stream,
-                )
+                d_gate_up_exps.as_ptr(),
+                d_down_exps.as_ptr(),
+                d_active_exp_ids.as_ptr(),
+                d_active_exp_weights.as_ptr(),
+                scale_ptr,
+                d_x_in.as_ptr(),
+                d_act_scratch.as_mut_ptr(),
+                d_out_moe.as_mut_ptr(),
+                dim as i32,
+                exp_ffn_dim as i32,
+                n_active as i32,
+                1,
+                self.stream,
+            )
             .expect("Rust CUDA MoE expert computation failed");
         }
     }
@@ -2068,16 +2379,16 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_moe_router(
-                    d_weights.as_ptr(),
-                    d_input.as_ptr(),
-                    d_logits.as_mut_ptr(),
-                    d_ids.as_mut_ptr(),
-                    d_probabilities.as_mut_ptr(),
-                    dim as i32,
-                    n_experts as i32,
-                    1,
-                    self.stream,
-                )
+                d_weights.as_ptr(),
+                d_input.as_ptr(),
+                d_logits.as_mut_ptr(),
+                d_ids.as_mut_ptr(),
+                d_probabilities.as_mut_ptr(),
+                dim as i32,
+                n_experts as i32,
+                1,
+                self.stream,
+            )
             .expect("Rust CUDA MoE router failed");
         }
     }
@@ -2106,20 +2417,20 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_moe_topk(
-                    gate_up.as_ptr(),
-                    down.as_ptr(),
-                    ids.as_ptr(),
-                    weights.as_ptr(),
-                    scale_ptr,
-                    input.as_ptr(),
-                    act.as_mut_ptr(),
-                    output.as_mut_ptr(),
-                    dim as i32,
-                    exp_dim as i32,
-                    n_active as i32,
-                    batch as i32,
-                    self.stream,
-                )
+                gate_up.as_ptr(),
+                down.as_ptr(),
+                ids.as_ptr(),
+                weights.as_ptr(),
+                scale_ptr,
+                input.as_ptr(),
+                act.as_mut_ptr(),
+                output.as_mut_ptr(),
+                dim as i32,
+                exp_dim as i32,
+                n_active as i32,
+                batch as i32,
+                self.stream,
+            )
             .expect("Rust CUDA batched MoE expert computation failed");
         }
     }
@@ -2142,16 +2453,16 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_moe_router(
-                    weights.as_ptr(),
-                    input.as_ptr(),
-                    logits.as_mut_ptr(),
-                    ids.as_mut_ptr(),
-                    probabilities.as_mut_ptr(),
-                    dim as i32,
-                    n_experts as i32,
-                    batch as i32,
-                    self.stream,
-                )
+                weights.as_ptr(),
+                input.as_ptr(),
+                logits.as_mut_ptr(),
+                ids.as_mut_ptr(),
+                probabilities.as_mut_ptr(),
+                dim as i32,
+                n_experts as i32,
+                batch as i32,
+                self.stream,
+            )
             .expect("Rust CUDA batched MoE router failed");
         }
     }
@@ -2173,20 +2484,20 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_prepare_ffn(
-                    hidden.as_ptr(),
-                    attn_proj.as_ptr(),
-                    post_attn_norm.as_ptr(),
-                    ffn_norm.as_ptr(),
-                    pre_ffw_norm_2.as_ptr(),
-                    router_scale.as_ptr(),
-                    attn_res.as_mut_ptr(),
-                    shared_in.as_mut_ptr(),
-                    moe_in.as_mut_ptr(),
-                    router_in.as_mut_ptr(),
-                    dim as i32,
-                    1,
-                    self.stream,
-                )
+                hidden.as_ptr(),
+                attn_proj.as_ptr(),
+                post_attn_norm.as_ptr(),
+                ffn_norm.as_ptr(),
+                pre_ffw_norm_2.as_ptr(),
+                router_scale.as_ptr(),
+                attn_res.as_mut_ptr(),
+                shared_in.as_mut_ptr(),
+                moe_in.as_mut_ptr(),
+                router_in.as_mut_ptr(),
+                dim as i32,
+                1,
+                self.stream,
+            )
             .expect("Rust CUDA FFN preparation failed");
         }
     }
@@ -2211,20 +2522,20 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_prepare_ffn(
-                    hidden.as_ptr(),
-                    attn.as_ptr(),
-                    pan.as_ptr(),
-                    ffn.as_ptr(),
-                    pfn.as_ptr(),
-                    router_scale.as_ptr(),
-                    attn_res.as_mut_ptr(),
-                    shared.as_mut_ptr(),
-                    moe.as_mut_ptr(),
-                    router.as_mut_ptr(),
-                    dim as i32,
-                    batch as i32,
-                    self.stream,
-                )
+                hidden.as_ptr(),
+                attn.as_ptr(),
+                pan.as_ptr(),
+                ffn.as_ptr(),
+                pfn.as_ptr(),
+                router_scale.as_ptr(),
+                attn_res.as_mut_ptr(),
+                shared.as_mut_ptr(),
+                moe.as_mut_ptr(),
+                router.as_mut_ptr(),
+                dim as i32,
+                batch as i32,
+                self.stream,
+            )
             .expect("Rust CUDA batched FFN preparation failed");
         }
     }
@@ -2244,18 +2555,18 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_finish_ffn(
-                    attn_res.as_ptr(),
-                    dense.as_mut_ptr(),
-                    moe.as_mut_ptr(),
-                    post_ffw_norm_1.as_ptr(),
-                    post_ffw_norm_2.as_ptr(),
-                    post_ffw_norm.as_ptr(),
-                    hidden_out.as_mut_ptr(),
-                    layer_scale,
-                    dim as i32,
-                    1,
-                    self.stream,
-                )
+                attn_res.as_ptr(),
+                dense.as_mut_ptr(),
+                moe.as_mut_ptr(),
+                post_ffw_norm_1.as_ptr(),
+                post_ffw_norm_2.as_ptr(),
+                post_ffw_norm.as_ptr(),
+                hidden_out.as_mut_ptr(),
+                layer_scale,
+                dim as i32,
+                1,
+                self.stream,
+            )
             .expect("Rust CUDA FFN finalization failed");
         }
     }
@@ -2278,18 +2589,18 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             launch_rust_finish_ffn(
-                    attn_res.as_ptr(),
-                    dense.as_mut_ptr(),
-                    moe.as_mut_ptr(),
-                    p1.as_ptr(),
-                    p2.as_ptr(),
-                    pf.as_ptr(),
-                    output.as_mut_ptr(),
-                    scale,
-                    dim as i32,
-                    batch as i32,
-                    self.stream,
-                )
+                attn_res.as_ptr(),
+                dense.as_mut_ptr(),
+                moe.as_mut_ptr(),
+                p1.as_ptr(),
+                p2.as_ptr(),
+                pf.as_ptr(),
+                output.as_mut_ptr(),
+                scale,
+                dim as i32,
+                batch as i32,
+                self.stream,
+            )
             .expect("Rust CUDA batched FFN finalization failed");
         }
     }

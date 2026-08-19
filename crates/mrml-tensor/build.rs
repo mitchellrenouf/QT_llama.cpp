@@ -7,9 +7,6 @@ fn main() {
 
     #[cfg(feature = "cuda")]
     {
-        let is_windows = env::var("CARGO_CFG_TARGET_OS")
-            .map(|s| s == "windows")
-            .unwrap_or(false);
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
         let nightly_rustc = env::var_os("USERPROFILE")
@@ -50,16 +47,5 @@ fn main() {
             "cargo:warning=[mrml-tensor] Compiled Rust CUDA PTX with {}",
             nightly_rustc.display()
         );
-
-        let cuda_path = env::var("CUDA_PATH")
-            .or_else(|_| env::var("CUDA_TOOLKIT_ROOT_DIR"))
-            .unwrap_or_else(|_| r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3".into());
-        let cuda_path = PathBuf::from(cuda_path);
-        if is_windows {
-            println!("cargo:rustc-link-search=native={}", cuda_path.join("lib").join("x64").display());
-        } else {
-            println!("cargo:rustc-link-search=native={}", cuda_path.join("lib64").display());
-        }
-        println!("cargo:rustc-link-lib=dylib=cudart");
     }
 }

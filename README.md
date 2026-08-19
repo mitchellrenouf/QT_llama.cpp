@@ -49,8 +49,29 @@ Important limitations:
 
 ## Quick start
 
-You need stable Rust. CUDA builds additionally require an NVIDIA driver and
-CUDA Toolkit 13.3.
+MRML uses Rust 2024 and pins nightly in `rust-toolchain.toml`. Install rustup
+and the Rust CUDA target on Windows or Linux:
+
+```powershell
+# Windows PowerShell
+winget install Rustlang.Rustup
+rustup toolchain install nightly --component rust-src,rustfmt,clippy
+rustup target add nvptx64-nvidia-cuda --toolchain nightly
+```
+
+```bash
+# Linux
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup toolchain install nightly --component rust-src,rustfmt,clippy
+rustup target add nvptx64-nvidia-cuda --toolchain nightly
+```
+
+CUDA builds require an NVIDIA display driver, but do **not** require the CUDA
+Toolkit or `libcudart`. MRML compiles its kernels directly to PTX with nightly
+Rust and dynamically loads the driver's `nvcuda.dll` on Windows or
+`libcuda.so.1` on Linux. In WSL2, install the current NVIDIA Windows driver;
+Microsoft's WSL bridge exposes its CUDA driver to Linux. Do not install a Linux
+NVIDIA display driver inside WSL2.
 
 CPU-only CLI:
 
@@ -62,7 +83,6 @@ cargo run --release -p mrml-cli --no-default-features -- `
 CUDA CLI:
 
 ```powershell
-$env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3"
 cargo run --release -p mrml-cli --features cuda -- `
   --model C:\path\to\model.gguf --ctx-size 8192 --prompt "Hello"
 ```
