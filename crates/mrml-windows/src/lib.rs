@@ -83,7 +83,38 @@ unsafe extern "system" {
     ) -> i32;
     fn SetFilePointerEx(file: *mut c_void, distance: i64, position: *mut i64, method: u32) -> i32;
     fn GetFileSizeEx(file: *mut c_void, size: *mut i64) -> i32;
+    fn CreateThread(
+        attributes: *const c_void,
+        stack_size: usize,
+        start: unsafe extern "system" fn(*mut c_void) -> u32,
+        parameter: *mut c_void,
+        creation_flags: u32,
+        thread_id: *mut u32,
+    ) -> *mut c_void;
     fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[cfg(windows)]
+pub unsafe fn spawn_detached_thread(
+    context: *mut c_void,
+    start: unsafe extern "system" fn(*mut c_void) -> u32,
+) -> bool {
+    let handle = unsafe {
+        CreateThread(
+            core::ptr::null(),
+            0,
+            start,
+            context,
+            0,
+            core::ptr::null_mut(),
+        )
+    };
+    if handle.is_null() {
+        false
+    } else {
+        let _ = unsafe { CloseHandle(handle) };
+        true
+    }
 }
 
 #[derive(Debug)]

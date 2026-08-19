@@ -70,6 +70,25 @@ unsafe extern "C" {
     fn read(file: c_int, buffer: *mut c_void, count: usize) -> isize;
     fn lseek(file: c_int, offset: isize, whence: c_int) -> isize;
     fn close(file: c_int) -> c_int;
+    fn pthread_create(
+        thread: *mut usize,
+        attributes: *const c_void,
+        start: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+        argument: *mut c_void,
+    ) -> c_int;
+    fn pthread_detach(thread: usize) -> c_int;
+}
+
+#[cfg(unix)]
+pub unsafe fn spawn_detached_thread(
+    context: *mut c_void,
+    start: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+) -> bool {
+    let mut thread = 0usize;
+    if unsafe { pthread_create(&mut thread, core::ptr::null(), start, context) } != 0 {
+        return false;
+    }
+    unsafe { pthread_detach(thread) == 0 }
 }
 
 #[derive(Debug)]
