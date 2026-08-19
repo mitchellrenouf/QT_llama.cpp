@@ -88,6 +88,16 @@ pub fn monotonic_nanos() -> u64 {
 }
 
 #[cfg(unix)]
+pub fn unix_time_millis() -> u64 {
+    const CLOCK_REALTIME: c_int = 0;
+    let mut value = Timespec { seconds: 0, nanoseconds: 0 };
+    if unsafe { clock_gettime(CLOCK_REALTIME, &mut value) } != 0 {
+        return 0;
+    }
+    value.seconds as u64 * 1000 + value.nanoseconds as u64 / 1_000_000
+}
+
+#[cfg(unix)]
 pub fn local_time(epoch_seconds: i64) -> Option<LocalTime> {
     let seconds = epoch_seconds as c_long;
     let mut value = core::mem::MaybeUninit::<Tm>::uninit();
@@ -120,12 +130,16 @@ pub fn sleep_millis(_: u64) {}
 #[cfg(not(unix))]
 pub fn monotonic_nanos() -> u64 { 0 }
 
+#[cfg(not(unix))]
+pub fn unix_time_millis() -> u64 { 0 }
+
 #[cfg(all(test, unix))]
 mod tests {
     use core::alloc::{GlobalAlloc, Layout};
 
     #[test]
     fn native_allocator_and_clock_work() {
+        assert!(super::unix_time_millis() > 1_000_000_000_000);
         let layout = Layout::from_size_align(64, 8).unwrap();
         let pointer = unsafe { GlobalAlloc::alloc(&super::SystemAllocator, layout) };
         assert!(!pointer.is_null());

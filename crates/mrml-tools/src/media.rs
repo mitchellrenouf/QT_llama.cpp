@@ -210,7 +210,7 @@ impl Tool for RecordScreenVideoTool {
         let mut frames_out = Vec::new();
         for i in 0..duration {
             if i > 0 {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                crate::platform::sleep_millis(1000);
             }
             if let Ok(res) = desk_tool.execute(workspace_root, json!({})).await {
                 frames_out.push(res);

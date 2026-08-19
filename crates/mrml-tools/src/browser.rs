@@ -178,7 +178,7 @@ impl EdgeController {
                     }
                 }
             }
-            std::thread::sleep(Duration::from_millis(50))
+            crate::platform::sleep_millis(50)
         }
         Err(anyhow!("Edge did not expose DevTools on port {}", port))
     }
@@ -190,7 +190,7 @@ impl EdgeController {
                     Ok(target) => break target,
                     Err(error) if Instant::now() < deadline => {
                         let _ = error;
-                        std::thread::sleep(Duration::from_millis(50));
+                        crate::platform::sleep_millis(50);
                     }
                     Err(error) => return Err(error),
                 }
@@ -225,7 +225,7 @@ impl EdgeController {
             {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(40))
+            crate::platform::sleep_millis(40)
         }
         Ok(())
     }

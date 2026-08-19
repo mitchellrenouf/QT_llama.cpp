@@ -1,6 +1,5 @@
 //! Native platform paths and timestamps shared by tools and the agent.
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use mrml_windows::LocalTime;
@@ -8,10 +7,20 @@ use mrml_windows::LocalTime;
 use mrml_linux::LocalTime;
 
 pub fn unix_timestamp_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
+    platform_unix_time_millis() as u128
+}
+
+#[cfg(windows)]
+fn platform_unix_time_millis() -> u64 { mrml_windows::unix_time_millis() }
+
+#[cfg(unix)]
+fn platform_unix_time_millis() -> u64 { mrml_linux::unix_time_millis() }
+
+pub fn sleep_millis(milliseconds: u64) {
+    #[cfg(windows)]
+    mrml_windows::sleep_millis(milliseconds);
+    #[cfg(unix)]
+    mrml_linux::sleep_millis(milliseconds);
 }
 
 pub fn local_date_string() -> String {
@@ -67,10 +76,7 @@ fn local_time() -> LocalTime {
 
 #[cfg(unix)]
 fn local_time() -> LocalTime {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let seconds = (mrml_linux::unix_time_millis() / 1000) as i64;
     mrml_linux::local_time(seconds).unwrap_or(LocalTime {
         year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0,
     })

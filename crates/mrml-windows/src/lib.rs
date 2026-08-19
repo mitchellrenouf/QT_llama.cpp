@@ -18,10 +18,17 @@ pub struct LocalTime {
     pub milliseconds: u16,
 }
 
+#[repr(C)]
+struct FileTime {
+    low: u32,
+    high: u32,
+}
+
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetLocalTime(time: *mut LocalTime);
+    fn GetSystemTimeAsFileTime(time: *mut FileTime);
     fn GetProcessHeap() -> *mut c_void;
     fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
     fn HeapReAlloc(heap: *mut c_void, flags: u32, memory: *mut c_void, bytes: usize) -> *mut c_void;
@@ -73,6 +80,15 @@ pub fn monotonic_nanos() -> u64 {
 }
 
 #[cfg(windows)]
+pub fn unix_time_millis() -> u64 {
+    const WINDOWS_TO_UNIX_100NS: u64 = 116_444_736_000_000_000;
+    let mut value = FileTime { low: 0, high: 0 };
+    unsafe { GetSystemTimeAsFileTime(&mut value) };
+    let ticks = (value.high as u64) << 32 | value.low as u64;
+    ticks.saturating_sub(WINDOWS_TO_UNIX_100NS) / 10_000
+}
+
+#[cfg(windows)]
 pub fn local_time() -> LocalTime {
     let mut value = LocalTime::default();
     // SAFETY: value points to writable storage matching the SYSTEMTIME ABI.
@@ -85,6 +101,9 @@ pub fn sleep_millis(_: u64) {}
 
 #[cfg(not(windows))]
 pub fn monotonic_nanos() -> u64 { 0 }
+
+#[cfg(not(windows))]
+pub fn unix_time_millis() -> u64 { 0 }
 
 #[cfg(not(windows))]
 pub fn local_time() -> LocalTime {
@@ -106,6 +125,7 @@ mod tests {
 
     #[test]
     fn monotonic_clock_advances_across_native_sleep() {
+        assert!(super::unix_time_millis() > 1_000_000_000_000);
         let before = super::monotonic_nanos();
         super::sleep_millis(2);
         assert!(super::monotonic_nanos() > before);

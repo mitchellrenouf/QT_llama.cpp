@@ -10,7 +10,7 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
             .lock()
             .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
         if let Ok(page) = guard.get_or_create_page(Some(url)) {
-            std::thread::sleep(std::time::Duration::from_millis(1200));
+            crate::platform::sleep_millis(1200);
             if let Ok(html) = page.content() {
                 if !html.is_empty() {
                     return Ok(html);
