@@ -352,7 +352,7 @@ where
         }
 
         // Run real streaming curl download with resume support
-        let mut curl_cmd = std::process::Command::new("curl");
+        let mut curl_cmd = Command::new("curl");
         curl_cmd
             .arg("-f")
             .arg("-sS")
@@ -369,13 +369,10 @@ where
                 .arg(format!("Authorization: Bearer {}", token));
         }
 
-        let mut child = curl_cmd
-            .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()?;
+        let mut child = curl_cmd.spawn_silent()?;
 
         loop {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_wait() {
                 if !status.success() {
                     return Err(anyhow!(
                         "Failed to download {}. Check network or HF_TOKEN.",
