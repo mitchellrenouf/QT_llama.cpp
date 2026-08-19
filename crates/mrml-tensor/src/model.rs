@@ -440,7 +440,7 @@ impl MrmlModel {
         let layer_bytes = 450_000_000;
         let layer_devices = device_manager.plan_layers(n_layers, layer_bytes);
 
-        let sw_layers: Vec<usize> = (0..n_layers).filter(|i| i % 6 != 5).collect();
+        let sw_layers: Vector<usize> = (0..n_layers).filter(|i| i % 6 != 5).collect();
 
         let kv_cache = KvCacheManager::new(
             n_layers,
@@ -972,7 +972,7 @@ impl MrmlModel {
 
         #[cfg(feature = "cuda")]
         let gpu_valid_vocab = if cuda_dev.is_some() {
-            let bytes: Vec<u8> = valid_vocab_token.iter().map(|&v| u8::from(v)).collect();
+            let bytes: Vector<u8> = valid_vocab_token.iter().map(|&v| u8::from(v)).collect();
             crate::cuda::CudaBuffer::from_host_on(0, &bytes).ok()
         } else {
             None
