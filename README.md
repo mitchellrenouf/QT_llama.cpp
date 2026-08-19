@@ -11,6 +11,30 @@ That makes MRML useful as a compact inference-engine project, but it does not
 yet have llama.cpp's model coverage, hardware coverage, or years of kernel
 tuning.
 
+## Architecture and design intent
+
+MRML is a self-contained local inference runtime. Its portable crates are being
+migrated away from Rust's `std` and global `alloc` interfaces. This does not
+mean inference uses no dynamic memory. MRML instead makes allocation explicit
+through its own platform and accelerator layers:
+
+- `mrml-tensor` contains portable tensor and inference primitives.
+- `mrml-model` implements model behavior and generation.
+- `mrml-windows` and `mrml-linux` provide operating-system memory, file,
+  synchronization, timing, and process interfaces.
+- CUDA memory is managed directly through the NVIDIA driver API.
+- CLI, server, and tool crates contain application policy and user interfaces.
+
+The goals are predictable latency, controlled memory behavior, minimal
+third-party dependencies, portability, and a small auditable runtime. Hot paths
+use bounded storage, caller-provided buffers, arenas, memory mapping, and device
+memory instead of implicit general-purpose allocation where practical.
+
+When analyzing or extending MRML, preserve the separation between portable
+inference code, platform services, accelerator code, and application policy.
+Do not interpret `no_std` or the removal of `alloc` as an embedded-only
+limitation or as a claim that model execution never allocates memory.
+
 ## Status
 
 MRML is under active development and currently specializes in
