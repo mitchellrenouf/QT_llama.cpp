@@ -1,7 +1,16 @@
 pub use crate::modes::{AgentMode, BackendChoice};
+use core::fmt::Write as _;
 use core::str::FromStr;
 use mrml_runtime::{Text, Vector};
 use std::path::{Path, PathBuf};
+
+macro_rules! text_format {
+    ($($argument:tt)*) => {{
+        let mut output = Text::new();
+        write!(output, $($argument)*).expect("MRML text allocation failed");
+        output
+    }};
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -76,7 +85,9 @@ impl Default for Config {
 
 impl Config {
     pub fn parse() -> Self {
-        let arguments = std::env::args().collect::<Vec<_>>();
+        let arguments = std::env::args()
+            .map(|argument| Text::from(argument.as_str()))
+            .collect::<Vector<_>>();
         if arguments
             .iter()
             .any(|argument| argument == "--help" || argument == "-h")
@@ -100,32 +111,34 @@ impl Config {
         }
     }
 
-    pub fn try_parse_from<I, S>(arguments: I) -> Result<Self, String>
+    pub fn try_parse_from<I, S>(arguments: I) -> Result<Self, Text>
     where
         I: IntoIterator<Item = S>,
-        S: Into<String>,
+        S: AsRef<str>,
     {
-        let mut args = arguments.into_iter().map(Into::into);
+        let mut args = arguments
+            .into_iter()
+            .map(|argument| Text::from(argument.as_ref()));
         let _program = args.next();
         let mut config = Self::default();
         let mut args = args.peekable();
         while let Some(raw) = args.next() {
             if raw == "--help" || raw == "-h" {
-                return Err(Self::help().to_owned());
+                return Err(Self::help().into());
             }
             if raw == "--version" || raw == "-V" {
-                return Err(env!("CARGO_PKG_VERSION").to_owned());
+                return Err(env!("CARGO_PKG_VERSION").into());
             }
             let (name, inline) = raw
                 .split_once('=')
                 .map_or((raw.as_str(), None), |(name, value)| {
-                    (name, Some(value.to_owned()))
+                    (name, Some(value.into()))
                 });
             let mut value = || {
                 inline
                     .clone()
                     .or_else(|| args.next())
-                    .ok_or_else(|| format!("{name} requires a value"))
+                    .ok_or_else(|| text_format!("{name} requires a value"))
             };
             match name {
                 "--server-url" => config.server_url = value()?.as_str().into(),
@@ -133,7 +146,7 @@ impl Config {
                 "--model" => config.model = value()?.as_str().into(),
                 "--hf" => config.hf = Some(value()?.as_str().into()),
                 "--mode" => config.mode = parse_value("--mode", &value()?)?,
-                "--workspace-root" => config.workspace_root = value()?.into(),
+                "--workspace-root" => config.workspace_root = PathBuf::from(value()?.as_str()),
                 "--temperature" => config.temperature = parse_value(name, &value()?)?,
                 "--max-tokens" => config.max_tokens = parse_value(name, &value()?)?,
                 "--ctx-size" => config.ctx_size = parse_value(name, &value()?)?,
@@ -167,7 +180,7 @@ impl Config {
                 "--serve" => config.serve = true,
                 "--port" => config.port = parse_value(name, &value()?)?,
                 "--mcp-server" => config.mcp_servers.push(value()?.as_str().into()),
-                _ => return Err(format!("unknown argument '{raw}'")),
+                _ => return Err(text_format!("unknown argument '{raw}'")),
             }
         }
         Ok(config)
@@ -178,28 +191,28 @@ impl Config {
     }
 }
 
-fn parse_value<T: FromStr>(name: &str, value: &str) -> Result<T, String> {
+fn parse_value<T: FromStr>(name: &str, value: &str) -> Result<T, Text> {
     value
         .parse()
-        .map_err(|_| format!("invalid value '{value}' for {name}"))
+        .map_err(|_| text_format!("invalid value '{value}' for {name}"))
 }
 
-fn parse_bool(value: &str) -> Result<bool, String> {
+fn parse_bool(value: &str) -> Result<bool, Text> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Ok(true),
         "false" | "0" | "no" | "off" => Ok(false),
-        _ => Err(format!("invalid boolean '{value}'")),
+        _ => Err(text_format!("invalid boolean '{value}'")),
     }
 }
 
-fn parse_cache_type(name: &str, value: String) -> Result<String, String> {
+fn parse_cache_type(name: &str, value: Text) -> Result<Text, Text> {
     const TYPES: &[&str] = &[
         "auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
     ];
     if TYPES.contains(&value.as_str()) {
         Ok(value)
     } else {
-        Err(format!("invalid cache type '{value}' for {name}"))
+        Err(text_format!("invalid cache type '{value}' for {name}"))
     }
 }
 

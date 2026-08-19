@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use core::fmt::Write as _;
 use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
 use mrml_json::{Value, object};
@@ -6,6 +7,14 @@ use mrml_runtime::{Shared, SpinMutex, Text, Vector};
 use std::io::{self, BufRead};
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
+
+macro_rules! text_format {
+    ($($argument:tt)*) => {{
+        let mut output = Text::new();
+        write!(output, $($argument)*).expect("MRML text allocation failed");
+        output
+    }};
+}
 
 /// Stable, non-interactive MRML interface for ChatGPT and test harnesses.
 #[derive(Debug)]
@@ -18,7 +27,9 @@ struct Args {
 
 impl Args {
     fn parse() -> Self {
-        let arguments = std::env::args().collect::<Vec<_>>();
+        let arguments = std::env::args()
+            .map(|argument| Text::from(argument.as_str()))
+            .collect::<Vector<_>>();
         if arguments
             .iter()
             .any(|argument| argument == "--help" || argument == "-h")
@@ -45,15 +56,15 @@ impl Args {
         }
     }
 
-    fn try_parse_from<I, S>(arguments: I) -> std::result::Result<Self, String>
+    fn try_parse_from<I, S>(arguments: I) -> std::result::Result<Self, Text>
     where
         I: IntoIterator<Item = S>,
-        S: Into<String>,
+        S: AsRef<str>,
     {
         let all = arguments
             .into_iter()
-            .map(Into::into)
-            .collect::<Vec<String>>();
+            .map(|argument| Text::from(argument.as_ref()))
+            .collect::<Vector<Text>>();
         let program = all
             .first()
             .cloned()
@@ -61,8 +72,8 @@ impl Args {
         let command_index = all
             .iter()
             .position(|arg| matches!(arg.as_str(), "chat" | "health" | "session"))
-            .ok_or_else(|| "a chat, health, or session command is required".to_owned())?;
-        let mut common = vec![program];
+            .ok_or_else(|| Text::from("a chat, health, or session command is required"))?;
+        let mut common = Vector::from([program]);
         let mut require_full_gpu = std::env::var("MRML_REQUIRE_FULL_GPU")
             .ok()
             .map(|value| {
@@ -84,14 +95,14 @@ impl Args {
                     index += 1;
                     gpu_load_retries = all
                         .get(index)
-                        .ok_or_else(|| "--gpu-load-retries requires a value".to_owned())?
+                        .ok_or_else(|| Text::from("--gpu-load-retries requires a value"))?
                         .parse()
-                        .map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
+                        .map_err(|_| Text::from("invalid --gpu-load-retries value"))?;
                 }
                 value if value.starts_with("--gpu-load-retries=") => {
                     gpu_load_retries = value[19..]
                         .parse()
-                        .map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
+                        .map_err(|_| Text::from("invalid --gpu-load-retries value"))?;
                 }
                 _ => common.push(all[index].clone()),
             }
@@ -113,22 +124,22 @@ impl Args {
                             index += 1;
                             prompt = Some(
                                 tail.get(index)
-                                    .ok_or_else(|| "--prompt requires a value".to_owned())?
+                                    .ok_or_else(|| Text::from("--prompt requires a value"))?
                                     .as_str()
                                     .into(),
                             );
                         }
                         value if value.starts_with("--prompt=") => prompt = Some(value[9..].into()),
-                        value => return Err(format!("unknown chat argument '{value}'")),
+                        value => return Err(text_format!("unknown chat argument '{value}'")),
                     }
                     index += 1;
                 }
                 if stdin && prompt.is_some() {
-                    return Err("--stdin conflicts with --prompt".to_owned());
+                    return Err("--stdin conflicts with --prompt".into());
                 }
                 Command::Chat { prompt, stdin }
             }
-            command => return Err(format!("unexpected arguments after {command}")),
+            command => return Err(text_format!("unexpected arguments after {command}")),
         };
         Ok(Self {
             config,
