@@ -5,7 +5,7 @@ extern crate std;
 
 pub mod fixed_encoding;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod browser;
 #[cfg(feature = "runtime")]
 pub mod desktop;

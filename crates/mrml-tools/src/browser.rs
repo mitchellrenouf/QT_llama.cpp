@@ -2,8 +2,24 @@ use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::time::Duration;
 use mrml_runtime::{Child, Command, Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector};
+#[cfg(not(feature = "std"))]
+use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::{Value, json};
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
+
+fn owned_string(value: &str) -> String {
+    value.into()
+}
+
+#[cfg(feature = "std")]
+fn text_string(value: Text) -> String {
+    value.as_str().into()
+}
+
+#[cfg(not(feature = "std"))]
+fn text_string(value: Text) -> String {
+    value
+}
 
 struct CdpSocket {
     stream: TcpStream,
@@ -39,8 +55,7 @@ impl CdpSocket {
         self.next_id += 1;
         self.write_frame(
             1,
-            json!({"id":id,"method":method,"params":params})
-                .to_string()
+            serde_json::stringify(&json!({"id":id,"method":method,"params":params}))
                 .as_bytes(),
         )?;
         loop {
@@ -66,25 +81,25 @@ impl CdpSocket {
         }
     }
     fn write_frame(&mut self, op: u8, p: &[u8]) -> Result<()> {
-        let mut f = Vec::with_capacity(p.len() + 14);
+        let mut f = Vector::with_capacity(p.len() + 14).expect("MRML allocation failed");
         f.push(0x80 | op);
         if p.len() < 126 {
             f.push(0x80 | p.len() as u8)
         } else if p.len() <= 65535 {
             f.extend([0x80 | 126]);
-            f.extend_from_slice(&(p.len() as u16).to_be_bytes())
+            f.try_extend_from_slice(&(p.len() as u16).to_be_bytes()).expect("MRML allocation failed")
         } else {
             f.extend([0x80 | 127]);
-            f.extend_from_slice(&(p.len() as u64).to_be_bytes())
+            f.try_extend_from_slice(&(p.len() as u64).to_be_bytes()).expect("MRML allocation failed")
         }
         let k = (self.next_id as u32).wrapping_mul(0x9e3779b9).to_be_bytes();
-        f.extend_from_slice(&k);
+        f.try_extend_from_slice(&k).expect("MRML allocation failed");
         f.extend(p.iter().enumerate().map(|(i, b)| b ^ k[i % 4]));
         self.stream.write_all(&f)?;
         Ok(())
     }
-    fn read_message(&mut self) -> Result<(u8, Vec<u8>)> {
-        let mut all = Vec::new();
+    fn read_message(&mut self) -> Result<(u8, Vector<u8>)> {
+        let mut all = Vector::new();
         let mut first = 0;
         loop {
             let mut h = [0; 2];
@@ -234,25 +249,21 @@ impl EdgeController {
             .clone())
     }
     pub fn content(&mut self) -> Result<String> {
-        Ok(self
-            .eval("document.documentElement.outerHTML")?
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
+        Ok(owned_string(
+            self.eval("document.documentElement.outerHTML")?
+                .as_str()
+                .unwrap_or_default(),
+        ))
     }
     fn title(&mut self) -> Result<String> {
-        Ok(self
-            .eval("document.title")?
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
+        Ok(owned_string(
+            self.eval("document.title")?.as_str().unwrap_or_default(),
+        ))
     }
     fn url(&mut self) -> Result<String> {
-        Ok(self
-            .eval("location.href")?
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
+        Ok(owned_string(
+            self.eval("location.href")?.as_str().unwrap_or_default(),
+        ))
     }
 }
 impl Drop for EdgeController {
@@ -304,13 +315,13 @@ fn parse_ipv4_authority(authority: &str) -> Result<([u8; 4], u16)> {
     Ok((ip, port))
 }
 fn read_http_header(s: &mut TcpStream) -> Result<String> {
-    let mut v = Vec::new();
+    let mut v = Vector::new();
     let mut b = [0];
     while v.len() < 65536 {
         s.read_exact(&mut b)?;
         v.push(b[0]);
         if v.ends_with(b"\r\n\r\n") {
-            return Ok(String::from_utf8_lossy(&v).into_owned());
+            return Ok(text_string(Text::from_utf8_lossy(&v)));
         }
     }
     Err(anyhow!("HTTP header too large"))
@@ -339,7 +350,8 @@ fn http_json(port: u16, method: &str, path: &str) -> Result<Value> {
                 .flatten()
         })
         .ok_or_else(|| anyhow!("DevTools response omitted Content-Length"))?;
-    let mut body = vec![0; length];
+    let mut body = Vector::with_capacity(length).expect("MRML allocation failed");
+    body.resize(length, 0);
     s.read_exact(&mut body)?;
     Ok(serde_json::from_slice(&body)?)
 }
@@ -399,7 +411,7 @@ impl Tool for BrowserGetContentTool {
                 crate::markdown::truncate_utf8(&text, 6000)
             )
         } else {
-            text.to_string()
+            text_string(text)
         };
         Ok(format!(
             "[Headless Edge DOM Content - '{}']:\n{}",
@@ -427,13 +439,12 @@ impl Tool for BrowserScreenshotTool {
         let x = get_browser_controller().await?;
         let mut c = x.lock();
         c.get_or_create_page(None)?;
-        let data = c.cdp(
+        let data: String = owned_string(c.cdp(
             "Page.captureScreenshot",
             json!({"format":"jpeg","quality":75}),
         )?["data"]
             .as_str()
-            .unwrap_or_default()
-            .to_string();
+            .unwrap_or_default());
         let bytes = crate::encoding::base64_decode(&data)
             .map_err(|e| anyhow!("Invalid screenshot: {}", e))?;
         let dir = mrml_runtime::join_path(r, ".mrml/screenshots");
