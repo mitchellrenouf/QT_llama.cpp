@@ -2,8 +2,7 @@ use crate::anyhow::{self, Result};
 use crate::quant::{
     f16_to_f32, quantize_f32_to_q4_0, quantize_f32_to_q8_0, vec_dot_q4_0_q8_0, vec_dot_q8_0_q8_0,
 };
-use alloc::vec;
-use alloc::vec::Vec;
+use mrml_runtime::Vector;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum KvCacheFormat {
@@ -30,13 +29,14 @@ impl KvCacheFormat {
         }
     }
     pub fn parse(value: &str) -> Result<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "q4" | "q4_0" => Ok(Self::Q4),
-            "q8" | "q8_0" => Ok(Self::Q8),
-            "f32" | "f16" => Ok(Self::F32),
-            value => {
-                anyhow::bail!("unsupported CPU KV cache type '{value}' (use q4_0, q8_0, or f32)")
-            }
+        if value.eq_ignore_ascii_case("q4") || value.eq_ignore_ascii_case("q4_0") {
+            Ok(Self::Q4)
+        } else if value.eq_ignore_ascii_case("q8") || value.eq_ignore_ascii_case("q8_0") {
+            Ok(Self::Q8)
+        } else if value.eq_ignore_ascii_case("f32") || value.eq_ignore_ascii_case("f16") {
+            Ok(Self::F32)
+        } else {
+            anyhow::bail!("unsupported CPU KV cache type '{value}' (use q4_0, q8_0, or f32)")
         }
     }
 }
@@ -44,23 +44,25 @@ impl KvCacheFormat {
 #[derive(Clone, Debug)]
 pub enum KvCacheRow {
     Empty,
-    F32(Vec<f32>),
-    Q8(Vec<u8>),
-    Q4(Vec<u8>),
+    F32(Vector<f32>),
+    Q8(Vector<u8>),
+    Q4(Vector<u8>),
 }
 
 impl KvCacheRow {
     pub fn from_f32(values: &[f32], format: KvCacheFormat) -> Self {
         assert_eq!(values.len() % 32, 0);
         match format {
-            KvCacheFormat::F32 => Self::F32(values.to_vec()),
+            KvCacheFormat::F32 => Self::F32(values.iter().copied().collect()),
             KvCacheFormat::Q8 => {
-                let mut data = vec![0; values.len() / 32 * 34];
+                let mut data = Vector::new();
+                data.resize(values.len() / 32 * 34, 0);
                 quantize_f32_to_q8_0(values, &mut data);
                 Self::Q8(data)
             }
             KvCacheFormat::Q4 => {
-                let mut data = vec![0; values.len() / 32 * 18];
+                let mut data = Vector::new();
+                data.resize(values.len() / 32 * 18, 0);
                 quantize_f32_to_q4_0(values, &mut data);
                 Self::Q4(data)
             }
@@ -128,13 +130,14 @@ mod tests {
 
     #[test]
     fn quantized_rows_preserve_attention_operations() {
-        let values: Vec<f32> = (0..128)
+        let values: Vector<f32> = (0..128)
             .map(|i| ((i * 29 % 97) as f32 - 48.0) / 23.0)
             .collect();
-        let query: Vec<f32> = (0..64)
+        let query: Vector<f32> = (0..64)
             .map(|i| ((i * 11 % 53) as f32 - 26.0) / 17.0)
             .collect();
-        let mut query_q8 = vec![0; query.len() / 32 * 34];
+        let mut query_q8 = Vector::new();
+        query_q8.resize(query.len() / 32 * 34, 0);
         quantize_f32_to_q8_0(&query, &mut query_q8);
         let exact_dot: f32 = values[64..].iter().zip(&query).map(|(a, b)| a * b).sum();
 
@@ -145,7 +148,8 @@ mod tests {
                 (dot - exact_dot).abs() < tolerance,
                 "{format:?}: {dot} vs {exact_dot}"
             );
-            let mut actual = vec![0.0; 64];
+            let mut actual = Vector::new();
+            actual.resize(64, 0.0);
             row.add_head_scaled(&mut actual, 64, 0.37);
             let max_error = actual
                 .iter()
@@ -179,8 +183,8 @@ pub struct LayerKvCache {
     #[cfg(feature = "cuda")]
     pub d_v: Option<CudaBuffer<f32>>,
 
-    pub host_k: Vec<f32>,
-    pub host_v: Vec<f32>,
+    pub host_k: Vector<f32>,
+    pub host_v: Vector<f32>,
 }
 
 impl LayerKvCache {
@@ -213,8 +217,8 @@ impl LayerKvCache {
             d_k: None,
             #[cfg(feature = "cuda")]
             d_v: None,
-            host_k: Vec::new(),
-            host_v: Vec::new(),
+            host_k: Vector::new(),
+            host_v: Vector::new(),
         })
     }
 
@@ -236,7 +240,7 @@ impl LayerKvCache {
 /// Prompt Prefix Cache for 0ms initial prefill on recurring system instructions & rules
 #[derive(Default)]
 pub struct PrefixCache {
-    cached_tokens: Vec<i32>,
+    cached_tokens: Vector<i32>,
     cached_len: usize,
 }
 
@@ -261,7 +265,10 @@ impl PrefixCache {
 
     /// Update the cached prefix with newly evaluated tokens
     pub fn update(&mut self, tokens: &[i32], len: usize) {
-        self.cached_tokens = tokens[..len.min(tokens.len())].to_vec();
+        self.cached_tokens.clear();
+        self.cached_tokens
+            .try_extend_from_slice(&tokens[..len.min(tokens.len())])
+            .expect("MRML allocation failed");
         self.cached_len = self.cached_tokens.len();
     }
 
@@ -281,7 +288,7 @@ impl PrefixCache {
 
 /// Global KV Cache Manager managing all transformer layers up to 256k context
 pub struct KvCacheManager {
-    pub layers: Vec<LayerKvCache>,
+    pub layers: Vector<LayerKvCache>,
     pub max_context: usize,
     pub prefix_cache: PrefixCache,
 }
@@ -296,7 +303,7 @@ impl KvCacheManager {
         sliding_window_size: usize,
         layer_devices: &[crate::device::DeviceType],
     ) -> Result<Self> {
-        let mut layers = Vec::with_capacity(num_layers);
+        let mut layers = Vector::with_capacity(num_layers).expect("MRML allocation failed");
 
         for l in 0..num_layers {
             let is_swa = sliding_window_layers.contains(&l);
