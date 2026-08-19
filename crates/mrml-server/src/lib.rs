@@ -2,11 +2,10 @@ use anyhow::Result;
 use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use mrml_json::{Value, object};
 use mrml_terminal_style::Colorize;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub struct OpenAiChatRequest {
@@ -53,9 +52,9 @@ impl ApiServer {
         Self { client, port }
     }
 
-    pub async fn run(&self) -> Result<()> {
+    pub fn run(&self) -> Result<()> {
         let addr = format!("0.0.0.0:{}", self.port);
-        let listener = TcpListener::bind(&addr).await?;
+        let listener = TcpListener::bind(&addr)?;
         println!(
             "{}",
             format!(
@@ -68,7 +67,7 @@ impl ApiServer {
         println!("   - Endpoints: /v1/models, /v1/chat/completions (supports SSE stream: true)");
 
         loop {
-            let (socket, _) = match listener.accept().await {
+            let (socket, _) = match listener.accept() {
                 Ok(conn) => conn,
                 Err(e) => {
                     eprintln!("Socket accept error: {}", e);
@@ -77,8 +76,8 @@ impl ApiServer {
             };
 
             let client = self.client.clone();
-            tokio::spawn(async move {
-                if let Err(e) = handle_connection(socket, client).await {
+            std::thread::spawn(move || {
+                if let Err(e) = handle_connection(socket, client) {
                     eprintln!("HTTP Handler Error: {}", e);
                 }
             });
@@ -86,13 +85,13 @@ impl ApiServer {
     }
 }
 
-async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<()> {
+fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<()> {
     let mut buf = vec![0u8; 8192];
     let mut total_read = 0;
 
     // Read HTTP headers
     let header_end_pos = loop {
-        let n = socket.read(&mut buf[total_read..]).await?;
+        let n = socket.read(&mut buf[total_read..])?;
         if n == 0 {
             return Ok(());
         }
@@ -115,7 +114,7 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
     // Handle CORS preflight
     if method == "OPTIONS" {
         let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\n\r\n";
-        socket.write_all(resp.as_bytes()).await?;
+        socket.write_all(resp.as_bytes())?;
         return Ok(());
     }
 
@@ -138,7 +137,7 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
             body.len(),
             body
         );
-        socket.write_all(resp.as_bytes()).await?;
+        socket.write_all(resp.as_bytes())?;
         return Ok(());
     }
 
@@ -154,7 +153,7 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
 
         let body_start = header_end_pos + 4;
         while total_read < body_start + content_length {
-            let n = socket.read(&mut buf[total_read..]).await?;
+            let n = socket.read(&mut buf[total_read..])?;
             if n == 0 {
                 break;
             }
@@ -173,7 +172,7 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
                     err_body.len(),
                     err_body
                 );
-                socket.write_all(resp.as_bytes()).await?;
+                socket.write_all(resp.as_bytes())?;
                 return Ok(());
             }
         };
@@ -206,45 +205,35 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
 
         if stream_mode {
             let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
-            socket.write_all(header.as_bytes()).await?;
-
-            let (tx, mut rx) = mpsc::channel::<String>(128);
-            let client_clone = client.clone();
-            let req_clone = req.clone();
-
-            tokio::spawn(async move {
-                let _ = client_clone
-                    .stream_completion(&req_clone, |event| match event {
-                        StreamEvent::Content(c) => {
-                            let _ = tx.blocking_send(c);
-                        }
-                        StreamEvent::Reasoning(r) => {
-                            let _ = tx.blocking_send(r);
-                        }
-                        _ => {}
-                    })
-                    .await;
-            });
+            socket.write_all(header.as_bytes())?;
 
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
 
-            while let Some(piece) = rx.recv().await {
-                let sse_line = format!("data: {}\n\n", sse_chunk(now, Some(piece), None));
-                if socket.write_all(sse_line.as_bytes()).await.is_err() {
-                    break;
+            let mut disconnected = false;
+            let stream_result = mrml_tools::block_on(client.stream_completion(&req, |event| {
+                let piece = match event {
+                    StreamEvent::Content(content) | StreamEvent::Reasoning(content) => content,
+                    _ => return,
+                };
+                if !disconnected {
+                    let line = format!("data: {}\n\n", sse_chunk(now, Some(piece), None));
+                    disconnected = socket.write_all(line.as_bytes()).is_err();
                 }
-            }
+            }));
+            stream_result?;
 
             let done_obj = sse_chunk(now, None, Some("stop"));
-            let _ = socket
-                .write_all(format!("data: {}\n\ndata: [DONE]\n\n", done_obj).as_bytes())
-                .await;
+            if !disconnected {
+                let _ = socket.write_all(
+                    format!("data: {}\n\ndata: [DONE]\n\n", done_obj).as_bytes(),
+                );
+            }
             return Ok(());
         } else {
-            let res = client.chat_completion(&req).await?;
+            let res = mrml_tools::block_on(client.chat_completion(&req))?;
             let _now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -263,13 +252,13 @@ async fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Re
                 body.len(),
                 body
             );
-            socket.write_all(resp.as_bytes()).await?;
+            socket.write_all(resp.as_bytes())?;
             return Ok(());
         }
     }
 
     let not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-    socket.write_all(not_found.as_bytes()).await?;
+    socket.write_all(not_found.as_bytes())?;
     Ok(())
 }
 
@@ -348,5 +337,27 @@ mod json_tests {
         let value = mrml_json::parse(&chunk).unwrap();
         assert_eq!(value.get("created").and_then(Value::as_u64), Some(7));
         assert!(chunk.contains(r#"hello\n\"world\""#));
+    }
+
+    #[test]
+    fn serves_models_over_standard_tcp() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = Arc::new(MrmlClient::new("", ""));
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            handle_connection(socket, client).unwrap();
+        });
+
+        let mut socket = TcpStream::connect(address).unwrap();
+        socket
+            .write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        server.join().unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("gemma-4-26B-A4B-it"));
     }
 }

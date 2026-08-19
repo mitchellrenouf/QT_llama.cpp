@@ -21,14 +21,3 @@ version = "0.4.0"
 edition = "2024"
 authors = ["Mitchell Renouf <mitchell@localhost>"]
 license = "CC0-1.0"
-
-[workspace.dependencies]
-tokio = { version = "1.43", features = [
-    "io-util",
-    "macros",
-    "net",
-    "process",
-    "rt-multi-thread",
-    "sync",
-    "time",
-] }

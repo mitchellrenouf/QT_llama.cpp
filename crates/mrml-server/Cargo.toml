@@ -22,4 +22,4 @@ mrml-terminal-style = { path = "../mrml-terminal-style" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 mrml-model = { path = "../mrml-model" }
 mrml-json = { path = "../mrml-json" }
-tokio.workspace = true
+mrml-tools = { path = "../mrml-tools" }
