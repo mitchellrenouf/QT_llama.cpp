@@ -77,6 +77,12 @@ impl File {
         Ok(())
     }
 
+    pub fn read(&mut self, buffer: &mut [u8]) -> Result<usize, FileError> {
+        let read = self.inner.read(buffer).ok_or(FileError::ReadFailed)?;
+        self.position = self.position.saturating_add(read as u64);
+        Ok(read)
+    }
+
     pub fn seek(&mut self, position: u64) -> Result<(), FileError> {
         self.inner
             .seek_absolute(position)

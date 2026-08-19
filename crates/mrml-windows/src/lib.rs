@@ -31,6 +31,7 @@ struct FileTime {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetLocalTime(time: *mut LocalTime);
+    fn GetCommandLineW() -> *const u16;
     fn GetSystemTimeAsFileTime(time: *mut FileTime);
     fn GetProcessHeap() -> *mut c_void;
     fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
@@ -104,6 +105,16 @@ unsafe extern "system" {
     fn WakeByAddressSingle(address: *const c_void);
     fn WakeByAddressAll(address: *const c_void);
     fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[cfg(windows)]
+pub fn command_line_wide() -> &'static [u16] {
+    let pointer = unsafe { GetCommandLineW() };
+    let mut length = 0usize;
+    while unsafe { *pointer.add(length) } != 0 {
+        length += 1;
+    }
+    unsafe { core::slice::from_raw_parts(pointer, length) }
 }
 
 #[cfg(windows)]

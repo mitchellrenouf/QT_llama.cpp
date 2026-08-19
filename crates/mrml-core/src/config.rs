@@ -77,9 +77,7 @@ impl Default for Config {
 
 impl Config {
     pub fn parse() -> Self {
-        let arguments = std::env::args()
-            .map(|argument| Text::from(argument.as_str()))
-            .collect::<Vector<_>>();
+        let arguments = mrml_runtime::command_arguments();
         if arguments
             .iter()
             .any(|argument| argument == "--help" || argument == "-h")
