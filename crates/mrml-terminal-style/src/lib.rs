@@ -1,5 +1,31 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum AnsiCode {
+    Bold = 1,
+    Dimmed = 2,
+    Italic = 3,
+    Red = 31,
+    Green = 32,
+    Yellow = 33,
+    Magenta = 35,
+    Cyan = 36,
+    BrightBlack = 90,
+    BrightGreen = 92,
+    BrightYellow = 93,
+    BrightCyan = 96,
+    BrightWhite = 97,
+}
+
+impl AnsiCode {
+    pub const fn value(self) -> u8 {
+        self as u8
+    }
+}
+
+#[cfg(feature = "alloc")]
+mod allocated {
 extern crate alloc;
 
 use alloc::string::{String, ToString};
@@ -141,5 +167,18 @@ mod tests {
         assert_eq!("hello".green().bold().to_string(), "hello");
         // SAFETY: paired with the serialized mutation above.
         unsafe { std::env::remove_var("NO_COLOR") };
+    }
+}
+}
+
+#[cfg(feature = "alloc")]
+pub use allocated::*;
+
+#[cfg(test)]
+mod portable_tests {
+    #[test]
+    fn ansi_codes_have_protocol_values_without_allocation() {
+        assert_eq!(super::AnsiCode::Bold.value(), 1);
+        assert_eq!(super::AnsiCode::BrightWhite.value(), 97);
     }
 }
