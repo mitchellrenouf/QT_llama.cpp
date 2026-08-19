@@ -6,6 +6,10 @@ fn native_file_len(path: &Path) -> Option<u64> {
     mrml_runtime::File::open(path.to_str()?).ok()?.len().ok()
 }
 
+fn path_file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HfModelSpec {
     pub repo_id: Text,
@@ -113,22 +117,19 @@ impl HfModelSpec {
         }
 
         let target_quant_lower = self.quant.to_ascii_lowercase();
-        for path in crate::fs_walk::paths(&model_dir) {
-            let name = Text::from(
-                path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .as_ref(),
-            )
-            .to_ascii_lowercase();
+        let Some(model_dir) = model_dir.to_str() else { return false };
+        for path in crate::fs_walk::paths(model_dir) {
+            let name = Text::from(path_file_name(&path)).to_ascii_lowercase();
             if name.ends_with(".gguf")
                 && name.contains(target_quant_lower.as_str())
                 && !name.ends_with(".part")
                 && !name.contains("mmproj")
                 && !name.contains("mtp")
             {
-                if native_file_len(&path).is_some_and(|length| length > 10 * 1024 * 1024) {
+                if mrml_runtime::File::open(&path)
+                    .and_then(|file| file.len())
+                    .is_ok_and(|length| length > 10 * 1024 * 1024)
+                {
                     // > 10MB
                     return true;
                 }

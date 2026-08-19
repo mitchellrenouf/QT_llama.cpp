@@ -1016,11 +1016,11 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                 .is_some_and(mrml_runtime::path_is_directory)
             {
                 let mut best_match = None;
-                for path in crate::fs_walk::paths(&repo_dir) {
+                for path in crate::fs_walk::paths(repo_dir.to_str().unwrap_or("")) {
                     let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(&path)
                         .to_lowercase();
                     if name.ends_with(".gguf")
                         && !name.ends_with(".part")
@@ -1028,10 +1028,10 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                         && !name.contains("mtp")
                     {
                         if name.contains(&target_quant) {
-                            return Some(path);
+                            return Some(PathBuf::from(path.as_str()));
                         }
                         if best_match.is_none() {
-                            best_match = Some(path);
+                            best_match = Some(PathBuf::from(path.as_str()));
                         }
                     }
                 }
@@ -1046,11 +1046,11 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                 .to_str()
                 .is_some_and(mrml_runtime::path_is_directory)
             {
-                for path in crate::fs_walk::paths(&legacy_dir) {
+                for path in crate::fs_walk::paths(legacy_dir.to_str().unwrap_or("")) {
                     let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(&path)
                         .to_lowercase();
                     if name.ends_with(".gguf")
                         && !name.ends_with(".part")
@@ -1058,7 +1058,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                         && !name.contains("mtp")
                     {
                         if name.contains(&target_quant) {
-                            return Some(path);
+                            return Some(PathBuf::from(path.as_str()));
                         }
                     }
                 }
@@ -1068,11 +1068,11 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
 
     // 2. Scan whole cache roots for matching model file
     for root in &cache_roots {
-        for path in crate::fs_walk::paths(root) {
+        for path in crate::fs_walk::paths(root.to_str().unwrap_or("")) {
             let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(&path)
                 .to_lowercase();
             if name.ends_with(".gguf")
                 && !name.ends_with(".part")
@@ -1080,7 +1080,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
                 && !name.contains("mtp")
             {
                 if name.contains("gemma-4") || name.contains("gemma") {
-                    return Some(path);
+                    return Some(PathBuf::from(path.as_str()));
                 }
             }
         }

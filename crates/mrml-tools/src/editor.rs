@@ -316,8 +316,13 @@ impl Tool for GrepSearchTool {
         let search_path = workspace_root.join(sub_path);
         let pattern = crate::simple_regex::Regex::new(query_str)?;
         let mut matches = Vec::new();
-        for path in crate::fs_walk::paths(search_path) {
-            let path = path.as_path();
+        for path in crate::fs_walk::paths(
+            search_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Search path is not valid UTF-8"))?,
+        ) {
+            let path_buffer = std::path::PathBuf::from(path.as_str());
+            let path = path_buffer.as_path();
             if !path.to_str().is_some_and(mrml_runtime::path_is_file) {
                 continue;
             }
