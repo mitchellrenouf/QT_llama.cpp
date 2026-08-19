@@ -582,7 +582,7 @@ unsafe fn launch_rust_prepare_ffn(
     launch_rust_kernel(
         "rust_cuda_prepare_ffn_f32",
         (batch as u32, 1, 1),
-        (256, 1, 1),
+        (512, 1, 1),
         stream,
         &mut args,
     )
@@ -621,7 +621,7 @@ unsafe fn launch_rust_finish_ffn(
     launch_rust_kernel(
         "rust_cuda_finish_ffn_f32",
         (batch as u32, 1, 1),
-        (256, 1, 1),
+        (512, 1, 1),
         stream,
         &mut args,
     )

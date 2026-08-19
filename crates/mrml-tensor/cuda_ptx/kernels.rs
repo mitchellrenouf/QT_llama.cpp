@@ -6,7 +6,7 @@ use core::arch::{
     nvptx::{_block_dim_x, _block_idx_x, _block_idx_y, _block_idx_z, _grid_dim_x, _thread_idx_x},
 };
 
-global_asm!(".shared .align 4 .b8 rust_rms_scratch[32];");
+global_asm!(".shared .align 4 .b8 rust_rms_scratch[64];");
 global_asm!(".shared .align 4 .b8 rust_vocab_scratch[16384];");
 global_asm!(".extern .shared .align 4 .b8 rust_dynamic_scratch[];");
 
