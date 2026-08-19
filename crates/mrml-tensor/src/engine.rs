@@ -74,7 +74,7 @@ impl MrmlEngine {
         let model_arc = self.model.clone();
         let prompt_string = Text::from(prompt);
 
-        std::thread::spawn(move || {
+        let _ = mrml_runtime::spawn_detached(move || {
             let prompt_tokens = {
                 let guard = model_arc.lock();
                 guard.tokenize(&prompt_string)
