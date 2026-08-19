@@ -471,7 +471,7 @@ impl MrmlAgent {
             let clock_command = "date '+%Y-%m-%d %H:%M:%S %z'";
             let command = explicit_command.unwrap_or_else(|| clock_command.to_string());
             let call_id = format!("clock-{}", self.history.len());
-            let args = serde_json::json!({ "command_line": command });
+            let args = serde_json::json!({ "command_line": (command.as_str()) });
             let tool_call = crate::client::ToolCall {
                 id: call_id.clone(),
                 tool_type: "function".to_string(),
@@ -660,7 +660,7 @@ impl MrmlAgent {
             let clock_command = "date '+%Y-%m-%d %H:%M:%S %z'";
             let command = explicit_command.unwrap_or_else(|| clock_command.to_string());
             let call_id = format!("clock-{}", self.history.len());
-            let args = serde_json::json!({ "command_line": command });
+            let args = serde_json::json!({ "command_line": (command.as_str()) });
             let tool_call = crate::client::ToolCall {
                 id: call_id.clone(),
                 tool_type: "function".to_string(),

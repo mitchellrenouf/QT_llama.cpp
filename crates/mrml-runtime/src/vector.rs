@@ -16,6 +16,9 @@ pub struct Vector<T> {
     capacity: usize,
 }
 
+unsafe impl<T: Send> Send for Vector<T> {}
+unsafe impl<T: Sync> Sync for Vector<T> {}
+
 impl<T> Vector<T> {
     pub const fn new() -> Self {
         Self {
@@ -54,12 +57,39 @@ impl<T> Vector<T> {
         Ok(())
     }
 
+    pub fn push(&mut self, value: T) {
+        self.try_push(value).expect("MRML allocation failed");
+    }
+
     pub fn pop(&mut self) -> Option<T> {
         if self.length == 0 {
             return None;
         }
         self.length -= 1;
         Some(unsafe { self.pointer.as_ptr().add(self.length).read() })
+    }
+
+    pub fn try_insert(&mut self, index: usize, value: T) -> Result<(), TryReserveError> {
+        assert!(index <= self.length, "vector insertion index out of bounds");
+        self.try_reserve(1)?;
+        unsafe {
+            let insertion = self.pointer.as_ptr().add(index);
+            ptr::copy(insertion, insertion.add(1), self.length - index);
+            insertion.write(value);
+        }
+        self.length += 1;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, index: usize) -> T {
+        assert!(index < self.length, "vector removal index out of bounds");
+        unsafe {
+            let removal = self.pointer.as_ptr().add(index);
+            let value = removal.read();
+            ptr::copy(removal.add(1), removal, self.length - index - 1);
+            self.length -= 1;
+            value
+        }
     }
 
     pub fn clear(&mut self) {
@@ -132,6 +162,14 @@ impl<T> Vector<T> {
         Ok(())
     }
 
+    pub fn resize(&mut self, length: usize, value: T)
+    where
+        T: Clone,
+    {
+        self.try_resize(length, value)
+            .expect("MRML allocation failed");
+    }
+
     pub fn into_raw_parts(self) -> (*mut T, usize, usize) {
         let this = ManuallyDrop::new(self);
         (this.pointer.as_ptr(), this.length, this.capacity)
@@ -197,6 +235,16 @@ impl<T: PartialEq> PartialEq for Vector<T> {
     }
 }
 impl<T: Eq> Eq for Vector<T> {}
+impl<T: PartialOrd> PartialOrd for Vector<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self[..].partial_cmp(&other[..])
+    }
+}
+impl<T: Ord> Ord for Vector<T> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self[..].cmp(&other[..])
+    }
+}
 
 impl<T: Clone> Clone for Vector<T> {
     fn clone(&self) -> Self {
@@ -206,6 +254,44 @@ impl<T: Clone> Clone for Vector<T> {
             .try_extend_from_slice(self)
             .unwrap_or_else(|_| panic!("MRML allocation failed"));
         output
+    }
+}
+
+impl<T, const N: usize> From<[T; N]> for Vector<T> {
+    fn from(values: [T; N]) -> Self {
+        let mut output = Self::with_capacity(N).expect("MRML allocation failed");
+        for value in values {
+            output.push(value);
+        }
+        output
+    }
+}
+
+impl<T> core::iter::FromIterator<T> for Vector<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
+        let iterator = values.into_iter();
+        let mut output =
+            Self::with_capacity(iterator.size_hint().0).expect("MRML allocation failed");
+        for value in iterator {
+            output.push(value);
+        }
+        output
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Vector<T> {
+    type Item = &'a T;
+    type IntoIter = core::slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut Vector<T> {
+    type Item = &'a mut T;
+    type IntoIter = core::slice::IterMut<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
     }
 }
 

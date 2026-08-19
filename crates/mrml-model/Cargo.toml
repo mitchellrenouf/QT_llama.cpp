@@ -12,7 +12,7 @@ mrml-tensor = { path = "../mrml-tensor", default-features = false, optional = tr
 
 [features]
 default = ["std", "auto"]
-alloc = ["dep:serde_json", "serde_json/alloc"]
+alloc = ["dep:serde_json"]
 std = ["alloc", "dep:mrml-tensor", "mrml-tensor/std"]
 auto = ["std", "mrml-tensor/cuda"]
 cuda = ["std", "mrml-tensor/cuda"]

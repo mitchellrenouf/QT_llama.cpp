@@ -6,8 +6,5 @@ authors.workspace = true
 license.workspace = true
 description = "Dependency-free JSON parser and serializer for MRML"
 
-[features]
-default = ["alloc"]
-alloc = []
-
 [dependencies]
+mrml-runtime = { path = "../mrml-runtime" }

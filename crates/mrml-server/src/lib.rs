@@ -146,7 +146,7 @@ fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<(
             ("object", "list".into()),
             (
                 "data",
-                Value::Array(vec![object([
+                mrml_json::array([object([
                     ("id", "gemma-4-26B-A4B-it".into()),
                     ("object", "model".into()),
                     ("created", now.into()),
@@ -186,8 +186,10 @@ fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<(
         let chat_req = match OpenAiChatRequest::parse(body_bytes) {
             Ok(r) => r,
             Err(e) => {
-                let err_body =
-                    mrml_json::stringify(&object([("error", format!("Invalid JSON: {e}").into())]));
+                let err_body = mrml_json::stringify(&object([(
+                    "error",
+                    Value::text(format!("Invalid JSON: {e}")),
+                )]));
                 let resp = format!(
                     "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
                     err_body.len(),
@@ -258,12 +260,12 @@ fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<(
                     object([
                         ("index", choice.index.into()),
                         ("message", chat_message_value(choice.message)),
-                        ("finish_reason", choice.finish_reason.into()),
+                        ("finish_reason", Value::optional_text(choice.finish_reason)),
                     ])
                 })
                 .collect();
             let body = mrml_json::stringify(&object([
-                ("id", res.id.into()),
+                ("id", Value::text(res.id)),
                 ("choices", Value::Array(choices)),
             ]));
             let resp = format!(
@@ -289,7 +291,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn sse_chunk(created: u64, content: Option<String>, finish_reason: Option<&str>) -> String {
     let delta = content
-        .map(|content| object([("content", content.into())]))
+        .map(|content| object([("content", Value::text(content))]))
         .unwrap_or_else(|| Value::Object(Default::default()));
     mrml_json::stringify(&object([
         ("id", "chatcmpl-mrml".into()),
@@ -298,28 +300,29 @@ fn sse_chunk(created: u64, content: Option<String>, finish_reason: Option<&str>)
         ("model", "gemma-4-26B-A4B-it".into()),
         (
             "choices",
-            Value::Array(vec![object([
+            mrml_json::array([object([
                 ("index", 0usize.into()),
                 ("delta", delta),
-                ("finish_reason", finish_reason.map(str::to_owned).into()),
+                ("finish_reason", Value::optional_text(finish_reason)),
             ])]),
         ),
     ]))
+    .to_string()
 }
 
 fn chat_message_value(message: ChatMessage) -> Value {
     let content = match message.content {
-        Some(mrml_model::MessageContent::Text(text)) => text.into(),
+        Some(mrml_model::MessageContent::Text(text)) => Value::text(text),
         Some(mrml_model::MessageContent::Parts(parts)) => Value::Array(
             parts
                 .into_iter()
                 .map(|part| match part {
                     mrml_model::ContentPart::Text { text } => {
-                        object([("type", "text".into()), ("text", text.into())])
+                        object([("type", "text".into()), ("text", Value::text(text))])
                     }
                     mrml_model::ContentPart::ImageUrl { image_url } => object([
                         ("type", "image_url".into()),
-                        ("image_url", object([("url", image_url.url.into())])),
+                        ("image_url", object([("url", Value::text(image_url.url))])),
                     ]),
                 })
                 .collect(),
@@ -327,11 +330,14 @@ fn chat_message_value(message: ChatMessage) -> Value {
         None => Value::Null,
     };
     let mut fields = [
-        ("role", message.role.into()),
+        ("role", Value::text(message.role)),
         ("content", content),
-        ("name", message.name.into()),
-        ("tool_call_id", message.tool_call_id.into()),
-        ("reasoning_content", message.reasoning_content.into()),
+        ("name", Value::optional_text(message.name)),
+        ("tool_call_id", Value::optional_text(message.tool_call_id)),
+        (
+            "reasoning_content",
+            Value::optional_text(message.reasoning_content),
+        ),
         ("tool_calls", Value::Null),
     ];
     if let Some(calls) = message.tool_calls {
@@ -340,13 +346,13 @@ fn chat_message_value(message: ChatMessage) -> Value {
                 .into_iter()
                 .map(|call| {
                     object([
-                        ("id", call.id.into()),
-                        ("type", call.tool_type.into()),
+                        ("id", Value::text(call.id)),
+                        ("type", Value::text(call.tool_type)),
                         (
                             "function",
                             object([
-                                ("name", call.function.name.into()),
-                                ("arguments", call.function.arguments.into()),
+                                ("name", Value::text(call.function.name)),
+                                ("arguments", Value::text(call.function.arguments)),
                             ]),
                         ),
                     ])

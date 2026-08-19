@@ -116,7 +116,7 @@ impl ChatMessage {
 
     pub fn to_json(&self) -> serde_json::Value {
         let content = match &self.content {
-            Some(MessageContent::Text(text)) => text.clone().into(),
+            Some(MessageContent::Text(text)) => text.as_str().into(),
             Some(MessageContent::Parts(parts)) => serde_json::Value::Array(
                 parts
                     .iter()
@@ -164,10 +164,13 @@ impl ChatMessage {
         let fields = [
             ("role", self.role.as_str().into()),
             ("content", content),
-            ("name", self.name.clone().into()),
-            ("tool_call_id", self.tool_call_id.clone().into()),
+            ("name", self.name.as_deref().into()),
+            ("tool_call_id", self.tool_call_id.as_deref().into()),
             ("tool_calls", calls),
-            ("reasoning_content", self.reasoning_content.clone().into()),
+            (
+                "reasoning_content",
+                self.reasoning_content.as_deref().into(),
+            ),
         ];
         serde_json::Value::Object(
             fields
@@ -186,7 +189,7 @@ impl ChatMessage {
             .to_owned();
         let content = match value.get("content") {
             None | Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::String(text)) => Some(MessageContent::Text(text.clone())),
+            Some(serde_json::Value::String(text)) => Some(MessageContent::Text(text.to_string())),
             Some(serde_json::Value::Array(parts)) => Some(MessageContent::Parts(
                 parts
                     .iter()
@@ -465,7 +468,11 @@ fn render_gemma4_template(
                     output.push_str(name);
                     output.push_str("{value:");
                     output.push_str(&format_argument_canonical(&serde_json::Value::String(
-                        response.get_text_content().unwrap_or_default(),
+                        response
+                            .get_text_content()
+                            .unwrap_or_default()
+                            .as_str()
+                            .into(),
                     )));
                     output.push_str("}<tool_response|>");
                     follow += 1;

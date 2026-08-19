@@ -2,7 +2,7 @@ use crate::{TryReserveError, Vector};
 use core::fmt::{self, Write};
 use core::ops::Deref;
 
-#[derive(Clone, Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Text {
     bytes: Vector<u8>,
 }
@@ -37,10 +37,16 @@ impl Text {
     pub fn try_push_str(&mut self, value: &str) -> Result<(), TryReserveError> {
         self.bytes.try_extend_from_slice(value.as_bytes())
     }
+    pub fn push_str(&mut self, value: &str) {
+        self.try_push_str(value).expect("MRML allocation failed");
+    }
 
     pub fn try_push(&mut self, value: char) -> Result<(), TryReserveError> {
         let mut encoded = [0; 4];
         self.try_push_str(value.encode_utf8(&mut encoded))
+    }
+    pub fn push(&mut self, value: char) {
+        self.try_push(value).expect("MRML allocation failed");
     }
 
     pub fn clear(&mut self) {
@@ -67,6 +73,21 @@ impl Deref for Text {
         self.as_str()
     }
 }
+impl core::borrow::Borrow<str> for Text {
+    fn borrow(&self) -> &str {
+        self
+    }
+}
+impl AsRef<str> for Text {
+    fn as_ref(&self) -> &str {
+        self
+    }
+}
+impl AsRef<[u8]> for Text {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
 impl fmt::Display for Text {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self)
@@ -90,6 +111,11 @@ impl PartialEq<str> for Text {
 impl PartialEq<&str> for Text {
     fn eq(&self, other: &&str) -> bool {
         self.as_str() == *other
+    }
+}
+impl From<&str> for Text {
+    fn from(value: &str) -> Self {
+        Self::try_from_str(value).expect("MRML allocation failed")
     }
 }
 

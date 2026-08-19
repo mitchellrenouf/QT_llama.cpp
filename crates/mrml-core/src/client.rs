@@ -240,19 +240,16 @@ pub fn parse_kwargs_to_json(args: &str) -> String {
                     || (raw_val.starts_with('\'') && raw_val.ends_with('\'')))
             {
                 map.insert(
-                    key.to_string(),
-                    serde_json::Value::String(raw_val[1..raw_val.len() - 1].to_string()),
+                    key.into(),
+                    serde_json::Value::String(raw_val[1..raw_val.len() - 1].into()),
                 );
             } else {
                 if let Ok(n) = raw_val.parse::<i64>() {
-                    map.insert(key.to_string(), serde_json::json!(n));
+                    map.insert(key.into(), serde_json::json!(n));
                 } else if let Ok(b) = raw_val.parse::<bool>() {
-                    map.insert(key.to_string(), serde_json::json!(b));
+                    map.insert(key.into(), serde_json::json!(b));
                 } else {
-                    map.insert(
-                        key.to_string(),
-                        serde_json::Value::String(raw_val.to_string()),
-                    );
+                    map.insert(key.into(), serde_json::Value::String(raw_val.into()));
                 }
             }
         }

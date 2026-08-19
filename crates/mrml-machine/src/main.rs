@@ -304,17 +304,25 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
 
     let tools = std::mem::take(&mut state.tools)
         .into_iter()
-        .map(|tool| object([("name", tool.name.into()), ("result", tool.result.into())]))
+        .map(|tool| {
+            object([
+                ("name", Value::text(tool.name)),
+                ("result", Value::text(tool.result)),
+            ])
+        })
         .collect();
     Ok(object([
         ("schema_version", 1usize.into()),
         ("type", "chat_result".into()),
         ("id", id.into()),
         ("ok", true.into()),
-        ("content", content.into()),
-        ("reasoning", reasoning.into()),
+        ("content", Value::text(content)),
+        ("reasoning", Value::text(reasoning)),
         ("tool_events", Value::Array(tools)),
-        ("finish_reason", state.finish_reason.clone().into()),
+        (
+            "finish_reason",
+            Value::optional_text(state.finish_reason.clone()),
+        ),
         (
             "metrics",
             object([
@@ -334,14 +342,14 @@ async fn health(agent: &MrmlAgent, id: Option<Value>) -> Value {
             ("type", "health_result".into()),
             ("id", id.into()),
             ("ok", true.into()),
-            ("message", message.into()),
+            ("message", Value::text(message)),
         ]),
         Err(error) => object([
             ("schema_version", 1usize.into()),
             ("type", "health_result".into()),
             ("id", id.into()),
             ("ok", false.into()),
-            ("error", error.to_string().into()),
+            ("error", Value::text(error.to_string())),
         ]),
     }
 }
@@ -367,7 +375,7 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
                     ("type", "error".into()),
                     ("ok", false.into()),
                     ("error", "invalid_request".into()),
-                    ("message", error.to_string().into()),
+                    ("message", Value::text(error.to_string())),
                 ]))?;
                 continue;
             }
@@ -403,7 +411,7 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
                 ("type", "error".into()),
                 ("ok", false.into()),
                 ("error", "operation_failed".into()),
-                ("message", error.to_string().into()),
+                ("message", Value::text(error.to_string())),
             ]))?,
         }
     }
