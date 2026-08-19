@@ -2182,7 +2182,7 @@ impl MrmlModel {
             }
         }
 
-        let formatted = text.replace(' ', "\u{2581}");
+        let formatted = Text::from(text).replace(" ", "\u{2581}");
         let mut char_indices: Vector<usize> = formatted.char_indices().map(|(i, _)| i).collect();
         char_indices.push(formatted.len());
 
@@ -2207,7 +2207,8 @@ impl MrmlModel {
                     tokens.push(tid);
                 } else {
                     for &b in single_char.as_bytes() {
-                        let hex_repr = format!("<0x{:02X}>", b);
+                        let mut hex_repr = Text::with_capacity(6).expect("MRML allocation failed");
+                        write!(hex_repr, "<0x{b:02X}>").expect("MRML allocation failed");
                         if let Some(&tid) = self.vocab_to_id.get(hex_repr.as_str()) {
                             tokens.push(tid);
                         }
