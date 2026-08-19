@@ -78,6 +78,7 @@ unsafe extern "C" {
     fn opendir(path: *const i8) -> *mut c_void;
     fn readdir(directory: *mut c_void) -> *mut Dirent;
     fn closedir(directory: *mut c_void) -> c_int;
+    fn realpath(path: *const i8, resolved: *mut i8) -> *mut i8;
     fn pthread_create(
         thread: *mut usize,
         attributes: *const c_void,
@@ -259,6 +260,13 @@ pub fn path_is_directory(path: &CStr) -> bool {
         let _ = unsafe { close(file) };
         true
     }
+}
+
+#[cfg(unix)]
+pub fn canonical_path<'a>(path: &CStr, output: &'a mut [u8; 4096]) -> Option<&'a [u8]> {
+    NonNull::new(unsafe { realpath(path.as_ptr(), output.as_mut_ptr().cast()) })?;
+    let length = output.iter().position(|byte| *byte == 0)?;
+    Some(&output[..length])
 }
 
 #[cfg(unix)]

@@ -67,6 +67,7 @@ unsafe extern "system" {
     fn GetEnvironmentVariableA(name: *const i8, value: *mut i8, capacity: u32) -> u32;
     fn GetEnvironmentVariableW(name: *const u16, value: *mut u16, capacity: u32) -> u32;
     fn GetFileAttributesW(name: *const u16) -> u32;
+    fn GetFullPathNameW(name: *const u16, capacity: u32, output: *mut u16, file_part: *mut *mut u16) -> u32;
     fn CreateDirectoryW(name: *const u16, security: *const c_void) -> i32;
     fn DeleteFileW(name: *const u16) -> i32;
     fn RemoveDirectoryW(name: *const u16) -> i32;
@@ -169,6 +170,22 @@ pub fn wide_path_is_directory(name: &[u16]) -> bool {
     }
     let attributes = unsafe { GetFileAttributesW(name.as_ptr()) };
     attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+}
+
+#[cfg(windows)]
+pub fn full_path_wide(name: &[u16], output: &mut [u16]) -> Option<usize> {
+    if name.last().copied() != Some(0) {
+        return None;
+    }
+    let length = unsafe {
+        GetFullPathNameW(
+            name.as_ptr(),
+            output.len().min(u32::MAX as usize) as u32,
+            output.as_mut_ptr(),
+            core::ptr::null_mut(),
+        )
+    } as usize;
+    (length > 0 && length < output.len()).then_some(length)
 }
 
 #[cfg(windows)]

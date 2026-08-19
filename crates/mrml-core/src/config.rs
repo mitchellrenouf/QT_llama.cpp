@@ -274,10 +274,11 @@ pub fn detect_os_name() -> Text {
 
 impl Config {
     pub fn get_system_prompt(&self, mode: AgentMode, rules_text: &str) -> Text {
-        let abs_workspace = std::fs::canonicalize(&self.workspace_root)
-            .unwrap_or_else(|_| self.workspace_root.clone())
-            .display()
-            .to_string();
+        let abs_workspace = self
+            .workspace_root
+            .to_str()
+            .and_then(|path| mrml_runtime::canonical_path(path).ok())
+            .unwrap_or_else(|| self.workspace_root.to_string_lossy().as_ref().into());
 
         let current_date = crate::platform::local_date_string();
         let os_name = detect_os_name();

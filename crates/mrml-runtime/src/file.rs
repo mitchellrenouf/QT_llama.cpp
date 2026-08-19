@@ -99,6 +99,35 @@ pub fn path_is_directory(path: &str) -> bool {
     }
 }
 
+pub fn canonical_path(path: &str) -> Result<Text, FileError> {
+    #[cfg(windows)]
+    {
+        let encoded = encode_windows_path(path).ok_or(FileError::InvalidPath)?;
+        const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
+        let mut output = Vector::with_capacity(MAX_WINDOWS_PATH_UNITS)
+            .map_err(|_| FileError::MetadataFailed)?;
+        output.resize(MAX_WINDOWS_PATH_UNITS, 0);
+        let length = mrml_windows::full_path_wide(&encoded, &mut output)
+            .ok_or(FileError::MetadataFailed)?;
+        let mut result = Text::new();
+        for character in core::char::decode_utf16(output[..length].iter().copied()) {
+            result.push(character.map_err(|_| FileError::InvalidUtf8)?);
+        }
+        Ok(result)
+    }
+    #[cfg(unix)]
+    {
+        let encoded = encode_unix_path(path).ok_or(FileError::InvalidPath)?;
+        let encoded = core::ffi::CStr::from_bytes_with_nul(&encoded)
+            .map_err(|_| FileError::InvalidPath)?;
+        let mut output = [0u8; 4096];
+        let path = mrml_linux::canonical_path(encoded, &mut output)
+            .ok_or(FileError::MetadataFailed)?;
+        Text::try_from_str(core::str::from_utf8(path).map_err(|_| FileError::InvalidUtf8)?)
+            .map_err(|_| FileError::MetadataFailed)
+    }
+}
+
 pub fn create_dir_all(path: &str) -> Result<(), FileError> {
     let path = path.trim_end_matches(['/', '\\']);
     if path.is_empty() || path == "/" || path.ends_with(':') || path_is_directory(path) {
@@ -402,6 +431,16 @@ mod tests {
         assert!(entries.iter().any(|entry| entry.name == "file-λ.txt" && !entry.is_directory));
         remove_dir_all(root.to_str().unwrap()).unwrap();
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn resolves_existing_paths_natively() {
+        let root = std::env::temp_dir().join(std::format!("mrml-canonical-{}", std::process::id()));
+        create_dir_all(root.to_str().unwrap()).unwrap();
+        let resolved = canonical_path(root.to_str().unwrap()).unwrap();
+        assert!(path_is_directory(&resolved));
+        assert!(resolved.contains("mrml-canonical-"));
+        remove_dir_all(root.to_str().unwrap()).unwrap();
     }
 
     #[test]
