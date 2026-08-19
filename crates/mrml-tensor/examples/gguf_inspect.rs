@@ -12,7 +12,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
             println!("{key} = {value:?}");
         }
     }
-    let mut tensors: Vec<_> = gguf.tensors.values().collect();
+    let mut tensors: Vec<_> = gguf.tensors.iter().map(|(_, tensor)| tensor).collect();
     tensors.sort_unstable_by_key(|tensor| &tensor.name);
     for tensor in tensors {
         println!("{} {:?} {:?}", tensor.name, tensor.shape, tensor.dtype);

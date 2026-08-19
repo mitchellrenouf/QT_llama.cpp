@@ -1,7 +1,6 @@
 use crate::anyhow::{Result, anyhow};
 use crate::types::{DType, Shape};
-use mrml_runtime::{File, Text};
-use std::collections::HashMap;
+use mrml_runtime::{File, OrderedMap, Text, Vector};
 
 pub const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" in little endian
 
@@ -15,8 +14,8 @@ pub enum GgufValue {
     Int32(i32),
     Float32(f32),
     Bool(bool),
-    String(String),
-    Array(Vec<GgufValue>),
+    String(Text),
+    Array(Vector<GgufValue>),
     Uint64(u64),
     Int64(i64),
     Float64(f64),
@@ -53,7 +52,7 @@ impl GgufValue {
 
     pub fn as_array(&self) -> Option<&[GgufValue]> {
         match self {
-            GgufValue::Array(arr) => Some(arr.as_slice()),
+            GgufValue::Array(arr) => Some(arr),
             _ => None,
         }
     }
@@ -61,7 +60,7 @@ impl GgufValue {
 
 #[derive(Debug, Clone)]
 pub struct GgufTensorInfo {
-    pub name: String,
+    pub name: Text,
     pub shape: Shape,
     pub dtype: DType,
     pub offset: u64,
@@ -70,8 +69,8 @@ pub struct GgufTensorInfo {
 
 pub struct GgufFile {
     pub version: u32,
-    pub metadata: HashMap<String, GgufValue>,
-    pub tensors: HashMap<String, GgufTensorInfo>,
+    pub metadata: OrderedMap<Text, GgufValue>,
+    pub tensors: OrderedMap<Text, GgufTensorInfo>,
     pub data_offset: u64,
     pub path: Text,
 }
@@ -94,7 +93,8 @@ impl GgufFile {
         let tensor_count = read_u64_le(&mut file)?;
         let kv_count = read_u64_le(&mut file)?;
 
-        let mut metadata = HashMap::with_capacity(kv_count as usize);
+        let mut metadata =
+            OrderedMap::with_capacity(kv_count as usize).expect("MRML allocation failed");
         for _ in 0..kv_count {
             let key = read_gguf_string(&mut file)?;
             let val_type = read_u32_le(&mut file)?;
@@ -102,7 +102,8 @@ impl GgufFile {
             metadata.insert(key, value);
         }
 
-        let mut tensors = HashMap::with_capacity(tensor_count as usize);
+        let mut tensors =
+            OrderedMap::with_capacity(tensor_count as usize).expect("MRML allocation failed");
         for _ in 0..tensor_count {
             let name = read_gguf_string(&mut file)?;
             let n_dims = read_u32_le(&mut file)? as usize;
@@ -188,11 +189,13 @@ impl GgufFile {
     }
 }
 
-fn read_gguf_string(reader: &mut File) -> Result<String> {
+fn read_gguf_string(reader: &mut File) -> Result<Text> {
     let len = read_u64_le(reader)? as usize;
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).to_string())
+    let value = core::str::from_utf8(&buf)
+        .map_err(|_| crate::anyhow::Error::msg("GGUF string is not valid UTF-8"))?;
+    Ok(Text::from(value))
 }
 
 fn read_gguf_value(reader: &mut File, val_type: u32) -> Result<GgufValue> {
@@ -209,7 +212,7 @@ fn read_gguf_value(reader: &mut File, val_type: u32) -> Result<GgufValue> {
         9 => {
             let item_type = read_u32_le(reader)?;
             let len = read_u64_le(reader)? as usize;
-            let mut arr = Vec::with_capacity(len);
+            let mut arr = Vector::with_capacity(len).expect("MRML allocation failed");
             for _ in 0..len {
                 arr.push(read_gguf_value(reader, item_type)?);
             }

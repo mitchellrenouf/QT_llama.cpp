@@ -565,12 +565,12 @@ impl MrmlModel {
 
             let ffn_gate_up_exps_offset = gguf
                 .tensors
-                .get(&format!("blk.{}.ffn_gate_up_exps.weight", l))
+                .get(format!("blk.{}.ffn_gate_up_exps.weight", l).as_str())
                 .map(|t| gguf.data_offset + t.offset)
                 .unwrap_or(0);
             let ffn_down_exps_offset = gguf
                 .tensors
-                .get(&format!("blk.{}.ffn_down_exps.weight", l))
+                .get(format!("blk.{}.ffn_down_exps.weight", l).as_str())
                 .map(|t| gguf.data_offset + t.offset)
                 .unwrap_or(0);
             let is_moe = ffn_gate_up_exps_offset > 0;
