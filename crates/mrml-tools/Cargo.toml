@@ -13,11 +13,11 @@ runtime = [
     "dep:mrml-runtime",
     "dep:serde_json",
     "dep:urlencoding",
+    "dep:mrml-linux",
+    "dep:mrml-windows",
 ]
 std = [
     "runtime",
-    "dep:mrml-linux",
-    "dep:mrml-windows",
 ]
 
 [dependencies]

@@ -1,5 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(all(test, not(feature = "std")))]
+extern crate std;
+
 pub mod fixed_encoding;
 
 #[cfg(feature = "std")]
@@ -23,11 +26,11 @@ pub mod web;
 pub mod diff;
 #[cfg(feature = "runtime")]
 pub mod encoding;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod fs_walk;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod markdown;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod platform;
 #[cfg(feature = "runtime")]
 pub mod simple_regex;

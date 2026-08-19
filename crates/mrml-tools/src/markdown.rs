@@ -145,7 +145,7 @@ mod tests {
         for i in 0..=s.len() + 10 {
             let truncated = truncate_utf8(s, i);
             assert!(truncated.len() <= i);
-            assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+            assert!(core::str::from_utf8(truncated.as_bytes()).is_ok());
         }
     }
 }

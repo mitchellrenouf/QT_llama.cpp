@@ -37,6 +37,8 @@ impl Iterator for Paths {
 
 #[cfg(test)]
 mod tests {
+    use std::format;
+
     #[test]
     fn includes_root_and_skips_missing_children() {
         let root = std::env::temp_dir().join(format!("mrml-walk-{}", std::process::id()));
@@ -44,7 +46,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("file.txt"), b"test").unwrap();
 
-        let found = super::paths(root.to_str().unwrap()).collect::<Vec<_>>();
+        let found = super::paths(root.to_str().unwrap()).collect::<std::vec::Vec<_>>();
         assert!(found.iter().any(|path| path == root.to_str().unwrap()));
         assert!(found
             .iter()
