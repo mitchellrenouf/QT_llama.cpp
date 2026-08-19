@@ -400,12 +400,16 @@ impl Tool for RunCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn test_workspace() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "mrml-tools-editor-{}-{}",
+            "mrml-tools-editor-{}-{}-{}",
             std::process::id(),
-            crate::platform::unix_timestamp_millis()
+            crate::platform::unix_timestamp_millis(),
+            WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&path).unwrap();
         path

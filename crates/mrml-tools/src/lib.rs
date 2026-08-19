@@ -41,9 +41,9 @@ use core::pin::Pin;
 #[cfg(feature = "std")]
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 #[cfg(feature = "std")]
-use serde_json::Value;
+use mrml_runtime::{Text, Vector};
 #[cfg(feature = "std")]
-use std::collections::HashMap;
+use serde_json::Value;
 #[cfg(feature = "std")]
 use std::path::Path;
 #[cfg(feature = "std")]
@@ -80,15 +80,15 @@ pub fn tool_error(message: impl core::fmt::Display) -> ToolError {
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct FunctionDefinition {
-    pub name: String,
-    pub description: String,
+    pub name: Text,
+    pub description: Text,
     pub parameters: serde_json::Value,
 }
 
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
-    pub tool_type: String,
+    pub tool_type: Text,
     pub function: FunctionDefinition,
 }
 
@@ -105,10 +105,10 @@ pub trait Tool: Send + Sync {
 
     fn to_tool_definition(&self) -> ToolDefinition {
         ToolDefinition {
-            tool_type: "function".to_string(),
+            tool_type: "function".into(),
             function: FunctionDefinition {
-                name: self.name().to_string(),
-                description: self.description().to_string(),
+                name: self.name().into(),
+                description: self.description().into(),
                 parameters: self.parameters(),
             },
         }
@@ -152,16 +152,14 @@ impl<T: Tool> DynTool for T {
 
 #[cfg(feature = "std")]
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn DynTool>>,
-    order: Vec<String>,
+    tools: Vector<Arc<dyn DynTool>>,
 }
 
 #[cfg(feature = "std")]
 impl ToolRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
-            tools: HashMap::new(),
-            order: Vec::new(),
+            tools: Vector::new(),
         };
 
         // Editor & OS Tools
@@ -203,21 +201,24 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: Arc<dyn DynTool>) {
-        let name = tool.name().to_string();
-        if !self.tools.contains_key(&name) {
-            self.order.push(name.clone());
+        if let Some(existing) = self
+            .tools
+            .iter_mut()
+            .find(|existing| existing.name() == tool.name())
+        {
+            *existing = tool;
+        } else {
+            self.tools.push(tool);
         }
-        self.tools.insert(name, tool);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn DynTool>> {
-        self.tools.get(name).cloned()
+        self.tools.iter().find(|tool| tool.name() == name).cloned()
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.order
+    pub fn definitions(&self) -> Vector<ToolDefinition> {
+        self.tools
             .iter()
-            .filter_map(|name| self.tools.get(name))
             .map(|tool| tool.to_tool_definition())
             .collect()
     }
