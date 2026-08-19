@@ -3,12 +3,14 @@
 #[cfg(test)]
 extern crate std;
 
+mod file;
 mod map;
 mod sync;
 mod text;
 mod time;
 mod vector;
 
+pub use file::{File, FileError};
 pub use map::OrderedMap;
 pub use sync::{OnceCell, Shared, SpinMutex, SpinMutexGuard};
 pub use text::Text;

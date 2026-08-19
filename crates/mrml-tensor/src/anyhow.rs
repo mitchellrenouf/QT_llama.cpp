@@ -62,6 +62,11 @@ impl From<core::num::TryFromIntError> for Error {
         Self::with_source(error)
     }
 }
+impl From<mrml_runtime::FileError> for Error {
+    fn from(error: mrml_runtime::FileError) -> Self {
+        Self::with_source(error)
+    }
+}
 
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 

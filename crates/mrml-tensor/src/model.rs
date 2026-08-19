@@ -10,15 +10,8 @@ use core::cmp::Ordering as CompareOrdering;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use mrml_runtime::Vector;
-use mrml_runtime::{Instant, Shared};
+use mrml_runtime::{File, Instant, Shared, Vector};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 
 fn environment_is_set(name: &CStr) -> bool {
@@ -366,7 +359,10 @@ impl MrmlModel {
         cache_type_v: KvCacheFormat,
     ) -> Result<Self> {
         let gguf_path = path.as_ref().to_path_buf();
-        let gguf = GgufFile::open(&gguf_path)?;
+        let gguf_path_text = gguf_path
+            .to_str()
+            .ok_or_else(|| anyhow::Error::msg("model path is not valid UTF-8"))?;
+        let gguf = GgufFile::open(gguf_path_text)?;
         let chat_template = gguf
             .get_meta("tokenizer.chat_template")
             .and_then(|value| value.as_str())
@@ -473,15 +469,14 @@ impl MrmlModel {
         #[cfg(not(feature = "cuda"))]
         let mut execution_plan = crate::execution_plan::ExecutionPlan::portable();
 
-        let mmap = File::open(&gguf_path)
+        let mmap = File::open(gguf_path_text)
             .ok()
             .and_then(|file| {
-                let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
+                let len = usize::try_from(file.len().ok()?).ok()?;
                 #[cfg(windows)]
-                let mapped =
-                    unsafe { crate::mmap::Mmap::map_raw(file.as_raw_handle().cast(), len) };
+                let mapped = unsafe { crate::mmap::Mmap::map_raw(file.raw_handle(), len) };
                 #[cfg(unix)]
-                let mapped = unsafe { crate::mmap::Mmap::map_raw(file.as_raw_fd(), len) };
+                let mapped = unsafe { crate::mmap::Mmap::map_raw(file.raw_fd(), len) };
                 mapped.ok()
             })
             .map(Shared::new);
@@ -956,9 +951,9 @@ impl MrmlModel {
         let row_bytes = (dim / 32) * 34;
         let mut token_embd_table = vec![0u8; vocab_size * row_bytes];
 
-        if let (Some(info), Ok(mut file)) = (&token_embd_info, File::open(&gguf_path)) {
+        if let (Some(info), Ok(mut file)) = (&token_embd_info, File::open(gguf_path_text)) {
             let offset = gguf.data_offset + info.offset;
-            if file.seek(SeekFrom::Start(offset)).is_ok() {
+            if file.seek(offset).is_ok() {
                 let _ = file.read_exact(&mut token_embd_table);
             }
         }

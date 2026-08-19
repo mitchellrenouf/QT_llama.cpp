@@ -1,9 +1,7 @@
 use crate::anyhow::{Result, anyhow};
 use crate::types::{DType, Shape};
+use mrml_runtime::{File, Text};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
 
 pub const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" in little endian
 
@@ -75,13 +73,13 @@ pub struct GgufFile {
     pub metadata: HashMap<String, GgufValue>,
     pub tensors: HashMap<String, GgufTensorInfo>,
     pub data_offset: u64,
-    pub path: PathBuf,
+    pub path: Text,
 }
 
 impl GgufFile {
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let p_buf = path.as_ref().to_path_buf();
-        let mut file = File::open(&p_buf)?;
+    pub fn open(path: &str) -> Result<Self> {
+        let stored_path = Text::from(path);
+        let mut file = File::open(path)?;
 
         let magic = read_u32_le(&mut file)?;
         if magic != GGUF_MAGIC {
@@ -159,7 +157,7 @@ impl GgufFile {
             .and_then(|v| v.as_u32())
             .unwrap_or(32) as u64;
 
-        let cur_pos = file.stream_position()?;
+        let cur_pos = file.position();
         let data_offset = if cur_pos % alignment == 0 {
             cur_pos
         } else {
@@ -171,7 +169,7 @@ impl GgufFile {
             metadata,
             tensors,
             data_offset,
-            path: p_buf,
+            path: stored_path,
         })
     }
 
@@ -179,7 +177,7 @@ impl GgufFile {
     pub fn read_tensor_bytes(&self, tensor: &GgufTensorInfo) -> Result<Vec<u8>> {
         let mut file = File::open(&self.path)?;
         let start = self.data_offset + tensor.offset;
-        file.seek(SeekFrom::Start(start))?;
+        file.seek(start)?;
         let mut buf = vec![0u8; tensor.size_bytes];
         file.read_exact(&mut buf)?;
         Ok(buf)
@@ -190,14 +188,14 @@ impl GgufFile {
     }
 }
 
-fn read_gguf_string<R: Read>(reader: &mut R) -> Result<String> {
+fn read_gguf_string(reader: &mut File) -> Result<String> {
     let len = read_u64_le(reader)? as usize;
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-fn read_gguf_value<R: Read>(reader: &mut R, val_type: u32) -> Result<GgufValue> {
+fn read_gguf_value(reader: &mut File, val_type: u32) -> Result<GgufValue> {
     match val_type {
         0 => Ok(GgufValue::Uint8(read_u8(reader)?)),
         1 => Ok(GgufValue::Int8(read_i8(reader)?)),
@@ -224,61 +222,61 @@ fn read_gguf_value<R: Read>(reader: &mut R, val_type: u32) -> Result<GgufValue> 
     }
 }
 
-fn read_u8<R: Read>(reader: &mut R) -> Result<u8> {
+fn read_u8(reader: &mut File) -> Result<u8> {
     let mut b = [0u8; 1];
     reader.read_exact(&mut b)?;
     Ok(b[0])
 }
 
-fn read_i8<R: Read>(reader: &mut R) -> Result<i8> {
+fn read_i8(reader: &mut File) -> Result<i8> {
     let mut b = [0u8; 1];
     reader.read_exact(&mut b)?;
     Ok(b[0] as i8)
 }
 
-fn read_u16_le<R: Read>(reader: &mut R) -> Result<u16> {
+fn read_u16_le(reader: &mut File) -> Result<u16> {
     let mut b = [0u8; 2];
     reader.read_exact(&mut b)?;
     Ok(u16::from_le_bytes(b))
 }
 
-fn read_i16_le<R: Read>(reader: &mut R) -> Result<i16> {
+fn read_i16_le(reader: &mut File) -> Result<i16> {
     let mut b = [0u8; 2];
     reader.read_exact(&mut b)?;
     Ok(i16::from_le_bytes(b))
 }
 
-fn read_u32_le<R: Read>(reader: &mut R) -> Result<u32> {
+fn read_u32_le(reader: &mut File) -> Result<u32> {
     let mut b = [0u8; 4];
     reader.read_exact(&mut b)?;
     Ok(u32::from_le_bytes(b))
 }
 
-fn read_i32_le<R: Read>(reader: &mut R) -> Result<i32> {
+fn read_i32_le(reader: &mut File) -> Result<i32> {
     let mut b = [0u8; 4];
     reader.read_exact(&mut b)?;
     Ok(i32::from_le_bytes(b))
 }
 
-fn read_f32_le<R: Read>(reader: &mut R) -> Result<f32> {
+fn read_f32_le(reader: &mut File) -> Result<f32> {
     let mut b = [0u8; 4];
     reader.read_exact(&mut b)?;
     Ok(f32::from_le_bytes(b))
 }
 
-fn read_u64_le<R: Read>(reader: &mut R) -> Result<u64> {
+fn read_u64_le(reader: &mut File) -> Result<u64> {
     let mut b = [0u8; 8];
     reader.read_exact(&mut b)?;
     Ok(u64::from_le_bytes(b))
 }
 
-fn read_i64_le<R: Read>(reader: &mut R) -> Result<i64> {
+fn read_i64_le(reader: &mut File) -> Result<i64> {
     let mut b = [0u8; 8];
     reader.read_exact(&mut b)?;
     Ok(i64::from_le_bytes(b))
 }
 
-fn read_f64_le<R: Read>(reader: &mut R) -> Result<f64> {
+fn read_f64_le(reader: &mut File) -> Result<f64> {
     let mut b = [0u8; 8];
     reader.read_exact(&mut b)?;
     Ok(f64::from_le_bytes(b))

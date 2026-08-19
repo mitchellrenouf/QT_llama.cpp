@@ -65,7 +65,90 @@ unsafe extern "system" {
     ) -> *mut c_void;
     fn UnmapViewOfFile(address: *const c_void) -> i32;
     fn CloseHandle(handle: *mut c_void) -> i32;
+    fn CreateFileW(
+        name: *const u16,
+        access: u32,
+        share: u32,
+        security: *const c_void,
+        creation: u32,
+        flags: u32,
+        template: *mut c_void,
+    ) -> *mut c_void;
+    fn ReadFile(
+        file: *mut c_void,
+        buffer: *mut c_void,
+        bytes: u32,
+        read: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
+    fn SetFilePointerEx(file: *mut c_void, distance: i64, position: *mut i64, method: u32) -> i32;
+    fn GetFileSizeEx(file: *mut c_void, size: *mut i64) -> i32;
     fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[derive(Debug)]
+#[cfg(windows)]
+pub struct NativeFile(*mut c_void);
+
+#[cfg(windows)]
+unsafe impl Send for NativeFile {}
+
+#[cfg(windows)]
+impl NativeFile {
+    pub fn open_read(path: &[u16]) -> Option<Self> {
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const FILE_SHARE_READ: u32 = 1;
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ,
+                core::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                core::ptr::null_mut(),
+            )
+        };
+        (handle as isize != -1).then_some(Self(handle))
+    }
+
+    pub fn read(&self, buffer: &mut [u8]) -> Option<usize> {
+        let amount = buffer.len().min(u32::MAX as usize) as u32;
+        let mut read = 0;
+        (unsafe {
+            ReadFile(
+                self.0,
+                buffer.as_mut_ptr().cast(),
+                amount,
+                &mut read,
+                core::ptr::null_mut(),
+            )
+        } != 0)
+            .then_some(read as usize)
+    }
+
+    pub fn seek_absolute(&self, position: u64) -> bool {
+        position <= i64::MAX as u64
+            && unsafe { SetFilePointerEx(self.0, position as i64, core::ptr::null_mut(), 0) } != 0
+    }
+
+    pub fn len(&self) -> Option<u64> {
+        let mut size = 0i64;
+        (unsafe { GetFileSizeEx(self.0, &mut size) } != 0 && size >= 0).then_some(size as u64)
+    }
+
+    pub fn raw_handle(&self) -> *mut c_void {
+        self.0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeFile {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
 }
 
 #[cfg(windows)]

@@ -66,6 +66,52 @@ unsafe extern "C" {
     fn _exit(status: c_int) -> !;
     fn isatty(file: c_int) -> c_int;
     fn getenv(name: *const i8) -> *mut i8;
+    fn open(path: *const i8, flags: c_int, ...) -> c_int;
+    fn read(file: c_int, buffer: *mut c_void, count: usize) -> isize;
+    fn lseek(file: c_int, offset: isize, whence: c_int) -> isize;
+    fn close(file: c_int) -> c_int;
+}
+
+#[derive(Debug)]
+#[cfg(unix)]
+pub struct NativeFile(c_int);
+
+#[cfg(unix)]
+impl NativeFile {
+    pub fn open_read(path: &CStr) -> Option<Self> {
+        let file = unsafe { open(path.as_ptr(), 0) };
+        (file >= 0).then_some(Self(file))
+    }
+
+    pub fn read(&self, buffer: &mut [u8]) -> Option<usize> {
+        let read = unsafe { read(self.0, buffer.as_mut_ptr().cast(), buffer.len()) };
+        (read >= 0).then_some(read as usize)
+    }
+
+    pub fn seek_absolute(&self, position: u64) -> bool {
+        position <= isize::MAX as u64 && unsafe { lseek(self.0, position as isize, 0) } >= 0
+    }
+
+    pub fn len(&self) -> Option<u64> {
+        let current = unsafe { lseek(self.0, 0, 1) };
+        if current < 0 {
+            return None;
+        }
+        let end = unsafe { lseek(self.0, 0, 2) };
+        let _ = unsafe { lseek(self.0, current, 0) };
+        (end >= 0).then_some(end as u64)
+    }
+
+    pub fn raw_fd(&self) -> c_int {
+        self.0
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativeFile {
+    fn drop(&mut self) {
+        let _ = unsafe { close(self.0) };
+    }
 }
 
 #[cfg(unix)]
