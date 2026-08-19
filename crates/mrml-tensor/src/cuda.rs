@@ -143,14 +143,6 @@ extern "C" {
         n_cols: i32,
         stream: CudaStream,
     );
-    fn cuda_op_gemv_q8_0(
-        d_w_q8: *const u8,
-        d_x: *const f32,
-        d_y: *mut f32,
-        n_rows: i32,
-        n_cols: i32,
-        stream: CudaStream,
-    );
     fn cuda_op_vocab_topk(
         d_logits: *const f32,
         d_valid: *const u8,
@@ -2098,8 +2090,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if rust_cuda_op_enabled("Q8_GEMV") {
-                let mut weights = d_w_q8.as_ptr();
+            let mut weights = d_w_q8.as_ptr();
                 let mut input = d_x.as_ptr();
                 let mut output = d_y.as_mut_ptr();
                 let mut rows = n_rows as i32;
@@ -2118,17 +2109,7 @@ impl CudaDevice {
                     self.stream,
                     &mut args,
                 )
-                .expect("Rust CUDA Q8 GEMV kernel failed");
-                return;
-            }
-            cuda_op_gemv_q8_0(
-                d_w_q8.as_ptr(),
-                d_x.as_ptr(),
-                d_y.as_mut_ptr(),
-                n_rows as i32,
-                n_cols as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA Q8 GEMV kernel failed");
         }
     }
 

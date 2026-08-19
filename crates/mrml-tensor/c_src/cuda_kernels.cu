@@ -1287,20 +1287,6 @@ void cuda_op_gemv_q4_0_geglu(
     );
 }
 
-void cuda_op_gemv_q8_0(
-    const uint8_t* d_w_q8,
-    const float* d_x,
-    float* d_y,
-    int n_rows,
-    int n_cols,
-    cudaStream_t stream
-) {
-    int threads = 128;
-    int rows_per_block = 2 * threads / WARP_SIZE;
-    int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
-    k_gemv_q8_0_f32<<<blocks, threads, 0, stream>>>(d_w_q8, d_x, d_y, n_rows, n_cols);
-}
-
 void cuda_op_vocab_topk(
     const float* d_logits,
     const uint8_t* d_valid,
