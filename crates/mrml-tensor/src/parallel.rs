@@ -1,6 +1,8 @@
+use core::mem::{ManuallyDrop, MaybeUninit};
+use core::sync::atomic::{AtomicBool, Ordering};
+use mrml_runtime::{OnceCell, Shared};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Mutex, mpsc};
 
 struct Work {
     context: usize,
@@ -8,7 +10,7 @@ struct Work {
     end: usize,
     run: unsafe fn(usize, usize, usize),
     done: mpsc::SyncSender<()>,
-    failed: Arc<AtomicBool>,
+    failed: Shared<AtomicBool>,
 }
 
 unsafe impl Send for Work {}
@@ -19,13 +21,13 @@ struct Pool {
 }
 
 fn pool() -> &'static Pool {
-    static POOL: OnceLock<Pool> = OnceLock::new();
+    static POOL: OnceCell<Pool> = OnceCell::new();
     POOL.get_or_init(|| {
         let workers = std::thread::available_parallelism().map_or(1, usize::from);
         let (sender, receiver) = mpsc::channel::<Work>();
-        let receiver = Arc::new(Mutex::new(receiver));
+        let receiver = Shared::new(Mutex::new(receiver));
         for index in 0..workers {
-            let receiver = Arc::clone(&receiver);
+            let receiver = receiver.clone();
             std::thread::Builder::new()
                 .name(format!("mrml-worker-{index}"))
                 .spawn(move || {
@@ -67,7 +69,7 @@ where
     let jobs = pool.workers.min(len.div_ceil(minimum_chunk));
     let chunk = len.div_ceil(jobs);
     let (done_tx, done_rx) = mpsc::sync_channel(jobs);
-    let failed = Arc::new(AtomicBool::new(false));
+    let failed = Shared::new(AtomicBool::new(false));
     let context = (&operation as *const F) as usize;
     let mut submitted = 0;
     for start in (0..len).step_by(chunk) {
@@ -79,7 +81,7 @@ where
                 end,
                 run: invoke::<F>,
                 done: done_tx.clone(),
-                failed: Arc::clone(&failed),
+                failed: failed.clone(),
             })
             .expect("MRML worker pool stopped");
         submitted += 1;
@@ -100,7 +102,7 @@ where
     T: Send,
     F: Fn(usize) -> T + Sync,
 {
-    let mut output = Vec::<std::mem::MaybeUninit<T>>::with_capacity(len);
+    let mut output = Vec::<MaybeUninit<T>>::with_capacity(len);
     // SAFETY: every element is initialized exactly once before conversion.
     unsafe { output.set_len(len) };
     let output_address = output.as_mut_ptr() as usize;
@@ -108,13 +110,13 @@ where
         for index in start..end {
             // SAFETY: workers receive disjoint ranges and output lives until all finish.
             unsafe {
-                (output_address as *mut std::mem::MaybeUninit<T>)
+                (output_address as *mut MaybeUninit<T>)
                     .add(index)
-                    .write(std::mem::MaybeUninit::new(operation(index)));
+                    .write(MaybeUninit::new(operation(index)));
             }
         }
     });
-    let mut output = std::mem::ManuallyDrop::new(output);
+    let mut output = ManuallyDrop::new(output);
     // SAFETY: all elements were initialized, and layouts are identical.
     unsafe {
         Vec::from_raw_parts(
