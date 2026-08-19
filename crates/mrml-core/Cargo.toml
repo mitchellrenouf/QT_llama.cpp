@@ -14,7 +14,6 @@ std = [
     "dep:mrml-tools",
     "dep:serde_json",
     "mrml-model/std",
-    "mrml-terminal-style/std",
     "mrml-tools/std",
 ]
 auto = ["std", "mrml-model/auto"]

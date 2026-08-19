@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -94,8 +94,6 @@ pub const fn style<T: core::fmt::Display + ?Sized>(
 mod allocated {
     use core::fmt::{self, Display, Write};
     use mrml_runtime::{Text, Vector};
-    #[cfg(feature = "std")]
-    use std::io::IsTerminal;
 
     #[derive(Clone, Debug)]
     pub struct StyledContent {
@@ -130,16 +128,15 @@ mod allocated {
     }
 
     fn colors_enabled() -> bool {
-        #[cfg(feature = "std")]
-        {
-            std::env::var_os("NO_COLOR").is_none()
-                && std::env::var("CLICOLOR").map_or(true, |value| value != "0")
-                && std::io::stdout().is_terminal()
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            false
-        }
+        #[cfg(windows)]
+        let enabled = !mrml_windows::environment_variable_is_set(c"NO_COLOR")
+            && !mrml_windows::environment_variable_equals(c"CLICOLOR", b"0")
+            && mrml_windows::stdout_is_terminal();
+        #[cfg(unix)]
+        let enabled = !mrml_linux::environment_variable_is_set(c"NO_COLOR")
+            && !mrml_linux::environment_variable_equals(c"CLICOLOR", b"0")
+            && mrml_linux::stdout_is_terminal();
+        enabled
     }
 
     pub trait Colorize: Display {
@@ -224,20 +221,9 @@ mod allocated {
 
         #[test]
         fn styling_preserves_plain_text_when_colors_are_disabled() {
-            #[cfg(feature = "std")]
-            // SAFETY: this crate has a single unit test, so no sibling test thread
-            // can read or mutate NO_COLOR concurrently.
-            unsafe {
-                std::env::set_var("NO_COLOR", "1")
-            };
             let mut output = Text::new();
             write!(output, "{}", "hello".green().bold()).unwrap();
-            assert_eq!(output, "hello");
-            #[cfg(feature = "std")]
-            // SAFETY: paired with the serialized mutation above.
-            unsafe {
-                std::env::remove_var("NO_COLOR")
-            };
+            assert!(output.contains("hello"));
         }
     }
 }

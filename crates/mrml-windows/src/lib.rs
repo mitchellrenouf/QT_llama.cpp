@@ -3,7 +3,7 @@
 #[cfg(windows)]
 use core::alloc::{GlobalAlloc, Layout};
 #[cfg(windows)]
-use core::ffi::c_void;
+use core::ffi::{CStr, c_void};
 #[cfg(windows)]
 use core::ptr::NonNull;
 
@@ -43,6 +43,11 @@ unsafe extern "system" {
     fn LoadLibraryA(name: *const i8) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
+    fn GetStdHandle(kind: u32) -> *mut c_void;
+    fn GetConsoleMode(handle: *mut c_void, mode: *mut u32) -> i32;
+    fn GetEnvironmentVariableA(name: *const i8, value: *mut i8, capacity: u32) -> u32;
+    fn GetLastError() -> u32;
+    fn SetLastError(error: u32);
     fn CreateFileMappingW(
         file: *mut c_void,
         attributes: *const c_void,
@@ -61,6 +66,36 @@ unsafe extern "system" {
     fn UnmapViewOfFile(address: *const c_void) -> i32;
     fn CloseHandle(handle: *mut c_void) -> i32;
     fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[cfg(windows)]
+pub fn stdout_is_terminal() -> bool {
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    let mut mode = 0;
+    !handle.is_null() && unsafe { GetConsoleMode(handle, &mut mode) } != 0
+}
+
+#[cfg(windows)]
+pub fn environment_variable_is_set(name: &CStr) -> bool {
+    const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
+    unsafe { SetLastError(0) };
+    let length = unsafe { GetEnvironmentVariableA(name.as_ptr(), core::ptr::null_mut(), 0) };
+    length != 0 || unsafe { GetLastError() } != ERROR_ENVVAR_NOT_FOUND
+}
+
+#[cfg(windows)]
+pub fn environment_variable_equals(name: &CStr, expected: &[u8]) -> bool {
+    let mut value = [0i8; 64];
+    let length =
+        unsafe { GetEnvironmentVariableA(name.as_ptr(), value.as_mut_ptr(), value.len() as u32) }
+            as usize;
+    length == expected.len()
+        && length < value.len()
+        && value[..length]
+            .iter()
+            .zip(expected)
+            .all(|(&actual, &expected)| actual as u8 == expected)
 }
 
 #[cfg(windows)]
@@ -213,6 +248,12 @@ mod tests {
         assert!((1..=12).contains(&time.month));
         assert!((1..=31).contains(&time.day));
         assert!(time.hour < 24 && time.minute < 60 && time.second < 60);
+    }
+
+    #[test]
+    fn reads_process_environment_without_allocation() {
+        assert!(super::environment_variable_is_set(c"PATH"));
+        let _ = super::stdout_is_terminal();
     }
 
     #[test]

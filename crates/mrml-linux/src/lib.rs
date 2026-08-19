@@ -5,7 +5,7 @@ use core::alloc::{GlobalAlloc, Layout};
 #[cfg(unix)]
 use core::ffi::c_void;
 #[cfg(unix)]
-use core::ffi::{c_int, c_long};
+use core::ffi::{CStr, c_int, c_long};
 #[cfg(unix)]
 use core::ptr::NonNull;
 
@@ -64,6 +64,27 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn munmap(address: *mut c_void, len: usize) -> c_int;
     fn _exit(status: c_int) -> !;
+    fn isatty(file: c_int) -> c_int;
+    fn getenv(name: *const i8) -> *mut i8;
+}
+
+#[cfg(unix)]
+pub fn stdout_is_terminal() -> bool {
+    (unsafe { isatty(1) }) == 1
+}
+
+#[cfg(unix)]
+pub fn environment_variable_is_set(name: &CStr) -> bool {
+    !unsafe { getenv(name.as_ptr()) }.is_null()
+}
+
+#[cfg(unix)]
+pub fn environment_variable_equals(name: &CStr, expected: &[u8]) -> bool {
+    let value = unsafe { getenv(name.as_ptr()) };
+    if value.is_null() {
+        return false;
+    }
+    unsafe { CStr::from_ptr(value) }.to_bytes() == expected
 }
 
 #[cfg(unix)]
@@ -231,6 +252,12 @@ mod tests {
         let before = super::monotonic_nanos();
         super::sleep_millis(2);
         assert!(super::monotonic_nanos() > before);
+    }
+
+    #[test]
+    fn reads_process_environment_without_allocation() {
+        assert!(super::environment_variable_is_set(c"PATH"));
+        let _ = super::stdout_is_terminal();
     }
 
     #[test]

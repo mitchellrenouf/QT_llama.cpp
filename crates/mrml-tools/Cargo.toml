@@ -18,7 +18,6 @@ std = [
     "runtime",
     "dep:mrml-linux",
     "dep:mrml-windows",
-    "mrml-terminal-style/std",
 ]
 
 [dependencies]

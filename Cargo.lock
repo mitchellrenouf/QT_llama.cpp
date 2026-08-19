@@ -100,7 +100,9 @@ dependencies = [
 name = "mrml-terminal-style"
 version = "0.4.0"
 dependencies = [
+ "mrml-linux",
  "mrml-runtime",
+ "mrml-windows",
 ]
 
 [[package]]
