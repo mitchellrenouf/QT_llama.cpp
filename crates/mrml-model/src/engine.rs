@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use core::sync::atomic::AtomicBool;
-use mrml_runtime::Shared;
+use mrml_runtime::{Shared, Vector};
 use mrml_tensor::MrmlEngine;
 use std::sync::mpsc;
 
@@ -60,7 +60,7 @@ impl ModelEngine {
         (rx, cancel)
     }
 
-    pub fn tokenize(&self, text: &str, add_special: bool) -> Result<Vec<i32>> {
+    pub fn tokenize(&self, text: &str, add_special: bool) -> Result<Vector<i32>> {
         Ok(self.inner.tokenize(text, add_special)?)
     }
 

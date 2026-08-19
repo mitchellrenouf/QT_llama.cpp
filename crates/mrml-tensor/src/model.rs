@@ -2165,12 +2165,12 @@ impl MrmlModel {
     }
 
     /// Tokenize text using longest-matching BPE over the loaded GGUF vocabulary
-    pub fn tokenize(&self, text: &str) -> Vec<i32> {
+    pub fn tokenize(&self, text: &str) -> Vector<i32> {
         if self.vocab.is_empty() {
             return text.as_bytes().iter().map(|&b| b as i32 + 100).collect();
         }
 
-        let mut tokens = Vec::new();
+        let mut tokens = Vector::new();
         if !text.starts_with("<bos>") && !text.starts_with("<s>") {
             if let Some(&bos) = self
                 .vocab_to_id
@@ -2182,7 +2182,7 @@ impl MrmlModel {
         }
 
         let formatted = text.replace(' ', "\u{2581}");
-        let mut char_indices: Vec<usize> = formatted.char_indices().map(|(i, _)| i).collect();
+        let mut char_indices: Vector<usize> = formatted.char_indices().map(|(i, _)| i).collect();
         char_indices.push(formatted.len());
 
         let mut i = 0;

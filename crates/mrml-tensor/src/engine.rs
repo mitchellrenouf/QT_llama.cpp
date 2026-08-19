@@ -1,7 +1,7 @@
 use crate::anyhow::Result;
 use crate::model::MrmlModel;
 use core::sync::atomic::{AtomicBool, Ordering};
-use mrml_runtime::{Instant, Shared, SpinMutex};
+use mrml_runtime::{Instant, Shared, SpinMutex, Vector};
 
 pub struct MrmlEngine {
     pub model: Shared<SpinMutex<MrmlModel>>,
@@ -15,7 +15,7 @@ impl MrmlEngine {
         })
     }
 
-    pub fn tokenize(&self, text: &str, _add_special: bool) -> Result<Vec<i32>> {
+    pub fn tokenize(&self, text: &str, _add_special: bool) -> Result<Vector<i32>> {
         let guard = self.model.lock();
         Ok(guard.tokenize(text))
     }
