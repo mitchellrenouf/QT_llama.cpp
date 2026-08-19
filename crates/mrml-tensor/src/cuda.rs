@@ -742,6 +742,7 @@ unsafe fn launch_rust_attention(
     if max_keys <= 8192
         && capacity > 0
         && capacity & (capacity - 1) == 0
+        && head_dim & 1 == 0
         && k_format == 0
         && v_format == 0
     {
