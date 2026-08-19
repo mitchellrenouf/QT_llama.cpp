@@ -1,9 +1,8 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::time::Duration;
-use mrml_runtime::{Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector};
+use mrml_runtime::{Child, Command, Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector};
 use serde_json::{Value, json};
-use std::process::{Child, Command, Stdio};
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
 
 struct CdpSocket {
@@ -159,10 +158,7 @@ impl EdgeController {
             .arg(format!("--remote-debugging-port={}", port))
             .arg(format!("--user-data-dir={}", profile))
             .arg("about:blank")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+            .spawn_silent()
             .map_err(|e| anyhow!("Failed to launch '{}': {}", exe, e))?;
         let deadline = Instant::now();
         while deadline.elapsed() < Duration::from_secs(10) {
