@@ -1,27 +1,39 @@
-use alloc::boxed::Box;
-use alloc::string::{String, ToString};
 use core::error::Error as StdError;
-use core::fmt;
+use core::fmt::{self, Write};
+use mrml_runtime::Text;
 
 #[derive(Debug)]
 pub struct Error {
-    message: String,
-    source: Option<Box<dyn StdError + Send + Sync>>,
+    message: Text,
+    source: Option<SourceError>,
 }
+
+#[derive(Debug)]
+struct SourceError(Text);
+
 impl Error {
-    pub fn msg(message: impl Into<String>) -> Self {
+    pub fn msg(message: impl fmt::Display) -> Self {
         Self {
-            message: message.into(),
+            message: format_text(format_args!("{message}")),
             source: None,
         }
     }
-    fn with_source(error: impl StdError + Send + Sync + 'static) -> Self {
+
+    fn with_source(error: impl fmt::Display) -> Self {
+        let source = format_text(format_args!("{error}"));
         Self {
-            message: error.to_string(),
-            source: Some(Box::new(error)),
+            message: source.clone(),
+            source: Some(SourceError(source)),
         }
     }
 }
+
+fn format_text(arguments: fmt::Arguments<'_>) -> Text {
+    let mut output = Text::new();
+    output.write_fmt(arguments).expect("MRML allocation failed");
+    output
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.message)
@@ -29,17 +41,19 @@ impl fmt::Display for Error {
 }
 impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        self.source.as_deref().map(|source| source as _)
+        self.source.as_ref().map(|source| source as _)
     }
 }
+impl fmt::Display for SourceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+impl StdError for SourceError {}
+
 #[cfg(feature = "std")]
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
-        Self::with_source(error)
-    }
-}
-impl From<alloc::string::FromUtf8Error> for Error {
-    fn from(error: alloc::string::FromUtf8Error) -> Self {
         Self::with_source(error)
     }
 }
@@ -48,10 +62,14 @@ impl From<core::num::TryFromIntError> for Error {
         Self::with_source(error)
     }
 }
+
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 pub fn formatted(arguments: fmt::Arguments<'_>) -> Error {
-    Error::msg(alloc::fmt::format(arguments))
+    Error {
+        message: format_text(arguments),
+        source: None,
+    }
 }
 
 #[macro_export]
@@ -64,6 +82,7 @@ pub use crate::tensor_bail as bail;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::ToString;
 
     #[test]
     fn preserves_formatted_messages_and_sources() {

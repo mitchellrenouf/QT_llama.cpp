@@ -14,6 +14,7 @@ cuda = ["std"]
 
 [dependencies]
 mrml-math = { path = "../mrml-math" }
+mrml-runtime = { path = "../mrml-runtime" }
 
 [target.'cfg(windows)'.dependencies]
 mrml-windows = { path = "../mrml-windows" }
