@@ -2,7 +2,6 @@ pub use crate::modes::{AgentMode, BackendChoice};
 use core::fmt::Write as _;
 use core::str::FromStr;
 use mrml_runtime::{Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
-use std::path::PathBuf;
 
 macro_rules! text_format {
     ($($argument:tt)*) => {{
@@ -19,7 +18,7 @@ pub struct Config {
     pub model: Text,
     pub hf: Option<Text>,
     pub mode: AgentMode,
-    pub workspace_root: PathBuf,
+    pub workspace_root: Text,
     pub temperature: f32,
     pub max_tokens: u32,
     pub ctx_size: u32,
@@ -49,7 +48,7 @@ impl Default for Config {
             model: env("MRML_MODEL", "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0"),
             hf: Some(env("HF_MODEL", "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0")),
             mode: AgentMode::General,
-            workspace_root: PathBuf::from(env("WORKSPACE_ROOT", ".").as_str()),
+            workspace_root: env("WORKSPACE_ROOT", "."),
             temperature: 0.7,
             max_tokens: 8192,
             ctx_size: mrml_runtime::environment_variable("MRML_CTX_SIZE")
@@ -136,7 +135,7 @@ impl Config {
                 "--model" => config.model = value()?.as_str().into(),
                 "--hf" => config.hf = Some(value()?.as_str().into()),
                 "--mode" => config.mode = parse_value("--mode", &value()?)?,
-                "--workspace-root" => config.workspace_root = PathBuf::from(value()?.as_str()),
+                "--workspace-root" => config.workspace_root = value()?,
                 "--temperature" => config.temperature = parse_value(name, &value()?)?,
                 "--max-tokens" => config.max_tokens = parse_value(name, &value()?)?,
                 "--ctx-size" => config.ctx_size = parse_value(name, &value()?)?,
@@ -274,11 +273,8 @@ pub fn detect_os_name() -> Text {
 
 impl Config {
     pub fn get_system_prompt(&self, mode: AgentMode, rules_text: &str) -> Text {
-        let abs_workspace = self
-            .workspace_root
-            .to_str()
-            .and_then(|path| mrml_runtime::canonical_path(path).ok())
-            .unwrap_or_else(|| self.workspace_root.to_string_lossy().as_ref().into());
+        let abs_workspace = mrml_runtime::canonical_path(&self.workspace_root)
+            .unwrap_or_else(|_| self.workspace_root.clone());
 
         let current_date = crate::platform::local_date_string();
         let os_name = detect_os_name();

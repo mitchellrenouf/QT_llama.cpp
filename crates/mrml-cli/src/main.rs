@@ -78,7 +78,7 @@ async fn async_main() -> anyhow::Result<()> {
             agent.loaded_rules_count().to_string().bright_green().bold()
         );
         for src in &agent.get_rules().rule_sources {
-            println!("   - {}", src.display().to_string().dimmed());
+            println!("   - {}", src.dimmed());
         }
     }
 
@@ -195,12 +195,11 @@ async fn async_main() -> anyhow::Result<()> {
             }
             "/model" => {
                 if let Some(path_str) = parts.get(1) {
-                    let p = std::path::PathBuf::from(path_str);
-                    match agent.reload_model(&p) {
+                    match agent.reload_model(path_str) {
                         Ok(_) => println!(
                             "{} Local model loaded: {}",
                             "✔".green().bold(),
-                            p.display().to_string().cyan()
+                            path_str.cyan()
                         ),
                         Err(e) => println!("{} Failed to load model: {}", "✖".red(), e),
                     }
@@ -294,7 +293,7 @@ async fn async_main() -> anyhow::Result<()> {
                     Ok(path) => println!(
                         "{} Session saved to: {}",
                         "✔".green(),
-                        path.display().to_string().cyan()
+                        path.cyan()
                     ),
                     Err(e) => println!("{} Failed to save session: {}", "✖".red(), e),
                 }
@@ -306,7 +305,7 @@ async fn async_main() -> anyhow::Result<()> {
                     Ok(path) => println!(
                         "{} Session loaded from: {}",
                         "✔".green(),
-                        path.display().to_string().cyan()
+                        path.cyan()
                     ),
                     Err(e) => println!("{} Failed to load session: {}", "✖".red(), e),
                 }

@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Vector, mrml_eprintln as eprintln, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
-use std::path::PathBuf;
 
 use crate::client::{ChatMessage, MrmlClient, StreamEvent};
 use crate::config::{AgentMode, Config};
@@ -201,14 +200,11 @@ impl MrmlAgent {
         &self.config
     }
 
-    pub fn reload_model(&mut self, model_path: &std::path::Path) -> Result<()> {
+    pub fn reload_model(&mut self, model_path: &str) -> Result<()> {
         let n_layers = self.config.n_gpu_layers.unwrap_or(-1);
         let backend_str = self.config.backend.to_string();
-        let model_path_text = model_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8"))?;
         let engine = mrml_model::ModelEngine::new(
-            model_path_text,
+            model_path,
             n_layers,
             self.config.ctx_size,
             &self.config.cache_type_k,
@@ -221,7 +217,7 @@ impl MrmlAgent {
             self.config.system_prompt.as_deref().map(Into::into),
             crate::client::thinking_enabled_for_mode(self.config.mode),
         );
-        self.config.model = model_path.display().to_string().as_str().into();
+        self.config.model = model_path.into();
         Ok(())
     }
 
@@ -231,7 +227,12 @@ impl MrmlAgent {
     {
         let spec = crate::hf::HfModelSpec::parse(spec_str)?;
         let files = crate::hf::resolve_or_fetch_hf_model(&spec, progress_cb).await?;
-        self.reload_model(&files.primary_entry_file)?;
+        self.reload_model(
+            files
+                .primary_entry_file
+                .to_str()
+                .ok_or_else(|| anyhow!("Model path is not valid UTF-8"))?,
+        )?;
         self.config.hf = Some(spec_str.into());
         Ok(())
     }
@@ -245,7 +246,10 @@ impl MrmlAgent {
             crate::client::find_model_file(&self.config.model)
         };
         if let Some(path) = model_path {
-            self.reload_model(&path)?;
+            self.reload_model(
+                path.to_str()
+                    .ok_or_else(|| anyhow!("Model path is not valid UTF-8"))?,
+            )?;
         }
         Ok(())
     }
@@ -299,11 +303,7 @@ impl MrmlAgent {
         println!(" Model          : {}", self.config.model.bright_white());
         println!(
             " Workspace Root : {}",
-            self.config
-                .workspace_root
-                .display()
-                .to_string()
-                .bright_cyan()
+            self.config.workspace_root.bright_cyan()
         );
         println!(
             " Current Tokens : ~{} (max: {})",
@@ -314,7 +314,7 @@ impl MrmlAgent {
         println!(" Registered Tools: {}", self.registry.definitions().len());
         println!(" Loaded Rules   : {}", self.loaded_rules_count());
         for src in &self.workspace_rules.rule_sources {
-            println!("   - {}", src.display());
+            println!("   - {}", src);
         }
         println!("====================================\n");
     }
@@ -385,50 +385,43 @@ impl MrmlAgent {
         Ok(())
     }
 
-    pub fn save_session(&self, name: &str) -> Result<PathBuf> {
-        let sessions_dir = self.config.workspace_root.join(".mrml").join("sessions");
-        mrml_runtime::create_dir_all(
-            sessions_dir
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("session directory is not valid UTF-8"))?,
-        )?;
-        let file_path = sessions_dir.join(format!("{}.json", name));
+    pub fn save_session(&self, name: &str) -> Result<mrml_runtime::Text> {
+        let sessions_dir = mrml_runtime::join_path(
+            &mrml_runtime::join_path(&self.config.workspace_root, ".mrml"),
+            "sessions",
+        );
+        mrml_runtime::create_dir_all(&sessions_dir)?;
+        let file_path = mrml_runtime::join_path(&sessions_dir, &format!("{}.json", name));
         let serialized = serde_json::stringify(&serde_json::Value::Array(
             self.history.iter().map(ChatMessage::to_json).collect(),
         ));
         mrml_runtime::write_file(
-            file_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("session path is not valid UTF-8"))?,
+            &file_path,
             serialized.as_bytes(),
         )?;
         println!(
             "Session saved to: {}",
-            file_path.display().to_string().cyan()
+            file_path.cyan()
         );
         Ok(file_path)
     }
 
-    pub fn load_session(&mut self, name: &str) -> Result<PathBuf> {
-        let file_path = self
-            .config
-            .workspace_root
-            .join(".mrml")
-            .join("sessions")
-            .join(format!("{}.json", name));
-        if !file_path
-            .to_str()
-            .is_some_and(mrml_runtime::path_is_file)
-        {
+    pub fn load_session(&mut self, name: &str) -> Result<mrml_runtime::Text> {
+        let file_path = mrml_runtime::join_path(
+            &mrml_runtime::join_path(
+                &mrml_runtime::join_path(&self.config.workspace_root, ".mrml"),
+                "sessions",
+            ),
+            &format!("{}.json", name),
+        );
+        if !mrml_runtime::path_is_file(&file_path) {
             return Err(anyhow::anyhow!(
                 "Session file not found: {}",
-                file_path.display()
+                file_path
             ));
         }
         let content = mrml_runtime::read_file_text(
-            file_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("session path is not valid UTF-8"))?,
+            &file_path,
         )?;
         let value: serde_json::Value = serde_json::from_str(&content)?;
         let history = value
@@ -444,19 +437,17 @@ impl MrmlAgent {
     }
 
     pub fn list_sessions(&self) -> Result<Vector<mrml_runtime::Text>> {
-        let sessions_dir = self.config.workspace_root.join(".mrml").join("sessions");
-        if !sessions_dir
-            .to_str()
-            .is_some_and(mrml_runtime::path_is_directory)
-        {
+        let sessions_dir = mrml_runtime::join_path(
+            &mrml_runtime::join_path(&self.config.workspace_root, ".mrml"),
+            "sessions",
+        );
+        if !mrml_runtime::path_is_directory(&sessions_dir) {
             return Ok(Vector::new());
         }
 
         let mut list = Vector::new();
         for entry in mrml_runtime::read_directory(
-            sessions_dir
-                .to_str()
-                .ok_or_else(|| anyhow!("Session directory is not valid UTF-8"))?,
+            &sessions_dir,
         )? {
             if !entry.is_directory && entry.name.ends_with(".json") {
                 list.push(entry.name[..entry.name.len() - 5].into());
@@ -523,10 +514,7 @@ impl MrmlAgent {
                 .get("run_command")
                 .unwrap()
                 .execute(
-                    self.config
-                        .workspace_root
-                        .to_str()
-                        .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                    &self.config.workspace_root,
                     args,
                 )
                 .await;
@@ -645,10 +633,7 @@ impl MrmlAgent {
                 let tool_result = match tool_opt {
                     Some(tool) => {
                         tool.execute(
-                            self.config
-                                .workspace_root
-                                .to_str()
-                                .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                            &self.config.workspace_root,
                             parsed_args,
                         )
                         .await
@@ -728,10 +713,7 @@ impl MrmlAgent {
                 .get("run_command")
                 .unwrap()
                 .execute(
-                    self.config
-                        .workspace_root
-                        .to_str()
-                        .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                    &self.config.workspace_root,
                     args,
                 )
                 .await;
@@ -959,10 +941,7 @@ impl MrmlAgent {
                     Some(tool) => {
                         println!("⚡ Executing {}", name.cyan());
                         tool.execute(
-                            self.config
-                                .workspace_root
-                                .to_str()
-                                .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                            &self.config.workspace_root,
                             parsed_args,
                         )
                         .await
