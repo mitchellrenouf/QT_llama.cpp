@@ -69,8 +69,8 @@ impl Command {
         Self { program: program.into(), arguments: Vector::new(), current_directory: None }
     }
 
-    pub fn arg(&mut self, argument: &str) -> &mut Self {
-        self.arguments.push(argument.into());
+    pub fn arg(&mut self, argument: impl AsRef<str>) -> &mut Self {
+        self.arguments.push(argument.as_ref().into());
         self
     }
 

@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Text, Vector, mrml_println as println, rename_file};
+use mrml_runtime::Command;
 
 fn native_file_len(path: &str) -> Option<u64> {
     mrml_runtime::File::open(path).ok()?.len().ok()
@@ -162,7 +163,7 @@ pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vector<Text>> {
         spec.user, spec.model
     );
 
-    let mut cmd = std::process::Command::new("curl");
+    let mut cmd = Command::new("curl");
     cmd.arg("-s").arg("-L").arg(&api_url);
     if let Some(token) = mrml_runtime::environment_variable("HF_TOKEN") {
         cmd.arg("-H")

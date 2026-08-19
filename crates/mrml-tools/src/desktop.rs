@@ -1,6 +1,7 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Text, Vector, remove_file, rename_file};
+use mrml_runtime::Command as CaptureCommand;
 use serde_json::json;
 use std::process::Command;
 
@@ -54,7 +55,7 @@ impl Tool for TakeScreenshotTool {
 
         let mut captured = false;
         if is_executable_in_path("spectacle").is_some() {
-            let out = Command::new("spectacle")
+            let out = CaptureCommand::new("spectacle")
                 .args(["-b", "-n", "-o", temp_png_str.as_str()])
                 .output();
             if let Ok(o) = out {
@@ -65,7 +66,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("grim").is_some() {
-            let out = Command::new("grim").arg(temp_png_str.as_str()).output();
+            let out = CaptureCommand::new("grim").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -74,7 +75,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("scrot").is_some() {
-            let out = Command::new("scrot").arg(temp_png_str.as_str()).output();
+            let out = CaptureCommand::new("scrot").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -83,7 +84,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("maim").is_some() {
-            let out = Command::new("maim").arg(temp_png_str.as_str()).output();
+            let out = CaptureCommand::new("maim").arg(temp_png_str.as_str()).output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
@@ -92,7 +93,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if !captured && is_executable_in_path("import").is_some() {
-            let out = Command::new("import")
+            let out = CaptureCommand::new("import")
                 .args(["-window", "root", temp_png_str.as_str()])
                 .output();
             if let Ok(o) = out {
@@ -109,7 +110,7 @@ impl Tool for TakeScreenshotTool {
         }
 
         if is_executable_in_path("ffmpeg").is_some() {
-            let _ = Command::new("ffmpeg")
+            let _ = CaptureCommand::new("ffmpeg")
                 .args([
                     "-y",
                     "-i",

@@ -1,8 +1,8 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::sync::atomic::{AtomicBool, Ordering};
+use mrml_runtime::Command;
 use serde_json::json;
-use std::process::Command;
 
 pub static SPEECH_ENABLED: AtomicBool = AtomicBool::new(false);
 
