@@ -199,10 +199,13 @@ pub fn render_chat_template<T: Serialize>(
         .transpose()?
         .unwrap_or_else(|| serde_json::json!([]));
     let mut environment = Environment::new();
-    environment.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
-    environment.add_function("raise_exception", |message: String| -> std::result::Result<String, Error> {
-        Err(Error::new(ErrorKind::InvalidOperation, message))
-    });
+    environment.set_unknown_method_callback(crate::pycompat::unknown_method_callback);
+    environment.add_function(
+        "raise_exception",
+        |message: String| -> std::result::Result<String, Error> {
+            Err(Error::new(ErrorKind::InvalidOperation, message))
+        },
+    );
     let template = environment.template_from_str(template_source)?;
     template
         .render(context! {

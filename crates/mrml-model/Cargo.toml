@@ -11,7 +11,6 @@ tokio = { version = "1.43", features = ["sync", "rt"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 minijinja = { version = "2.12", features = ["builtins", "json"] }
-minijinja-contrib = { version = "2.24", features = ["pycompat"] }
 mrml-tensor = { path = "../mrml-tensor", default-features = false }
 
 [features]

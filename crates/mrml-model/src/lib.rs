@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod engine;
 pub mod error;
+mod pycompat;
 
 pub use chat::*;
 pub use engine::*;
