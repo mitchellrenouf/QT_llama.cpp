@@ -1,4 +1,4 @@
-use crate::Vector;
+use crate::{Text, Vector};
 use core::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9,6 +9,23 @@ pub enum FileError {
     UnexpectedEnd,
     SeekFailed,
     MetadataFailed,
+    InvalidUtf8,
+}
+
+pub fn read_file_text(path: &str) -> Result<Text, FileError> {
+    let mut file = File::open(path)?;
+    let mut bytes = Vector::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        bytes
+            .try_extend_from_slice(&chunk[..read])
+            .map_err(|_| FileError::ReadFailed)?;
+    }
+    Text::try_from_utf8(bytes).map_err(|_| FileError::InvalidUtf8)
 }
 
 impl fmt::Display for FileError {
@@ -20,6 +37,7 @@ impl fmt::Display for FileError {
             Self::UnexpectedEnd => "unexpected end of file",
             Self::SeekFailed => "failed to seek file",
             Self::MetadataFailed => "failed to read file metadata",
+            Self::InvalidUtf8 => "file is not valid UTF-8 text",
         })
     }
 }
@@ -129,6 +147,15 @@ mod tests {
         file.read_exact(&mut suffix).unwrap();
         assert_eq!(&suffix, b"file");
         drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+
+    #[test]
+    fn reads_utf8_text_through_native_file() {
+        let path = std::env::temp_dir().join(std::format!("mrml-text-{}.txt", std::process::id()));
+        std::fs::write(&path, "observatory λ").unwrap();
+        assert_eq!(read_file_text(path.to_str().unwrap()).unwrap(), "observatory λ");
         std::fs::remove_file(path).unwrap();
     }
 }

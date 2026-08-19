@@ -1,6 +1,5 @@
 use core::fmt::Write as _;
 use mrml_runtime::{Text, Vector};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default)]
@@ -25,17 +24,19 @@ impl WorkspaceRules {
 
         for name in &candidate_names {
             let candidate_path = workspace_root.join(name);
-            if candidate_path.is_file() {
-                if let Ok(content) = fs::read_to_string(&candidate_path) {
-                    if !content.trim().is_empty() {
-                        sources.push(candidate_path.clone());
-                        write!(
-                            instructions,
-                            "\n--- PROJECT RULE ({}) ---\n{}\n",
-                            name,
-                            content.trim()
-                        )
-                        .expect("MRML rule text allocation failed");
+            if crate::platform::path_is_file(&candidate_path) {
+                if let Some(path) = candidate_path.to_str() {
+                    if let Ok(content) = mrml_runtime::read_file_text(path) {
+                        if !content.trim().is_empty() {
+                            sources.push(candidate_path.clone());
+                            write!(
+                                instructions,
+                                "\n--- PROJECT RULE ({}) ---\n{}\n",
+                                name,
+                                content.trim()
+                            )
+                            .expect("MRML rule text allocation failed");
+                        }
                     }
                 }
             }
@@ -55,6 +56,7 @@ impl WorkspaceRules {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_rules_discovery() {

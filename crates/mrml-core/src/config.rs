@@ -259,7 +259,7 @@ pub fn detect_os_name() -> Text {
     if Path::new("/.flatpak-info").exists() {
         return "Flatpak Sandbox (Freedesktop SDK 26.08)".into();
     }
-    if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+    if let Ok(content) = mrml_runtime::read_file_text("/etc/os-release") {
         for line in content.lines() {
             if let Some(pretty) = line.strip_prefix("PRETTY_NAME=") {
                 return pretty.trim_matches('"').into();
