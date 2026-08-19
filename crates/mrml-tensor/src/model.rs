@@ -49,19 +49,19 @@ pub struct TransformerLayer {
     pub sliding_window: usize,
 
     pub attn_norm: Vec<f32>,
-    pub attn_q: Vec<u8>,
-    pub attn_k: Vec<u8>,
-    pub attn_v: Vec<u8>,
-    pub attn_output: Vec<u8>,
+    pub attn_q: Vector<u8>,
+    pub attn_k: Vector<u8>,
+    pub attn_v: Vector<u8>,
+    pub attn_output: Vector<u8>,
     pub attn_q_norm: Vec<f32>,
     pub attn_k_norm: Vec<f32>,
     pub post_attention_norm: Vec<f32>,
 
     // Dense shared FFN
     pub ffn_norm: Vec<f32>,
-    pub ffn_gate: Vec<u8>,
-    pub ffn_up: Vec<u8>,
-    pub ffn_down: Vec<u8>,
+    pub ffn_gate: Vector<u8>,
+    pub ffn_up: Vector<u8>,
+    pub ffn_down: Vector<u8>,
     pub post_ffw_norm: Vec<f32>,
     pub post_ffw_norm_1: Vec<f32>,
     pub pre_ffw_norm_2: Vec<f32>,
@@ -205,7 +205,7 @@ pub struct MrmlModel {
     pub output_norm_weights: Vec<f32>,
     pub layers: Vec<TransformerLayer>,
     pub data_offset: u64,
-    pub token_embd_table: Vec<u8>,
+    pub token_embd_table: Vector<u8>,
     pub mmap: Option<Shared<crate::mmap::Mmap>>,
     #[cfg(feature = "cuda")]
     pub cuda_dev: Option<Shared<crate::cuda::CudaDevice>>,
@@ -951,7 +951,9 @@ impl MrmlModel {
 
         // Preload complete token embedding table in memory
         let row_bytes = (dim / 32) * 34;
-        let mut token_embd_table = vec![0u8; vocab_size * row_bytes];
+        let mut token_embd_table =
+            Vector::with_capacity(vocab_size * row_bytes).expect("MRML allocation failed");
+        token_embd_table.resize(vocab_size * row_bytes, 0);
 
         if let (Some(info), Ok(mut file)) = (&token_embd_info, File::open(gguf_path_text)) {
             let offset = gguf.data_offset + info.offset;
@@ -2803,10 +2805,10 @@ fn read_f32_tensor_opt(gguf: &GgufFile, name: &str, default_len: usize) -> Resul
     }
 }
 
-fn read_raw_tensor_opt(gguf: &GgufFile, name: &str) -> Result<Vec<u8>> {
+fn read_raw_tensor_opt(gguf: &GgufFile, name: &str) -> Result<Vector<u8>> {
     if let Some(info) = gguf.tensors.get(name) {
         gguf.read_tensor_bytes(info)
     } else {
-        Ok(Vec::new())
+        Ok(Vector::new())
     }
 }

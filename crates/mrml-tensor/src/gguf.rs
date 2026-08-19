@@ -175,11 +175,12 @@ impl GgufFile {
     }
 
     /// Read raw tensor bytes directly from file on-demand
-    pub fn read_tensor_bytes(&self, tensor: &GgufTensorInfo) -> Result<Vec<u8>> {
+    pub fn read_tensor_bytes(&self, tensor: &GgufTensorInfo) -> Result<Vector<u8>> {
         let mut file = File::open(&self.path)?;
         let start = self.data_offset + tensor.offset;
         file.seek(start)?;
-        let mut buf = vec![0u8; tensor.size_bytes];
+        let mut buf = Vector::with_capacity(tensor.size_bytes).expect("MRML allocation failed");
+        buf.resize(tensor.size_bytes, 0);
         file.read_exact(&mut buf)?;
         Ok(buf)
     }
