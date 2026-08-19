@@ -72,7 +72,7 @@ impl ModelEngine {
         self.inner.is_eog(token)
     }
 
-    pub fn chat_template(&self) -> Option<String> {
+    pub fn chat_template(&self) -> Option<Text> {
         self.inner.chat_template()
     }
 

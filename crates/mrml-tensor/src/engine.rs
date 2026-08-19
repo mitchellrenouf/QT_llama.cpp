@@ -1,7 +1,7 @@
 use crate::anyhow::Result;
 use crate::model::MrmlModel;
 use core::sync::atomic::{AtomicBool, Ordering};
-use mrml_runtime::{Instant, Shared, SpinMutex, Vector};
+use mrml_runtime::{Instant, Shared, SpinMutex, Text, Vector};
 
 pub struct MrmlEngine {
     pub model: Shared<SpinMutex<MrmlModel>>,
@@ -20,7 +20,7 @@ impl MrmlEngine {
         Ok(guard.tokenize(text))
     }
 
-    pub fn token_to_piece(&self, token: i32) -> Result<mrml_runtime::Text> {
+    pub fn token_to_piece(&self, token: i32) -> Result<Text> {
         let guard = self.model.lock();
         Ok(guard.token_to_piece(token))
     }
@@ -49,12 +49,9 @@ impl MrmlEngine {
         })
     }
 
-    pub fn chat_template(&self) -> Option<String> {
+    pub fn chat_template(&self) -> Option<Text> {
         let guard = self.model.lock();
-        guard
-            .chat_template
-            .as_ref()
-            .map(|template| template.to_string())
+        guard.chat_template.clone()
     }
 
     pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {
@@ -69,13 +66,13 @@ impl MrmlEngine {
         mut emit: F,
     ) -> Shared<AtomicBool>
     where
-        F: FnMut(Result<mrml_runtime::Text>) -> bool + Send + 'static,
+        F: FnMut(Result<Text>) -> bool + Send + 'static,
     {
         let cancelled = Shared::new(AtomicBool::new(false));
         let cancel_flag = cancelled.clone();
 
         let model_arc = self.model.clone();
-        let prompt_string = prompt.to_string();
+        let prompt_string = Text::from(prompt);
 
         std::thread::spawn(move || {
             let prompt_tokens = {
