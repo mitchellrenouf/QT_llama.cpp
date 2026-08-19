@@ -25,11 +25,18 @@ impl ModelEngine {
         _backend: Option<&str>,
     ) -> Result<Self> {
         let automatic = if ctx_size >= 131_072 { "q4_0" } else { "f16" };
-        let cache_type_k = if cache_type_k == "auto" { automatic } else { cache_type_k };
-        let cache_type_v = if cache_type_v == "auto" { automatic } else { cache_type_v };
-        let inner = MrmlEngine::new_with_cache(
-            model_path, ctx_size as usize, cache_type_k, cache_type_v,
-        )?;
+        let cache_type_k = if cache_type_k == "auto" {
+            automatic
+        } else {
+            cache_type_k
+        };
+        let cache_type_v = if cache_type_v == "auto" {
+            automatic
+        } else {
+            cache_type_v
+        };
+        let inner =
+            MrmlEngine::new_with_cache(model_path, ctx_size as usize, cache_type_k, cache_type_v)?;
         Ok(Self {
             inner: Arc::new(inner),
         })
@@ -42,17 +49,15 @@ impl ModelEngine {
         temperature: f32,
     ) -> (mpsc::Receiver<Result<GenerationChunk>>, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::channel(4096);
-        let cancel = self.inner.generate_stream(
-            prompt,
-            max_tokens,
-            temperature,
-            move |piece| {
-                let chunk = piece
-                    .map_err(Error::from)
-                    .map(|text| GenerationChunk { text, token_count: 1 });
+        let cancel = self
+            .inner
+            .generate_stream(prompt, max_tokens, temperature, move |piece| {
+                let chunk = piece.map_err(Error::from).map(|text| GenerationChunk {
+                    text,
+                    token_count: 1,
+                });
                 tx.blocking_send(chunk).is_ok()
-            },
-        );
+            });
         (rx, cancel)
     }
 
@@ -70,5 +75,10 @@ impl ModelEngine {
 
     pub fn chat_template(&self) -> Option<String> {
         self.inner.chat_template()
+    }
+
+
+    pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {
+        self.inner.gpu_layer_residency()
     }
 }

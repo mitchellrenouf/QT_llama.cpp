@@ -285,6 +285,10 @@ impl MrmlClient {
         self.engine.is_some()
     }
 
+    pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {
+        self.engine.as_ref()?.gpu_layer_residency()
+    }
+
     pub async fn health_check(&self) -> Result<String> {
         if self.engine.is_some() {
             Ok("Native MRML Engine Active".to_string())

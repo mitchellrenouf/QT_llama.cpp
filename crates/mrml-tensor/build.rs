@@ -17,7 +17,15 @@ fn find_msvc_bin() -> Option<PathBuf> {
         .join("Installer")
         .join("vswhere.exe");
     let output = Command::new(vswhere)
-        .args(["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"])
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -41,12 +49,31 @@ fn find_msvc_bin() -> Option<PathBuf> {
 
 fn main() {
     println!("cargo:rerun-if-changed=c_src/cuda_kernels.cu");
+    println!("cargo:rerun-if-changed=cuda_ptx/kernels.rs");
     println!("cargo:rerun-if-env-changed=MRML_CUDA_ARCHS");
 
     #[cfg(feature = "cuda")]
     {
-        let is_windows = env::var("CARGO_CFG_TARGET_OS").map(|s| s == "windows").unwrap_or(false);
+        let is_windows = env::var("CARGO_CFG_TARGET_OS")
+            .map(|s| s == "windows")
+            .unwrap_or(false);
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+        let nightly_rustc = env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .map(|home| home.join(".rustup/toolchains/nightly-x86_64-pc-windows-msvc/bin/rustc.exe"))
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from("rustc"));
+        let rust_ptx = out_dir.join("rust_cuda_kernels.ptx");
+        let rust_status = Command::new(&nightly_rustc)
+            .args(["cuda_ptx/kernels.rs", "--crate-name", "mrml_cuda_ptx", "--crate-type", "cdylib", "--edition", "2021", "--target", "nvptx64-nvidia-cuda", "-O", "-C", "target-cpu=sm_120", "-C", "unsafe-allow-abi-mismatch=target-cpu", "--emit", "asm", "-o"])
+            .arg(&rust_ptx)
+            .status()
+            .expect("failed to run nightly Rust CUDA compiler");
+        if !rust_status.success() {
+            panic!("Rust CUDA PTX compilation failed");
+        }
+        println!("cargo:warning=[mrml-tensor] Compiled Rust CUDA PTX with {}", nightly_rustc.display());
 
         let mut cuda_path = env::var("CUDA_PATH")
             .or_else(|_| env::var("CUDA_TOOLKIT_ROOT_DIR"))
@@ -68,7 +95,10 @@ fn main() {
             };
 
             if nvcc_path.exists() {
-                println!("cargo:warning=[mrml-tensor] Compiling CUDA acceleration kernels with NVCC: {}", nvcc_path.display());
+                println!(
+                    "cargo:warning=[mrml-tensor] Compiling CUDA acceleration kernels with NVCC: {}",
+                    nvcc_path.display()
+                );
 
                 let obj_out = if is_windows {
                     out_dir.join("cuda_kernels.obj")
@@ -84,13 +114,16 @@ fn main() {
                 let mut cmd = Command::new(&nvcc_path);
 
                 #[cfg(windows)]
-                let msvc_bin = find_msvc_bin().expect("Visual Studio C++ x64 tools are required for CUDA builds");
+                let msvc_bin = find_msvc_bin()
+                    .expect("Visual Studio C++ x64 tools are required for CUDA builds");
                 #[cfg(windows)]
                 cmd.arg("-ccbin").arg(&msvc_bin);
 
                 cmd.args(&[
-                    "-c", "c_src/cuda_kernels.cu",
-                    "-o", obj_out.to_str().unwrap(),
+                    "-c",
+                    "c_src/cuda_kernels.cu",
+                    "-o",
+                    obj_out.to_str().unwrap(),
                     "-O3",
                     "--use_fast_math",
                 ]);
@@ -112,7 +145,9 @@ fn main() {
                     parsed_archs.push(arch.to_string());
                 }
                 if let Some(lowest) = parsed_archs.first() {
-                    cmd.arg(format!("-gencode=arch=compute_{lowest},code=compute_{lowest}"));
+                    cmd.arg(format!(
+                        "-gencode=arch=compute_{lowest},code=compute_{lowest}"
+                    ));
                 }
 
                 if is_windows {
@@ -132,7 +167,7 @@ fn main() {
                 #[cfg(windows)]
                 lib_cmd.arg("-ccbin").arg(&msvc_bin);
                 lib_cmd.arg("--lib").arg(&obj_out).arg("-o").arg(&lib_out);
-                
+
                 let lib_status = lib_cmd.status().expect("Failed to execute archiver");
                 if !lib_status.success() {
                     panic!("Library archive creation failed");
@@ -142,9 +177,15 @@ fn main() {
                 println!("cargo:rustc-link-lib=static=mrml_tensor_cuda_kernels");
 
                 if is_windows {
-                    println!("cargo:rustc-link-search=native={}", p.join("lib").join("x64").display());
+                    println!(
+                        "cargo:rustc-link-search=native={}",
+                        p.join("lib").join("x64").display()
+                    );
                 } else {
-                    println!("cargo:rustc-link-search=native={}", p.join("lib64").display());
+                    println!(
+                        "cargo:rustc-link-search=native={}",
+                        p.join("lib64").display()
+                    );
                 }
                 println!("cargo:rustc-link-lib=dylib=cudart");
             }

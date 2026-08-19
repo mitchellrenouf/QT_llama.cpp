@@ -916,6 +916,14 @@ void cuda_pool_release(void* pointer, size_t bytes) {
     mrml_pool_blocks[bytes].push_back(pointer);
 }
 
+void cuda_pool_clear() {
+    std::lock_guard<std::mutex> lock(mrml_pool_mutex);
+    for (auto& entry : mrml_pool_blocks) {
+        for (void* pointer : entry.second) cudaFree(pointer);
+    }
+    mrml_pool_blocks.clear();
+}
+
 void cuda_op_rms_norm(
     const float* d_x,
     const float* d_w,

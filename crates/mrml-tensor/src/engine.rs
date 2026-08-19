@@ -1,5 +1,5 @@
-use crate::model::MrmlModel;
 use crate::anyhow::Result;
+use crate::model::MrmlModel;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,14 +41,23 @@ impl MrmlEngine {
         let cache_type_k = crate::kv_cache::KvCacheFormat::parse(cache_type_k)?;
         let cache_type_v = crate::kv_cache::KvCacheFormat::parse(cache_type_v)?;
         let model = MrmlModel::load_from_gguf_with_cache(
-            model_path, max_context, cache_type_k, cache_type_v,
+            model_path,
+            max_context,
+            cache_type_k,
+            cache_type_v,
         )?;
-        Ok(Self { model: Arc::new(Mutex::new(model)) })
+        Ok(Self {
+            model: Arc::new(Mutex::new(model)),
+        })
     }
 
     pub fn chat_template(&self) -> Option<String> {
         let guard = self.model.lock().unwrap();
         guard.chat_template.clone()
+    }
+
+    pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {
+        self.model.lock().unwrap().gpu_layer_residency()
     }
 
     pub fn generate_stream<F>(
@@ -129,7 +138,10 @@ impl MrmlEngine {
             } else {
                 0.0
             };
-            eprintln!("[mrml] Generated {} tokens in {:.2}s ({:.1} tk/s)", generated, elapsed, tps);
+            eprintln!(
+                "[mrml] Generated {} tokens in {:.2}s ({:.1} tk/s)",
+                generated, elapsed, tps
+            );
         });
 
         cancelled

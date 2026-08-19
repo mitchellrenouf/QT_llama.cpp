@@ -171,6 +171,10 @@ impl MrmlAgent {
         self.client.has_engine()
     }
 
+    pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {
+        self.client.gpu_layer_residency()
+    }
+
     pub fn get_config(&self) -> &Config {
         &self.config
     }

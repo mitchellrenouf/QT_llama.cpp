@@ -17,8 +17,46 @@ struct Args {
     #[command(flatten)]
     config: Config,
 
+    /// Exit before inference unless every transformer layer is GPU-resident.
+    #[arg(long, env = "MRML_REQUIRE_FULL_GPU")]
+    require_full_gpu: bool,
+
+    /// Reload the model this many times when full GPU residency is not achieved.
+    #[arg(long, env = "MRML_GPU_LOAD_RETRIES", default_value_t = 0)]
+    gpu_load_retries: usize,
+
     #[command(subcommand)]
     command: Command,
+}
+
+fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
+    let strict = args.require_full_gpu || args.gpu_load_retries > 0;
+    for attempt in 0..=args.gpu_load_retries {
+        let agent = MrmlAgent::new(args.config.clone());
+        match agent.gpu_layer_residency() {
+            Some((resident, total)) if resident == total => return Ok(agent),
+            Some(_) if !strict => return Ok(agent),
+            Some((resident, total)) => {
+                let reason = format!("only {resident}/{total} transformer layers are fully GPU-resident");
+                if attempt == args.gpu_load_retries {
+                    anyhow::bail!("GPU residency requirement failed after {} load attempt(s): {reason}. Close other GPU applications or reduce context/cache memory, then retry", attempt + 1);
+                }
+                eprintln!("[mrml-machine] Load attempt {} rejected: {reason}; releasing the model and retrying", attempt + 1);
+            }
+            None if !strict => return Ok(agent),
+            None => {
+                if attempt == args.gpu_load_retries {
+                    anyhow::bail!("GPU residency requirement failed after {} load attempt(s): no CUDA model engine was loaded. Verify --features cuda, --backend cuda, and the model path", attempt + 1);
+                }
+                eprintln!("[mrml-machine] Load attempt {} did not create a CUDA model engine; retrying", attempt + 1);
+            }
+        }
+        drop(agent);
+        #[cfg(feature = "cuda")]
+        mrml_core::clear_cuda_allocation_pool();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    unreachable!()
 }
 
 #[derive(Debug, Subcommand)]
@@ -193,7 +231,7 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
 async fn main() -> Result<()> {
     let mut args = Args::parse();
     args.config.prompt = None;
-    let mut agent = MrmlAgent::new(args.config);
+    let mut agent = load_agent_with_residency_policy(&args)?;
     agent.init_mcp_servers().await?;
 
     match args.command {
@@ -224,5 +262,12 @@ mod tests {
     #[test]
     fn rejects_unknown_session_operation() {
         assert!(serde_json::from_str::<SessionRequest>(r#"{"op":"explode"}"#).is_err());
+    }
+
+    #[test]
+    fn parses_strict_gpu_residency_options() {
+        let args=Args::try_parse_from(["mrml-machine","--require-full-gpu","--gpu-load-retries","3","health"]).unwrap();
+        assert!(args.require_full_gpu);
+        assert_eq!(args.gpu_load_retries,3);
     }
 }
