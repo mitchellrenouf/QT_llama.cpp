@@ -49,26 +49,40 @@ Important limitations:
 
 ## Quick start
 
-MRML uses Rust 2024 and pins nightly in `rust-toolchain.toml`. Install rustup
-and the Rust CUDA target on Windows or Linux:
+MRML uses Rust 2024 and pins nightly in `rust-toolchain.toml`. On Windows, MRML
+supports only Rust's native GNU/LLVM (`x86_64-pc-windows-gnullvm`) host. It does
+not require or support the MSVC Rust target, Visual Studio, the MSVC compiler,
+the Windows SDK, or a separate LLVM installation. Install rustup, the
+self-contained Rust MinGW component, and the Rust CUDA PTX target:
 
 ```powershell
 # Windows PowerShell
 winget install Rustlang.Rustup
-rustup toolchain install nightly --component rust-src,rustfmt,clippy
-rustup target add nvptx64-nvidia-cuda --toolchain nightly
+rustup toolchain install nightly-x86_64-pc-windows-gnullvm --profile minimal `
+  --component rust-src --component rustfmt --component clippy `
+  --component rust-mingw --target nvptx64-nvidia-cuda
+rustup default nightly-x86_64-pc-windows-gnullvm
+
+rustc -vV
+# host must print: x86_64-pc-windows-gnullvm
 ```
 
+The workspace selects Rust's bundled `rust-lld` and statically links its MinGW
+runtime. Do not install `LLVM.LLVM`, Visual Studio Build Tools, or the Windows
+SDK for MRML. `rust-mingw` supplies the Windows import libraries required by
+the GNU/LLVM target.
+
 ```bash
-# Linux
+# Linux/WSL2 uses its normal native GNU host (not the Windows gnullvm target).
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup toolchain install nightly --component rust-src,rustfmt,clippy
 rustup target add nvptx64-nvidia-cuda --toolchain nightly
 ```
 
-CUDA builds require an NVIDIA display driver, but do **not** require the CUDA
-Toolkit or `libcudart`. MRML compiles its kernels directly to PTX with nightly
-Rust and dynamically loads the driver's `nvcuda.dll` on Windows or
+CUDA builds require only a compatible NVIDIA display driver plus the Rust
+`nvptx64-nvidia-cuda` target installed above. They do **not** require the CUDA
+Toolkit, CUDA compiler, or `libcudart`. MRML compiles its kernels directly to
+PTX with nightly Rust and dynamically loads the driver's `nvcuda.dll` on Windows or
 `libcuda.so.1` on Linux. In WSL2, install the current NVIDIA Windows driver;
 Microsoft's WSL bridge exposes its CUDA driver to Linux. Do not install a Linux
 NVIDIA display driver inside WSL2.

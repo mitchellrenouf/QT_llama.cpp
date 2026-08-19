@@ -8,12 +8,10 @@ fn main() {
     {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-        let nightly_rustc = env::var_os("USERPROFILE")
+        // Cargo supplies the compiler belonging to the selected host toolchain.
+        // Reusing it keeps CUDA PTX builds independent of a specific Windows ABI.
+        let nightly_rustc = env::var_os("RUSTC")
             .map(PathBuf::from)
-            .map(|home| {
-                home.join(".rustup/toolchains/nightly-x86_64-pc-windows-msvc/bin/rustc.exe")
-            })
-            .filter(|path| path.is_file())
             .unwrap_or_else(|| PathBuf::from("rustc"));
         let rust_ptx = out_dir.join("rust_cuda_kernels.ptx");
         let rust_status = Command::new(&nightly_rustc)

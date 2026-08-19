@@ -2,3 +2,4 @@
 channel = "nightly"
 profile = "minimal"
 components = ["rustfmt", "clippy", "rust-src"]
+targets = ["nvptx64-nvidia-cuda"]
