@@ -71,6 +71,7 @@ unsafe extern "C" {
     fn write(file: c_int, buffer: *const c_void, count: usize) -> isize;
     fn lseek(file: c_int, offset: isize, whence: c_int) -> isize;
     fn close(file: c_int) -> c_int;
+    fn mkdir(path: *const i8, mode: u32) -> c_int;
     fn pthread_create(
         thread: *mut usize,
         attributes: *const c_void,
@@ -229,6 +230,24 @@ pub fn environment_variable_bytes(name: &CStr, value: &mut [u8]) -> Result<usize
     }
     value[..bytes.len()].copy_from_slice(bytes);
     Ok(bytes.len())
+}
+
+#[cfg(unix)]
+pub fn path_is_directory(path: &CStr) -> bool {
+    const O_RDONLY: c_int = 0;
+    const O_DIRECTORY: c_int = 0o200000;
+    let file = unsafe { open(path.as_ptr(), O_RDONLY | O_DIRECTORY) };
+    if file < 0 {
+        false
+    } else {
+        let _ = unsafe { close(file) };
+        true
+    }
+}
+
+#[cfg(unix)]
+pub fn create_directory(path: &CStr) -> bool {
+    (unsafe { mkdir(path.as_ptr(), 0o777) }) == 0 || path_is_directory(path)
 }
 
 #[cfg(unix)]

@@ -389,7 +389,11 @@ impl MrmlAgent {
 
     pub fn save_session(&self, name: &str) -> Result<PathBuf> {
         let sessions_dir = self.config.workspace_root.join(".mrml").join("sessions");
-        fs::create_dir_all(&sessions_dir)?;
+        mrml_runtime::create_dir_all(
+            sessions_dir
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("session directory is not valid UTF-8"))?,
+        )?;
         let file_path = sessions_dir.join(format!("{}.json", name));
         let serialized = serde_json::stringify(&serde_json::Value::Array(
             self.history.iter().map(ChatMessage::to_json).collect(),

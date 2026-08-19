@@ -116,7 +116,9 @@ impl Tool for WriteFileTool {
             .unwrap_or_default();
 
         if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent)?;
+            mrml_runtime::create_dir_all(
+                parent.to_str().ok_or_else(|| anyhow!("Path is not valid UTF-8"))?,
+            )?;
         }
 
         mrml_runtime::write_file(

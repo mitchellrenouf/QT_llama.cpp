@@ -152,7 +152,11 @@ impl EdgeController {
         drop(listener);
         let profile =
             std::env::temp_dir().join(format!("mrml-edge-{}-{}", std::process::id(), port));
-        fs::create_dir_all(&profile)?;
+        mrml_runtime::create_dir_all(
+            profile
+                .to_str()
+                .ok_or_else(|| anyhow!("Browser profile path is not valid UTF-8"))?,
+        )?;
         let child = Command::new(&exe)
             .args([
                 "--headless=new",
@@ -432,7 +436,10 @@ impl Tool for BrowserScreenshotTool {
         let bytes = crate::encoding::base64_decode(&data)
             .map_err(|e| anyhow!("Invalid screenshot: {}", e))?;
         let dir = r.join(".mrml/screenshots");
-        fs::create_dir_all(&dir)?;
+        mrml_runtime::create_dir_all(
+            dir.to_str()
+                .ok_or_else(|| anyhow!("Screenshot directory is not valid UTF-8"))?,
+        )?;
         let p = dir.join(format!(
             "browser_screenshot_{}.jpg",
             crate::platform::local_timestamp_string()

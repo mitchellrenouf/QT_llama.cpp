@@ -216,7 +216,11 @@ where
     }
 
     let model_dir = spec.get_model_dir();
-    std::fs::create_dir_all(&model_dir)?;
+    mrml_runtime::create_dir_all(
+        model_dir
+            .to_str()
+            .ok_or_else(|| anyhow!("model directory is not valid UTF-8"))?,
+    )?;
 
     progress_cb(
         &format!(

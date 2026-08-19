@@ -11,6 +11,7 @@ pub enum FileError {
     MetadataFailed,
     InvalidUtf8,
     WriteFailed,
+    DirectoryFailed,
 }
 
 pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
@@ -49,8 +50,65 @@ impl fmt::Display for FileError {
             Self::MetadataFailed => "failed to read file metadata",
             Self::InvalidUtf8 => "file is not valid UTF-8 text",
             Self::WriteFailed => "failed to write file",
+            Self::DirectoryFailed => "failed to create directory",
         })
     }
+}
+
+#[cfg(windows)]
+fn encode_windows_path(path: &str) -> Option<Vector<u16>> {
+    let mut encoded = Vector::with_capacity(path.len() + 1).ok()?;
+    encoded.extend(path.encode_utf16());
+    encoded.push(0);
+    Some(encoded)
+}
+
+#[cfg(unix)]
+fn encode_unix_path(path: &str) -> Option<Vector<u8>> {
+    if path.as_bytes().contains(&0) {
+        return None;
+    }
+    let mut encoded = Vector::with_capacity(path.len() + 1).ok()?;
+    encoded.try_extend_from_slice(path.as_bytes()).ok()?;
+    encoded.push(0);
+    Some(encoded)
+}
+
+pub fn path_is_directory(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        encode_windows_path(path)
+            .is_some_and(|path| mrml_windows::wide_path_is_directory(&path))
+    }
+    #[cfg(unix)]
+    {
+        encode_unix_path(path).is_some_and(|path| {
+            core::ffi::CStr::from_bytes_with_nul(&path)
+                .is_ok_and(mrml_linux::path_is_directory)
+        })
+    }
+}
+
+pub fn create_dir_all(path: &str) -> Result<(), FileError> {
+    let path = path.trim_end_matches(['/', '\\']);
+    if path.is_empty() || path == "/" || path.ends_with(':') || path_is_directory(path) {
+        return Ok(());
+    }
+    if let Some(split) = path.rfind(['/', '\\']) {
+        let parent = &path[..split];
+        if !parent.is_empty() && parent != path {
+            create_dir_all(parent)?;
+        }
+    }
+    #[cfg(windows)]
+    let created = encode_windows_path(path)
+        .is_some_and(|path| mrml_windows::create_directory_wide(&path));
+    #[cfg(unix)]
+    let created = encode_unix_path(path).is_some_and(|path| {
+        core::ffi::CStr::from_bytes_with_nul(&path)
+            .is_ok_and(mrml_linux::create_directory)
+    });
+    created.then_some(()).ok_or(FileError::DirectoryFailed)
 }
 impl core::error::Error for FileError {}
 
@@ -206,5 +264,17 @@ mod tests {
         write_file(path.to_str().unwrap(), "observatory λ".as_bytes()).unwrap();
         assert_eq!(read_file_text(path.to_str().unwrap()).unwrap(), "observatory λ");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn recursively_creates_unicode_directories_and_rejects_file_conflicts() {
+        let root = std::env::temp_dir().join(std::format!("mrml-dir-{}", std::process::id()));
+        let nested = root.join("observatory-λ").join("deep");
+        create_dir_all(nested.to_str().unwrap()).unwrap();
+        assert!(path_is_directory(nested.to_str().unwrap()));
+        let file = nested.join("conflict");
+        write_file(file.to_str().unwrap(), b"not a directory").unwrap();
+        assert!(create_dir_all(file.to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

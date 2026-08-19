@@ -49,6 +49,7 @@ unsafe extern "system" {
     fn GetEnvironmentVariableA(name: *const i8, value: *mut i8, capacity: u32) -> u32;
     fn GetEnvironmentVariableW(name: *const u16, value: *mut u16, capacity: u32) -> u32;
     fn GetFileAttributesW(name: *const u16) -> u32;
+    fn CreateDirectoryW(name: *const u16, security: *const c_void) -> i32;
     fn GetLastError() -> u32;
     fn SetLastError(error: u32);
     fn CreateFileMappingW(
@@ -133,6 +134,27 @@ pub fn wide_path_is_file(name: &[u16]) -> bool {
     }
     let attributes = unsafe { GetFileAttributesW(name.as_ptr()) };
     attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+}
+
+#[cfg(windows)]
+pub fn wide_path_is_directory(name: &[u16]) -> bool {
+    const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    if name.last().copied() != Some(0) {
+        return false;
+    }
+    let attributes = unsafe { GetFileAttributesW(name.as_ptr()) };
+    attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+}
+
+#[cfg(windows)]
+pub fn create_directory_wide(name: &[u16]) -> bool {
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    if name.last().copied() != Some(0) {
+        return false;
+    }
+    (unsafe { CreateDirectoryW(name.as_ptr(), core::ptr::null()) }) != 0
+        || (unsafe { GetLastError() } == ERROR_ALREADY_EXISTS && wide_path_is_directory(name))
 }
 
 #[cfg(windows)]

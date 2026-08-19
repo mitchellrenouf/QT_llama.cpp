@@ -2,7 +2,6 @@ use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::sync::atomic::{AtomicBool, Ordering};
 use serde_json::json;
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -95,7 +94,11 @@ impl Tool for RecordAudioTool {
     async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
         let duration = args["duration_secs"].as_i64().unwrap_or(5);
         let audio_dir = workspace_root.join(".mrml").join("audio");
-        fs::create_dir_all(&audio_dir)?;
+        mrml_runtime::create_dir_all(
+            audio_dir
+                .to_str()
+                .ok_or_else(|| anyhow!("Audio directory is not valid UTF-8"))?,
+        )?;
 
         let timestamp = crate::platform::local_timestamp_string();
         let file_path = audio_dir.join(format!("audio_{}.wav", timestamp));

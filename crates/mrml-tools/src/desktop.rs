@@ -44,7 +44,11 @@ impl Tool for TakeScreenshotTool {
 
     async fn execute(&self, workspace_root: &Path, _args: serde_json::Value) -> Result<String> {
         let shot_dir = workspace_root.join(".mrml").join("screenshots");
-        fs::create_dir_all(&shot_dir)?;
+        mrml_runtime::create_dir_all(
+            shot_dir
+                .to_str()
+                .ok_or_else(|| anyhow!("Screenshot directory is not valid UTF-8"))?,
+        )?;
 
         let timestamp = crate::platform::local_timestamp_string();
         let file_path = shot_dir.join(format!("screenshot_{}.jpg", timestamp));
