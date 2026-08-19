@@ -49,7 +49,7 @@ use mrml_runtime::{Owned, Text};
 use mrml_runtime::Text as String;
 #[cfg(feature = "std")]
 use std::string::String;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 use mrml_runtime::{Shared, Vector};
 #[cfg(feature = "runtime")]
 use serde_json::Value;
@@ -154,12 +154,12 @@ impl<T: Tool> DynTool for T {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub struct ToolRegistry {
     tools: Vector<Shared<dyn DynTool>>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 impl ToolRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
@@ -228,7 +228,7 @@ impl ToolRegistry {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(all(test, feature = "runtime"))]
 mod tests {
     use super::*;
 
@@ -284,12 +284,12 @@ mod tests {
         ];
         let registry = ToolRegistry::new();
         let definitions = registry.definitions();
-        let actual: Vec<_> = definitions
+        let actual: Vector<_> = definitions
             .iter()
             .map(|definition| definition.function.name.as_str())
             .collect();
-        assert_eq!(actual, expected);
-        for definition in definitions {
+        assert_eq!(actual, expected.as_slice());
+        for definition in &definitions {
             assert!(!definition.function.description.trim().is_empty());
             assert_eq!(definition.function.parameters["type"], "object");
             assert!(registry.get(&definition.function.name).is_some());
@@ -299,13 +299,13 @@ mod tests {
     #[test]
     fn replacing_a_registered_tool_does_not_reorder_it() {
         let mut registry = ToolRegistry::new();
-        let before: Vec<_> = registry
+        let before: Vector<_> = registry
             .definitions()
             .into_iter()
             .map(|item| item.function.name)
             .collect();
         registry.register(Shared::new(editor::ViewFileTool));
-        let after: Vec<_> = registry
+        let after: Vector<_> = registry
             .definitions()
             .into_iter()
             .map(|item| item.function.name)
