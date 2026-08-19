@@ -35,43 +35,36 @@ pub mod simple_regex;
 #[cfg(feature = "std")]
 use anyhow::Result;
 #[cfg(feature = "std")]
+use core::future::Future;
+#[cfg(feature = "std")]
+use core::pin::Pin;
+#[cfg(feature = "std")]
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+#[cfg(feature = "std")]
 use serde_json::Value;
 #[cfg(feature = "std")]
 use std::collections::HashMap;
 #[cfg(feature = "std")]
-use std::future::Future;
-#[cfg(feature = "std")]
 use std::path::Path;
 #[cfg(feature = "std")]
-use std::pin::Pin;
-#[cfg(feature = "std")]
 use std::sync::Arc;
-#[cfg(feature = "std")]
-use std::task::{Context, Poll, Wake, Waker};
-
-#[cfg(feature = "std")]
-struct ThreadWaker(std::thread::Thread);
-
-#[cfg(feature = "std")]
-impl Wake for ThreadWaker {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.unpark();
-    }
-}
 
 #[cfg(feature = "std")]
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    unsafe fn clone(_: *const ()) -> RawWaker {
+        RawWaker::new(core::ptr::null(), &VTABLE)
+    }
+    unsafe fn no_op(_: *const ()) {}
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+
+    let raw = RawWaker::new(core::ptr::null(), &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw) };
     let mut context = Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
+    let mut future = core::pin::pin!(future);
     loop {
         match future.as_mut().poll(&mut context) {
             Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::park(),
+            Poll::Pending => mrml_runtime::yield_now(),
         }
     }
 }
@@ -233,6 +226,29 @@ impl ToolRegistry {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocation_free_executor_repolls_pending_futures() {
+        struct PendingOnce(bool);
+        impl core::future::Future for PendingOnce {
+            type Output = usize;
+
+            fn poll(
+                mut self: core::pin::Pin<&mut Self>,
+                context: &mut core::task::Context<'_>,
+            ) -> core::task::Poll<Self::Output> {
+                if self.0 {
+                    core::task::Poll::Ready(42)
+                } else {
+                    self.0 = true;
+                    context.waker().wake_by_ref();
+                    core::task::Poll::Pending
+                }
+            }
+        }
+
+        assert_eq!(block_on(PendingOnce(false)), 42);
+    }
 
     #[test]
     fn registry_exposes_every_tool_in_stable_prompt_order() {

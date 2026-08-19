@@ -8,6 +8,13 @@ pub fn available_parallelism() -> usize {
     return mrml_linux::processor_count();
 }
 
+pub fn yield_now() {
+    #[cfg(windows)]
+    mrml_windows::yield_now();
+    #[cfg(unix)]
+    mrml_linux::yield_now();
+}
+
 struct ThreadStart<F> {
     operation: F,
     _non_zero_sized: u8,
