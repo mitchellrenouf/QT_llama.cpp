@@ -34,7 +34,11 @@ impl HfModelSpec {
         let (user, model) = match parts.len() {
             1 => ("ggml-org", parts[0]),
             2 => (parts[0], parts[1]),
-            _ => return Err(anyhow!("Invalid HuggingFace repo format. Expected 'user/model' or 'user/model:quant'")),
+            _ => {
+                return Err(anyhow!(
+                    "Invalid HuggingFace repo format. Expected 'user/model' or 'user/model:quant'"
+                ))
+            }
         };
 
         let repo_id = format!("{}/{}", user, model);
@@ -100,10 +104,20 @@ impl HfModelSpec {
 
         let target_quant_lower = self.quant.to_lowercase();
         for path in crate::fs_walk::paths(&model_dir) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            if name.ends_with(".gguf") && name.contains(&target_quant_lower) && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            if name.ends_with(".gguf")
+                && name.contains(&target_quant_lower)
+                && !name.ends_with(".part")
+                && !name.contains("mmproj")
+                && !name.contains("mtp")
+            {
                 if let Ok(meta) = path.metadata() {
-                    if meta.len() > 10 * 1024 * 1024 { // > 10MB
+                    if meta.len() > 10 * 1024 * 1024 {
+                        // > 10MB
                         return true;
                     }
                 }
@@ -120,22 +134,26 @@ pub fn render_progress_bar(percent: f32, width: usize) -> String {
 }
 
 pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vec<String>> {
-    let api_url = format!("https://huggingface.co/api/models/{}/{}", spec.user, spec.model);
-    
-    let mut cmd = tokio::process::Command::new("curl");
+    let api_url = format!(
+        "https://huggingface.co/api/models/{}/{}",
+        spec.user, spec.model
+    );
+
+    let mut cmd = std::process::Command::new("curl");
     cmd.arg("-s").arg("-L").arg(&api_url);
     if let Ok(token) = std::env::var("HF_TOKEN") {
-        cmd.arg("-H").arg(format!("Authorization: Bearer {}", token));
+        cmd.arg("-H")
+            .arg(format!("Authorization: Bearer {}", token));
     }
 
-    let output = cmd.output().await?;
+    let output = cmd.output()?;
     if !output.status.success() {
         return Err(anyhow!("Failed to query Hugging Face API at {}", api_url));
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
     let val: serde_json::Value = serde_json::from_str(&body)?;
-    
+
     let mut filenames = Vec::new();
     if let Some(siblings) = val.get("siblings").and_then(|s| s.as_array()) {
         for item in siblings {
@@ -158,11 +176,18 @@ where
     F: FnMut(&str, f32, usize, usize) + Send + 'static,
 {
     // 1. First check if model already exists in HF hub cache (~/.cache/huggingface/hub/) or local cache
-    if let Some(existing_primary) = crate::client::find_model_file(&format!("{}:{}", spec.repo_id, spec.quant))
-        .or_else(|| crate::client::find_model_file(&spec.model))
+    if let Some(existing_primary) =
+        crate::client::find_model_file(&format!("{}:{}", spec.repo_id, spec.quant))
+            .or_else(|| crate::client::find_model_file(&spec.model))
     {
         progress_cb(
-            &format!("✓ Found local cached weights at {}", existing_primary.file_name().unwrap_or_default().to_string_lossy()),
+            &format!(
+                "✓ Found local cached weights at {}",
+                existing_primary
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
             1.0,
             1,
             1,
@@ -179,7 +204,10 @@ where
     std::fs::create_dir_all(&model_dir)?;
 
     progress_cb(
-        &format!("Querying Hugging Face for model shards, mmproj & MTP speedup in {}...", spec.repo_id),
+        &format!(
+            "Querying Hugging Face for model shards, mmproj & MTP speedup in {}...",
+            spec.repo_id
+        ),
         0.05,
         0,
         1,
@@ -221,7 +249,11 @@ where
                 ));
             }
         } else {
-            matching_shards.push(format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase()));
+            matching_shards.push(format!(
+                "{}-{}.gguf",
+                spec.model.to_lowercase(),
+                spec.quant.to_lowercase()
+            ));
         }
     }
 
@@ -247,10 +279,23 @@ where
         let dest_path = model_dir.join(filename);
         let part_path = model_dir.join(format!("{}.part", filename));
 
-        if dest_path.exists() && dest_path.metadata().map(|m| m.len() > 10 * 1024 * 1024).unwrap_or(false) {
-            let msg = format!("✓ [File {}/{}] {} (Cached)", file_num, total_files, filename);
+        if dest_path.exists()
+            && dest_path
+                .metadata()
+                .map(|m| m.len() > 10 * 1024 * 1024)
+                .unwrap_or(false)
+        {
+            let msg = format!(
+                "✓ [File {}/{}] {} (Cached)",
+                file_num, total_files, filename
+            );
             println!("{}", msg);
-            progress_cb(&msg, file_num as f32 / total_files as f32, file_num, total_files);
+            progress_cb(
+                &msg,
+                file_num as f32 / total_files as f32,
+                file_num,
+                total_files,
+            );
 
             if filename.contains("mmproj") {
                 resolved_mmproj_path = Some(dest_path);
@@ -275,21 +320,33 @@ where
 
         if initial_resume_bytes > 0 {
             let mb = initial_resume_bytes as f64 / (1024.0 * 1024.0);
-            println!("🔄 [File {}/{}] Resuming {} from {:.1} MB...", file_num, total_files, filename, mb);
+            println!(
+                "🔄 [File {}/{}] Resuming {} from {:.1} MB...",
+                file_num, total_files, filename, mb
+            );
         } else {
-            println!("⬇️ [File {}/{}] Downloading {}...", file_num, total_files, filename);
+            println!(
+                "⬇️ [File {}/{}] Downloading {}...",
+                file_num, total_files, filename
+            );
         }
 
         // Run real streaming curl download with resume support
-        let mut curl_cmd = tokio::process::Command::new("curl");
-        curl_cmd.arg("-f")
+        let mut curl_cmd = std::process::Command::new("curl");
+        curl_cmd
+            .arg("-f")
+            .arg("-sS")
             .arg("-L")
-            .arg("-C").arg("-") // Auto-resume from partial byte offset
-            .arg("-o").arg(&part_path)
+            .arg("-C")
+            .arg("-") // Auto-resume from partial byte offset
+            .arg("-o")
+            .arg(&part_path)
             .arg(&download_url);
 
         if let Ok(token) = std::env::var("HF_TOKEN") {
-            curl_cmd.arg("-H").arg(format!("Authorization: Bearer {}", token));
+            curl_cmd
+                .arg("-H")
+                .arg(format!("Authorization: Bearer {}", token));
         }
 
         let mut child = curl_cmd
@@ -297,26 +354,21 @@ where
             .stdout(std::process::Stdio::null())
             .spawn()?;
 
-        let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
         loop {
-            tokio::select! {
-                res = child.wait() => {
-                    let status = res?;
-                    if !status.success() {
-                        return Err(anyhow!("Failed to download {}. Check network or HF_TOKEN.", filename));
-                    }
-                    break;
+            if let Some(status) = child.try_wait()? {
+                if !status.success() {
+                    return Err(anyhow!("Failed to download {}. Check network or HF_TOKEN.", filename));
                 }
-                _ = check_interval.tick() => {
-                    if let Ok(meta) = part_path.metadata() {
-                        let cur_len = meta.len();
-                        let mb = cur_len as f64 / (1024.0 * 1024.0);
-                        let msg = format!("⬇️ [File {}/{}] {} ({:.1} MB downloaded)...", file_num, total_files, filename, mb);
-                        let file_pct = (mb / 4000.0).clamp(0.05, 0.95) as f32;
-                        let overall = ((file_num as f32 - 1.0) + file_pct) / total_files as f32;
-                        progress_cb(&msg, overall, file_num, total_files);
-                    }
-                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if let Ok(meta) = part_path.metadata() {
+                let cur_len = meta.len();
+                let mb = cur_len as f64 / (1024.0 * 1024.0);
+                let msg = format!("⬇️ [File {}/{}] {} ({:.1} MB downloaded)...", file_num, total_files, filename, mb);
+                let file_pct = (mb / 4000.0).clamp(0.05, 0.95) as f32;
+                let overall = ((file_num as f32 - 1.0) + file_pct) / total_files as f32;
+                progress_cb(&msg, overall, file_num, total_files);
             }
         }
 
@@ -325,9 +377,17 @@ where
             std::fs::rename(&part_path, &dest_path)?;
         }
 
-        let done_msg = format!("✓ [File {}/{}] {} (Downloaded)", file_num, total_files, filename);
+        let done_msg = format!(
+            "✓ [File {}/{}] {} (Downloaded)",
+            file_num, total_files, filename
+        );
         println!("{}", done_msg);
-        progress_cb(&done_msg, file_num as f32 / total_files as f32, file_num, total_files);
+        progress_cb(
+            &done_msg,
+            file_num as f32 / total_files as f32,
+            file_num,
+            total_files,
+        );
 
         if filename.contains("mmproj") {
             resolved_mmproj_path = Some(dest_path);
@@ -338,12 +398,19 @@ where
         }
     }
 
-    let primary_entry_file = downloaded_shard_paths
-        .first()
-        .cloned()
-        .unwrap_or_else(|| model_dir.join(format!("{}-{}.gguf", spec.model.to_lowercase(), spec.quant.to_lowercase())));
+    let primary_entry_file = downloaded_shard_paths.first().cloned().unwrap_or_else(|| {
+        model_dir.join(format!(
+            "{}-{}.gguf",
+            spec.model.to_lowercase(),
+            spec.quant.to_lowercase()
+        ))
+    });
 
-    let complete_msg = format!("✨ All {} model weights ready in {}", total_files, model_dir.display());
+    let complete_msg = format!(
+        "✨ All {} model weights ready in {}",
+        total_files,
+        model_dir.display()
+    );
     println!("{}", complete_msg);
     progress_cb(&complete_msg, 1.0, total_files, total_files);
 

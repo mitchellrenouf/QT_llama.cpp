@@ -58,7 +58,6 @@ dependencies = [
  "mrml-model",
  "mrml-terminal-style",
  "mrml-tools",
- "tokio",
 ]
 
 [[package]]
