@@ -2,6 +2,18 @@ use crate::{TryReserveError, Vector};
 use core::fmt::{self, Write};
 use core::ops::Deref;
 
+#[macro_export]
+macro_rules! mrml_format {
+    ($($argument:tt)*) => {{
+        use core::fmt::Write as _;
+        let mut output = $crate::Text::new();
+        output
+            .write_fmt(core::format_args!($($argument)*))
+            .expect("MRML text allocation failed");
+        output
+    }};
+}
+
 #[derive(Clone, Default)]
 pub struct Text {
     bytes: Vector<u8>,

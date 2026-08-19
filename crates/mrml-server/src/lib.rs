@@ -1,7 +1,9 @@
+#![no_std]
+
 use anyhow::Result;
 use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, TcpListener, TcpStream, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
+use mrml_runtime::{Shared, TcpListener, TcpStream, Text, Text as String, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
 use mrml_terminal_style::Colorize;
 
 #[derive(Debug)]
@@ -21,24 +23,24 @@ pub struct OpenAiMessage {
 
 impl OpenAiChatRequest {
     fn parse(bytes: &[u8]) -> Result<Self, String> {
-        let source = core::str::from_utf8(bytes).map_err(|error| error.to_string())?;
-        let value = mrml_json::parse(source).map_err(|error| error.to_string())?;
+        let source = core::str::from_utf8(bytes).map_err(|error| format!("{}", error))?;
+        let value = mrml_json::parse(source).map_err(|error| format!("{}", error))?;
         let messages = value
             .get("messages")
             .and_then(Value::as_array)
-            .ok_or_else(|| "messages must be an array".to_owned())?
+            .ok_or_else(|| Text::from("messages must be an array"))?
             .iter()
             .map(|message| {
                 Ok(OpenAiMessage {
                     role: message
                         .get("role")
                         .and_then(Value::as_str)
-                        .ok_or_else(|| "message role must be a string".to_owned())?
+                        .ok_or_else(|| Text::from("message role must be a string"))?
                         .into(),
                     content: message
                         .get("content")
                         .and_then(Value::as_str)
-                        .ok_or_else(|| "message content must be a string".to_owned())?
+                        .ok_or_else(|| Text::from("message content must be a string"))?
                         .into(),
                 })
             })
@@ -106,7 +108,8 @@ impl ApiServer {
 }
 
 fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Result<()> {
-    let mut buf = vec![0u8; 8192];
+    let mut buf = Vector::new();
+    buf.resize(8192, 0);
     let mut total_read = 0;
 
     // Read HTTP headers
@@ -124,7 +127,8 @@ fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Resul
         }
     };
 
-    let header_str = String::from_utf8_lossy(&buf[..header_end_pos]);
+    let header_str = core::str::from_utf8(&buf[..header_end_pos])
+        .map_err(anyhow::message)?;
     let mut lines = header_str.lines();
     let req_line = lines.next().unwrap_or("");
     let mut parts = req_line.split_whitespace();
