@@ -134,15 +134,6 @@ extern "C" {
         batch: i32,
         stream: CudaStream,
     );
-    fn cuda_op_gemv_q4_0_geglu(
-        d_w_gate: *const u8,
-        d_w_up: *const u8,
-        d_x: *const f32,
-        d_act: *mut f32,
-        n_rows: i32,
-        n_cols: i32,
-        stream: CudaStream,
-    );
     fn cuda_op_vocab_topk(
         d_logits: *const f32,
         d_valid: *const u8,
@@ -224,16 +215,6 @@ extern "C" {
         cache_capacity: i32,
         k_format: i32,
         v_format: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_gemm_q4_0_geglu(
-        d_w_gate: *const u8,
-        d_w_up: *const u8,
-        d_x: *const f32,
-        d_act: *mut f32,
-        n_rows: i32,
-        n_cols: i32,
-        batch: i32,
         stream: CudaStream,
     );
     fn cuda_op_attention_prefill(
@@ -1383,31 +1364,12 @@ impl CudaDevice {
                 .map(str::trim)
                 .any(|value| value == stage || value == "all")
         };
-        let rust_geglu = has_stage("geglu") || has_stage("dense");
         let rust_down = has_stage("down") || has_stage("dense");
         unsafe {
-            if rust_geglu {
-                launch_rust_geglu_q4(
-                    gate.as_ptr(),
-                    up.as_ptr(),
-                    shared_in.as_ptr(),
-                    dense_act.as_mut_ptr(),
-                    ffn_dim as i32,
-                    dim as i32,
-                    1,
-                    self.stream,
-                )?;
-            } else {
-                cuda_op_gemv_q4_0_geglu(
-                    gate.as_ptr(),
-                    up.as_ptr(),
-                    shared_in.as_ptr(),
-                    dense_act.as_mut_ptr(),
-                    ffn_dim as i32,
-                    dim as i32,
-                    self.stream,
-                );
-            }
+            launch_rust_geglu_q4(
+                gate.as_ptr(), up.as_ptr(), shared_in.as_ptr(), dense_act.as_mut_ptr(),
+                ffn_dim as i32, dim as i32, 1, self.stream,
+            )?;
             if rust_down {
                 launch_rust_gemv_q4(
                     down.as_ptr(),
@@ -2054,8 +2016,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                launch_rust_geglu_q4(
+            launch_rust_geglu_q4(
                     d_w_gate.as_ptr(),
                     d_w_up.as_ptr(),
                     d_x.as_ptr(),
@@ -2065,18 +2026,7 @@ impl CudaDevice {
                     1,
                     self.stream,
                 )
-                .expect("Rust CUDA fused Q4 GeGLU GEMV kernel failed");
-                return;
-            }
-            cuda_op_gemv_q4_0_geglu(
-                d_w_gate.as_ptr(),
-                d_w_up.as_ptr(),
-                d_x.as_ptr(),
-                d_act.as_mut_ptr(),
-                n_rows as i32,
-                n_cols as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA fused Q4 GeGLU GEMV kernel failed");
         }
     }
 
@@ -2244,8 +2194,7 @@ impl CudaDevice {
         assert_eq!(d_act.len(), n_rows * batch);
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                launch_rust_geglu_q4(
+            launch_rust_geglu_q4(
                     d_w_gate.as_ptr(),
                     d_w_up.as_ptr(),
                     d_x.as_ptr(),
@@ -2255,19 +2204,7 @@ impl CudaDevice {
                     batch as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA fused Q4 GeGLU GEMM kernel failed");
-                return;
-            }
-            cuda_op_gemm_q4_0_geglu(
-                d_w_gate.as_ptr(),
-                d_w_up.as_ptr(),
-                d_x.as_ptr(),
-                d_act.as_mut_ptr(),
-                n_rows as i32,
-                n_cols as i32,
-                batch as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA fused Q4 GeGLU GEMM kernel failed");
         }
     }
 

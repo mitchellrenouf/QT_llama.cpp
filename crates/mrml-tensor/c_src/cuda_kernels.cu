@@ -1270,23 +1270,6 @@ void cuda_op_gemm_q4_0_qkv(
         d_w_q, d_w_k, d_w_v, d_x, d_y, q_rows, kv_rows, n_cols, batch);
 }
 
-void cuda_op_gemv_q4_0_geglu(
-    const uint8_t* d_w_gate,
-    const uint8_t* d_w_up,
-    const float* d_x,
-    float* d_act,
-    int n_rows,
-    int n_cols,
-    cudaStream_t stream
-) {
-    int threads = 128;
-    int rows_per_block = 2 * threads / WARP_SIZE;
-    int blocks = (n_rows + rows_per_block - 1) / rows_per_block;
-    k_gemv_q4_0_geglu_f32<<<blocks, threads, 0, stream>>>(
-        d_w_gate, d_w_up, d_x, d_act, n_rows, n_cols
-    );
-}
-
 void cuda_op_vocab_topk(
     const float* d_logits,
     const uint8_t* d_valid,
@@ -1383,18 +1366,6 @@ void cuda_op_attention(
     else { MRML_DISPATCH_ATTN(false) }
 #undef MRML_DISPATCH_ATTN
 #undef MRML_LAUNCH_ATTN
-}
-
-void cuda_op_gemm_q4_0_geglu(
-    const uint8_t* d_w_gate, const uint8_t* d_w_up, const float* d_x,
-    float* d_act, int n_rows, int n_cols, int batch, cudaStream_t stream
-) {
-    int threads = 128, rows_per_block = 2 * threads / WARP_SIZE;
-    constexpr int token_tile = 8;
-    dim3 grid((n_rows + rows_per_block - 1) / rows_per_block,
-              (batch + token_tile - 1) / token_tile);
-    k_gemm_q4_0_geglu_f32<<<grid, threads, 0, stream>>>(
-        d_w_gate, d_w_up, d_x, d_act, n_rows, n_cols, batch);
 }
 
 void cuda_op_attention_prefill(
