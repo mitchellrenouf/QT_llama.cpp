@@ -36,6 +36,38 @@ unsafe extern "system" {
     fn QueryPerformanceCounter(value: *mut i64) -> i32;
     fn QueryPerformanceFrequency(value: *mut i64) -> i32;
     fn Sleep(milliseconds: u32);
+    fn LoadLibraryA(name: *const i8) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
+    fn FreeLibrary(module: *mut c_void) -> i32;
+}
+
+#[derive(Debug)]
+#[cfg(windows)]
+pub struct DynamicLibrary(*mut c_void);
+
+#[cfg(windows)]
+unsafe impl Send for DynamicLibrary {}
+#[cfg(windows)]
+unsafe impl Sync for DynamicLibrary {}
+
+#[cfg(windows)]
+impl DynamicLibrary {
+    pub fn open(name: &core::ffi::CStr) -> Option<Self> {
+        let handle = unsafe { LoadLibraryA(name.as_ptr()) };
+        (!handle.is_null()).then_some(Self(handle))
+    }
+
+    pub fn symbol(&self, name: &core::ffi::CStr) -> Option<*mut c_void> {
+        let symbol = unsafe { GetProcAddress(self.0, name.as_ptr()) };
+        (!symbol.is_null()).then_some(symbol)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DynamicLibrary {
+    fn drop(&mut self) {
+        let _ = unsafe { FreeLibrary(self.0) };
+    }
 }
 
 pub struct SystemAllocator;
@@ -141,5 +173,12 @@ mod tests {
             assert_eq!(pointer.read(), 0x5a);
             GlobalAlloc::dealloc(&super::SystemAllocator, pointer, layout);
         }
+    }
+
+    #[test]
+    fn loads_native_library_symbols() {
+        let library = super::DynamicLibrary::open(c"kernel32.dll").unwrap();
+        assert!(library.symbol(c"GetCurrentProcessId").is_some());
+        assert!(library.symbol(c"definitely_missing_symbol").is_none());
     }
 }

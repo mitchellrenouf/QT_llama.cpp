@@ -73,7 +73,9 @@ dependencies = [
 name = "mrml-tensor"
 version = "0.4.0"
 dependencies = [
+ "mrml-linux",
  "mrml-math",
+ "mrml-windows",
 ]
 
 [[package]]

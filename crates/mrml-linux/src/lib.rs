@@ -49,6 +49,39 @@ unsafe extern "C" {
     fn free(memory: *mut c_void);
     fn nanosleep(request: *const Timespec, remaining: *mut Timespec) -> c_int;
     fn clock_gettime(clock: c_int, time: *mut Timespec) -> c_int;
+    fn dlopen(name: *const i8, flags: c_int) -> *mut c_void;
+    fn dlsym(module: *mut c_void, name: *const i8) -> *mut c_void;
+    fn dlclose(module: *mut c_void) -> c_int;
+}
+
+#[derive(Debug)]
+#[cfg(unix)]
+pub struct DynamicLibrary(*mut c_void);
+
+#[cfg(unix)]
+unsafe impl Send for DynamicLibrary {}
+#[cfg(unix)]
+unsafe impl Sync for DynamicLibrary {}
+
+#[cfg(unix)]
+impl DynamicLibrary {
+    pub fn open(name: &core::ffi::CStr) -> Option<Self> {
+        const RTLD_NOW: c_int = 2;
+        let handle = unsafe { dlopen(name.as_ptr(), RTLD_NOW) };
+        (!handle.is_null()).then_some(Self(handle))
+    }
+
+    pub fn symbol(&self, name: &core::ffi::CStr) -> Option<*mut c_void> {
+        let symbol = unsafe { dlsym(self.0, name.as_ptr()) };
+        (!symbol.is_null()).then_some(symbol)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DynamicLibrary {
+    fn drop(&mut self) {
+        let _ = unsafe { dlclose(self.0) };
+    }
 }
 
 pub struct SystemAllocator;
@@ -152,5 +185,12 @@ mod tests {
         let before = super::monotonic_nanos();
         super::sleep_millis(2);
         assert!(super::monotonic_nanos() > before);
+    }
+
+    #[test]
+    fn loads_native_library_symbols() {
+        let library = super::DynamicLibrary::open(c"libc.so.6").unwrap();
+        assert!(library.symbol(c"getpid").is_some());
+        assert!(library.symbol(c"definitely_missing_symbol").is_none());
     }
 }

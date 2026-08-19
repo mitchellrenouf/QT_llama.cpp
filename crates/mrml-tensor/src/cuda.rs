@@ -2,13 +2,19 @@
 #![allow(non_snake_case)]
 
 use crate::anyhow::{Result, anyhow};
+use alloc::ffi::CString;
+use core::ffi::{CStr, c_void};
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::ffi::{CString, c_void};
 use std::marker::PhantomData;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+#[cfg(unix)]
+use mrml_linux::DynamicLibrary;
+#[cfg(windows)]
+use mrml_windows::DynamicLibrary;
 
 pub type CudaStream = *mut c_void;
 type CudaGraphHandle = *mut c_void;
@@ -87,48 +93,31 @@ pub enum CudaMemcpyKind {
     Default = 4,
 }
 
-#[cfg(windows)]
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn LoadLibraryA(name: *const i8) -> *mut c_void;
-    fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
-}
-
-#[cfg(unix)]
-#[link(name = "dl")]
-unsafe extern "C" {
-    fn dlopen(name: *const i8, flags: i32) -> *mut c_void;
-    fn dlsym(module: *mut c_void, name: *const i8) -> *mut c_void;
-}
-
-fn cuda_driver_library() -> Result<usize> {
-    static LIBRARY: OnceLock<usize> = OnceLock::new();
+fn cuda_driver_library() -> Result<&'static DynamicLibrary> {
+    static LIBRARY: OnceLock<DynamicLibrary> = OnceLock::new();
     if let Some(library) = LIBRARY.get() {
-        return Ok(*library);
+        return Ok(library);
     }
     #[cfg(windows)]
-    let library = unsafe { LoadLibraryA(c"nvcuda.dll".as_ptr()) };
+    let library = DynamicLibrary::open(c"nvcuda.dll");
     #[cfg(unix)]
-    let library = unsafe { dlopen(c"libcuda.so.1".as_ptr(), 2) };
-    if library.is_null() {
-        return Err(anyhow!("NVIDIA CUDA driver library is not installed"));
-    }
-    let _ = LIBRARY.set(library as usize);
-    Ok(*LIBRARY.get().unwrap())
+    let library = DynamicLibrary::open(c"libcuda.so.1");
+    let library = library.ok_or_else(|| anyhow!("NVIDIA CUDA driver library is not installed"))?;
+    let _ = LIBRARY.set(library);
+    Ok(LIBRARY.get().unwrap())
 }
 
 unsafe fn cuda_driver_symbol(name: &str) -> Result<*mut c_void> {
-    let library = cuda_driver_library()? as *mut c_void;
-    let name = CString::new(name).map_err(|_| anyhow!("invalid CUDA driver symbol"))?;
-    #[cfg(windows)]
-    let function = GetProcAddress(library, name.as_ptr());
-    #[cfg(unix)]
-    let function = dlsym(library, name.as_ptr());
-    if function.is_null() {
-        Err(anyhow!("CUDA driver symbol {name:?} is unavailable"))
-    } else {
-        Ok(function)
+    let mut bytes = [0u8; 128];
+    if name.len() + 1 > bytes.len() {
+        return Err(anyhow!("invalid CUDA driver symbol"));
     }
+    bytes[..name.len()].copy_from_slice(name.as_bytes());
+    let name_c = CStr::from_bytes_until_nul(&bytes)
+        .map_err(|_| anyhow!("invalid CUDA driver symbol"))?;
+    cuda_driver_library()?
+        .symbol(name_c)
+        .ok_or_else(|| anyhow!("CUDA driver symbol {name:?} is unavailable"))
 }
 
 pub fn clear_cuda_allocation_pool() {

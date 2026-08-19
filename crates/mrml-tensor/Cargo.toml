@@ -14,6 +14,12 @@ cuda = ["std"]
 [dependencies]
 mrml-math = { path = "../mrml-math" }
 
+[target.'cfg(windows)'.dependencies]
+mrml-windows = { path = "../mrml-windows" }
+
+[target.'cfg(unix)'.dependencies]
+mrml-linux = { path = "../mrml-linux" }
+
 [[bench]]
 name = "hot_paths"
 harness = false
