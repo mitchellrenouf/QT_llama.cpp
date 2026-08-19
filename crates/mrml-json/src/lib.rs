@@ -1,0 +1,318 @@
+#![no_std]
+
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::fmt;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Null,
+    Bool(bool),
+    Number(String),
+    String(String),
+    Array(Vec<Value>),
+    Object(BTreeMap<String, Value>),
+}
+
+pub fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
+    Value::Object(entries.into_iter().map(|(key, value)| (key.into(), value)).collect())
+}
+
+impl From<&str> for Value { fn from(value: &str) -> Self { Self::String(value.into()) } }
+impl From<String> for Value { fn from(value: String) -> Self { Self::String(value) } }
+impl From<bool> for Value { fn from(value: bool) -> Self { Self::Bool(value) } }
+impl From<usize> for Value { fn from(value: usize) -> Self { Self::Number(value.to_string()) } }
+impl From<u64> for Value { fn from(value: u64) -> Self { Self::Number(value.to_string()) } }
+impl From<f64> for Value { fn from(value: f64) -> Self { Self::Number(value.to_string()) } }
+
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(value: Option<T>) -> Self { value.map(Into::into).unwrap_or(Self::Null) }
+}
+
+impl Value {
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.as_object()?.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+        self.as_object_mut()?.get_mut(key)
+    }
+
+    pub fn as_object(&self) -> Option<&BTreeMap<String, Value>> {
+        if let Self::Object(value) = self { Some(value) } else { None }
+    }
+
+    pub fn as_object_mut(&mut self) -> Option<&mut BTreeMap<String, Value>> {
+        if let Self::Object(value) = self { Some(value) } else { None }
+    }
+
+    pub fn as_array(&self) -> Option<&Vec<Value>> {
+        if let Self::Array(value) = self { Some(value) } else { None }
+    }
+
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<Value>> {
+        if let Self::Array(value) = self { Some(value) } else { None }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        if let Self::String(value) = self { Some(value) } else { None }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        if let Self::Bool(value) = self { Some(*value) } else { None }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        if let Self::Number(value) = self { value.parse().ok() } else { None }
+    }
+
+    pub fn is_null(&self) -> bool { matches!(self, Self::Null) }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Error {
+    message: String,
+    offset: usize,
+}
+
+impl Error {
+    fn new(message: impl Into<String>, offset: usize) -> Self {
+        Self { message: message.into(), offset }
+    }
+
+    pub fn message(message: impl Into<String>) -> Self { Self::new(message, 0) }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} at byte {}", self.message, self.offset)
+    }
+}
+
+pub fn parse(source: &str) -> Result<Value, Error> {
+    let mut parser = Parser { bytes: source.as_bytes(), position: 0 };
+    let value = parser.value()?;
+    parser.whitespace();
+    if parser.position != parser.bytes.len() {
+        return Err(Error::new("trailing characters", parser.position));
+    }
+    Ok(value)
+}
+
+pub fn stringify(value: &Value) -> String {
+    let mut output = String::new();
+    write_value(value, &mut output);
+    output
+}
+
+fn write_value(value: &Value, output: &mut String) {
+    match value {
+        Value::Null => output.push_str("null"),
+        Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        Value::Number(value) => output.push_str(value),
+        Value::String(value) => write_string(value, output),
+        Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 { output.push(','); }
+                write_value(value, output);
+            }
+            output.push(']');
+        }
+        Value::Object(values) => {
+            output.push('{');
+            for (index, (key, value)) in values.iter().enumerate() {
+                if index != 0 { output.push(','); }
+                write_string(key, output);
+                output.push(':');
+                write_value(value, output);
+            }
+            output.push('}');
+        }
+    }
+}
+
+fn write_string(value: &str, output: &mut String) {
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if character < '\u{20}' => output.push_str(&format!("\\u{:04x}", character as u32)),
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+}
+
+struct Parser<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl Parser<'_> {
+    fn value(&mut self) -> Result<Value, Error> {
+        self.whitespace();
+        match self.peek() {
+            Some(b'n') => { self.literal(b"null")?; Ok(Value::Null) }
+            Some(b't') => { self.literal(b"true")?; Ok(Value::Bool(true)) }
+            Some(b'f') => { self.literal(b"false")?; Ok(Value::Bool(false)) }
+            Some(b'"') => Ok(Value::String(self.string()?)),
+            Some(b'[') => self.array(),
+            Some(b'{') => self.object(),
+            Some(b'-' | b'0'..=b'9') => Ok(Value::Number(self.number()?)),
+            _ => Err(Error::new("expected JSON value", self.position)),
+        }
+    }
+
+    fn array(&mut self) -> Result<Value, Error> {
+        self.position += 1;
+        let mut values = Vec::new();
+        self.whitespace();
+        if self.take(b']') { return Ok(Value::Array(values)); }
+        loop {
+            values.push(self.value()?);
+            self.whitespace();
+            if self.take(b']') { break; }
+            self.expect(b',')?;
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn object(&mut self) -> Result<Value, Error> {
+        self.position += 1;
+        let mut values = BTreeMap::new();
+        self.whitespace();
+        if self.take(b'}') { return Ok(Value::Object(values)); }
+        loop {
+            self.whitespace();
+            if self.peek() != Some(b'"') { return Err(Error::new("expected object key", self.position)); }
+            let key = self.string()?;
+            self.whitespace();
+            self.expect(b':')?;
+            values.insert(key, self.value()?);
+            self.whitespace();
+            if self.take(b'}') { break; }
+            self.expect(b',')?;
+        }
+        Ok(Value::Object(values))
+    }
+
+    fn string(&mut self) -> Result<String, Error> {
+        self.expect(b'"')?;
+        let mut output = String::new();
+        let mut start = self.position;
+        while let Some(byte) = self.peek() {
+            match byte {
+                b'"' => {
+                    self.push_utf8(start, self.position, &mut output)?;
+                    self.position += 1;
+                    return Ok(output);
+                }
+                b'\\' => {
+                    self.push_utf8(start, self.position, &mut output)?;
+                    self.position += 1;
+                    let escaped = self.peek().ok_or_else(|| Error::new("unterminated escape", self.position))?;
+                    self.position += 1;
+                    match escaped {
+                        b'"' => output.push('"'), b'\\' => output.push('\\'), b'/' => output.push('/'),
+                        b'b' => output.push('\u{08}'), b'f' => output.push('\u{0c}'), b'n' => output.push('\n'),
+                        b'r' => output.push('\r'), b't' => output.push('\t'),
+                        b'u' => self.unicode_escape(&mut output)?,
+                        _ => return Err(Error::new("invalid escape", self.position - 1)),
+                    }
+                    start = self.position;
+                }
+                0..=0x1f => return Err(Error::new("control character in string", self.position)),
+                _ => self.position += 1,
+            }
+        }
+        Err(Error::new("unterminated string", self.position))
+    }
+
+    fn unicode_escape(&mut self, output: &mut String) -> Result<(), Error> {
+        let first = self.hex4()?;
+        let scalar = if (0xd800..=0xdbff).contains(&first) {
+            if !self.take(b'\\') || !self.take(b'u') { return Err(Error::new("missing low surrogate", self.position)); }
+            let second = self.hex4()?;
+            if !(0xdc00..=0xdfff).contains(&second) { return Err(Error::new("invalid low surrogate", self.position - 4)); }
+            0x10000 + (((first - 0xd800) as u32) << 10) + (second - 0xdc00) as u32
+        } else { first as u32 };
+        output.push(char::from_u32(scalar).ok_or_else(|| Error::new("invalid unicode scalar", self.position))?);
+        Ok(())
+    }
+
+    fn hex4(&mut self) -> Result<u16, Error> {
+        let mut value = 0u16;
+        for _ in 0..4 {
+            let byte = self.peek().ok_or_else(|| Error::new("short unicode escape", self.position))?;
+            self.position += 1;
+            value = value * 16 + match byte { b'0'..=b'9' => (byte-b'0') as u16, b'a'..=b'f' => (byte-b'a'+10) as u16, b'A'..=b'F' => (byte-b'A'+10) as u16, _ => return Err(Error::new("invalid hex digit", self.position-1)) };
+        }
+        Ok(value)
+    }
+
+    fn number(&mut self) -> Result<String, Error> {
+        let start = self.position;
+        self.take(b'-');
+        if self.take(b'0') {
+            if matches!(self.peek(), Some(b'0'..=b'9')) { return Err(Error::new("leading zero", self.position)); }
+        } else { self.digits()?; }
+        if self.take(b'.') { self.digits()?; }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.position += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) { self.position += 1; }
+            self.digits()?;
+        }
+        Ok(core::str::from_utf8(&self.bytes[start..self.position]).unwrap().to_owned())
+    }
+
+    fn digits(&mut self) -> Result<(), Error> {
+        let start = self.position;
+        while matches!(self.peek(), Some(b'0'..=b'9')) { self.position += 1; }
+        if start == self.position { Err(Error::new("expected digit", self.position)) } else { Ok(()) }
+    }
+
+    fn push_utf8(&self, start: usize, end: usize, output: &mut String) -> Result<(), Error> {
+        output.push_str(core::str::from_utf8(&self.bytes[start..end]).map_err(|_| Error::new("invalid UTF-8", start))?);
+        Ok(())
+    }
+
+    fn literal(&mut self, literal: &[u8]) -> Result<(), Error> {
+        if self.bytes.get(self.position..self.position + literal.len()) == Some(literal) { self.position += literal.len(); Ok(()) } else { Err(Error::new("invalid literal", self.position)) }
+    }
+    fn whitespace(&mut self) { while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) { self.position += 1; } }
+    fn peek(&self) -> Option<u8> { self.bytes.get(self.position).copied() }
+    fn take(&mut self, byte: u8) -> bool { if self.peek() == Some(byte) { self.position += 1; true } else { false } }
+    fn expect(&mut self, byte: u8) -> Result<(), Error> { if self.take(byte) { Ok(()) } else { Err(Error::new(format!("expected '{}'", byte as char), self.position)) } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_nested_values_and_unicode() {
+        let source = r#"{"array":[null,true,-12.5e2,"hi\n\u263a\ud83d\ude80"]}"#;
+        let value = parse(source).unwrap();
+        assert_eq!(parse(&stringify(&value)).unwrap(), value);
+        assert_eq!(value.get("array").unwrap().as_array().unwrap()[3].as_str(), Some("hi\n☺🚀"));
+    }
+
+    #[test]
+    fn rejects_trailing_data_bad_numbers_and_bad_surrogates() {
+        for source in ["null x", "01", "1.", r#""\ud800""#] {
+            assert!(parse(source).is_err(), "accepted {source}");
+        }
+    }
+}

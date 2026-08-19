@@ -13,6 +13,7 @@ members = [
     "crates/mrml-urlencoding",
     "crates/mrml-windows",
     "crates/mrml-linux",
+    "crates/mrml-json",
 ]
 
 [workspace.package]

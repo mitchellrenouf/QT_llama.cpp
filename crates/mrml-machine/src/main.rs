@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use mrml_json::{Value, object};
 use std::io::{self, BufRead};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -145,8 +144,7 @@ enum Command {
     Session,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[derive(Debug)]
 enum SessionRequest {
     Chat { id: Option<Value>, prompt: String },
     Health { id: Option<Value> },
@@ -154,13 +152,33 @@ enum SessionRequest {
     Exit { id: Option<Value> },
 }
 
-#[derive(Debug, Serialize)]
+impl SessionRequest {
+    fn parse(source: &str) -> std::result::Result<Self, mrml_json::Error> {
+        let value = mrml_json::parse(source)?;
+        let operation = value.get("op").and_then(Value::as_str).unwrap_or("");
+        let id = value.get("id").cloned().filter(|value| !value.is_null());
+        Ok(match operation {
+            "chat" => Self::Chat {
+                id,
+                prompt: value.get("prompt").and_then(Value::as_str)
+                    .ok_or_else(|| mrml_json::Error::message("chat request requires a string prompt"))?
+                    .to_owned(),
+            },
+            "health" => Self::Health { id },
+            "reset" => Self::Reset { id },
+            "exit" => Self::Exit { id },
+            _ => return Err(mrml_json::Error::message(format!("unknown session operation '{operation}'"))),
+        })
+    }
+}
+
+#[derive(Debug)]
 struct ToolEvent {
     name: String,
     result: String,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default)]
 struct TurnMetrics {
     token_count: Option<usize>,
     generation_seconds: Option<f64>,
@@ -178,7 +196,7 @@ struct TurnCapture {
 }
 
 fn emit(value: Value) -> Result<()> {
-    println!("{RECORD_PREFIX}{}", serde_json::to_string(&value)?);
+    println!("{RECORD_PREFIX}{}", mrml_json::stringify(&value));
     Ok(())
 }
 
@@ -217,50 +235,55 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
         wall_seconds: started.elapsed().as_secs_f64(),
     };
 
-    Ok(json!({
-        "schema_version": 1,
-        "type": "chat_result",
-        "id": id,
-        "ok": true,
-        "content": content,
-        "reasoning": reasoning,
-        "tool_events": std::mem::take(&mut state.tools),
-        "finish_reason": state.finish_reason,
-        "metrics": metrics,
-    }))
+    let tools = std::mem::take(&mut state.tools).into_iter().map(|tool| object([
+        ("name", tool.name.into()), ("result", tool.result.into())
+    ])).collect();
+    Ok(object([
+        ("schema_version", 1usize.into()), ("type", "chat_result".into()),
+        ("id", id.into()), ("ok", true.into()), ("content", content.into()),
+        ("reasoning", reasoning.into()), ("tool_events", Value::Array(tools)),
+        ("finish_reason", state.finish_reason.clone().into()),
+        ("metrics", object([
+            ("token_count", metrics.token_count.into()),
+            ("generation_seconds", metrics.generation_seconds.into()),
+            ("tokens_per_second", metrics.tokens_per_second.into()),
+            ("wall_seconds", metrics.wall_seconds.into()),
+        ])),
+    ]))
 }
 
 async fn health(agent: &MrmlAgent, id: Option<Value>) -> Value {
     match agent.health_check().await {
-        Ok(message) => json!({
-            "schema_version": 1, "type": "health_result", "id": id,
-            "ok": true, "message": message,
-        }),
-        Err(error) => json!({
-            "schema_version": 1, "type": "health_result", "id": id,
-            "ok": false, "error": error.to_string(),
-        }),
+        Ok(message) => object([
+            ("schema_version", 1usize.into()), ("type", "health_result".into()),
+            ("id", id.into()), ("ok", true.into()), ("message", message.into()),
+        ]),
+        Err(error) => object([
+            ("schema_version", 1usize.into()), ("type", "health_result".into()),
+            ("id", id.into()), ("ok", false.into()), ("error", error.to_string().into()),
+        ]),
     }
 }
 
 async fn run_session(mut agent: MrmlAgent) -> Result<()> {
-    emit(json!({
-        "schema_version": 1, "type": "ready", "ok": true,
-        "protocol": "mrml-machine-jsonl-v1",
-    }))?;
+    emit(object([
+        ("schema_version", 1usize.into()), ("type", "ready".into()),
+        ("ok", true.into()), ("protocol", "mrml-machine-jsonl-v1".into()),
+    ]))?;
 
     for line in io::stdin().lock().lines() {
         let line = line.context("failed reading session input")?;
         if line.trim().is_empty() {
             continue;
         }
-        let request = match serde_json::from_str::<SessionRequest>(&line) {
+        let request = match SessionRequest::parse(&line) {
             Ok(request) => request,
             Err(error) => {
-                emit(json!({
-                    "schema_version": 1, "type": "error", "ok": false,
-                    "error": "invalid_request", "message": error.to_string(),
-                }))?;
+                emit(object([
+                    ("schema_version", 1usize.into()), ("type", "error".into()),
+                    ("ok", false.into()), ("error", "invalid_request".into()),
+                    ("message", error.to_string().into()),
+                ]))?;
                 continue;
             }
         };
@@ -270,24 +293,27 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
             SessionRequest::Health { id } => Ok(health(&agent, id).await),
             SessionRequest::Reset { id } => {
                 agent.reset_context();
-                Ok(json!({
-                    "schema_version": 1, "type": "reset_result", "id": id, "ok": true,
-                }))
+                Ok(object([
+                    ("schema_version", 1usize.into()), ("type", "reset_result".into()),
+                    ("id", id.into()), ("ok", true.into()),
+                ]))
             }
             SessionRequest::Exit { id } => {
-                emit(json!({
-                    "schema_version": 1, "type": "exit_result", "id": id, "ok": true,
-                }))?;
+                emit(object([
+                    ("schema_version", 1usize.into()), ("type", "exit_result".into()),
+                    ("id", id.into()), ("ok", true.into()),
+                ]))?;
                 break;
             }
         };
 
         match response {
             Ok(value) => emit(value)?,
-            Err(error) => emit(json!({
-                "schema_version": 1, "type": "error", "ok": false,
-                "error": "operation_failed", "message": error.to_string(),
-            }))?,
+            Err(error) => emit(object([
+                ("schema_version", 1usize.into()), ("type", "error".into()),
+                ("ok", false.into()), ("error", "operation_failed".into()),
+                ("message", error.to_string().into()),
+            ]))?,
         }
     }
     Ok(())
@@ -320,14 +346,27 @@ mod tests {
 
     #[test]
     fn parses_session_chat_request() {
-        let request: SessionRequest =
-            serde_json::from_str(r#"{"op":"chat","id":7,"prompt":"hi"}"#).unwrap();
+        let request = SessionRequest::parse(r#"{"op":"chat","id":7,"prompt":"hi"}"#).unwrap();
         assert!(matches!(request, SessionRequest::Chat { prompt, .. } if prompt == "hi"));
     }
 
     #[test]
     fn rejects_unknown_session_operation() {
-        assert!(serde_json::from_str::<SessionRequest>(r#"{"op":"explode"}"#).is_err());
+        assert!(SessionRequest::parse(r#"{"op":"explode"}"#).is_err());
+        assert!(SessionRequest::parse(r#"{"op":"chat"}"#).is_err());
+    }
+
+    #[test]
+    fn local_json_preserves_machine_protocol_values_and_escaping() {
+        let value = object([
+            ("schema_version", 1usize.into()),
+            ("type", "chat_result".into()),
+            ("content", "line one\n\"line two\"".into()),
+            ("ok", true.into()),
+        ]);
+        let encoded = mrml_json::stringify(&value);
+        assert_eq!(mrml_json::parse(&encoded).unwrap(), value);
+        assert!(encoded.contains(r#"line one\n\"line two\""#));
     }
 
     #[test]

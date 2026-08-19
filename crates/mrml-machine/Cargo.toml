@@ -20,7 +20,6 @@ sycl = ["mrml-core/sycl"]
 
 [dependencies]
 mrml-core = { path = "../mrml-core", default-features = false }
+mrml-json = { path = "../mrml-json" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
-serde.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
