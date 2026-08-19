@@ -1,7 +1,7 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
+use mrml_runtime::Command;
 use serde_json::json;
-use std::process::Command;
 
 pub struct GitCheckpointTool;
 impl Tool for GitCheckpointTool {
@@ -164,5 +164,17 @@ impl Tool for GitDiffTool {
                 detail.trim()
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_diff_runs_through_native_process_capture() {
+        let output = crate::block_on(GitDiffTool.execute(env!("CARGO_MANIFEST_DIR"), json!({})))
+            .expect("git diff tool should run inside the repository");
+        assert!(!output.is_empty());
     }
 }

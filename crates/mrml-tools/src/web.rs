@@ -1,6 +1,6 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
-use mrml_runtime::Vector;
+use mrml_runtime::{Command, Vector};
 use serde_json::json;
 
 pub async fn fetch_http_text(url: &str) -> Result<String> {
@@ -18,7 +18,7 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
     }
 
     // 2. Direct HTTP fallback using curl
-    if let Ok(output) = std::process::Command::new("curl")
+    if let Ok(output) = Command::new("curl")
         .arg("-sL")
         .arg("--max-time")
         .arg("10")
@@ -36,7 +36,7 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
     }
 
     // 3. Fallback to wget
-    if let Ok(output) = std::process::Command::new("wget")
+    if let Ok(output) = Command::new("wget")
         .arg("-qO-")
         .arg("--timeout=10")
         .arg("-U")
