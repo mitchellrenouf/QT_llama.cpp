@@ -1,18 +1,19 @@
 use anyhow::{Result, anyhow};
+use mrml_runtime::{Text, Vector};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HfModelSpec {
-    pub repo_id: String,
-    pub user: String,
-    pub model: String,
-    pub quant: String,
+    pub repo_id: Text,
+    pub user: Text,
+    pub model: Text,
+    pub quant: Text,
 }
 
 #[derive(Debug, Clone)]
 pub struct HfModelFiles {
     pub primary_entry_file: PathBuf,
-    pub shard_files: Vec<PathBuf>,
+    pub shard_files: Vector<PathBuf>,
     pub mmproj_file: Option<PathBuf>,
     pub speedup_draft_file: Option<PathBuf>,
 }
@@ -49,19 +50,19 @@ impl HfModelSpec {
         };
 
         Ok(Self {
-            repo_id,
-            user: user.to_string(),
-            model: model.to_string(),
-            quant,
+            repo_id: repo_id.as_str().into(),
+            user: user.into(),
+            model: model.into(),
+            quant: quant.as_str().into(),
         })
     }
 
     pub fn default_gemma_4_26b() -> Self {
         Self {
-            repo_id: "ggml-org/gemma-4-26B-A4B-it-GGUF".to_string(),
-            user: "ggml-org".to_string(),
-            model: "gemma-4-26B-A4B-it-GGUF".to_string(),
-            quant: "Q4_0".to_string(),
+            repo_id: "ggml-org/gemma-4-26B-A4B-it-GGUF".into(),
+            user: "ggml-org".into(),
+            model: "gemma-4-26B-A4B-it-GGUF".into(),
+            quant: "Q4_0".into(),
         }
     }
 
@@ -194,7 +195,7 @@ where
         );
         return Ok(HfModelFiles {
             primary_entry_file: existing_primary.clone(),
-            shard_files: vec![existing_primary],
+            shard_files: [existing_primary].into_iter().collect(),
             mmproj_file: None,
             speedup_draft_file: None,
         });
@@ -422,7 +423,7 @@ where
 
     Ok(HfModelFiles {
         primary_entry_file,
-        shard_files: downloaded_shard_paths,
+        shard_files: downloaded_shard_paths.into_iter().collect(),
         mmproj_file: resolved_mmproj_path,
         speedup_draft_file: resolved_speedup_path,
     })
