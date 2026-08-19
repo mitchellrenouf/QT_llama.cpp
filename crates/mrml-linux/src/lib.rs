@@ -88,6 +88,13 @@ unsafe extern "C" {
     fn readdir(directory: *mut c_void) -> *mut Dirent;
     fn closedir(directory: *mut c_void) -> c_int;
     fn realpath(path: *const i8, resolved: *mut i8) -> *mut i8;
+    fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+    fn bind(socket: c_int, address: *const SockAddr, length: u32) -> c_int;
+    fn listen(socket: c_int, backlog: c_int) -> c_int;
+    fn accept(socket: c_int, address: *mut SockAddr, length: *mut u32) -> c_int;
+    fn connect(socket: c_int, address: *const SockAddr, length: u32) -> c_int;
+    fn getsockname(socket: c_int, address: *mut SockAddr, length: *mut u32) -> c_int;
+    fn setsockopt(socket: c_int, level: c_int, name: c_int, value: *const c_void, length: u32) -> c_int;
     fn pthread_create(
         thread: *mut usize,
         attributes: *const c_void,
@@ -99,6 +106,19 @@ unsafe extern "C" {
     fn sched_yield() -> c_int;
     fn syscall(number: c_long, ...) -> c_long;
 }
+
+#[repr(C)]
+#[cfg(unix)]
+struct SockAddr {
+    family: u16,
+    port: [u8; 2],
+    address: [u8; 4],
+    zero: [u8; 8],
+}
+
+#[repr(C)]
+#[cfg(unix)]
+struct TimeVal { seconds: isize, microseconds: isize }
 
 #[repr(C)]
 #[cfg(unix)]
@@ -120,6 +140,79 @@ pub fn processor_count() -> usize {
 pub fn process_id() -> u32 {
     (unsafe { getpid() }) as u32
 }
+
+#[cfg(unix)]
+fn socket_address(ip: [u8; 4], port: u16) -> SockAddr {
+    SockAddr { family: 2, port: port.to_be_bytes(), address: ip, zero: [0; 8] }
+}
+
+#[cfg(unix)]
+pub struct NativeTcpListener(c_int);
+
+#[cfg(unix)]
+impl NativeTcpListener {
+    pub fn bind(ip: [u8; 4], port: u16) -> Option<Self> {
+        let handle = unsafe { socket(2, 1, 0) };
+        if handle < 0 { return None; }
+        let address = socket_address(ip, port);
+        if unsafe { bind(handle, &address, core::mem::size_of::<SockAddr>() as u32) } != 0
+            || unsafe { listen(handle, 128) } != 0
+        { let _ = unsafe { close(handle) }; return None; }
+        Some(Self(handle))
+    }
+
+    pub fn local_port(&self) -> Option<u16> {
+        let mut address = socket_address([0; 4], 0);
+        let mut length = core::mem::size_of::<SockAddr>() as u32;
+        (unsafe { getsockname(self.0, &mut address, &mut length) } == 0).then(|| u16::from_be_bytes(address.port))
+    }
+
+    pub fn accept(&self) -> Option<NativeTcpStream> {
+        let handle = unsafe { accept(self.0, core::ptr::null_mut(), core::ptr::null_mut()) };
+        (handle >= 0).then_some(NativeTcpStream(handle))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativeTcpListener { fn drop(&mut self) { let _ = unsafe { close(self.0) }; } }
+
+#[cfg(unix)]
+pub struct NativeTcpStream(c_int);
+
+#[cfg(unix)]
+unsafe impl Send for NativeTcpStream {}
+
+#[cfg(unix)]
+impl NativeTcpStream {
+    pub fn connect(ip: [u8; 4], port: u16) -> Option<Self> {
+        let handle = unsafe { socket(2, 1, 0) };
+        if handle < 0 { return None; }
+        let address = socket_address(ip, port);
+        if unsafe { connect(handle, &address, core::mem::size_of::<SockAddr>() as u32) } != 0 {
+            let _ = unsafe { close(handle) };
+            None
+        } else { Some(Self(handle)) }
+    }
+
+    pub fn read(&mut self, buffer: &mut [u8]) -> Option<usize> {
+        let amount = unsafe { read(self.0, buffer.as_mut_ptr().cast(), buffer.len()) };
+        (amount >= 0).then_some(amount as usize)
+    }
+
+    pub fn write(&mut self, buffer: &[u8]) -> Option<usize> {
+        let amount = unsafe { write(self.0, buffer.as_ptr().cast(), buffer.len()) };
+        (amount >= 0).then_some(amount as usize)
+    }
+
+    pub fn set_timeout_millis(&self, read_timeout: bool, milliseconds: u64) -> bool {
+        let value = TimeVal { seconds: (milliseconds / 1000) as isize, microseconds: ((milliseconds % 1000) * 1000) as isize };
+        let option = if read_timeout { 20 } else { 21 };
+        (unsafe { setsockopt(self.0, 1, option, (&value as *const TimeVal).cast(), core::mem::size_of::<TimeVal>() as u32) }) == 0
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativeTcpStream { fn drop(&mut self) { let _ = unsafe { close(self.0) }; } }
 
 #[cfg(unix)]
 pub fn spawn_detached_process(

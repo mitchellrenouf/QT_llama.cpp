@@ -6,6 +6,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::{CStr, c_void};
 #[cfg(windows)]
 use core::ptr::NonNull;
+#[cfg(windows)]
+use core::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(C)]
@@ -83,6 +85,27 @@ struct ProcessInformation {
     thread: *mut c_void,
     process_id: u32,
     thread_id: u32,
+}
+
+#[repr(C)]
+#[cfg(windows)]
+struct SockAddr {
+    family: u16,
+    port: [u8; 2],
+    address: [u8; 4],
+    zero: [u8; 8],
+}
+
+#[repr(C)]
+#[cfg(windows)]
+struct WsaData {
+    version: u16,
+    high_version: u16,
+    description: [u8; 257],
+    system_status: [u8; 129],
+    max_sockets: u16,
+    max_udp_datagram: u16,
+    vendor_info: *mut i8,
 }
 
 #[cfg(windows)]
@@ -197,6 +220,22 @@ unsafe extern "system" {
     fn WakeByAddressSingle(address: *const c_void);
     fn WakeByAddressAll(address: *const c_void);
     fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[cfg(windows)]
+#[link(name = "ws2_32")]
+unsafe extern "system" {
+    fn WSAStartup(version: u16, data: *mut WsaData) -> i32;
+    fn socket(domain: i32, kind: i32, protocol: i32) -> usize;
+    fn bind(socket: usize, address: *const SockAddr, length: i32) -> i32;
+    fn listen(socket: usize, backlog: i32) -> i32;
+    fn accept(socket: usize, address: *mut SockAddr, length: *mut i32) -> usize;
+    fn connect(socket: usize, address: *const SockAddr, length: i32) -> i32;
+    fn getsockname(socket: usize, address: *mut SockAddr, length: *mut i32) -> i32;
+    fn setsockopt(socket: usize, level: i32, name: i32, value: *const i8, length: i32) -> i32;
+    fn recv(socket: usize, buffer: *mut i8, length: i32, flags: i32) -> i32;
+    fn send(socket: usize, buffer: *const i8, length: i32, flags: i32) -> i32;
+    fn closesocket(socket: usize) -> i32;
 }
 
 #[cfg(windows)]
@@ -334,6 +373,102 @@ pub fn processor_count() -> usize {
 pub fn process_id() -> u32 {
     unsafe { GetCurrentProcessId() }
 }
+
+#[cfg(windows)]
+fn initialize_winsock() -> bool {
+    static STATE: AtomicU8 = AtomicU8::new(0);
+    loop {
+        match STATE.load(Ordering::Acquire) {
+            2 => return true,
+            3 => return false,
+            0 if STATE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() => {
+                let mut data = unsafe { core::mem::zeroed::<WsaData>() };
+                let okay = unsafe { WSAStartup(0x0202, &mut data) } == 0;
+                STATE.store(if okay { 2 } else { 3 }, Ordering::Release);
+                return okay;
+            }
+            _ => core::hint::spin_loop(),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn socket_address(ip: [u8; 4], port: u16) -> SockAddr {
+    SockAddr { family: 2, port: port.to_be_bytes(), address: ip, zero: [0; 8] }
+}
+
+#[cfg(windows)]
+pub struct NativeTcpListener(usize);
+
+#[cfg(windows)]
+unsafe impl Send for NativeTcpListener {}
+
+#[cfg(windows)]
+impl NativeTcpListener {
+    pub fn bind(ip: [u8; 4], port: u16) -> Option<Self> {
+        if !initialize_winsock() { return None; }
+        let handle = unsafe { socket(2, 1, 6) };
+        if handle == usize::MAX { return None; }
+        let address = socket_address(ip, port);
+        if unsafe { bind(handle, &address, core::mem::size_of::<SockAddr>() as i32) } != 0
+            || unsafe { listen(handle, 128) } != 0
+        { let _ = unsafe { closesocket(handle) }; return None; }
+        Some(Self(handle))
+    }
+
+    pub fn local_port(&self) -> Option<u16> {
+        let mut address = socket_address([0; 4], 0);
+        let mut length = core::mem::size_of::<SockAddr>() as i32;
+        (unsafe { getsockname(self.0, &mut address, &mut length) } == 0).then(|| u16::from_be_bytes(address.port))
+    }
+
+    pub fn accept(&self) -> Option<NativeTcpStream> {
+        let handle = unsafe { accept(self.0, core::ptr::null_mut(), core::ptr::null_mut()) };
+        (handle != usize::MAX).then_some(NativeTcpStream(handle))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeTcpListener { fn drop(&mut self) { let _ = unsafe { closesocket(self.0) }; } }
+
+#[cfg(windows)]
+pub struct NativeTcpStream(usize);
+
+#[cfg(windows)]
+unsafe impl Send for NativeTcpStream {}
+
+#[cfg(windows)]
+impl NativeTcpStream {
+    pub fn connect(ip: [u8; 4], port: u16) -> Option<Self> {
+        if !initialize_winsock() { return None; }
+        let handle = unsafe { socket(2, 1, 6) };
+        if handle == usize::MAX { return None; }
+        let address = socket_address(ip, port);
+        if unsafe { connect(handle, &address, core::mem::size_of::<SockAddr>() as i32) } != 0 {
+            let _ = unsafe { closesocket(handle) };
+            None
+        } else { Some(Self(handle)) }
+    }
+
+    pub fn read(&mut self, buffer: &mut [u8]) -> Option<usize> {
+        let amount = unsafe { recv(self.0, buffer.as_mut_ptr().cast(), buffer.len().min(i32::MAX as usize) as i32, 0) };
+        (amount >= 0).then_some(amount as usize)
+    }
+
+    pub fn write(&mut self, buffer: &[u8]) -> Option<usize> {
+        let amount = unsafe { send(self.0, buffer.as_ptr().cast(), buffer.len().min(i32::MAX as usize) as i32, 0) };
+        (amount >= 0).then_some(amount as usize)
+    }
+
+    pub fn set_timeout_millis(&self, read_timeout: bool, milliseconds: u64) -> bool {
+        let value = milliseconds.min(u32::MAX as u64) as u32;
+        let option = if read_timeout { 0x1006 } else { 0x1005 };
+        (unsafe { setsockopt(self.0, 0xffff, option, (&value as *const u32).cast(), core::mem::size_of::<u32>() as i32) }) == 0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeTcpStream { fn drop(&mut self) { let _ = unsafe { closesocket(self.0) }; } }
 
 #[cfg(windows)]
 pub fn spawn_detached_process(

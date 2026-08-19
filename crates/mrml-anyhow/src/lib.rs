@@ -72,6 +72,12 @@ impl From<mrml_runtime::ProcessError> for Error {
     }
 }
 
+impl From<mrml_runtime::NetError> for Error {
+    fn from(error: mrml_runtime::NetError) -> Self {
+        Self::with_source(error)
+    }
+}
+
 #[cfg(feature = "std")]
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
