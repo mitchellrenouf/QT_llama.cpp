@@ -1,6 +1,6 @@
 #[cfg(feature = "cuda")]
 use crate::cuda::CudaDevice;
-use alloc::vec::Vec;
+use mrml_runtime::Vector;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceType {
@@ -10,13 +10,13 @@ pub enum DeviceType {
 
 #[derive(Clone)]
 pub struct DeviceManager {
-    pub devices: Vec<DeviceType>,
+    pub devices: Vector<DeviceType>,
     pub primary_gpu: Option<i32>,
 }
 
 impl DeviceManager {
     pub fn new() -> Self {
-        let mut devices = Vec::new();
+        let mut devices = Vector::new();
         #[allow(unused_mut)]
         let mut primary_gpu = None;
 
@@ -45,8 +45,8 @@ impl DeviceManager {
         &self,
         total_layers: usize,
         estimated_layer_bytes: usize,
-    ) -> Vec<DeviceType> {
-        let mut assignments = Vec::with_capacity(total_layers);
+    ) -> Vector<DeviceType> {
+        let mut assignments = Vector::with_capacity(total_layers).expect("MRML allocation failed");
 
         #[cfg(feature = "cuda")]
         {
@@ -96,5 +96,21 @@ impl DeviceManager {
         }
 
         assignments
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_fallback_plans_every_layer() {
+        let manager = DeviceManager::new();
+        assert!(manager.devices.contains(&DeviceType::Cpu));
+
+        let plan = manager.plan_layers(7, 1024);
+        assert_eq!(plan.len(), 7);
+        #[cfg(not(feature = "cuda"))]
+        assert!(plan.iter().all(|device| *device == DeviceType::Cpu));
     }
 }

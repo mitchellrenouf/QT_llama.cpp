@@ -6,6 +6,7 @@ use crate::kv_cache::{KvCacheFormat, KvCacheRow};
 use crate::ops;
 use crate::quant::dequantize_q8_0;
 use crate::sync as parking_lot;
+use mrml_runtime::Vector;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -185,7 +186,7 @@ pub struct MrmlModel {
     pub config: ModelConfig,
     pub device_manager: DeviceManager,
     pub kv_cache: KvCacheManager,
-    pub layer_devices: Vec<DeviceType>,
+    pub layer_devices: Vector<DeviceType>,
     pub vocab: Vec<String>,
     pub vocab_to_id: HashMap<String, i32>,
     pub valid_vocab_token: Vec<bool>,
