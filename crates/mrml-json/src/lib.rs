@@ -8,6 +8,9 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
+use core::ops::{Index, IndexMut};
+
+pub type Map = BTreeMap<String, Value>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -19,9 +22,23 @@ pub enum Value {
     Object(BTreeMap<String, Value>),
 }
 
+impl PartialEq<&str> for Value {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == Some(*other)
+    }
+}
+
+impl PartialEq<String> for Value {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == Some(other.as_str())
+    }
+}
+
 pub fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
     Value::Object(entries.into_iter().map(|(key, value)| (key.into(), value)).collect())
 }
+
+pub fn array<const N: usize>(values: [Value; N]) -> Value { Value::Array(values.into()) }
 
 impl From<&str> for Value { fn from(value: &str) -> Self { Self::String(value.into()) } }
 impl From<String> for Value { fn from(value: String) -> Self { Self::String(value) } }
@@ -29,6 +46,10 @@ impl From<bool> for Value { fn from(value: bool) -> Self { Self::Bool(value) } }
 impl From<usize> for Value { fn from(value: usize) -> Self { Self::Number(value.to_string()) } }
 impl From<u64> for Value { fn from(value: u64) -> Self { Self::Number(value.to_string()) } }
 impl From<f64> for Value { fn from(value: f64) -> Self { Self::Number(value.to_string()) } }
+impl From<f32> for Value { fn from(value: f32) -> Self { Self::Number(value.to_string()) } }
+impl From<i64> for Value { fn from(value: i64) -> Self { Self::Number(value.to_string()) } }
+impl From<i32> for Value { fn from(value: i32) -> Self { Self::Number(value.to_string()) } }
+impl From<u32> for Value { fn from(value: u32) -> Self { Self::Number(value.to_string()) } }
 
 impl<T: Into<Value>> From<Option<T>> for Value {
     fn from(value: Option<T>) -> Self { value.map(Into::into).unwrap_or(Self::Null) }
@@ -75,7 +96,30 @@ impl Value {
         if let Self::Number(value) = self { value.parse().ok() } else { None }
     }
 
+    pub fn as_i64(&self) -> Option<i64> {
+        if let Self::Number(value) = self { value.parse().ok() } else { None }
+    }
+
     pub fn is_null(&self) -> bool { matches!(self, Self::Null) }
+    pub fn is_string(&self) -> bool { matches!(self, Self::String(_)) }
+}
+
+static NULL: Value = Value::Null;
+
+impl Index<&str> for Value {
+    type Output = Value;
+    fn index(&self, key: &str) -> &Self::Output { self.get(key).unwrap_or(&NULL) }
+}
+
+impl IndexMut<&str> for Value {
+    fn index_mut(&mut self, key: &str) -> &mut Self::Output {
+        if !matches!(self, Self::Object(_)) { *self = Self::Object(BTreeMap::new()); }
+        self.as_object_mut().unwrap().entry(key.into()).or_insert(Self::Null)
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { formatter.write_str(&stringify(self)) }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,6 +142,8 @@ impl fmt::Display for Error {
     }
 }
 
+impl core::error::Error for Error {}
+
 pub fn parse(source: &str) -> Result<Value, Error> {
     let mut parser = Parser { bytes: source.as_bytes(), position: 0 };
     let value = parser.value()?;
@@ -106,6 +152,34 @@ pub fn parse(source: &str) -> Result<Value, Error> {
         return Err(Error::new("trailing characters", parser.position));
     }
     Ok(value)
+}
+
+pub trait FromJson: Sized {
+    fn from_json(value: Value) -> Result<Self, Error>;
+}
+
+impl FromJson for Value {
+    fn from_json(value: Value) -> Result<Self, Error> { Ok(value) }
+}
+
+pub fn from_str<T: FromJson>(source: &str) -> Result<T, Error> { T::from_json(parse(source)?) }
+
+pub fn from_slice<T: FromJson>(source: &[u8]) -> Result<T, Error> {
+    from_str(core::str::from_utf8(source).map_err(|_| Error::message("JSON is not UTF-8"))?)
+}
+
+pub fn to_string(value: &Value) -> Result<String, Error> { Ok(stringify(value)) }
+
+pub fn string(value: &str) -> String { stringify(&Value::String(value.into())) }
+
+#[macro_export]
+macro_rules! json {
+    (null) => { $crate::Value::Null };
+    ([ $($value:tt),* $(,)? ]) => { $crate::array([$($crate::json!($value)),*]) };
+    ({ $($key:literal : $value:tt),* $(,)? }) => {
+        $crate::object([$(($key, $crate::json!($value))),*])
+    };
+    ($value:expr) => { $crate::Value::from($value) };
 }
 
 pub fn stringify(value: &Value) -> String {

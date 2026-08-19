@@ -22,24 +22,21 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 pub type ToolError = anyhow::Error;
 
 pub fn tool_error(message: impl Into<String>) -> ToolError {
     anyhow::message(message)
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct FunctionDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ToolDefinition {
-    #[serde(rename = "type")]
     pub tool_type: String,
     pub function: FunctionDefinition,
 }

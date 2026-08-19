@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
@@ -9,23 +8,6 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 use crate::{DynTool, Tool};
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JsonRpcRequest {
-    pub jsonrpc: String,
-    pub id: u64,
-    pub method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<Value>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JsonRpcResponse {
-    pub jsonrpc: String,
-    pub id: Option<u64>,
-    pub result: Option<Value>,
-    pub error: Option<Value>,
-}
 
 pub struct McpClient {
     stdin: Mutex<ChildStdin>,
@@ -85,14 +67,13 @@ impl McpClient {
             current
         };
 
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id,
-            method: method.to_string(),
-            params,
-        };
-
-        let mut req_str = serde_json::to_string(&req)?;
+        let mut request = serde_json::object([
+            ("jsonrpc", "2.0".into()),
+            ("id", id.into()),
+            ("method", method.into()),
+        ]);
+        if let Some(params) = params { request["params"] = params; }
+        let mut req_str = serde_json::to_string(&request)?;
         req_str.push('\n');
 
         {
@@ -107,12 +88,11 @@ impl McpClient {
             reader_guard.read_line(&mut line).await?;
         }
 
-        let resp: JsonRpcResponse = serde_json::from_str(&line)?;
-        if let Some(err) = resp.error {
+        let resp: Value = serde_json::from_str(&line)?;
+        if let Some(err) = resp.get("error").filter(|value| !value.is_null()) {
             return Err(anyhow!("MCP Error: {}", err));
         }
-
-        resp.result
+        resp.get("result").cloned()
             .ok_or_else(|| anyhow!("Empty result from MCP server"))
     }
 
@@ -167,10 +147,10 @@ impl Tool for McpTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: Value) -> Result<String> {
-        let params = serde_json::json!({
-            "name": self.name,
-            "arguments": args
-        });
+        let params = serde_json::object([
+            ("name", self.name.as_str().into()),
+            ("arguments", args),
+        ]);
 
         let res = self.client.call_method("tools/call", Some(params)).await?;
         if let Some(content_arr) = res.get("content").and_then(|c| c.as_array()) {

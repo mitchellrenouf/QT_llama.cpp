@@ -1,6 +1,5 @@
 use anyhow::Result;
 use mrml_terminal_style::Colorize;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,7 +11,7 @@ use crate::rules::WorkspaceRules;
 use crate::tools::ToolRegistry;
 
 #[allow(dead_code)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct SessionState {
     pub mode: AgentMode,
     pub messages: Vec<ChatMessage>,
@@ -363,7 +362,9 @@ impl MrmlAgent {
         let sessions_dir = self.config.workspace_root.join(".mrml").join("sessions");
         fs::create_dir_all(&sessions_dir)?;
         let file_path = sessions_dir.join(format!("{}.json", name));
-        let serialized = serde_json::to_string_pretty(&self.history)?;
+        let serialized = serde_json::stringify(&serde_json::Value::Array(
+            self.history.iter().map(ChatMessage::to_json).collect(),
+        ));
         fs::write(&file_path, serialized)?;
         println!(
             "Session saved to: {}",
@@ -386,7 +387,10 @@ impl MrmlAgent {
             ));
         }
         let content = fs::read_to_string(&file_path)?;
-        let history: Vec<ChatMessage> = serde_json::from_str(&content)?;
+        let value: serde_json::Value = serde_json::from_str(&content)?;
+        let history = value.as_array()
+            .ok_or_else(|| anyhow::anyhow!("session history must be a JSON array"))?
+            .iter().map(ChatMessage::from_json).collect::<mrml_model::error::Result<Vec<_>>>()?;
         self.history = history;
         println!("Loaded session: {}", name.cyan());
         Ok(file_path)

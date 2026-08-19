@@ -464,7 +464,7 @@ impl Tool for BrowserClickElementTool {
         let x = get_browser_controller().await?;
         let mut c = x.lock().await;
         c.get_or_create_page(None).await?;
-        let q = serde_json::to_string(t)?;
+        let q = serde_json::string(t);
         let js=format!("(()=>{{const t={q};let e;try{{e=document.querySelector(t)}}catch(_){{}}if(!e)e=[...document.querySelectorAll('a,button,input,[role=button],[onclick]')].find(x=>(x.innerText||x.value||'').trim().includes(t));if(!e)return false;e.scrollIntoView({{block:'center'}});e.click();return true}})()");
         if c.eval(&js)?.as_bool() == Some(true) {
             Ok(format!("Clicked '{}'.", t))

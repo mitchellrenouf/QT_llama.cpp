@@ -1,51 +1,42 @@
 use crate::error::{Error as ModelError, Result};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ToolCall {
     pub id: String,
-    #[serde(rename = "type")]
     pub tool_type: String,
     pub function: FunctionCall,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ImageUrlDetail {
     pub url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum ContentPart {
     Text { text: String },
     ImageUrl { image_url: ImageUrlDetail },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum MessageContent {
     Text(String),
     Parts(Vec<ContentPart>),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<MessageContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
 }
 
@@ -120,6 +111,70 @@ impl ChatMessage {
             None => None,
         }
     }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let content = match &self.content {
+            Some(MessageContent::Text(text)) => text.clone().into(),
+            Some(MessageContent::Parts(parts)) => serde_json::Value::Array(parts.iter().map(|part| match part {
+                ContentPart::Text { text } => serde_json::object([("type", "text".into()), ("text", text.as_str().into())]),
+                ContentPart::ImageUrl { image_url } => serde_json::object([
+                    ("type", "image_url".into()),
+                    ("image_url", serde_json::object([("url", image_url.url.as_str().into())])),
+                ]),
+            }).collect()),
+            None => serde_json::Value::Null,
+        };
+        let calls = self.tool_calls.as_ref().map(|calls| serde_json::Value::Array(calls.iter().map(|call| serde_json::object([
+            ("id", call.id.as_str().into()),
+            ("type", call.tool_type.as_str().into()),
+            ("function", serde_json::object([
+                ("name", call.function.name.as_str().into()),
+                ("arguments", call.function.arguments.as_str().into()),
+            ])),
+        ])).collect())).unwrap_or(serde_json::Value::Null);
+        let fields = [
+            ("role", self.role.as_str().into()), ("content", content),
+            ("name", self.name.clone().into()), ("tool_call_id", self.tool_call_id.clone().into()),
+            ("tool_calls", calls), ("reasoning_content", self.reasoning_content.clone().into()),
+        ];
+        serde_json::Value::Object(fields.into_iter().filter(|(_, value)| !value.is_null())
+            .map(|(key, value)| (key.into(), value)).collect())
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Result<Self> {
+        let role = value.get("role").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ModelError::message("chat message role must be a string"))?.to_owned();
+        let content = match value.get("content") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => Some(MessageContent::Text(text.clone())),
+            Some(serde_json::Value::Array(parts)) => Some(MessageContent::Parts(parts.iter().map(|part| {
+                match part.get("type").and_then(serde_json::Value::as_str) {
+                    Some("text") => Ok(ContentPart::Text { text: part.get("text").and_then(serde_json::Value::as_str).unwrap_or("").to_owned() }),
+                    Some("image_url") => Ok(ContentPart::ImageUrl { image_url: ImageUrlDetail { url: part.get("image_url").and_then(|image| image.get("url")).and_then(serde_json::Value::as_str).unwrap_or("").to_owned() } }),
+                    _ => Err(ModelError::message("unknown chat content part")),
+                }
+            }).collect::<Result<Vec<_>>>()?)),
+            _ => return Err(ModelError::message("chat message content has invalid type")),
+        };
+        let tool_calls = value.get("tool_calls").and_then(serde_json::Value::as_array).map(|calls| calls.iter().map(|call| {
+            let function = call.get("function").ok_or_else(|| ModelError::message("tool call is missing function"))?;
+            Ok(ToolCall {
+                id: call.get("id").and_then(serde_json::Value::as_str).unwrap_or("").to_owned(),
+                tool_type: call.get("type").and_then(serde_json::Value::as_str).unwrap_or("function").to_owned(),
+                function: FunctionCall {
+                    name: function.get("name").and_then(serde_json::Value::as_str).unwrap_or("").to_owned(),
+                    arguments: function.get("arguments").and_then(serde_json::Value::as_str).unwrap_or("{}").to_owned(),
+                },
+            })
+        }).collect::<Result<Vec<_>>>()).transpose()?;
+        Ok(Self {
+            role, content,
+            name: value.get("name").and_then(serde_json::Value::as_str).map(str::to_owned),
+            tool_call_id: value.get("tool_call_id").and_then(serde_json::Value::as_str).map(str::to_owned),
+            tool_calls,
+            reasoning_content: value.get("reasoning_content").and_then(serde_json::Value::as_str).map(str::to_owned),
+        })
+    }
 }
 
 pub fn format_argument_canonical(val: &serde_json::Value) -> String {
@@ -190,10 +245,17 @@ pub fn format_gemma_chat(messages: &[ChatMessage], system_prompt: Option<&str>) 
 /// Render the tokenizer-provided GGUF chat template with llama.cpp-compatible
 /// inputs. Tool call arguments are converted from the OpenAI wire-format JSON
 /// string into the mapping expected by tokenizer templates.
-pub fn render_chat_template<T: Serialize>(
+#[derive(Debug, Clone)]
+pub struct TemplateTool {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+pub fn render_chat_template(
     template_source: &str,
     messages: &[ChatMessage],
-    tools: Option<&[T]>,
+    tools: Option<&[TemplateTool]>,
     system_prompt: Option<&str>,
     enable_thinking: bool,
 ) -> Result<String> {
@@ -202,16 +264,12 @@ pub fn render_chat_template<T: Serialize>(
             "the embedded GGUF chat template is not a supported Gemma 4 canonical template",
         ));
     }
-    let tools = tools
-        .map(serde_json::to_value)
-        .transpose()?
-        .unwrap_or_else(|| serde_json::json!([]));
-    render_gemma4_template(messages, tools.as_array().map(Vec::as_slice).unwrap_or(&[]), system_prompt, enable_thinking)
+    render_gemma4_template(messages, tools.unwrap_or(&[]), system_prompt, enable_thinking)
 }
 
 fn render_gemma4_template(
     messages: &[ChatMessage],
-    tools: &[serde_json::Value],
+    tools: &[TemplateTool],
     system_prompt: Option<&str>,
     enable_thinking: bool,
 ) -> Result<String> {
@@ -311,12 +369,11 @@ fn render_gemma4_template(
     Ok(output)
 }
 
-fn format_tool_value(tool: &serde_json::Value) -> Result<String> {
-    let function = tool.get("function").ok_or_else(|| ModelError::message("tool is missing function"))?;
+fn format_tool_value(tool: &TemplateTool) -> Result<String> {
     Ok(format_tool_declaration_canonical(
-        function.get("name").and_then(|value| value.as_str()).unwrap_or("unknown"),
-        function.get("description").and_then(|value| value.as_str()).unwrap_or(""),
-        function.get("parameters").unwrap_or(&serde_json::Value::Null),
+        &tool.name,
+        &tool.description,
+        &tool.parameters,
     ))
 }
 
@@ -419,15 +476,37 @@ mod template_tests {
 
     const GEMMA_TEMPLATE: &str = "Template: Google Gemma 4 Canonical Chat Template";
 
-    #[derive(Serialize)]
-    struct TestTool {
-        function: serde_json::Value,
+    #[test]
+    fn chat_message_json_round_trip_preserves_tool_calls() {
+        let mut message = ChatMessage::assistant(
+            Some("done".into()),
+            Some(vec![ToolCall {
+                id: "call-9".into(),
+                tool_type: "function".into(),
+                function: FunctionCall {
+                    name: "clock".into(),
+                    arguments: r#"{"timezone":"UTC"}"#.into(),
+                },
+            }]),
+        );
+        message.reasoning_content = Some("checked the clock".into());
+
+        let restored = ChatMessage::from_json(&message.to_json()).unwrap();
+        assert_eq!(restored.role, "assistant");
+        assert_eq!(restored.get_text_content().as_deref(), Some("done"));
+        assert_eq!(restored.reasoning_content.as_deref(), Some("checked the clock"));
+        let call = &restored.tool_calls.unwrap()[0];
+        assert_eq!(call.id, "call-9");
+        assert_eq!(call.function.name, "clock");
+        assert_eq!(call.function.arguments, r#"{"timezone":"UTC"}"#);
     }
 
     #[test]
     fn renders_messages_tools_and_generation_flags() {
-        let tools = [TestTool {
-            function: serde_json::json!({"name": "clock", "description": "", "parameters": null}),
+        let tools = [TemplateTool {
+            name: "clock".into(),
+            description: "".into(),
+            parameters: serde_json::Value::Null,
         }];
         let rendered = render_chat_template(
             GEMMA_TEMPLATE,
@@ -453,7 +532,7 @@ mod template_tests {
                 arguments: r#"{"command_line":"Get-Date"}"#.into(),
             },
         };
-        let rendered = render_chat_template::<serde_json::Value>(
+        let rendered = render_chat_template(
             GEMMA_TEMPLATE,
             &[ChatMessage::assistant(None, Some(vec![call]))],
             None,
@@ -474,7 +553,7 @@ mod template_tests {
                 arguments: "{}".into(),
             },
         };
-        let rendered = render_chat_template::<serde_json::Value>(
+        let rendered = render_chat_template(
             GEMMA_TEMPLATE,
             &[
                 ChatMessage::assistant(None, Some(vec![call])),
@@ -492,7 +571,7 @@ mod template_tests {
 
     #[test]
     fn rejects_unknown_template_dialects() {
-        let error = render_chat_template::<serde_json::Value>(
+        let error = render_chat_template(
             "{{ messages }}",
             &[ChatMessage::user("hello")],
             None,

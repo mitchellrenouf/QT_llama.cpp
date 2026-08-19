@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 pub use mrml_model::{format_gemma_chat, ChatMessage, FunctionCall, ModelEngine, ToolCall};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,30 +13,25 @@ pub(crate) fn thinking_enabled_for_mode(mode: crate::config::AgentMode) -> bool 
 #[allow(dead_code)]
 pub type ToolFunction = FunctionDefinition;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ChatCompletionChoice {
     pub index: usize,
     pub message: ChatMessage,
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ChatCompletionResponse {
     pub id: String,
     pub choices: Vec<ChatCompletionChoice>,
@@ -487,11 +481,18 @@ impl MrmlClient {
             }
         }
 
+        let template_tools = request.tools.as_ref().map(|tools| tools.iter().map(|tool| {
+            mrml_model::TemplateTool {
+                name: tool.function.name.clone(),
+                description: tool.function.description.clone(),
+                parameters: tool.function.parameters.clone(),
+            }
+        }).collect::<Vec<_>>());
         let prompt = if let Some(template) = chat_template {
             mrml_model::render_chat_template(
                 &template,
                 &request.messages,
-                request.tools.as_deref(),
+                template_tools.as_deref(),
                 Some(&sys_prompt),
                 self.enable_thinking,
             )?
