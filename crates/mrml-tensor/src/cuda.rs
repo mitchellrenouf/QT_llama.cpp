@@ -736,17 +736,29 @@ unsafe fn launch_rust_geglu_q4(
         &mut cols_arg as *mut _ as *mut c_void,
         &mut batch_arg as *mut _ as *mut c_void,
     ];
-    launch_rust_kernel(
-        "rust_cuda_gemm_q4_0_geglu_f32",
-        (
-            (rows.max(0) as u32).div_ceil(16).max(1),
-            (batch.max(0) as u32).div_ceil(8).max(1),
-            1,
-        ),
-        (256, 1, 1),
-        stream,
-        &mut args,
-    )
+    if batch == 1 {
+        // Decode does not need the eight-token accumulator arrays used by the
+        // prefill GEMM. The dedicated GEMV materially reduces register pressure.
+        launch_rust_kernel(
+            "rust_cuda_gemv_q4_0_geglu_f32",
+            ((rows.max(0) as u32).div_ceil(8).max(1), 1, 1),
+            (128, 1, 1),
+            stream,
+            &mut args[..6],
+        )
+    } else {
+        launch_rust_kernel(
+            "rust_cuda_gemm_q4_0_geglu_f32",
+            (
+                (rows.max(0) as u32).div_ceil(16).max(1),
+                (batch.max(0) as u32).div_ceil(8).max(1),
+                1,
+            ),
+            (256, 1, 1),
+            stream,
+            &mut args,
+        )
+    }
 }
 
 unsafe fn launch_rust_moe_router(
@@ -2257,7 +2269,7 @@ impl CudaDevice {
     ) {
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
+            if rust_cuda_op_enabled("Q8_GEMV") {
                 let mut weights = d_w_q8.as_ptr();
                 let mut input = d_x.as_ptr();
                 let mut output = d_y.as_mut_ptr();

@@ -662,6 +662,62 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemm_q4_0_geglu_f32(
 }
 
 #[no_mangle]
+pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q4_0_geglu_f32(
+    wgate: *const u8,
+    wup: *const u8,
+    input: *const f32,
+    output: *mut f32,
+    rows: i32,
+    cols: i32,
+) {
+    let lane = _thread_idx_x() & 31;
+    let sublane = (lane & 15) as usize;
+    let warp = _thread_idx_x() >> 5;
+    let row = (_block_idx_x() * ((_block_dim_x() >> 5) * 2) + warp * 2 + (lane >> 4)) as usize;
+    let active = row < rows as usize;
+    let blocks = cols as usize / 32;
+    let row_bytes = blocks * 18;
+    let gate = wgate.add(if active { row * row_bytes } else { 0 });
+    let up = wup.add(if active { row * row_bytes } else { 0 });
+    let mut gate_sum = 0.0f32;
+    let mut up_sum = 0.0f32;
+    let mut block = 0usize;
+    while block < blocks {
+        let offset = block * 18;
+        let gate_scale = f16_to_f32(
+            *gate.add(offset) as u16 | ((*gate.add(offset + 1) as u16) << 8),
+        );
+        let up_scale = f16_to_f32(
+            *up.add(offset) as u16 | ((*up.add(offset + 1) as u16) << 8),
+        );
+        let gate_packed = if active { *gate.add(offset + 2 + sublane) } else { 0 };
+        let up_packed = if active { *up.add(offset + 2 + sublane) } else { 0 };
+        let x0 = *input.add(block * 32 + sublane);
+        let x1 = *input.add(block * 32 + sublane + 16);
+        gate_sum += gate_scale
+            * (((gate_packed & 15) as i32 - 8) as f32 * x0
+                + ((gate_packed >> 4) as i32 - 8) as f32 * x1);
+        up_sum += up_scale
+            * (((up_packed & 15) as i32 - 8) as f32 * x0
+                + ((up_packed >> 4) as i32 - 8) as f32 * x1);
+        block += 1;
+    }
+    let gate_value = half_warp_sum(gate_sum);
+    let up_value = half_warp_sum(up_sum);
+    if active && sublane == 0 {
+        let gelu = 0.5
+            * gate_value
+            * (1.0
+                + fast_tanh(
+                    0.7978845608
+                        * gate_value
+                        * (1.0 + 0.044715 * gate_value * gate_value),
+                ));
+        *output.add(row) = gelu * up_value;
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "ptx-kernel" fn rust_cuda_add_f32(
     a: *const f32,
     b: *const f32,
