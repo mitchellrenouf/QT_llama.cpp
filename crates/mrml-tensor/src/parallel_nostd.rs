@@ -10,7 +10,7 @@ where
     }
 }
 
-pub fn map_collect<T, F>(len: usize, operation: F) -> Vector<T>
+pub fn map<T, F>(len: usize, _: usize, operation: F) -> Vector<T>
 where
     T: Send,
     F: Fn(usize) -> T + Sync,
@@ -34,6 +34,6 @@ mod tests {
         });
         assert_eq!(start_seen.load(Ordering::Relaxed), 0);
         assert_eq!(end_seen.load(Ordering::Relaxed), 9);
-        assert_eq!(&map_collect(4, |index| index * index)[..], &[0, 1, 4, 9]);
+        assert_eq!(&map(4, 1, |index| index * index)[..], &[0, 1, 4, 9]);
     }
 }

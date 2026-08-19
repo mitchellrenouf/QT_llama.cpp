@@ -1,6 +1,6 @@
-use core::mem::{ManuallyDrop, MaybeUninit};
+use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
-use mrml_runtime::{OnceCell, Shared};
+use mrml_runtime::{OnceCell, Shared, Vector};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Mutex, mpsc};
 
@@ -97,14 +97,16 @@ where
     );
 }
 
-pub fn map<T, F>(len: usize, minimum_chunk: usize, operation: F) -> Vec<T>
+pub fn map<T, F>(len: usize, minimum_chunk: usize, operation: F) -> Vector<T>
 where
     T: Send,
     F: Fn(usize) -> T + Sync,
 {
-    let mut output = Vec::<MaybeUninit<T>>::with_capacity(len);
-    // SAFETY: every element is initialized exactly once before conversion.
-    unsafe { output.set_len(len) };
+    let mut output = Vector::<MaybeUninit<T>>::with_capacity(len)
+        .expect("MRML parallel output allocation failed");
+    for _ in 0..len {
+        output.push(MaybeUninit::uninit());
+    }
     let output_address = output.as_mut_ptr() as usize;
     for_each_range(len, minimum_chunk, |start, end| {
         for index in start..end {
@@ -116,15 +118,9 @@ where
             }
         }
     });
-    let mut output = ManuallyDrop::new(output);
+    let (pointer, length, capacity) = output.into_raw_parts();
     // SAFETY: all elements were initialized, and layouts are identical.
-    unsafe {
-        Vec::from_raw_parts(
-            output.as_mut_ptr().cast::<T>(),
-            output.len(),
-            output.capacity(),
-        )
-    }
+    unsafe { Vector::from_raw_parts(pointer.cast::<T>(), length, capacity) }
 }
 
 #[cfg(test)]
