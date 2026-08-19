@@ -1,212 +1,351 @@
 use crate::Tool;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchMouseEventParams, DispatchMouseEventType, InsertTextParams, MouseButton,
+use serde_json::{json, Value};
+use std::{
+    fs,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::Arc,
+    time::{Duration, Instant},
 };
-use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
-use chromiumoxide::fetcher::{BrowserFetcher, BrowserFetcherOptions};
-use chromiumoxide::page::ScreenshotParams;
-use futures_util::StreamExt;
-use serde_json::json;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
-use tokio::time::sleep;
 
-use crate::web::WebFetchTool;
+static BROWSER_INSTANCE: OnceCell<Arc<Mutex<EdgeController>>> = OnceCell::const_new();
 
-static BROWSER_INSTANCE: OnceCell<Arc<Mutex<ChromiumController>>> = OnceCell::const_new();
-
-pub struct ChromiumController {
-    pub browser: Browser,
-    pub active_page: Option<chromiumoxide::Page>,
+struct CdpSocket {
+    stream: TcpStream,
+    next_id: u64,
 }
-
-impl ChromiumController {
-    pub async fn ensure_latest_and_launch() -> Result<Self> {
-        let mut exec_path: Option<PathBuf> = None;
-
-        // 0. Check custom environment variable
-        if let Ok(custom_exe) = std::env::var("BROWSER_EXE") {
-            let p = PathBuf::from(custom_exe);
-            if p.is_file() {
-                exec_path = Some(p);
-            }
+impl CdpSocket {
+    fn connect(url: &str) -> Result<Self> {
+        let rest = url
+            .strip_prefix("ws://")
+            .ok_or_else(|| anyhow!("Unsupported DevTools URL: {}", url))?;
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let stream = TcpStream::connect(authority)?;
+        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(15)))?;
+        let mut s = Self { stream, next_id: 1 };
+        write!(s.stream,"GET /{} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: bXJtbC1lZGdlLWNkcA==\r\nSec-WebSocket-Version: 13\r\n\r\n",path,authority)?;
+        let h = read_http_header(&mut s.stream)?;
+        if !h.starts_with("HTTP/1.1 101") {
+            return Err(anyhow!(
+                "DevTools WebSocket upgrade failed: {}",
+                h.lines().next().unwrap_or("empty response")
+            ));
         }
-
-        // 1. First check if a headless shell or system browser binary is already present
-        let system_candidates = [
-            "/usr/bin/chromium-headless-shell",
-            "/usr/bin/chrome-headless-shell",
-            "/usr/lib/chromium/chromium-headless-shell",
-            "/usr/lib/chromium/chrome-headless-shell",
-            "/app/bin/chromium-headless-shell",
-            "/app/bin/chrome-headless-shell",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/brave",
-            "/usr/bin/brave-browser",
-            "/usr/bin/microsoft-edge",
-            "/app/bin/chromium",
-            "/app/bin/chrome",
-            "/app/bin/brave",
-            "/app/extra/bin/chromium",
-            "/var/lib/flatpak/exports/bin/com.brave.Browser",
-            "/var/lib/flatpak/exports/bin/org.chromium.Chromium",
-            "/var/lib/flatpak/exports/bin/com.google.Chrome",
-            "/var/lib/flatpak/exports/bin/com.microsoft.Edge",
-        ];
-
-        if exec_path.is_none() {
-            for candidate in system_candidates {
-                let p = PathBuf::from(candidate);
-                if p.is_file() {
-                    exec_path = Some(p);
-                    break;
+        Ok(s)
+    }
+    fn command(&mut self, method: &str, params: Value) -> Result<Value> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.write_frame(
+            1,
+            json!({"id":id,"method":method,"params":params})
+                .to_string()
+                .as_bytes(),
+        )?;
+        loop {
+            let (op, payload) = self.read_message()?;
+            if op == 8 {
+                return Err(anyhow!("Edge closed DevTools"));
+            }
+            if op == 9 {
+                self.write_frame(10, &payload)?;
+                continue;
+            }
+            if op != 1 {
+                continue;
+            }
+            let v: Value = serde_json::from_slice(&payload)?;
+            if v.get("id").and_then(Value::as_u64) != Some(id) {
+                continue;
+            }
+            if let Some(e) = v.get("error") {
+                return Err(anyhow!("CDP {} failed: {}", method, e));
+            }
+            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+    fn write_frame(&mut self, op: u8, p: &[u8]) -> Result<()> {
+        let mut f = Vec::with_capacity(p.len() + 14);
+        f.push(0x80 | op);
+        if p.len() < 126 {
+            f.push(0x80 | p.len() as u8)
+        } else if p.len() <= 65535 {
+            f.extend([0x80 | 126]);
+            f.extend_from_slice(&(p.len() as u16).to_be_bytes())
+        } else {
+            f.extend([0x80 | 127]);
+            f.extend_from_slice(&(p.len() as u64).to_be_bytes())
+        }
+        let k = (self.next_id as u32).wrapping_mul(0x9e3779b9).to_be_bytes();
+        f.extend_from_slice(&k);
+        f.extend(p.iter().enumerate().map(|(i, b)| b ^ k[i % 4]));
+        self.stream.write_all(&f)?;
+        Ok(())
+    }
+    fn read_message(&mut self) -> Result<(u8, Vec<u8>)> {
+        let mut all = Vec::new();
+        let mut first = 0;
+        loop {
+            let mut h = [0; 2];
+            self.stream.read_exact(&mut h)?;
+            let fin = h[0] & 128 != 0;
+            let op = h[0] & 15;
+            if first == 0 && op != 0 {
+                first = op
+            }
+            let mut n = (h[1] & 127) as u64;
+            if n == 126 {
+                let mut b = [0; 2];
+                self.stream.read_exact(&mut b)?;
+                n = u16::from_be_bytes(b) as u64
+            } else if n == 127 {
+                let mut b = [0; 8];
+                self.stream.read_exact(&mut b)?;
+                n = u64::from_be_bytes(b)
+            }
+            if n > 64 * 1024 * 1024 {
+                return Err(anyhow!("Oversized DevTools message"));
+            }
+            let masked = h[1] & 128 != 0;
+            let mut k = [0; 4];
+            if masked {
+                self.stream.read_exact(&mut k)?
+            }
+            let start = all.len();
+            all.resize(start + n as usize, 0);
+            self.stream.read_exact(&mut all[start..])?;
+            if masked {
+                for (i, b) in all[start..].iter_mut().enumerate() {
+                    *b ^= k[i % 4]
                 }
             }
+            if fin {
+                return Ok((first, all));
+            }
         }
+    }
+}
 
-        if exec_path.is_none() {
-            for bin_name in [
-                "chromium-headless-shell",
-                "chrome-headless-shell",
-                "chromium",
-                "chromium-browser",
-                "google-chrome",
-                "google-chrome-stable",
-                "brave",
-                "brave-browser",
-                "microsoft-edge",
-            ] {
-                if let Ok(output) = std::process::Command::new("which").arg(bin_name).output() {
-                    if output.status.success() {
-                        let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        let p = PathBuf::from(&path_str);
-                        if p.is_file() {
-                            exec_path = Some(p);
-                            break;
-                        }
+pub struct EdgeController {
+    child: Child,
+    port: u16,
+    browser: CdpSocket,
+    page: Option<CdpSocket>,
+    profile: PathBuf,
+}
+impl EdgeController {
+    pub async fn ensure_latest_and_launch() -> Result<Self> {
+        Self::launch()
+    }
+    fn launch() -> Result<Self> {
+        let exe = find_browser()
+            .ok_or_else(|| anyhow!("No installed Edge/Chrome/Chromium found; set BROWSER_EXE"))?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+        let profile =
+            std::env::temp_dir().join(format!("mrml-edge-{}-{}", std::process::id(), port));
+        fs::create_dir_all(&profile)?;
+        let child = Command::new(&exe)
+            .args([
+                "--headless=new",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ])
+            .arg(format!("--remote-debugging-port={}", port))
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg("about:blank")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow!("Failed to launch '{}': {}", exe.display(), e))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(version) = http_json(port, "GET", "/json/version") {
+                if let Some(ws) = version["webSocketDebuggerUrl"].as_str() {
+                    if let Ok(browser) = CdpSocket::connect(ws) {
+                        return Ok(Self {
+                            child,
+                            port,
+                            browser,
+                            page: None,
+                            profile,
+                        });
                     }
                 }
             }
+            std::thread::sleep(Duration::from_millis(50))
         }
-
-        // Check persistent cache directory for previously downloaded Google Chrome Headless Shell
-        let cache_dir = crate::platform::cache_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("mrml")
-            .join("chromium");
-
-        if exec_path.is_none() && cache_dir.is_dir() {
-            for p in crate::fs_walk::paths(&cache_dir) {
-                let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if (file_name == "chrome-headless-shell"
-                    || file_name == "chromium-headless-shell"
-                    || file_name == "chrome"
-                    || file_name == "chromium")
-                    && p.is_file()
-                {
-                    exec_path = Some(p);
-                    break;
-                }
-            }
-        }
-
-        let final_exec_path = match exec_path {
-            Some(p) => p,
-            None => {
-                let _ = std::fs::create_dir_all(&cache_dir);
-                let options = BrowserFetcherOptions::builder()
-                    .with_path(&cache_dir)
-                    .build()
-                    .map_err(|e| anyhow!("Failed to create browser fetcher options: {}", e))?;
-                let fetcher = BrowserFetcher::new(options);
-                eprintln!(
-                    "[browser] Downloading latest Google Chrome / Headless Shell to {}...",
-                    cache_dir.display()
-                );
-                let info = fetcher.fetch().await.map_err(|e| {
-                    anyhow!(
-                        "Failed to download latest Chrome/Chromium Headless Shell from Google: {}",
-                        e
-                    )
-                })?;
-                info.executable_path
-            }
-        };
-
-        // 2. Configure headless Chromium
-        let config = BrowserConfig::builder()
-            .chrome_executable(final_exec_path)
-            .no_sandbox()
-            .viewport(None)
-            .arg("--disable-dev-shm-usage")
-            .arg("--disable-gpu")
-            .arg("--headless=new")
-            .build()
-            .map_err(|e| anyhow!("Failed to build browser config: {}", e))?;
-
-        let (browser, mut handler) = Browser::launch(config)
-            .await
-            .map_err(|e| anyhow!("Failed to launch Chromium: {}", e))?;
-
-        // 3. Spawn background handler to poll DevTools WebSocket events
-        tokio::task::spawn(async move {
-            while let Some(event) = handler.next().await {
-                if event.is_err() {
-                    break;
-                }
-            }
-        });
-
-        Ok(Self {
-            browser,
-            active_page: None,
-        })
+        Err(anyhow!("Edge did not expose DevTools on port {}", port))
     }
-
-    pub async fn get_or_create_page(
-        &mut self,
-        url_opt: Option<&str>,
-    ) -> Result<chromiumoxide::Page> {
-        if let Some(page) = &self.active_page {
-            if let Some(url) = url_opt {
-                page.goto(url)
-                    .await
-                    .map_err(|e| anyhow!("Failed to navigate to '{}': {}", url, e))?;
-                let _ = page.wait_for_navigation().await;
-            }
-            return Ok(page.clone());
+    pub async fn get_or_create_page(&mut self, url: Option<&str>) -> Result<&mut Self> {
+        if self.page.is_none() {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let target = loop {
+                match http_json(self.port, "PUT", "/json/new?about%3Ablank") {
+                    Ok(target) => break target,
+                    Err(error) if Instant::now() < deadline => {
+                        let _ = error;
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            let ws = target["webSocketDebuggerUrl"]
+                .as_str()
+                .ok_or_else(|| anyhow!("Missing page debugger URL"))?;
+            let mut page = CdpSocket::connect(ws)?;
+            page.command("Page.enable", json!({}))?;
+            page.command("Runtime.enable", json!({}))?;
+            self.page = Some(page)
         }
-
-        let target_url = url_opt.unwrap_or("about:blank");
-        let page = self
-            .browser
-            .new_page(target_url)
-            .await
-            .map_err(|e| anyhow!("Failed to create new Chromium page: {}", e))?;
-
-        let _ = page.wait_for_navigation().await;
-        self.active_page = Some(page.clone());
-        Ok(page)
+        if let Some(u) = url {
+            self.navigate(u)?
+        }
+        Ok(self)
+    }
+    fn cdp(&mut self, m: &str, p: Value) -> Result<Value> {
+        self.page
+            .as_mut()
+            .ok_or_else(|| anyhow!("No active browser page"))?
+            .command(m, p)
+    }
+    fn navigate(&mut self, url: &str) -> Result<()> {
+        self.cdp("Page.navigate", json!({"url":url}))?;
+        let end = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < end {
+            if self
+                .eval("document.readyState")?
+                .as_str()
+                .is_some_and(|s| s == "complete" || s == "interactive")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(40))
+        }
+        Ok(())
+    }
+    fn eval(&mut self, e: &str) -> Result<Value> {
+        Ok(self.cdp(
+            "Runtime.evaluate",
+            json!({"expression":e,"returnByValue":true,"awaitPromise":true}),
+        )?["result"]["value"]
+            .clone())
+    }
+    pub async fn content(&mut self) -> Result<String> {
+        Ok(self
+            .eval("document.documentElement.outerHTML")?
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    }
+    fn title(&mut self) -> Result<String> {
+        Ok(self
+            .eval("document.title")?
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    }
+    fn url(&mut self) -> Result<String> {
+        Ok(self
+            .eval("location.href")?
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    }
+}
+impl Drop for EdgeController {
+    fn drop(&mut self) {
+        let _ = self.browser.command("Browser.close", json!({}));
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_dir_all(&self.profile);
     }
 }
 
-pub async fn get_browser_controller() -> Result<Arc<Mutex<ChromiumController>>> {
-    let controller = BROWSER_INSTANCE
-        .get_or_try_init(|| async {
-            let ctrl = ChromiumController::ensure_latest_and_launch().await?;
-            Ok::<Arc<Mutex<ChromiumController>>, anyhow::Error>(Arc::new(Mutex::new(ctrl)))
+fn find_browser() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("BROWSER_EXE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    {
+        return Some(p);
+    }
+    let mut c = Vec::new();
+    for root in [
+        std::env::var_os("ProgramFiles(x86)"),
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("LOCALAPPDATA"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let r = PathBuf::from(root);
+        c.push(r.join("Microsoft/Edge/Application/msedge.exe"));
+        c.push(r.join("Google/Chrome/Application/chrome.exe"))
+    }
+    c.extend([
+        PathBuf::from("/usr/bin/microsoft-edge"),
+        PathBuf::from("/usr/bin/google-chrome"),
+        PathBuf::from("/usr/bin/chromium"),
+    ]);
+    c.into_iter().find(|p| p.is_file())
+}
+fn read_http_header(s: &mut TcpStream) -> Result<String> {
+    let mut v = Vec::new();
+    let mut b = [0];
+    while v.len() < 65536 {
+        s.read_exact(&mut b)?;
+        v.push(b[0]);
+        if v.ends_with(b"\r\n\r\n") {
+            return Ok(String::from_utf8_lossy(&v).into_owned());
+        }
+    }
+    Err(anyhow!("HTTP header too large"))
+}
+fn http_json(port: u16, method: &str, path: &str) -> Result<Value> {
+    let mut s = TcpStream::connect(("127.0.0.1", port))?;
+    s.set_read_timeout(Some(Duration::from_secs(2)))?;
+    write!(
+        s,
+        "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        method, path, port
+    )?;
+    let h = read_http_header(&mut s)?;
+    if !h.starts_with("HTTP/1.1 200") {
+        return Err(anyhow!(
+            "DevTools HTTP failed: {}",
+            h.lines().next().unwrap_or("empty response")
+        ));
+    }
+    let length = h
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
         })
-        .await?;
-    Ok(controller.clone())
+        .ok_or_else(|| anyhow!("DevTools response omitted Content-Length"))?;
+    let mut body = vec![0; length];
+    s.read_exact(&mut body)?;
+    Ok(serde_json::from_slice(&body)?)
+}
+pub async fn get_browser_controller() -> Result<Arc<Mutex<EdgeController>>> {
+    Ok(BROWSER_INSTANCE
+        .get_or_try_init(|| async {
+            Ok::<_, anyhow::Error>(Arc::new(Mutex::new(
+                EdgeController::ensure_latest_and_launch().await?,
+            )))
+        })
+        .await?
+        .clone())
 }
 
 pub struct BrowserOpenTool;
@@ -215,442 +354,235 @@ impl Tool for BrowserOpenTool {
     fn name(&self) -> &'static str {
         "browser_open"
     }
-
     fn description(&self) -> &'static str {
-        "Open and navigate to a web URL using the latest headless Chromium (Chromiumoxide CDP engine)."
+        "Open a URL in the installed browser running headlessly."
     }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "Full web page URL (e.g. 'https://www.youtube.com')"
-                }
-            },
-            "required": ["url"]
-        })
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})
     }
-
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let url = args["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
-
-        match get_browser_controller().await {
-            Ok(controller_arc) => {
-                let mut ctrl = controller_arc.lock().await;
-                let page = ctrl.get_or_create_page(Some(url)).await?;
-                sleep(Duration::from_millis(1500)).await;
-
-                let page_title = page.get_title().await.unwrap_or(None).unwrap_or_default();
-                let page_url = page
-                    .url()
-                    .await
-                    .unwrap_or(None)
-                    .unwrap_or_else(|| url.to_string());
-
-                Ok(format!(
-                    "Successfully opened URL '{}' in Chromium DevTools engine (Title: '{}', URL: '{}').",
-                    url, page_title, page_url
-                ))
-            }
-            Err(_e) => {
-                // Fallback: Open URL with system browser (xdg-open or flatpak-spawn) and fetch content
-                let opened_sys = if Path::new("/.flatpak-info").exists() {
-                    std::process::Command::new("flatpak-spawn")
-                        .args(["--host", "xdg-open", url])
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                } else {
-                    std::process::Command::new("xdg-open")
-                        .arg(url)
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                };
-
-                let web_fetch = WebFetchTool;
-                let fetch_res = web_fetch
-                    .execute(workspace_root, json!({"url": url}))
-                    .await
-                    .unwrap_or_default();
-
-                Ok(format!(
-                    "Opened '{}' in default desktop browser (status: {}). Page content:\n{}",
-                    url,
-                    if opened_sys {
-                        "desktop browser launched"
-                    } else {
-                        "headless scraper active"
-                    },
-                    fetch_res
-                ))
-            }
-        }
+    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+        let u = a["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
+        let x = get_browser_controller().await?;
+        let mut c = x.lock().await;
+        c.get_or_create_page(Some(u)).await?;
+        Ok(format!(
+            "Opened '{}' in headless Edge (Title: '{}', URL: '{}').",
+            u,
+            c.title()?,
+            c.url()?
+        ))
     }
 }
-
 pub struct BrowserGetContentTool;
 #[async_trait]
 impl Tool for BrowserGetContentTool {
     fn name(&self) -> &'static str {
         "browser_get_content"
     }
-
     fn description(&self) -> &'static str {
-        "Extract and return clean plain-text DOM content from the active Chromium page or target URL."
+        "Read DOM content from the active headless browser page or URL."
     }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "Optional web page URL to navigate and read DOM text from (if omitted, reads active page)"
-                }
-            }
-        })
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"url":{"type":"string"}}})
     }
-
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let url_opt = args["url"].as_str();
-
-        let controller_arc = get_browser_controller().await?;
-        let mut ctrl = controller_arc.lock().await;
-
-        let page = ctrl.get_or_create_page(url_opt).await?;
-        sleep(Duration::from_millis(500)).await;
-
-        let page_title = page.get_title().await.unwrap_or(None).unwrap_or_default();
-
-        let html = page
-            .content()
-            .await
-            .map_err(|e| anyhow!("Failed to extract page HTML: {}", e))?;
-
-        let display = {
-            let document = scraper::Html::parse_document(&html);
-            let noise_selector =
-                scraper::Selector::parse("script, style, noscript, svg, iframe, nav, footer")
-                    .unwrap();
-            let noise_ids: Vec<_> = document.select(&noise_selector).map(|e| e.id()).collect();
-
-            let content_selector =
-                scraper::Selector::parse("h1, h2, h3, h4, h5, p, article, section, li, a, span")
-                    .unwrap();
-            let mut extracted_lines = Vec::new();
-
-            for element in document.select(&content_selector) {
-                let mut current = element;
-                let mut in_noise = false;
-                while let Some(parent) = current.parent().and_then(scraper::ElementRef::wrap) {
-                    if noise_ids.contains(&parent.id()) {
-                        in_noise = true;
-                        break;
-                    }
-                    current = parent;
-                }
-
-                if !in_noise {
-                    let text = element.text().collect::<Vec<_>>().join(" ");
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty()
-                        && trimmed.len() > 2
-                        && !extracted_lines.contains(&trimmed.to_string())
-                    {
-                        extracted_lines.push(trimmed.to_string());
-                    }
-                }
-            }
-
-            let full_text = extracted_lines.join("\n");
-            if full_text.len() > 6000 {
-                format!(
-                    "{}... (truncated)",
-                    crate::markdown::truncate_utf8(&full_text, 6000)
-                )
-            } else {
-                full_text
-            }
+    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+        let x = get_browser_controller().await?;
+        let mut c = x.lock().await;
+        c.get_or_create_page(a["url"].as_str()).await?;
+        let title = c.title()?;
+        let text = crate::html::visible_text(&c.content().await?);
+        let d = if text.len() > 6000 {
+            format!(
+                "{}... (truncated)",
+                crate::markdown::truncate_utf8(&text, 6000)
+            )
+        } else {
+            text
         };
-
         Ok(format!(
-            "[Chromium Page DOM Content - '{}']:\n{}",
-            page_title,
-            if display.trim().is_empty() {
-                "(No readable text found on page)"
+            "[Headless Edge DOM Content - '{}']:\n{}",
+            title,
+            if d.trim().is_empty() {
+                "(No readable text found)"
             } else {
-                display.trim()
+                d.trim()
             }
         ))
     }
 }
-
 pub struct BrowserScreenshotTool;
 #[async_trait]
 impl Tool for BrowserScreenshotTool {
     fn name(&self) -> &'static str {
         "browser_screenshot"
     }
-
     fn description(&self) -> &'static str {
-        "Capture a compressed JPEG screenshot directly from the active Chromium page via Chrome DevTools Protocol."
+        "Capture a JPEG screenshot from the active headless browser."
     }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {}
-        })
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{}})
     }
-
-    async fn execute(&self, workspace_root: &Path, _args: serde_json::Value) -> Result<String> {
-        let controller_arc = get_browser_controller().await?;
-        let mut ctrl = controller_arc.lock().await;
-
-        let page = ctrl.get_or_create_page(None).await?;
-        sleep(Duration::from_millis(500)).await;
-
-        let params = ScreenshotParams::builder()
-            .format(CaptureScreenshotFormat::Jpeg)
-            .quality(75)
-            .build();
-
-        let img_bytes = page
-            .screenshot(params)
-            .await
-            .map_err(|e| anyhow!("Failed to capture Chromium screenshot via CDP: {}", e))?;
-
-        let shot_dir = workspace_root.join(".mrml").join("screenshots");
-        fs::create_dir_all(&shot_dir)?;
-
-        let timestamp = crate::platform::local_timestamp_string();
-        let file_path = shot_dir.join(format!("browser_screenshot_{}.jpg", timestamp));
-        fs::write(&file_path, &img_bytes)?;
-
-        let base64_str = crate::encoding::base64_encode(&img_bytes);
-        let data_uri = format!("data:image/jpeg;base64,{}", base64_str);
-
+    async fn execute(&self, r: &Path, _: Value) -> Result<String> {
+        let x = get_browser_controller().await?;
+        let mut c = x.lock().await;
+        c.get_or_create_page(None).await?;
+        let data = c.cdp(
+            "Page.captureScreenshot",
+            json!({"format":"jpeg","quality":75}),
+        )?["data"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let bytes = crate::encoding::base64_decode(&data)
+            .map_err(|e| anyhow!("Invalid screenshot: {}", e))?;
+        let dir = r.join(".mrml/screenshots");
+        fs::create_dir_all(&dir)?;
+        let p = dir.join(format!(
+            "browser_screenshot_{}.jpg",
+            crate::platform::local_timestamp_string()
+        ));
+        fs::write(&p, &bytes)?;
         Ok(format!(
-            "Chromium screenshot captured at '{}' ({} bytes). Base64 Data URI length: {}.\nDATA_URI:{}",
-            file_path.display(),
-            img_bytes.len(),
-            base64_str.len(),
-            data_uri
+            "Screenshot captured at '{}' ({} bytes).\nDATA_URI:data:image/jpeg;base64,{}",
+            p.display(),
+            bytes.len(),
+            data
         ))
     }
 }
-
 pub struct BrowserClickElementTool;
 #[async_trait]
 impl Tool for BrowserClickElementTool {
     fn name(&self) -> &'static str {
         "browser_click_element"
     }
-
     fn description(&self) -> &'static str {
-        "Find and click an interactive element on the Chromium page by visible text or CSS selector."
+        "Click an element by CSS selector or visible text."
     }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "target": {
-                    "type": "string",
-                    "description": "Visible text or CSS selector of the button/link/element to click (e.g. 'Add to Cart' or 'button#submit')"
-                }
-            },
-            "required": ["target"]
-        })
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"target":{"type":"string"}},"required":["target"]})
     }
-
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let target = args["target"]
+    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+        let t = a["target"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing target"))?;
-
-        let controller_arc = get_browser_controller().await?;
-        let mut ctrl = controller_arc.lock().await;
-
-        let page = ctrl.get_or_create_page(None).await?;
-
-        // 1. Try finding by CSS selector first
-        if let Ok(elem) = page.find_element(target).await {
-            elem.click()
-                .await
-                .map_err(|e| anyhow!("Failed to click element '{}': {}", target, e))?;
-            return Ok(format!(
-                "Successfully clicked element matching selector '{}'.",
-                target
-            ));
+        let x = get_browser_controller().await?;
+        let mut c = x.lock().await;
+        c.get_or_create_page(None).await?;
+        let q = serde_json::to_string(t)?;
+        let js=format!("(()=>{{const t={q};let e;try{{e=document.querySelector(t)}}catch(_){{}}if(!e)e=[...document.querySelectorAll('a,button,input,[role=button],[onclick]')].find(x=>(x.innerText||x.value||'').trim().includes(t));if(!e)return false;e.scrollIntoView({{block:'center'}});e.click();return true}})()");
+        if c.eval(&js)?.as_bool() == Some(true) {
+            Ok(format!("Clicked '{}'.", t))
+        } else {
+            Err(anyhow!("Could not locate '{}'", t))
         }
-
-        // 2. Try finding by XPath containing visible text
-        let xpath = format!("//*[contains(text(), '{}')]", target);
-        if let Ok(elem) = page.find_element(xpath.as_str()).await {
-            elem.click()
-                .await
-                .map_err(|e| anyhow!("Failed to click element with text '{}': {}", target, e))?;
-            return Ok(format!(
-                "Successfully clicked element with text '{}'.",
-                target
-            ));
-        }
-
-        Err(anyhow!(
-            "Could not locate element matching selector or text '{}' on the active Chromium page.",
-            target
-        ))
     }
 }
-
 pub struct BrowserClickTool;
 #[async_trait]
 impl Tool for BrowserClickTool {
     fn name(&self) -> &'static str {
         "browser_click"
     }
-
     fn description(&self) -> &'static str {
-        "Perform a mouse click at specific viewport coordinates (X, Y) on the active Chromium page."
+        "Click viewport coordinates on the active page."
     }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "x": {
-                    "type": "integer",
-                    "description": "Horizontal pixel coordinate (X)"
-                },
-                "y": {
-                    "type": "integer",
-                    "description": "Vertical pixel coordinate (Y)"
-                }
-            },
-            "required": ["x", "y"]
-        })
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]})
     }
-
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let x = args["x"]
-            .as_f64()
-            .ok_or_else(|| anyhow!("Missing x coordinate"))?;
-        let y = args["y"]
-            .as_f64()
-            .ok_or_else(|| anyhow!("Missing y coordinate"))?;
-
-        let controller_arc = get_browser_controller().await?;
-        let mut ctrl = controller_arc.lock().await;
-
-        let page = ctrl.get_or_create_page(None).await?;
-
-        // Dispatch CDP mouse click event at (x, y)
-        let move_params = DispatchMouseEventParams::builder()
-            .r#type(DispatchMouseEventType::MouseMoved)
-            .x(x)
-            .y(y)
-            .build()
-            .map_err(|e| anyhow!("Failed to build mouse move params: {}", e))?;
-
-        let press_params = DispatchMouseEventParams::builder()
-            .r#type(DispatchMouseEventType::MousePressed)
-            .x(x)
-            .y(y)
-            .button(MouseButton::Left)
-            .click_count(1)
-            .build()
-            .map_err(|e| anyhow!("Failed to build mouse press params: {}", e))?;
-
-        let release_params = DispatchMouseEventParams::builder()
-            .r#type(DispatchMouseEventType::MouseReleased)
-            .x(x)
-            .y(y)
-            .button(MouseButton::Left)
-            .click_count(1)
-            .build()
-            .map_err(|e| anyhow!("Failed to build mouse release params: {}", e))?;
-
-        page.execute(move_params).await?;
-        page.execute(press_params).await?;
-        page.execute(release_params).await?;
-
-        Ok(format!(
-            "Successfully clicked at coordinates ({}, {}) on Chromium page.",
-            x, y
-        ))
+    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+        let x = a["x"].as_f64().ok_or_else(|| anyhow!("Missing x"))?;
+        let y = a["y"].as_f64().ok_or_else(|| anyhow!("Missing y"))?;
+        let ctl = get_browser_controller().await?;
+        let mut c = ctl.lock().await;
+        c.get_or_create_page(None).await?;
+        for (k, b) in [
+            ("mouseMoved", false),
+            ("mousePressed", true),
+            ("mouseReleased", true),
+        ] {
+            let mut p = json!({"type":k,"x":x,"y":y});
+            if b {
+                p["button"] = json!("left");
+                p["clickCount"] = json!(1)
+            }
+            c.cdp("Input.dispatchMouseEvent", p)?;
+        }
+        Ok(format!("Clicked at ({}, {}).", x, y))
     }
 }
-
 pub struct BrowserTypeTool;
 #[async_trait]
 impl Tool for BrowserTypeTool {
     fn name(&self) -> &'static str {
         "browser_type"
     }
-
     fn description(&self) -> &'static str {
-        "Type text into the currently focused input element on the active Chromium page."
+        "Type into the focused element on the active page."
     }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "Text to type into the focused element"
-                }
-            },
-            "required": ["text"]
-        })
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})
     }
-
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
-        let text = args["text"]
-            .as_str()
-            .ok_or_else(|| anyhow!("Missing text"))?;
-
-        let controller_arc = get_browser_controller().await?;
-        let mut ctrl = controller_arc.lock().await;
-
-        let page = ctrl.get_or_create_page(None).await?;
-
-        let insert_params = InsertTextParams::builder()
-            .text(text)
-            .build()
-            .map_err(|e| anyhow!("Failed to build insert text params: {}", e))?;
-
-        page.execute(insert_params)
-            .await
-            .map_err(|e| anyhow!("Failed to insert text into Chromium page: {}", e))?;
-
-        Ok(format!("Successfully typed '{}' into Chromium page.", text))
+    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+        let t = a["text"].as_str().ok_or_else(|| anyhow!("Missing text"))?;
+        let x = get_browser_controller().await?;
+        let mut c = x.lock().await;
+        c.get_or_create_page(None).await?;
+        c.cdp("Input.insertText", json!({"text":t}))?;
+        Ok(format!("Typed '{}' into the browser page.", t))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_tools_definitions() {
-        let open_tool = BrowserOpenTool;
-        assert_eq!(open_tool.name(), "browser_open");
+    fn definitions() {
+        assert_eq!(BrowserOpenTool.name(), "browser_open");
+        assert_eq!(BrowserGetContentTool.name(), "browser_get_content");
+        assert_eq!(BrowserScreenshotTool.name(), "browser_screenshot");
+        assert_eq!(BrowserClickTool.name(), "browser_click");
+        assert_eq!(BrowserTypeTool.name(), "browser_type");
+    }
+    #[test]
+    fn installed_browser_is_found() {
+        if cfg!(windows) {
+            assert!(find_browser().is_some())
+        }
+    }
 
-        let content_tool = BrowserGetContentTool;
-        assert_eq!(content_tool.name(), "browser_get_content");
-
-        let shot_tool = BrowserScreenshotTool;
-        assert_eq!(shot_tool.name(), "browser_screenshot");
-
-        let click_tool = BrowserClickTool;
-        assert_eq!(click_tool.name(), "browser_click");
-
-        let type_tool = BrowserTypeTool;
-        assert_eq!(type_tool.name(), "browser_type");
+    #[tokio::test]
+    async fn installed_browser_navigates_types_clicks_and_screenshots() {
+        if find_browser().is_none() {
+            return;
+        }
+        let mut browser = EdgeController::ensure_latest_and_launch().await.unwrap();
+        browser.get_or_create_page(Some("data:text/html,<title>MRML%20Browser%20Test</title><input%20id='name'><button%20id='go'%20onclick=\"document.title=document.querySelector('%23name').value\">Go</button>")).await.unwrap();
+        assert_eq!(browser.title().unwrap(), "MRML Browser Test");
+        browser
+            .eval("document.querySelector('#name').focus()")
+            .unwrap();
+        browser
+            .cdp("Input.insertText", json!({"text":"typed correctly"}))
+            .unwrap();
+        assert_eq!(
+            browser
+                .eval("document.querySelector('#name').value")
+                .unwrap(),
+            "typed correctly"
+        );
+        assert_eq!(
+            browser
+                .eval("document.querySelector('#go').click(); document.title")
+                .unwrap(),
+            "typed correctly"
+        );
+        let shot = browser
+            .cdp(
+                "Page.captureScreenshot",
+                json!({"format":"jpeg","quality":50}),
+            )
+            .unwrap();
+        assert!(shot["data"].as_str().is_some_and(|data| data.len() > 100));
     }
 }

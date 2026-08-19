@@ -113,26 +113,24 @@ impl Tool for WebSearchTool {
         );
 
         if let Ok(html) = fetch_http_text(&wiki_url).await {
-            let document = scraper::Html::parse_document(&html);
-            let title_sel = scraper::Selector::parse("#firstHeading, h1").unwrap();
-            let p_sel = scraper::Selector::parse("p").unwrap();
-            let img_sel = scraper::Selector::parse("meta[property='og:image'], .infobox img, .mw-file-element, figure img, .thumbimage, .image img").unwrap();
-
-            let heading = document
-                .select(&title_sel)
+            let heading = crate::html::elements(&html, "h1", None)
+                .into_iter()
                 .next()
-                .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
+                .map(|element| element.text)
                 .unwrap_or_else(|| query.to_string());
 
             let mut img_url = None;
-            for el in document.select(&img_sel) {
-                if let Some(content) = el.value().attr("content") {
+            for element in crate::html::elements(&html, "meta", None)
+                .into_iter()
+                .chain(crate::html::elements(&html, "img", None))
+            {
+                if let Some(content) = element.attributes.get("content") {
                     if content.starts_with("http") {
                         img_url = Some(content.to_string());
                         break;
                     }
                 }
-                if let Some(src) = el.value().attr("src") {
+                if let Some(src) = element.attributes.get("src") {
                     let full = if src.starts_with("//") {
                         format!("https:{}", src)
                     } else {
@@ -148,10 +146,10 @@ impl Tool for WebSearchTool {
                 }
             }
 
-            let p_text = document
-                .select(&p_sel)
+            let p_text = crate::html::elements(&html, "p", None)
+                .into_iter()
                 .take(4)
-                .map(|p| p.text().collect::<Vec<_>>().join(" ").trim().to_string())
+                .map(|element| element.text)
                 .filter(|t| !t.is_empty() && t.len() > 20)
                 .collect::<Vec<_>>()
                 .join("\n\n");
@@ -180,28 +178,18 @@ impl Tool for WebSearchTool {
             urlencoding::encode(query)
         );
         if let Ok(html) = fetch_http_text(&ddg_url).await {
-            let document = scraper::Html::parse_document(&html);
-            let result_block_sel = scraper::Selector::parse(".result").unwrap();
-            let title_sel = scraper::Selector::parse(".result__a").unwrap();
-            let snippet_sel = scraper::Selector::parse(".result__snippet").unwrap();
-
-            for block in document.select(&result_block_sel).take(6) {
-                let title = block
-                    .select(&title_sel)
-                    .next()
-                    .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
-                    .unwrap_or_default();
-
-                let raw_href = block
-                    .select(&title_sel)
-                    .next()
-                    .and_then(|e| e.value().attr("href"))
+            let links = crate::html::elements(&html, "a", Some("result__a"));
+            let snippets = crate::html::elements(&html, "a", Some("result__snippet"));
+            for (index, link) in links.into_iter().take(6).enumerate() {
+                let title = link.text;
+                let raw_href = link
+                    .attributes
+                    .get("href")
+                    .map(String::as_str)
                     .unwrap_or("");
-
-                let snippet = block
-                    .select(&snippet_sel)
-                    .next()
-                    .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
+                let snippet = snippets
+                    .get(index)
+                    .map(|item| item.text.clone())
                     .unwrap_or_default();
 
                 let clean_url = if let Some(pos) = raw_href.find("uddg=") {
@@ -269,43 +257,7 @@ impl Tool for WebFetchTool {
         let url_str = args["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
         let html = fetch_http_text(url_str).await?;
 
-        let document = scraper::Html::parse_document(&html);
-
-        // Remove script, style, noscript, svg, iframe tags
-        let noise_selector =
-            scraper::Selector::parse("script, style, noscript, svg, iframe, nav, footer").unwrap();
-        let noise_ids: Vec<_> = document.select(&noise_selector).map(|e| e.id()).collect();
-
-        let content_selector =
-            scraper::Selector::parse("h1, h2, h3, h4, h5, p, article, section, li, a, span")
-                .unwrap();
-
-        let mut lines = Vec::new();
-        for element in document.select(&content_selector) {
-            if noise_ids.contains(&element.id()) {
-                continue;
-            }
-
-            let text = element.text().collect::<Vec<_>>().join(" ");
-            let trimmed = text.trim();
-
-            if trimmed.len() >= 15
-                && !trimmed.contains("function(")
-                && !trimmed.contains("const ")
-                && !trimmed.contains("var ")
-                && !trimmed.contains("window.")
-                && !trimmed.contains("document.")
-                && !trimmed.contains("freestar")
-                && !trimmed.contains("{")
-            {
-                let cleaned_line = trimmed.to_string();
-                if !lines.contains(&cleaned_line) {
-                    lines.push(cleaned_line);
-                }
-            }
-        }
-
-        let full_text = lines.join("\n");
+        let full_text = crate::html::visible_text(&html);
         if full_text.is_empty() {
             Ok(format!(
                 "Successfully fetched URL '{}', but no clean body text was extracted.",

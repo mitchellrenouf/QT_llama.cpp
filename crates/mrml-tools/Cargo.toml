@@ -9,11 +9,8 @@ license.workspace = true
 mrml-terminal-style = { path = "../mrml-terminal-style" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 async-trait.workspace = true
-futures-util.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 urlencoding = { package = "mrml-urlencoding", path = "../mrml-urlencoding" }
-scraper = "0.27"
-chromiumoxide = { version = "0.9.1", features = ["fetcher", "rustls", "zip8"] }

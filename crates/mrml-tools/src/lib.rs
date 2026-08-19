@@ -2,6 +2,7 @@ pub mod browser;
 pub mod desktop;
 pub mod editor;
 pub mod git;
+pub mod html;
 pub mod mcp;
 pub mod media;
 pub mod web;
