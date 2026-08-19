@@ -1,11 +1,10 @@
 use crate::anyhow::{Result, anyhow};
 use crate::types::{DType, Shape, Strides};
-use alloc::vec;
-use alloc::vec::Vec;
+use mrml_runtime::Vector;
 
 pub enum TensorStorage<'a> {
-    OwnedF32(Vec<f32>),
-    OwnedBytes(Vec<u8>),
+    OwnedF32(Vector<f32>),
+    OwnedBytes(Vector<u8>),
     Borrowed(&'a [u8]),
 }
 
@@ -24,11 +23,15 @@ impl<'a> Tensor<'a> {
             shape,
             strides,
             dtype: DType::F32,
-            storage: TensorStorage::OwnedF32(vec![0.0f32; numel]),
+            storage: TensorStorage::OwnedF32({
+                let mut values = Vector::new();
+                values.resize(numel, 0.0f32);
+                values
+            }),
         }
     }
 
-    pub fn from_f32_vec(shape: Shape, data: Vec<f32>) -> Self {
+    pub fn from_f32_vec(shape: Shape, data: Vector<f32>) -> Self {
         assert_eq!(shape.numel(), data.len());
         let strides = shape.default_strides(DType::F32);
         Self {
@@ -51,21 +54,21 @@ impl<'a> Tensor<'a> {
 
     pub fn as_f32_slice(&self) -> Result<&[f32]> {
         match &self.storage {
-            TensorStorage::OwnedF32(vec) => Ok(vec.as_slice()),
+            TensorStorage::OwnedF32(vec) => Ok(&vec[..]),
             _ => Err(anyhow!("Tensor storage is not owned F32")),
         }
     }
 
     pub fn as_f32_mut_slice(&mut self) -> Result<&mut [f32]> {
         match &mut self.storage {
-            TensorStorage::OwnedF32(vec) => Ok(vec.as_mut_slice()),
+            TensorStorage::OwnedF32(vec) => Ok(&mut vec[..]),
             _ => Err(anyhow!("Tensor storage is not mutable F32")),
         }
     }
 
     pub fn as_raw_bytes(&self) -> &[u8] {
         match &self.storage {
-            TensorStorage::OwnedBytes(vec) => vec.as_slice(),
+            TensorStorage::OwnedBytes(vec) => &vec[..],
             TensorStorage::Borrowed(slice) => slice,
             TensorStorage::OwnedF32(vec) => {
                 let ptr = vec.as_ptr() as *const u8;
@@ -86,5 +89,23 @@ impl<'a> Tensor<'a> {
         self.strides = new_shape.default_strides(self.dtype);
         self.shape = new_shape;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owns_and_reshapes_runtime_storage() {
+        let mut tensor = Tensor::zeros(Shape::new_2d(3, 2));
+        tensor.as_f32_mut_slice().unwrap()[5] = 4.5;
+        tensor.reshape(Shape::new_1d(6)).unwrap();
+
+        assert_eq!(
+            tensor.as_f32_slice().unwrap(),
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 4.5]
+        );
+        assert_eq!(tensor.as_raw_bytes().len(), 6 * core::mem::size_of::<f32>());
     }
 }
