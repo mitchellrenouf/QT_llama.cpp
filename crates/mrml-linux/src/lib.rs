@@ -44,6 +44,7 @@ struct Tm {
 }
 
 #[cfg(unix)]
+#[link(name = "c")]
 unsafe extern "C" {
     fn localtime_r(clock: *const c_long, result: *mut Tm) -> *mut Tm;
     fn malloc(bytes: usize) -> *mut c_void;

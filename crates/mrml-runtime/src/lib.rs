@@ -35,3 +35,45 @@ pub use text::Text;
 pub use thread::{available_parallelism, spawn_detached, yield_now};
 pub use time::Instant;
 pub use vector::{TryReserveError, Vector};
+
+pub fn exit_process(status: i32) -> ! {
+    #[cfg(windows)]
+    {
+        mrml_windows::exit_process(status)
+    }
+    #[cfg(unix)]
+    {
+        mrml_linux::exit_process(status)
+    }
+}
+
+#[macro_export]
+macro_rules! mrml_entrypoint {
+    ($application_main:path) => {
+        #[cfg(not(test))]
+        #[panic_handler]
+        fn mrml_panic(_information: &core::panic::PanicInfo<'_>) -> ! {
+            let _ = $crate::write_stderr(format_args!("MRML terminated after a panic\n"));
+            $crate::exit_process(101)
+        }
+
+        #[cfg(not(test))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn rust_eh_personality() {}
+
+        #[cfg(not(test))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn main(
+            _argument_count: core::ffi::c_int,
+            _argument_values: *const *const core::ffi::c_char,
+        ) -> core::ffi::c_int {
+            match $application_main() {
+                Ok(()) => 0,
+                Err(error) => {
+                    $crate::mrml_eprintln!("error: {error}");
+                    1
+                }
+            }
+        }
+    };
+}

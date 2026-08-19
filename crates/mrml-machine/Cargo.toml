@@ -19,7 +19,7 @@ hipblas = ["mrml-core/hipblas"]
 sycl = ["mrml-core/sycl"]
 
 [dependencies]
-mrml-core = { path = "../mrml-core", default-features = false }
+mrml-core = { path = "../mrml-core", default-features = false, features = ["runtime"] }
 mrml-json = { path = "../mrml-json" }
 mrml-tools = { path = "../mrml-tools" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }

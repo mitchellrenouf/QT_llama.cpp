@@ -7,7 +7,7 @@ use core::ffi::{CStr, c_void};
 #[cfg(windows)]
 use core::ptr::NonNull;
 #[cfg(windows)]
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(C)]
@@ -211,14 +211,6 @@ unsafe extern "system" {
     ) -> *mut c_void;
     fn GetActiveProcessorCount(group_number: u16) -> u32;
     fn SwitchToThread() -> i32;
-    fn WaitOnAddress(
-        address: *const c_void,
-        compare_address: *const c_void,
-        address_size: usize,
-        milliseconds: u32,
-    ) -> i32;
-    fn WakeByAddressSingle(address: *const c_void);
-    fn WakeByAddressAll(address: *const c_void);
     fn ExitProcess(exit_code: u32) -> !;
 }
 
@@ -777,24 +769,50 @@ pub fn yield_now() {
 
 #[cfg(windows)]
 pub fn wait_on_u32(address: *const u32, expected: u32) {
-    let _ = unsafe {
-        WaitOnAddress(
+    type Wait = unsafe extern "system" fn(*const c_void, *const c_void, usize, u32) -> i32;
+    static FUNCTION: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+    if let Some(wait) = resolve_kernelbase::<Wait>(&FUNCTION, b"WaitOnAddress\0") {
+        let _ = unsafe { wait(
             address.cast(),
             (&expected as *const u32).cast(),
             core::mem::size_of::<u32>(),
             u32::MAX,
-        )
-    };
+        ) };
+    } else {
+        unsafe { Sleep(1) };
+    }
 }
 
 #[cfg(windows)]
 pub fn wake_one_u32(address: *const u32) {
-    unsafe { WakeByAddressSingle(address.cast()) };
+    type Wake = unsafe extern "system" fn(*const c_void);
+    static FUNCTION: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+    if let Some(wake) = resolve_kernelbase::<Wake>(&FUNCTION, b"WakeByAddressSingle\0") {
+        unsafe { wake(address.cast()) };
+    }
 }
 
 #[cfg(windows)]
 pub fn wake_all_u32(address: *const u32) {
-    unsafe { WakeByAddressAll(address.cast()) };
+    type Wake = unsafe extern "system" fn(*const c_void);
+    static FUNCTION: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+    if let Some(wake) = resolve_kernelbase::<Wake>(&FUNCTION, b"WakeByAddressAll\0") {
+        unsafe { wake(address.cast()) };
+    }
+}
+
+#[cfg(windows)]
+fn resolve_kernelbase<T: Copy>(cache: &AtomicPtr<c_void>, symbol: &'static [u8]) -> Option<T> {
+    let cached = cache.load(Ordering::Acquire);
+    if !cached.is_null() {
+        return Some(unsafe { core::mem::transmute_copy(&cached) });
+    }
+    let module = unsafe { LoadLibraryA(c"kernelbase.dll".as_ptr()) };
+    if module.is_null() { return None; }
+    let pointer = unsafe { GetProcAddress(module, symbol.as_ptr().cast()) };
+    if pointer.is_null() { return None; }
+    cache.store(pointer, Ordering::Release);
+    Some(unsafe { core::mem::transmute_copy(&pointer) })
 }
 
 #[cfg(windows)]

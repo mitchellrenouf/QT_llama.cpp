@@ -168,8 +168,8 @@ fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Resul
     if method == "POST" && (path == "/v1/chat/completions" || path == "/chat/completions") {
         let mut content_length = 0;
         for line in lines {
-            if line.to_lowercase().starts_with("content-length:") {
-                if let Some(val) = line.split(':').nth(1) {
+            if let Some((name, val)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
                     content_length = val.trim().parse().unwrap_or(0);
                 }
             }

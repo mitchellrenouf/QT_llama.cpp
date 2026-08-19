@@ -1,9 +1,12 @@
+#![no_std]
+#![cfg_attr(not(test), no_main)]
+
 use anyhow::{Context, Result};
 use core::fmt::Write as _;
 use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
+use mrml_runtime::{Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
 
@@ -357,7 +360,7 @@ async fn health(agent: &MrmlAgent, id: Option<Value>) -> Value {
             ("type", "health_result".into()),
             ("id", id.into()),
             ("ok", false.into()),
-            ("error", Value::text(error.to_string())),
+            ("error", Value::text(text_format!("{error}"))),
         ]),
     }
 }
@@ -384,7 +387,7 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
                     ("type", "error".into()),
                     ("ok", false.into()),
                     ("error", "invalid_request".into()),
-                    ("message", Value::text(error.to_string())),
+                    ("message", Value::text(text_format!("{error}"))),
                 ]))?;
                 continue;
             }
@@ -420,16 +423,18 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
                 ("type", "error".into()),
                 ("ok", false.into()),
                 ("error", "operation_failed".into()),
-                ("message", Value::text(error.to_string())),
+                ("message", Value::text(text_format!("{error}"))),
             ]))?,
         }
     }
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn application_main() -> Result<()> {
     mrml_tools::block_on(async_main())
 }
+
+mrml_runtime::mrml_entrypoint!(application_main);
 
 async fn async_main() -> Result<()> {
     let mut args = Args::parse();

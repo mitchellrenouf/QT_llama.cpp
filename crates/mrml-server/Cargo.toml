@@ -17,7 +17,7 @@ cuda = ["mrml-core/cuda"]
 vulkan = ["mrml-core/vulkan"]
 
 [dependencies]
-mrml-core = { path = "../mrml-core", default-features = false }
+mrml-core = { path = "../mrml-core", default-features = false, features = ["runtime"] }
 mrml-terminal-style = { path = "../mrml-terminal-style" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 mrml-model = { path = "../mrml-model" }

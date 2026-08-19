@@ -1,11 +1,16 @@
+#![no_std]
+#![cfg_attr(not(test), no_main)]
+
 pub use mrml_core::config;
 use mrml_core::{AgentMode, Config, MrmlAgent};
-use mrml_runtime::{Text, Vector, mrml_print as print, mrml_println as println};
+use mrml_runtime::{Text, Vector, mrml_format as format, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
 
-fn main() -> anyhow::Result<()> {
+fn application_main() -> anyhow::Result<()> {
     mrml_tools::block_on(async_main())
 }
+
+mrml_runtime::mrml_entrypoint!(application_main);
 
 async fn async_main() -> anyhow::Result<()> {
     let config = Config::parse();
@@ -26,7 +31,7 @@ async fn async_main() -> anyhow::Result<()> {
     );
     println!(
         " Mode        : {}",
-        config.mode.to_string().bright_yellow().bold()
+        format!("{}", config.mode).bright_yellow().bold()
     );
     println!(
         " Inference   : {}",
@@ -38,7 +43,7 @@ async fn async_main() -> anyhow::Result<()> {
     println!(" Model Path  : {}", config.model.cyan());
     println!(
         " Context Size: {} tokens (GPU KV cache)",
-        config.ctx_size.to_string().bright_yellow().bold()
+        format!("{}", config.ctx_size).bright_yellow().bold()
     );
     let auto_cache = if config.ctx_size >= 131_072 {
         "q4_0"
@@ -62,11 +67,11 @@ async fn async_main() -> anyhow::Result<()> {
     );
     println!(
         " Max Context : {} tokens (auto-compact enabled)",
-        config.max_context_tokens.to_string().yellow()
+        format!("{}", config.max_context_tokens).yellow()
     );
     println!(
         " Auto-Approve: {}",
-        config.auto_approve.to_string().bright_white()
+        format!("{}", config.auto_approve).bright_white()
     );
 
     let mut agent = MrmlAgent::new(config.clone());
@@ -75,7 +80,7 @@ async fn async_main() -> anyhow::Result<()> {
     if agent.get_rules().has_rules() {
         println!(
             " Loaded Rules: {}",
-            agent.loaded_rules_count().to_string().bright_green().bold()
+            format!("{}", agent.loaded_rules_count()).bright_green().bold()
         );
         for src in &agent.get_rules().rule_sources {
             println!("   - {}", src.dimmed());
@@ -142,12 +147,12 @@ async fn async_main() -> anyhow::Result<()> {
 
     loop {
         let est_tokens = agent.estimate_tokens();
-        let mode_str = agent.get_mode().to_string();
+        let mode_str = format!("{}", agent.get_mode());
         print!(
             "{} [{}] [~{} tokens] ",
             "👤 User:".green().bold(),
             mode_str.yellow(),
-            est_tokens.to_string().dimmed()
+            format!("{}", est_tokens).dimmed()
         );
 
         let Some(line) = mrml_runtime::read_stdin_line()
@@ -210,20 +215,24 @@ async fn async_main() -> anyhow::Result<()> {
             }
             "/backend" => {
                 if let Some(name) = parts.get(1) {
-                    let choice = match name.to_lowercase().as_str() {
-                        "cuda" => crate::config::BackendChoice::Cuda,
-                        "rocm" | "hip" => crate::config::BackendChoice::Rocm,
-                        "sycl" | "oneapi" => crate::config::BackendChoice::Sycl,
-                        "vulkan" => crate::config::BackendChoice::Vulkan,
-                        "cpu" => crate::config::BackendChoice::Cpu,
-                        "auto" => crate::config::BackendChoice::Auto,
-                        _ => {
+                    let choice = if name.eq_ignore_ascii_case("cuda") {
+                        crate::config::BackendChoice::Cuda
+                    } else if name.eq_ignore_ascii_case("rocm") || name.eq_ignore_ascii_case("hip") {
+                        crate::config::BackendChoice::Rocm
+                    } else if name.eq_ignore_ascii_case("sycl") || name.eq_ignore_ascii_case("oneapi") {
+                        crate::config::BackendChoice::Sycl
+                    } else if name.eq_ignore_ascii_case("vulkan") {
+                        crate::config::BackendChoice::Vulkan
+                    } else if name.eq_ignore_ascii_case("cpu") {
+                        crate::config::BackendChoice::Cpu
+                    } else if name.eq_ignore_ascii_case("auto") {
+                        crate::config::BackendChoice::Auto
+                    } else {
                             println!(
                                 "{} Invalid backend. Use: cuda, rocm, sycl, vulkan, cpu, auto",
                                 "✖".red()
                             );
                             continue;
-                        }
                     };
                     match agent.switch_backend(choice) {
                         Ok(_) => println!(
@@ -236,10 +245,7 @@ async fn async_main() -> anyhow::Result<()> {
                 } else {
                     println!(
                         "\nActive backend: {}\nUsage: /backend cuda | rocm | sycl | vulkan | cpu | auto\n",
-                        agent
-                            .get_config()
-                            .backend
-                            .to_string()
+                        format!("{}", agent.get_config().backend)
                             .bright_yellow()
                             .bold()
                     );
@@ -247,20 +253,23 @@ async fn async_main() -> anyhow::Result<()> {
                 continue;
             }
             "/mode" => {
-                if let Some(target_mode) = parts.get(1).map(|s| s.to_lowercase()) {
-                    match target_mode.as_str() {
-                        "general" => agent.set_mode(AgentMode::General),
-                        "coder" | "coding" => agent.set_mode(AgentMode::Coder),
-                        "automatic" | "auto" => agent.set_mode(AgentMode::Automatic),
-                        _ => println!(
+                if let Some(target_mode) = parts.get(1) {
+                    if target_mode.eq_ignore_ascii_case("general") {
+                        agent.set_mode(AgentMode::General)
+                    } else if target_mode.eq_ignore_ascii_case("coder") || target_mode.eq_ignore_ascii_case("coding") {
+                        agent.set_mode(AgentMode::Coder)
+                    } else if target_mode.eq_ignore_ascii_case("automatic") || target_mode.eq_ignore_ascii_case("auto") {
+                        agent.set_mode(AgentMode::Automatic)
+                    } else {
+                        println!(
                             "{} Invalid mode. Use '/mode general', '/mode coder', or '/mode automatic'.",
                             "✖".red()
-                        ),
+                        )
                     }
                 } else {
                     println!(
                         "\nActive Mode: {}\nUsage: /mode general | /mode coder | /mode automatic\n",
-                        agent.get_mode().to_string().bright_yellow().bold()
+                        format!("{}", agent.get_mode()).bright_yellow().bold()
                     );
                 }
                 continue;
