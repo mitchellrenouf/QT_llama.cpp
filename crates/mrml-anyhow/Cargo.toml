@@ -6,5 +6,9 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["alloc"]
-alloc = []
+default = ["std"]
+std = []
+
+[dependencies]
+mrml-runtime = { path = "../mrml-runtime" }
+mrml-json = { path = "../mrml-json" }

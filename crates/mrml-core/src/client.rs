@@ -527,7 +527,8 @@ impl MrmlClient {
                 template_tools.as_deref(),
                 Some(&sys_prompt),
                 self.enable_thinking,
-            )?
+            )
+            .map_err(anyhow::Error::with_source)?
         } else {
             format_gemma_chat(&request.messages, Some(&sys_prompt))
         };
@@ -549,7 +550,7 @@ impl MrmlClient {
         while let Ok(piece_res) = rx.recv() {
             let chunk = match piece_res {
                 Ok(p) => p,
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(anyhow::Error::with_source(e)),
             };
             let piece = chunk.text;
 

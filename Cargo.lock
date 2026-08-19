@@ -5,6 +5,10 @@ version = 4
 [[package]]
 name = "mrml-anyhow"
 version = "0.4.0"
+dependencies = [
+ "mrml-json",
+ "mrml-runtime",
+]
 
 [[package]]
 name = "mrml-cli"

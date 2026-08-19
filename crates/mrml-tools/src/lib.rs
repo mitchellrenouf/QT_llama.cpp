@@ -83,7 +83,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 pub type ToolError = anyhow::Error;
 
 #[cfg(feature = "std")]
-pub fn tool_error(message: impl Into<String>) -> ToolError {
+pub fn tool_error(message: impl core::fmt::Display) -> ToolError {
     anyhow::message(message)
 }
 

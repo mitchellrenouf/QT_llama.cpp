@@ -205,7 +205,8 @@ impl MrmlAgent {
             &self.config.cache_type_k,
             &self.config.cache_type_v,
             Some(&backend_str),
-        )?;
+        )
+        .map_err(anyhow::Error::with_source)?;
         self.client = crate::client::MrmlClient::with_engine(
             std::sync::Arc::new(engine),
             self.config.system_prompt.clone(),
@@ -410,7 +411,8 @@ impl MrmlAgent {
             .ok_or_else(|| anyhow::anyhow!("session history must be a JSON array"))?
             .iter()
             .map(ChatMessage::from_json)
-            .collect::<mrml_model::error::Result<Vec<_>>>()?;
+            .collect::<mrml_model::error::Result<Vec<_>>>()
+            .map_err(anyhow::Error::with_source)?;
         self.history = history;
         println!("Loaded session: {}", name.cyan());
         Ok(file_path)
