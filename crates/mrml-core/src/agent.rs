@@ -35,7 +35,7 @@ fn requests_live_local_time(input: &str) -> bool {
         || normalized.contains("time right now")
 }
 
-fn verified_time_answer(tool_output: &str) -> Option<String> {
+fn verified_time_answer(tool_output: &str) -> Option<mrml_runtime::Text> {
     let stdout = tool_output
         .split("--- STDOUT ---")
         .nth(1)?
@@ -45,10 +45,10 @@ fn verified_time_answer(tool_output: &str) -> Option<String> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty() && *line != "(empty)")?;
-    Some(format!("The current local time is **{value}**."))
+    Some(format!("The current local time is **{value}**.").as_str().into())
 }
 
-fn verified_command_answer(tool_output: &str) -> Option<String> {
+fn verified_command_answer(tool_output: &str) -> Option<mrml_runtime::Text> {
     let stdout = tool_output
         .split("--- STDOUT ---")
         .nth(1)?
@@ -58,11 +58,15 @@ fn verified_command_answer(tool_output: &str) -> Option<String> {
     if stdout.is_empty() || stdout == "(empty)" {
         None
     } else {
-        Some(format!("The command printed:\n\n```text\n{}\n```", stdout))
+        Some(
+            format!("The command printed:\n\n```text\n{}\n```", stdout)
+                .as_str()
+                .into(),
+        )
     }
 }
 
-fn explicitly_requested_command(input: &str) -> Option<String> {
+fn explicitly_requested_command(input: &str) -> Option<mrml_runtime::Text> {
     let normalized = input.to_ascii_lowercase();
     if !normalized.contains("run_command") {
         return None;
@@ -75,7 +79,7 @@ fn explicitly_requested_command(input: &str) -> Option<String> {
         .min()
         .unwrap_or(remainder.len());
     let command = remainder[..end].trim().trim_matches(['`', '\'', '"']);
-    (!command.is_empty()).then(|| command.to_string())
+    (!command.is_empty()).then(|| command.into())
 }
 
 impl MrmlAgent {
@@ -156,7 +160,7 @@ impl MrmlAgent {
 
     pub async fn init_mcp_servers(&mut self) -> Result<()> {
         for server_cmd in &self.config.mcp_servers {
-            let parts: Vec<&str> = server_cmd.split_whitespace().collect();
+            let parts: Vector<&str> = server_cmd.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
             }
@@ -329,10 +333,10 @@ impl MrmlAgent {
         }
 
         let system_msg = self.history.first().cloned();
-        let recent_msgs: Vec<ChatMessage> =
+        let recent_msgs: Vector<ChatMessage> =
             self.history.iter().rev().take(4).rev().cloned().collect();
 
-        let mut summary_req_msgs = Vec::new();
+        let mut summary_req_msgs = Vector::new();
         summary_req_msgs.push(ChatMessage::system(
             "Summarize the conversation history concisely, retaining essential context, task goals, decisions, and file paths.",
         ));
@@ -360,7 +364,7 @@ impl MrmlAgent {
                             summary_text
                         ));
 
-                        let mut new_history = Vec::new();
+                        let mut new_history = Vector::new();
                         if let Some(sys) = system_msg {
                             new_history.push(sys);
                         }
@@ -418,26 +422,26 @@ impl MrmlAgent {
             .ok_or_else(|| anyhow::anyhow!("session history must be a JSON array"))?
             .iter()
             .map(ChatMessage::from_json)
-            .collect::<mrml_model::error::Result<Vec<_>>>()
+            .collect::<mrml_model::error::Result<Vector<_>>>()
             .map_err(anyhow::Error::with_source)?;
         self.history = history.into_iter().collect();
         println!("Loaded session: {}", name.cyan());
         Ok(file_path)
     }
 
-    pub fn list_sessions(&self) -> Result<Vec<String>> {
+    pub fn list_sessions(&self) -> Result<Vector<mrml_runtime::Text>> {
         let sessions_dir = self.config.workspace_root.join(".mrml").join("sessions");
         if !sessions_dir.exists() {
-            return Ok(Vec::new());
+            return Ok(Vector::new());
         }
 
-        let mut list = Vec::new();
+        let mut list = Vector::new();
         for entry in fs::read_dir(sessions_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    list.push(stem.to_string());
+                    list.push(stem.into());
                 }
             }
         }
@@ -452,7 +456,7 @@ impl MrmlAgent {
         &mut self,
         user_input: &str,
         mut event_sink: F,
-    ) -> Result<(String, String)>
+    ) -> Result<(mrml_runtime::Text, mrml_runtime::Text)>
     where
         F: FnMut(StreamEvent) + Send + 'static,
     {
@@ -478,7 +482,7 @@ impl MrmlAgent {
             let clock_command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
             #[cfg(not(windows))]
             let clock_command = "date '+%Y-%m-%d %H:%M:%S %z'";
-            let command = explicit_command.unwrap_or_else(|| clock_command.to_string());
+            let command = explicit_command.unwrap_or_else(|| clock_command.into());
             let call_id = format!("clock-{}", self.history.len());
             let args = serde_json::json!({ "command_line": (command.as_str()) });
             let tool_call = crate::client::ToolCall {
@@ -519,7 +523,7 @@ impl MrmlAgent {
                             event_sink(StreamEvent::Finish("stop".into()));
                             self.history
                                 .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
-                            return Ok((answer, String::new()));
+                            return Ok((answer, mrml_runtime::Text::new()));
                         }
                     } else {
                         if let Some(answer) = verified_command_answer(&output) {
@@ -527,7 +531,7 @@ impl MrmlAgent {
                             event_sink(StreamEvent::Finish("stop".into()));
                             self.history
                                 .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
-                            return Ok((answer, String::new()));
+                            return Ok((answer, mrml_runtime::Text::new()));
                         }
                     }
                 }
@@ -540,8 +544,8 @@ impl MrmlAgent {
             }
         }
 
-        let mut final_content = String::new();
-        let mut final_thought = String::new();
+        let mut final_content = mrml_runtime::Text::new();
+        let mut final_thought = mrml_runtime::Text::new();
         let mut loop_count = 0;
 
         loop {
@@ -560,7 +564,7 @@ impl MrmlAgent {
                 stream: Some(true),
             };
 
-            let mut assembled_tool_calls = Vec::new();
+            let mut assembled_tool_calls = Vector::new();
             let assistant_msg = self
                 .client
                 .stream_completion(&req, |e| {
@@ -584,10 +588,10 @@ impl MrmlAgent {
                 .to_string();
 
             if !content.is_empty() {
-                final_content = content.clone();
+                final_content = content.as_str().into();
             }
             if !thought.is_empty() {
-                final_thought = thought.clone();
+                final_thought = thought.as_str().into();
             }
 
             self.history.push(assistant_msg.clone());
@@ -667,7 +671,7 @@ impl MrmlAgent {
             let clock_command = "Get-Date -Format \"yyyy-MM-dd HH:mm:ss zzz\"";
             #[cfg(not(windows))]
             let clock_command = "date '+%Y-%m-%d %H:%M:%S %z'";
-            let command = explicit_command.unwrap_or_else(|| clock_command.to_string());
+            let command = explicit_command.unwrap_or_else(|| clock_command.into());
             let call_id = format!("clock-{}", self.history.len());
             let args = serde_json::json!({ "command_line": (command.as_str()) });
             let tool_call = crate::client::ToolCall {
@@ -729,7 +733,7 @@ impl MrmlAgent {
             }
         }
 
-        let mut last_model_output: Option<String> = None;
+        let mut last_model_output: Option<mrml_runtime::Text> = None;
         let mut model_output_repeat_count = 0;
 
         let mut step_count = 0;
@@ -758,7 +762,7 @@ impl MrmlAgent {
             let mut reasoning_header_printed = false;
             let mut last_was_reasoning = false;
             let mut content_header_printed = false;
-            let mut assembled_tool_calls = Vec::new();
+            let mut assembled_tool_calls = Vector::new();
             let mut last_metrics: Option<(usize, f64, f64)> = None;
 
             let assistant_msg_res = self
@@ -859,7 +863,7 @@ impl MrmlAgent {
                 .to_string();
             if !current_output_text.is_empty() {
                 if let Some(ref prev) = last_model_output {
-                    if prev == &current_output_text {
+                    if prev.as_str() == current_output_text {
                         model_output_repeat_count += 1;
                     } else {
                         model_output_repeat_count = 1;
@@ -867,7 +871,7 @@ impl MrmlAgent {
                 } else {
                     model_output_repeat_count = 1;
                 }
-                last_model_output = Some(current_output_text.clone());
+                last_model_output = Some(current_output_text.as_str().into());
 
                 if model_output_repeat_count >= 10 {
                     println!(
