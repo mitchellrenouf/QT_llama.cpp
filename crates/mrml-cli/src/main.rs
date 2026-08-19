@@ -1,6 +1,5 @@
 pub use mrml_core::config;
 use mrml_core::{AgentMode, Config, MrmlAgent};
-use clap::Parser;
 use mrml_terminal_style::Colorize;
 use std::io::{self, BufRead, Write};
 
@@ -8,52 +7,116 @@ use std::io::{self, BufRead, Write};
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
-    println!("{}", "==================================================".magenta());
-    println!("{}", "   🚀 MRML GENERAL-PURPOSE & VIBE-CODING CLI   ".bright_cyan().bold());
-    println!("{}", "==================================================".magenta());
-    println!(" Mode        : {}", config.mode.to_string().bright_yellow().bold());
-    println!(" Inference   : {}", "Native MRML GGUF Engine".bright_green().bold());
+    println!(
+        "{}",
+        "==================================================".magenta()
+    );
+    println!(
+        "{}",
+        "   🚀 MRML GENERAL-PURPOSE & VIBE-CODING CLI   "
+            .bright_cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "==================================================".magenta()
+    );
+    println!(
+        " Mode        : {}",
+        config.mode.to_string().bright_yellow().bold()
+    );
+    println!(
+        " Inference   : {}",
+        "Native MRML GGUF Engine".bright_green().bold()
+    );
     if let Some(hf_spec) = &config.hf {
         println!(" HuggingFace : {}", hf_spec.bright_cyan().bold());
     }
     println!(" Model Path  : {}", config.model.cyan());
-    println!(" Context Size: {} tokens (GPU KV cache)", config.ctx_size.to_string().bright_yellow().bold());
-    let auto_cache = if config.ctx_size >= 131_072 { "q4_0" } else { "f16" };
-    let cache_k = if config.cache_type_k == "auto" { auto_cache } else { &config.cache_type_k };
-    let cache_v = if config.cache_type_v == "auto" { auto_cache } else { &config.cache_type_v };
-    println!(" KV Cache    : K={} / V={}", cache_k.bright_yellow(), cache_v.bright_yellow());
-    println!(" Max Context : {} tokens (auto-compact enabled)", config.max_context_tokens.to_string().yellow());
-    println!(" Auto-Approve: {}", config.auto_approve.to_string().bright_white());
+    println!(
+        " Context Size: {} tokens (GPU KV cache)",
+        config.ctx_size.to_string().bright_yellow().bold()
+    );
+    let auto_cache = if config.ctx_size >= 131_072 {
+        "q4_0"
+    } else {
+        "f16"
+    };
+    let cache_k = if config.cache_type_k == "auto" {
+        auto_cache
+    } else {
+        &config.cache_type_k
+    };
+    let cache_v = if config.cache_type_v == "auto" {
+        auto_cache
+    } else {
+        &config.cache_type_v
+    };
+    println!(
+        " KV Cache    : K={} / V={}",
+        cache_k.bright_yellow(),
+        cache_v.bright_yellow()
+    );
+    println!(
+        " Max Context : {} tokens (auto-compact enabled)",
+        config.max_context_tokens.to_string().yellow()
+    );
+    println!(
+        " Auto-Approve: {}",
+        config.auto_approve.to_string().bright_white()
+    );
 
     let mut agent = MrmlAgent::new(config.clone());
     let _ = agent.init_mcp_servers().await;
 
     if agent.get_rules().has_rules() {
-        println!(" Loaded Rules: {}", agent.loaded_rules_count().to_string().bright_green().bold());
+        println!(
+            " Loaded Rules: {}",
+            agent.loaded_rules_count().to_string().bright_green().bold()
+        );
         for src in &agent.get_rules().rule_sources {
             println!("   - {}", src.display().to_string().dimmed());
         }
     }
 
-    println!("{}", "--------------------------------------------------".dimmed());
+    println!(
+        "{}",
+        "--------------------------------------------------".dimmed()
+    );
 
     let stdin = io::stdin();
     let mut handle = stdin.lock();
 
     if !agent.has_model_loaded() {
         if let Some(hf_spec) = config.hf.clone() {
-            println!("{} Model weights for '{}' are not cached locally.", "📥".cyan(), hf_spec.bright_cyan().bold());
-            print!("{} Download & load model weights now? [Y/n]: ", "❓".yellow());
+            println!(
+                "{} Model weights for '{}' are not cached locally.",
+                "📥".cyan(),
+                hf_spec.bright_cyan().bold()
+            );
+            print!(
+                "{} Download & load model weights now? [Y/n]: ",
+                "❓".yellow()
+            );
             io::stdout().flush()?;
             let mut ans = String::new();
             if handle.read_line(&mut ans).is_ok() {
                 let trimmed = ans.trim().to_lowercase();
                 if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
-                    println!("\nFetching and downloading Hugging Face model: {}...", hf_spec.cyan());
-                    match agent.load_hf_model(&hf_spec, |msg, _p, _cur, _tot| {
-                        println!("  {}", msg);
-                    }).await {
-                        Ok(_) => println!("{} Model successfully loaded into in-process engine!\n", "✔".green().bold()),
+                    println!(
+                        "\nFetching and downloading Hugging Face model: {}...",
+                        hf_spec.cyan()
+                    );
+                    match agent
+                        .load_hf_model(&hf_spec, |msg, _p, _cur, _tot| {
+                            println!("  {}", msg);
+                        })
+                        .await
+                    {
+                        Ok(_) => println!(
+                            "{} Model successfully loaded into in-process engine!\n",
+                            "✔".green().bold()
+                        ),
                         Err(e) => println!("{} Failed to download model: {}\n", "✖".red(), e),
                     }
                 }
@@ -71,12 +134,23 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("\nEnter your task or question (type {}/help{} for command menu, or {}/exit{} to quit):\n", "'".bright_cyan(), "'".bright_cyan(), "'".dimmed(), "'".dimmed());
+    println!(
+        "\nEnter your task or question (type {}/help{} for command menu, or {}/exit{} to quit):\n",
+        "'".bright_cyan(),
+        "'".bright_cyan(),
+        "'".dimmed(),
+        "'".dimmed()
+    );
 
     loop {
         let est_tokens = agent.estimate_tokens();
         let mode_str = agent.get_mode().to_string();
-        print!("{} [{}] [~{} tokens] ", "👤 User:".green().bold(), mode_str.yellow(), est_tokens.to_string().dimmed());
+        print!(
+            "{} [{}] [~{} tokens] ",
+            "👤 User:".green().bold(),
+            mode_str.yellow(),
+            est_tokens.to_string().dimmed()
+        );
         io::stdout().flush()?;
 
         let mut line = String::new();
@@ -98,12 +172,25 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
             "/hf" | "/download" => {
-                let spec = parts.get(1).copied().unwrap_or("ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0");
-                println!("Fetching and downloading Hugging Face model: {}...", spec.cyan());
-                match agent.load_hf_model(spec, |msg, _p, _cur, _tot| {
-                    println!("  {}", msg);
-                }).await {
-                    Ok(_) => println!("{} Model {} loaded successfully!", "✔".green().bold(), spec.cyan()),
+                let spec = parts
+                    .get(1)
+                    .copied()
+                    .unwrap_or("ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0");
+                println!(
+                    "Fetching and downloading Hugging Face model: {}...",
+                    spec.cyan()
+                );
+                match agent
+                    .load_hf_model(spec, |msg, _p, _cur, _tot| {
+                        println!("  {}", msg);
+                    })
+                    .await
+                {
+                    Ok(_) => println!(
+                        "{} Model {} loaded successfully!",
+                        "✔".green().bold(),
+                        spec.cyan()
+                    ),
                     Err(e) => println!("{} Failed to download model: {}", "✖".red(), e),
                 }
                 continue;
@@ -112,7 +199,11 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(path_str) = parts.get(1) {
                     let p = std::path::PathBuf::from(path_str);
                     match agent.reload_model(&p) {
-                        Ok(_) => println!("{} Local model loaded: {}", "✔".green().bold(), p.display().to_string().cyan()),
+                        Ok(_) => println!(
+                            "{} Local model loaded: {}",
+                            "✔".green().bold(),
+                            p.display().to_string().cyan()
+                        ),
                         Err(e) => println!("{} Failed to load model: {}", "✖".red(), e),
                     }
                 } else {
@@ -130,12 +221,19 @@ async fn main() -> anyhow::Result<()> {
                         "cpu" => crate::config::BackendChoice::Cpu,
                         "auto" => crate::config::BackendChoice::Auto,
                         _ => {
-                            println!("{} Invalid backend. Use: cuda, rocm, sycl, vulkan, cpu, auto", "✖".red());
+                            println!(
+                                "{} Invalid backend. Use: cuda, rocm, sycl, vulkan, cpu, auto",
+                                "✖".red()
+                            );
                             continue;
                         }
                     };
                     match agent.switch_backend(choice) {
-                        Ok(_) => println!("{} Switched backend to: {}", "✔".green().bold(), name.bright_yellow().bold()),
+                        Ok(_) => println!(
+                            "{} Switched backend to: {}",
+                            "✔".green().bold(),
+                            name.bright_yellow().bold()
+                        ),
                         Err(e) => println!("{} Failed to switch backend: {}", "✖".red(), e),
                     }
                 } else {
@@ -152,7 +250,10 @@ async fn main() -> anyhow::Result<()> {
                         _ => println!("{} Invalid mode. Use '/mode general', '/mode coder', or '/mode automatic'.", "✖".red()),
                     }
                 } else {
-                    println!("\nActive Mode: {}\nUsage: /mode general | /mode coder | /mode automatic\n", agent.get_mode().to_string().bright_yellow().bold());
+                    println!(
+                        "\nActive Mode: {}\nUsage: /mode general | /mode coder | /mode automatic\n",
+                        agent.get_mode().to_string().bright_yellow().bold()
+                    );
                 }
                 continue;
             }
@@ -169,7 +270,10 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             "/compact" => {
-                let limit = parts.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(256000 / 2);
+                let limit = parts
+                    .get(1)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(256000 / 2);
                 if let Err(e) = agent.compact_context(limit).await {
                     println!("{} Failed to compact context: {}", "✖".red(), e);
                 }
@@ -178,7 +282,11 @@ async fn main() -> anyhow::Result<()> {
             "/save" => {
                 let name = parts.get(1).copied().unwrap_or("default_session");
                 match agent.save_session(name) {
-                    Ok(path) => println!("{} Session saved to: {}", "✔".green(), path.display().to_string().cyan()),
+                    Ok(path) => println!(
+                        "{} Session saved to: {}",
+                        "✔".green(),
+                        path.display().to_string().cyan()
+                    ),
                     Err(e) => println!("{} Failed to save session: {}", "✖".red(), e),
                 }
                 continue;
@@ -186,7 +294,11 @@ async fn main() -> anyhow::Result<()> {
             "/load" => {
                 let name = parts.get(1).copied().unwrap_or("default_session");
                 match agent.load_session(name) {
-                    Ok(path) => println!("{} Session loaded from: {}", "✔".green(), path.display().to_string().cyan()),
+                    Ok(path) => println!(
+                        "{} Session loaded from: {}",
+                        "✔".green(),
+                        path.display().to_string().cyan()
+                    ),
                     Err(e) => println!("{} Failed to load session: {}", "✖".red(), e),
                 }
                 continue;
@@ -200,31 +312,55 @@ async fn main() -> anyhow::Result<()> {
             "/speech" => {
                 let enabled = agent.toggle_speech();
                 if enabled {
-                    println!("{} Text-to-Speech (TTS) enabled. MRML will speak responses aloud.", "🔊".green().bold());
+                    println!(
+                        "{} Text-to-Speech (TTS) enabled. MRML will speak responses aloud.",
+                        "🔊".green().bold()
+                    );
                 } else {
-                    println!("{} Text-to-Speech (TTS) disabled.", "🔇".bright_yellow().bold());
+                    println!(
+                        "{} Text-to-Speech (TTS) disabled.",
+                        "🔇".bright_yellow().bold()
+                    );
                 }
                 continue;
             }
             "/help" => {
-                println!("\n{}", "==================================================".cyan());
-                println!("{}", "   💡 MRML COMMAND REFERENCE (/help)     ".bright_yellow().bold());
-                println!("{}", "==================================================".cyan());
+                println!(
+                    "\n{}",
+                    "==================================================".cyan()
+                );
+                println!(
+                    "{}",
+                    "   💡 MRML COMMAND REFERENCE (/help)     "
+                        .bright_yellow()
+                        .bold()
+                );
+                println!(
+                    "{}",
+                    "==================================================".cyan()
+                );
                 println!("  /hf [repo:quant]               - Download & load Hugging Face GGUF model (default: ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0)");
                 println!("  /model <path>                  - Load a local .gguf model file");
                 println!("  /backend [cuda|rocm|sycl|vulkan|cpu|auto] - Switch active GPU/CPU compute backend");
                 println!("  /speech                        - Toggle Text-to-Speech audio output");
                 println!("  /mode [general|coder|automatic] - Switch between General, Coding & Automatic Modes");
-                println!("  /automatic, /auto              - Switch instantly into Autonomous Mode");
+                println!(
+                    "  /automatic, /auto              - Switch instantly into Autonomous Mode"
+                );
                 println!("  /status                        - View system telemetry, active mode, rules & token stats");
                 println!("  /save [name]                   - Save current session history to .mrml/sessions/");
                 println!("  /load [name]                   - Load a saved session history file");
                 println!("  /sessions                      - List all saved sessions");
-                println!("  /reset, /clear                 - Fully clear context to clean system prompt");
+                println!(
+                    "  /reset, /clear                 - Fully clear context to clean system prompt"
+                );
                 println!("  /compact [tokens]              - Compact & summarize context");
                 println!("  /help                          - Show this help menu");
                 println!("  /exit, /quit                   - Exit the agent");
-                println!("{}\n", "==================================================".cyan());
+                println!(
+                    "{}\n",
+                    "==================================================".cyan()
+                );
                 continue;
             }
             _ => {}

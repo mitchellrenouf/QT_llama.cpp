@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
 use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
 use serde::{Deserialize, Serialize};
@@ -11,22 +10,91 @@ use std::time::Instant;
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
 
 /// Stable, non-interactive MRML interface for ChatGPT and test harnesses.
-#[derive(Debug, Parser)]
-#[command(version, about)]
+#[derive(Debug)]
 struct Args {
-    #[command(flatten)]
     config: Config,
-
-    /// Exit before inference unless every transformer layer is GPU-resident.
-    #[arg(long, env = "MRML_REQUIRE_FULL_GPU")]
     require_full_gpu: bool,
-
-    /// Reload the model this many times when full GPU residency is not achieved.
-    #[arg(long, env = "MRML_GPU_LOAD_RETRIES", default_value_t = 0)]
     gpu_load_retries: usize,
-
-    #[command(subcommand)]
     command: Command,
+}
+
+impl Args {
+    fn parse() -> Self {
+        let arguments = std::env::args().collect::<Vec<_>>();
+        if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
+            println!("Usage: mrml-machine [OPTIONS] <chat|health|session>\n\n{}", Config::help());
+            std::process::exit(0);
+        }
+        if arguments.iter().any(|argument| argument == "--version" || argument == "-V") {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        match Self::try_parse_from(arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                eprintln!("error: {error}\n\nUsage: mrml-machine [OPTIONS] <chat|health|session>");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    fn try_parse_from<I, S>(arguments: I) -> std::result::Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let all = arguments.into_iter().map(Into::into).collect::<Vec<String>>();
+        let program = all.first().cloned().unwrap_or_else(|| "mrml-machine".into());
+        let command_index = all.iter().position(|arg| matches!(arg.as_str(), "chat" | "health" | "session"))
+            .ok_or_else(|| "a chat, health, or session command is required".to_owned())?;
+        let mut common = vec![program];
+        let mut require_full_gpu = std::env::var("MRML_REQUIRE_FULL_GPU")
+            .ok().map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")).unwrap_or(false);
+        let mut gpu_load_retries = std::env::var("MRML_GPU_LOAD_RETRIES").ok().and_then(|value| value.parse().ok()).unwrap_or(0);
+        let mut index = 1;
+        while index < command_index {
+            match all[index].as_str() {
+                "--require-full-gpu" => require_full_gpu = true,
+                "--gpu-load-retries" => {
+                    index += 1;
+                    gpu_load_retries = all.get(index).ok_or_else(|| "--gpu-load-retries requires a value".to_owned())?
+                        .parse().map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
+                }
+                value if value.starts_with("--gpu-load-retries=") => {
+                    gpu_load_retries = value[19..].parse().map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
+                }
+                _ => common.push(all[index].clone()),
+            }
+            index += 1;
+        }
+        let config = Config::try_parse_from(common)?;
+        let tail = &all[command_index + 1..];
+        let command = match all[command_index].as_str() {
+            "health" if tail.is_empty() => Command::Health,
+            "session" if tail.is_empty() => Command::Session,
+            "chat" => {
+                let mut prompt = None;
+                let mut stdin = false;
+                let mut index = 0;
+                while index < tail.len() {
+                    match tail[index].as_str() {
+                        "--stdin" => stdin = true,
+                        "--prompt" => {
+                            index += 1;
+                            prompt = Some(tail.get(index).ok_or_else(|| "--prompt requires a value".to_owned())?.clone());
+                        }
+                        value if value.starts_with("--prompt=") => prompt = Some(value[9..].to_owned()),
+                        value => return Err(format!("unknown chat argument '{value}'")),
+                    }
+                    index += 1;
+                }
+                if stdin && prompt.is_some() { return Err("--stdin conflicts with --prompt".to_owned()); }
+                Command::Chat { prompt, stdin }
+            }
+            command => return Err(format!("unexpected arguments after {command}")),
+        };
+        Ok(Self { config, require_full_gpu, gpu_load_retries, command })
+    }
 }
 
 fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
@@ -59,16 +127,14 @@ fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
     unreachable!()
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug)]
 enum Command {
     /// Run one prompt and emit a single JSON result record.
     Chat {
         /// Prompt text. Use --stdin to read it from standard input instead.
-        #[arg(long, conflicts_with = "stdin")]
         prompt: Option<String>,
 
         /// Read the complete prompt from standard input.
-        #[arg(long)]
         stdin: bool,
     },
 

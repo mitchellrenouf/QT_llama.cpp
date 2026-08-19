@@ -1,9 +1,9 @@
-use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
     General,
@@ -21,7 +21,20 @@ impl fmt::Display for AgentMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+impl FromStr for AgentMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "general" => Ok(Self::General),
+            "coder" => Ok(Self::Coder),
+            "automatic" => Ok(Self::Automatic),
+            _ => Err(format!("invalid agent mode '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendChoice {
     Auto,
@@ -45,99 +58,204 @@ impl fmt::Display for BackendChoice {
     }
 }
 
-#[derive(Parser, Debug, Clone)]
-#[command(author, version, about = "MRML local GGUF inference and multimodal agent interface", long_about = None)]
+impl FromStr for BackendChoice {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "cuda" => Ok(Self::Cuda),
+            "rocm" => Ok(Self::Rocm),
+            "vulkan" => Ok(Self::Vulkan),
+            "sycl" => Ok(Self::Sycl),
+            "cpu" => Ok(Self::Cpu),
+            _ => Err(format!("invalid backend '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
-    /// Base URL of the MRML OpenAI-compatible API endpoint
-    #[arg(long, env = "MRML_SERVER_URL", default_value = "http://localhost:8080/v1")]
     pub server_url: String,
-
-    /// API key for server authentication
-    #[arg(long, env = "MRML_API_KEY", default_value = "mitchell")]
     pub api_key: String,
-
-    /// Model name or local file path
-    #[arg(long, env = "MRML_MODEL", default_value = "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0")]
     pub model: String,
-
-    /// HuggingFace model repository specifier in user/model:quant format (e.g. ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0)
-    #[arg(long = "hf", env = "HF_MODEL", default_value = "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0")]
     pub hf: Option<String>,
-
-    /// Agent operating mode: 'general', 'coder', or 'automatic' (inner monologue mode)
-    #[arg(long, value_enum, default_value_t = AgentMode::General)]
     pub mode: AgentMode,
-
-    /// Workspace root directory for workspace tool operations
-    #[arg(long, env = "WORKSPACE_ROOT", default_value = ".")]
     pub workspace_root: PathBuf,
-
-    /// Generation temperature
-    #[arg(long, default_value_t = 0.7)]
     pub temperature: f32,
-
-    /// Maximum tokens per completion turn
-    #[arg(long, default_value_t = 8192)]
     pub max_tokens: u32,
-
-    /// Native MRML engine context window size in tokens (default: 8192)
-    #[arg(long = "ctx-size", env = "MRML_CTX_SIZE", default_value_t = 8192)]
     pub ctx_size: u32,
-
-    /// KV cache data type for keys (auto uses f16 normally and q4_0 for contexts >= 128k)
-    #[arg(long = "cache-type-k", env = "MRML_CACHE_TYPE_K", default_value = "auto",
-        value_parser = ["auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"])]
     pub cache_type_k: String,
-
-    /// KV cache data type for values (auto uses f16 normally and q4_0 for contexts >= 128k)
-    #[arg(long = "cache-type-v", env = "MRML_CACHE_TYPE_V", default_value = "auto",
-        value_parser = ["auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"])]
     pub cache_type_v: String,
-
-    /// Max context tokens before auto-compaction triggers (default 256k)
-    #[arg(long, default_value_t = 256000)]
     pub max_context_tokens: usize,
-
-    /// Auto-approve tool command executions without asking interactively
-    #[arg(long, default_value_t = true)]
     pub auto_approve: bool,
-
-    /// Custom system prompt override
-    #[arg(long)]
     pub system_prompt: Option<String>,
-
-    /// Execute a single prompt directly in CLI mode and exit
-    #[arg(long, short = 'p')]
     pub prompt: Option<String>,
-
-    /// Number of model layers to offload to GPU (-1 or 99 for auto-scaling, 0 for CPU only)
-    #[arg(long = "gpu-layers", env = "MRML_GPU_LAYERS")]
     pub n_gpu_layers: Option<i32>,
-
-    /// Hardware acceleration backend override: 'auto', 'cuda', 'vulkan', or 'cpu'
-    #[arg(long = "backend", env = "MRML_BACKEND", default_value_t = BackendChoice::Auto)]
     pub backend: BackendChoice,
-
-    /// Custom path to browser executable (e.g. /var/lib/flatpak/exports/bin/com.brave.Browser, com.brave.Browser, or /usr/bin/brave-origin)
-    #[arg(long, env = "BROWSER_EXE")]
     pub browser_exe: Option<String>,
-
-    /// Custom browser user-data-dir path or profile directory (e.g. "Default", ~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser, or ~/.config/BraveSoftware/Brave-Origin)
-    #[arg(long, env = "BROWSER_PROFILE")]
     pub browser_profile: Option<String>,
-
-
-    /// Run as an OpenAI-compatible HTTP & Server-Sent Events (SSE) API server
-    #[arg(long)]
     pub serve: bool,
-
-    /// HTTP API server port (default: 8080)
-    #[arg(long, default_value_t = 8080)]
     pub port: u16,
-
-    /// Optional external Model Context Protocol (MCP) servers to launch and connect (e.g. --mcp-server "npx -y @modelcontextprotocol/server-postgres ...")
-    #[arg(long = "mcp-server")]
     pub mcp_servers: Vec<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        fn env(name: &str, fallback: &str) -> String {
+            std::env::var(name).unwrap_or_else(|_| fallback.to_owned())
+        }
+        Self {
+            server_url: env("MRML_SERVER_URL", "http://localhost:8080/v1"),
+            api_key: env("MRML_API_KEY", "mitchell"),
+            model: env("MRML_MODEL", "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0"),
+            hf: Some(env("HF_MODEL", "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0")),
+            mode: AgentMode::General,
+            workspace_root: PathBuf::from(env("WORKSPACE_ROOT", ".")),
+            temperature: 0.7,
+            max_tokens: 8192,
+            ctx_size: std::env::var("MRML_CTX_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(8192),
+            cache_type_k: env("MRML_CACHE_TYPE_K", "auto"),
+            cache_type_v: env("MRML_CACHE_TYPE_V", "auto"),
+            max_context_tokens: 256_000,
+            auto_approve: true,
+            system_prompt: None,
+            prompt: None,
+            n_gpu_layers: std::env::var("MRML_GPU_LAYERS").ok().and_then(|v| v.parse().ok()),
+            backend: std::env::var("MRML_BACKEND").ok().and_then(|v| v.parse().ok()).unwrap_or(BackendChoice::Auto),
+            browser_exe: std::env::var("BROWSER_EXE").ok(),
+            browser_profile: std::env::var("BROWSER_PROFILE").ok(),
+            serve: false,
+            port: 8080,
+            mcp_servers: Vec::new(),
+        }
+    }
+}
+
+impl Config {
+    pub fn parse() -> Self {
+        let arguments = std::env::args().collect::<Vec<_>>();
+        if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
+            println!("{}", Self::help());
+            std::process::exit(0);
+        }
+        if arguments.iter().any(|argument| argument == "--version" || argument == "-V") {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        match Self::try_parse_from(arguments) {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("error: {error}\n\n{}", Self::help());
+                std::process::exit(2);
+            }
+        }
+    }
+
+    pub fn try_parse_from<I, S>(arguments: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut args = arguments.into_iter().map(Into::into);
+        let _program = args.next();
+        let mut config = Self::default();
+        let mut args = args.peekable();
+        while let Some(raw) = args.next() {
+            if raw == "--help" || raw == "-h" {
+                return Err(Self::help().to_owned());
+            }
+            if raw == "--version" || raw == "-V" {
+                return Err(env!("CARGO_PKG_VERSION").to_owned());
+            }
+            let (name, inline) = raw.split_once('=').map_or((raw.as_str(), None), |(name, value)| (name, Some(value.to_owned())));
+            let mut value = || inline.clone().or_else(|| args.next()).ok_or_else(|| format!("{name} requires a value"));
+            match name {
+                "--server-url" => config.server_url = value()?,
+                "--api-key" => config.api_key = value()?,
+                "--model" => config.model = value()?,
+                "--hf" => config.hf = Some(value()?),
+                "--mode" => config.mode = value()?.parse()?,
+                "--workspace-root" => config.workspace_root = value()?.into(),
+                "--temperature" => config.temperature = parse_value(name, &value()?)?,
+                "--max-tokens" => config.max_tokens = parse_value(name, &value()?)?,
+                "--ctx-size" => config.ctx_size = parse_value(name, &value()?)?,
+                "--cache-type-k" => config.cache_type_k = parse_cache_type(name, value()?)?,
+                "--cache-type-v" => config.cache_type_v = parse_cache_type(name, value()?)?,
+                "--max-context-tokens" => config.max_context_tokens = parse_value(name, &value()?)?,
+                "--auto-approve" => {
+                    config.auto_approve = if let Some(value) = inline.as_deref() {
+                        parse_bool(value)?
+                    } else if let Some(candidate) = args.peek().filter(|value| parse_bool(value).is_ok()) {
+                        let parsed = parse_bool(candidate)?;
+                        args.next();
+                        parsed
+                    } else {
+                        true
+                    };
+                }
+                "--no-auto-approve" => config.auto_approve = false,
+                "--system-prompt" => config.system_prompt = Some(value()?),
+                "--prompt" | "-p" => config.prompt = Some(value()?),
+                "--gpu-layers" => config.n_gpu_layers = Some(parse_value(name, &value()?)?),
+                "--backend" => config.backend = value()?.parse()?,
+                "--browser-exe" => config.browser_exe = Some(value()?),
+                "--browser-profile" => config.browser_profile = Some(value()?),
+                "--serve" => config.serve = true,
+                "--port" => config.port = parse_value(name, &value()?)?,
+                "--mcp-server" => config.mcp_servers.push(value()?),
+                _ => return Err(format!("unknown argument '{raw}'")),
+            }
+        }
+        Ok(config)
+    }
+
+    pub const fn help() -> &'static str {
+        "MRML local GGUF inference and multimodal agent interface\n\nOptions:\n  --model <PATH|SPEC>       Model path or repository specifier\n  --hf <SPEC>               Hugging Face model specifier\n  --mode <MODE>             general, coder, or automatic\n  --workspace-root <PATH>   Workspace used by tools\n  --temperature <FLOAT>     Generation temperature\n  --max-tokens <COUNT>      Maximum generated tokens\n  --ctx-size <COUNT>        KV-cache context size\n  --cache-type-k <TYPE>     Key cache type\n  --cache-type-v <TYPE>     Value cache type\n  --backend <BACKEND>       auto, cuda, rocm, vulkan, sycl, or cpu\n  --gpu-layers <COUNT>      GPU layer count\n  -p, --prompt <TEXT>       One-shot prompt\n  --port <PORT>             HTTP server port\n  --mcp-server <COMMAND>    Add an MCP server\n  -h, --help                Print help\n  -V, --version             Print version"
+    }
+}
+
+fn parse_value<T: FromStr>(name: &str, value: &str) -> Result<T, String> {
+    value.parse().map_err(|_| format!("invalid value '{value}' for {name}"))
+}
+
+fn parse_bool(value: &str) -> Result<bool, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!("invalid boolean '{value}'")),
+    }
+}
+
+fn parse_cache_type(name: &str, value: String) -> Result<String, String> {
+    const TYPES: &[&str] = &["auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"];
+    if TYPES.contains(&value.as_str()) { Ok(value) } else { Err(format!("invalid cache type '{value}' for {name}")) }
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+
+    #[test]
+    fn parses_values_flags_aliases_and_repeated_options() {
+        let config = Config::try_parse_from([
+            "mrml", "--model", "model.gguf", "-p", "hello", "--ctx-size=4096",
+            "--backend", "cuda", "--no-auto-approve", "--mcp-server", "one",
+            "--mcp-server=two",
+        ]).unwrap();
+        assert_eq!(config.model, "model.gguf");
+        assert_eq!(config.prompt.as_deref(), Some("hello"));
+        assert_eq!(config.ctx_size, 4096);
+        assert_eq!(config.backend, BackendChoice::Cuda);
+        assert!(!config.auto_approve);
+        assert_eq!(config.mcp_servers, ["one", "two"]);
+    }
+
+    #[test]
+    fn rejects_unknown_options_and_invalid_cache_types() {
+        assert!(Config::try_parse_from(["mrml", "--unknown"]).is_err());
+        assert!(Config::try_parse_from(["mrml", "--cache-type-k", "bad"]).is_err());
+    }
 }
 
 pub fn detect_os_name() -> String {
