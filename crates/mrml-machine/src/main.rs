@@ -53,7 +53,7 @@ impl Args {
         }
     }
 
-    fn try_parse_from<I, S>(arguments: I) -> std::result::Result<Self, Text>
+    fn try_parse_from<I, S>(arguments: I) -> core::result::Result<Self, Text>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -215,7 +215,7 @@ enum SessionRequest {
 }
 
 impl SessionRequest {
-    fn parse(source: &str) -> std::result::Result<Self, mrml_json::Error> {
+    fn parse(source: &str) -> core::result::Result<Self, mrml_json::Error> {
         let value = mrml_json::parse(source)?;
         let operation = value.get("op").and_then(Value::as_str).unwrap_or("");
         let id = value.get("id").cloned().filter(|value| !value.is_null());
