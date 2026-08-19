@@ -340,7 +340,7 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
 #[derive(Clone)]
 pub struct MrmlClient {
     engine: Option<Shared<ModelEngine>>,
-    system_prompt: Option<String>,
+    system_prompt: Option<Text>,
     enable_thinking: bool,
 }
 
@@ -370,7 +370,7 @@ impl MrmlClient {
 
     #[allow(dead_code)]
     pub fn set_system_prompt(&mut self, prompt: String) {
-        self.system_prompt = Some(prompt);
+        self.system_prompt = Some(prompt.as_str().into());
     }
 
     #[allow(dead_code)]
@@ -380,7 +380,7 @@ impl MrmlClient {
 
     pub fn with_engine(
         engine: Shared<ModelEngine>,
-        system_prompt: Option<String>,
+        system_prompt: Option<Text>,
         enable_thinking: bool,
     ) -> Self {
         Self {
@@ -429,7 +429,7 @@ impl MrmlClient {
 
         Self {
             engine,
-            system_prompt: config.system_prompt.clone(),
+            system_prompt: config.system_prompt.as_deref().map(Text::from),
             enable_thinking: thinking_enabled_for_mode(config.mode),
         }
     }
@@ -456,8 +456,8 @@ impl MrmlClient {
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
-        let mut text_acc = String::new();
-        let mut thought_acc = String::new();
+        let mut text_acc = Text::new();
+        let mut thought_acc = Text::new();
         let mut assembled_tool_calls = Vec::new();
 
         let msg = self
@@ -553,8 +553,8 @@ impl MrmlClient {
         let mut token_count = 0usize;
 
         let mut raw_acc = String::new();
-        let mut full_content = String::new();
-        let mut full_reasoning = String::new();
+        let mut full_content = Text::new();
+        let mut full_reasoning = Text::new();
         let mut in_thought =
             prompt.ends_with("<|channel>thought\n") || prompt.ends_with("<|channel>thought");
         let mut tool_calls = Vec::new();
@@ -913,11 +913,8 @@ impl MrmlClient {
 
         callback(StreamEvent::Finish("stop".to_string()));
 
-        let clean_full_reasoning = full_reasoning
-            .trim()
-            .trim_start_matches("thought")
-            .trim()
-            .to_string();
+        let clean_full_reasoning =
+            Text::from(full_reasoning.trim().trim_start_matches("thought").trim());
         let reasoning_opt = if clean_full_reasoning.is_empty()
             || clean_full_reasoning == "thought"
             || clean_full_reasoning == "</channel>"

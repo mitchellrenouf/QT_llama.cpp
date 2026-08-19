@@ -213,7 +213,7 @@ impl MrmlAgent {
         .map_err(anyhow::Error::with_source)?;
         self.client = crate::client::MrmlClient::with_engine(
             mrml_runtime::Shared::new(engine),
-            self.config.system_prompt.clone(),
+            self.config.system_prompt.as_deref().map(Into::into),
             crate::client::thinking_enabled_for_mode(self.config.mode),
         );
         self.config.model = model_path.display().to_string();
