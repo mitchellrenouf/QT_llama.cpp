@@ -23,6 +23,28 @@ pub struct Text {
 }
 
 impl Text {
+    pub fn from_utf8_lossy(mut bytes: &[u8]) -> Self {
+        let mut output = Self::new();
+        while !bytes.is_empty() {
+            match core::str::from_utf8(bytes) {
+                Ok(text) => {
+                    output.push_str(text);
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    output.push_str(unsafe { core::str::from_utf8_unchecked(&bytes[..valid]) });
+                    output.push('\u{fffd}');
+                    match error.error_len() {
+                        Some(length) => bytes = &bytes[valid + length..],
+                        None => break,
+                    }
+                }
+            }
+        }
+        output
+    }
+
     pub fn remove(&mut self, index: usize) -> char {
         let character = self.as_str()[index..]
             .chars()
@@ -299,5 +321,10 @@ mod tests {
     fn changes_ascii_case_without_global_allocation() {
         assert_eq!(Text::from("Gemma-Q4_0").to_ascii_lowercase(), "gemma-q4_0");
         assert_eq!(Text::from("Gemma-Q4_0").to_ascii_uppercase(), "GEMMA-Q4_0");
+    }
+
+    #[test]
+    fn replaces_invalid_utf8_without_global_allocation() {
+        assert_eq!(Text::from_utf8_lossy(b"a\xffb\xe2\x82"), "a\u{fffd}b\u{fffd}");
     }
 }

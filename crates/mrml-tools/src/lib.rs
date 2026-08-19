@@ -11,7 +11,7 @@ pub mod browser;
 pub mod desktop;
 #[cfg(feature = "std")]
 pub mod editor;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod git;
 #[cfg(feature = "runtime")]
 pub mod html;

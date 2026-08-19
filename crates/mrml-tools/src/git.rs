@@ -1,6 +1,8 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
-use mrml_runtime::Command;
+use mrml_runtime::{Command, Text};
+#[cfg(not(feature = "std"))]
+use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::json;
 
 pub struct GitCheckpointTool;
@@ -33,9 +35,7 @@ impl Tool for GitCheckpointTool {
             .current_dir(workspace_root)
             .output()?;
 
-        let commit_hash = String::from_utf8_lossy(&stash_output.stdout)
-            .trim()
-            .to_string();
+        let commit_hash = Text::from(Text::from_utf8_lossy(&stash_output.stdout).trim());
 
         if commit_hash.is_empty() {
             // No changes to stash, save HEAD hash
@@ -43,9 +43,7 @@ impl Tool for GitCheckpointTool {
                 .args(["rev-parse", "HEAD"])
                 .current_dir(workspace_root)
                 .output()?;
-            let head_hash = String::from_utf8_lossy(&head_output.stdout)
-                .trim()
-                .to_string();
+            let head_hash = Text::from(Text::from_utf8_lossy(&head_output.stdout).trim());
             Ok(format!("Checkpoint created at HEAD: {}", head_hash))
         } else {
             // Save stash reference
@@ -97,7 +95,7 @@ impl Tool for GitRollbackTool {
                 .args(["checkout", target, "--", "."])
                 .current_dir(workspace_root)
                 .output()?;
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = Text::from_utf8_lossy(&output.stderr);
             if output.status.success() {
                 Ok(format!(
                     "Successfully restored workspace to checkpoint '{}'.",
@@ -113,12 +111,9 @@ impl Tool for GitRollbackTool {
                 .current_dir(workspace_root)
                 .output()?;
             if output.status.success() {
-                Ok(
-                    "Successfully discarded all uncommitted changes and restored working tree."
-                        .to_string(),
-                )
+                Ok("Successfully discarded all uncommitted changes and restored working tree.".into())
             } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = Text::from_utf8_lossy(&output.stderr);
                 Err(anyhow!("Failed to rollback changes: {}", stderr))
             }
         }
@@ -148,15 +143,15 @@ impl Tool for GitDiffTool {
             .current_dir(workspace_root)
             .output()?;
 
-        let stat = String::from_utf8_lossy(&output.stdout);
+        let stat = Text::from_utf8_lossy(&output.stdout);
         let detail_output = Command::new("git")
             .args(["diff"])
             .current_dir(workspace_root)
             .output()?;
-        let detail = String::from_utf8_lossy(&detail_output.stdout);
+        let detail = Text::from_utf8_lossy(&detail_output.stdout);
 
         if stat.trim().is_empty() && detail.trim().is_empty() {
-            Ok("No uncommitted changes in working tree.".to_string())
+            Ok("No uncommitted changes in working tree.".into())
         } else {
             Ok(format!(
                 "--- GIT DIFF SUMMARY ---\n{}\n--- DETAILED DIFF ---\n{}",
