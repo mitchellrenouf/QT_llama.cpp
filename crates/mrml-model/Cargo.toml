@@ -9,6 +9,7 @@ description = "MRML model and chat adapter for native in-process GGUF inference"
 [dependencies]
 serde_json = { package = "mrml-json", path = "../mrml-json", default-features = false, optional = true }
 mrml-tensor = { path = "../mrml-tensor", default-features = false, optional = true }
+mrml-runtime = { path = "../mrml-runtime" }
 
 [features]
 default = ["std", "auto"]

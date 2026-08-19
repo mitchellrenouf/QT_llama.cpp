@@ -2,12 +2,13 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 #[cfg(feature = "alloc")]
 pub mod chat;
 #[cfg(feature = "std")]
 pub mod engine;
-#[cfg(feature = "alloc")]
 pub mod error;
 pub mod portable;
 

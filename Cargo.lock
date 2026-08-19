@@ -57,6 +57,7 @@ name = "mrml-model"
 version = "0.4.0"
 dependencies = [
  "mrml-json",
+ "mrml-runtime",
  "mrml-tensor",
 ]
 
