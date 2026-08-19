@@ -5,7 +5,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
         .nth(1)
         .expect("usage: prefill_model_check <model.gguf> [prompt]");
     let user_prompt = std::env::args().nth(2).unwrap_or_else(|| "hi".to_string());
-    let model = MrmlModel::load_from_gguf(path, 8192)?;
+    let model = MrmlModel::load_from_gguf(&path, 8192)?;
     let prompt = format!("<bos><|turn>user\n{user_prompt}<turn|>\n<|turn>model\n");
     let tokens = model.tokenize(&prompt);
     let mut state = model.init_generation_state(&tokens);

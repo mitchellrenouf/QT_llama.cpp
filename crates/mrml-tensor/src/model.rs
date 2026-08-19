@@ -10,8 +10,7 @@ use core::cmp::Ordering as CompareOrdering;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use mrml_runtime::{File, Instant, Shared, Text, Vector};
-use std::collections::HashMap;
+use mrml_runtime::{File, Instant, OrderedMap, Shared, Text, Vector};
 
 fn environment_is_set(name: &CStr) -> bool {
     #[cfg(windows)]
@@ -194,7 +193,7 @@ pub struct MrmlModel {
     pub kv_cache: KvCacheManager,
     pub layer_devices: Vector<DeviceType>,
     pub vocab: Vec<String>,
-    pub vocab_to_id: HashMap<String, i32>,
+    pub vocab_to_id: OrderedMap<Text, i32>,
     pub valid_vocab_token: Vec<bool>,
     pub chat_template: Option<String>,
     pub gguf_path: Text,
@@ -392,7 +391,8 @@ impl MrmlModel {
 
         // Load Vocabulary from GGUF metadata
         let mut vocab = Vec::new();
-        let mut vocab_to_id = HashMap::new();
+        let mut vocab_to_id = OrderedMap::new();
+        let mut vocab_entries = Vector::new();
 
         if let Some(tokens_meta) = gguf
             .get_meta("tokenizer.ggml.tokens")
@@ -401,9 +401,14 @@ impl MrmlModel {
             for (id, val) in tokens_meta.iter().enumerate() {
                 if let Some(s) = val.as_str() {
                     vocab.push(s.to_string());
-                    vocab_to_id.insert(s.to_string(), id as i32);
+                    vocab_entries.push((Text::from(s), id as i32));
                 }
             }
+        }
+        vocab_entries
+            .sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        for (token, id) in vocab_entries {
+            vocab_to_id.insert(token, id);
         }
 
         let vocab_size = if !vocab.is_empty() {
@@ -2199,7 +2204,7 @@ impl MrmlModel {
                 } else {
                     for &b in single_char.as_bytes() {
                         let hex_repr = format!("<0x{:02X}>", b);
-                        if let Some(&tid) = self.vocab_to_id.get(&hex_repr) {
+                        if let Some(&tid) = self.vocab_to_id.get(hex_repr.as_str()) {
                             tokens.push(tid);
                         }
                     }

@@ -29,7 +29,8 @@ fn test_generation_outputs() {
         return;
     }
 
-    let model = mrml_tensor::model::MrmlModel::load_from_gguf(&path, 8192).expect("Load model");
+    let model = mrml_tensor::model::MrmlModel::load_from_gguf(path.to_str().unwrap(), 8192)
+        .expect("Load model");
 
     let prompts = [
         "<|turn>user\nHi\n<turn|>\n<|turn>model\n",
