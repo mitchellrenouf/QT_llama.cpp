@@ -1,7 +1,32 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Command, Vector};
+use mrml_runtime::{Command, Text, Vector};
+#[cfg(not(feature = "std"))]
+use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::json;
+
+fn owned_string(value: &str) -> String {
+    value.into()
+}
+
+#[cfg(feature = "std")]
+fn text_string(value: Text) -> String {
+    value.as_str().into()
+}
+
+#[cfg(not(feature = "std"))]
+fn text_string(value: Text) -> String {
+    value
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    haystack.as_bytes().windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle.as_bytes())
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    })
+}
 
 pub async fn fetch_http_text(url: &str) -> Result<String> {
     // 1. Try headless Chromium if browser controller is available
@@ -28,7 +53,7 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
         .output()
     {
         if output.status.success() {
-            let body = String::from_utf8_lossy(&output.stdout).to_string();
+            let body = text_string(Text::from_utf8_lossy(&output.stdout));
             if !body.is_empty() {
                 return Ok(body);
             }
@@ -45,7 +70,7 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
         .output()
     {
         if output.status.success() {
-            let body = String::from_utf8_lossy(&output.stdout).to_string();
+            let body = text_string(Text::from_utf8_lossy(&output.stdout));
             if !body.is_empty() {
                 return Ok(body);
             }
@@ -86,14 +111,14 @@ impl Tool for WebSearchTool {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing query"))?;
-        let mut results = Vec::new();
+        let mut results = Vector::new();
 
-        let _is_image_query = query.to_lowercase().contains("image")
-            || query.to_lowercase().contains("picture")
-            || query.to_lowercase().contains("photo");
+        let _is_image_query = contains_ascii_case_insensitive(query, "image")
+            || contains_ascii_case_insensitive(query, "picture")
+            || contains_ascii_case_insensitive(query, "photo");
 
         // 1. First search Wikipedia directly
-        let clean_query = query
+        let clean_query = Text::from(query)
             .replace("find an image of a ", "")
             .replace("find an image of ", "")
             .replace("show an image of a ", "")
@@ -115,14 +140,14 @@ impl Tool for WebSearchTool {
                 .map(|element| element.text.clone())
                 .unwrap_or_else(|| mrml_runtime::Text::from(query));
 
-            let mut img_url = None;
+            let mut img_url: Option<String> = None;
             let metadata = crate::html::elements(&html, "meta", None);
             let images = crate::html::elements(&html, "img", None);
             for elements in [&metadata, &images] {
                 for element in elements {
                     if let Some(content) = element.attributes.get("content") {
                         if content.starts_with("http") {
-                            img_url = Some(content.to_string());
+                            img_url = Some(owned_string(content));
                             break;
                         }
                     }
@@ -130,7 +155,7 @@ impl Tool for WebSearchTool {
                         let full = if src.starts_with("//") {
                             format!("https:{}", src)
                         } else {
-                            src.to_string()
+                            owned_string(src)
                         };
                         if full.starts_with("http")
                             && !full.contains("static/favicon")
@@ -146,13 +171,13 @@ impl Tool for WebSearchTool {
                 }
             }
 
-            let p_text = crate::html::elements(&html, "p", None)
-                .iter()
-                .take(4)
-                .map(|element| element.text.to_string())
-                .filter(|t| !t.is_empty() && t.len() > 20)
-                .collect::<Vector<_>>()
-                .join("\n\n");
+            let mut p_text = String::new();
+            for element in crate::html::elements(&html, "p", None).iter().take(4) {
+                if !element.text.is_empty() && element.text.len() > 20 {
+                    if !p_text.is_empty() { p_text.push_str("\n\n"); }
+                    p_text.push_str(&element.text);
+                }
+            }
 
             if !p_text.is_empty() || img_url.is_some() {
                 let mut entry = format!("- **{}** (Wikipedia)\n  URL: {}\n", heading, wiki_url);
@@ -195,11 +220,11 @@ impl Tool for WebSearchTool {
                 let clean_url = if let Some(pos) = raw_href.find("uddg=") {
                     let after = &raw_href[pos + 5..];
                     let raw_encoded = after.split('&').next().unwrap_or(after);
-                    urlencoding::decode(raw_encoded)
-                        .unwrap_or(urlencoding::TextResult::Borrowed(raw_encoded))
-                        .to_string()
+                    let decoded = urlencoding::decode(raw_encoded)
+                        .unwrap_or(urlencoding::TextResult::Borrowed(raw_encoded));
+                    owned_string(&decoded)
                 } else if raw_href.starts_with("http") {
-                    raw_href.to_string()
+                    owned_string(raw_href)
                 } else {
                     continue;
                 };
@@ -226,7 +251,12 @@ impl Tool for WebSearchTool {
                 query
             ))
         } else {
-            Ok(results.join("\n\n"))
+            let mut output = String::new();
+            for (index, result) in results.iter().enumerate() {
+                if index != 0 { output.push_str("\n\n"); }
+                output.push_str(result);
+            }
+            Ok(output)
         }
     }
 }
@@ -271,7 +301,20 @@ impl Tool for WebFetchTool {
                 crate::markdown::truncate_utf8(&full_text, 10000)
             ))
         } else {
-            Ok(full_text.to_string())
+            Ok(text_string(full_text))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_tool_definitions_and_case_matching_are_stable() {
+        assert_eq!(WebSearchTool.name(), "web_search");
+        assert_eq!(WebFetchTool.name(), "web_fetch");
+        assert!(contains_ascii_case_insensitive("Find an IMAGE", "image"));
+        assert!(!contains_ascii_case_insensitive("documentation", "photo"));
     }
 }

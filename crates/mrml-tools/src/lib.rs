@@ -19,7 +19,7 @@ pub mod html;
 pub mod mcp;
 #[cfg(feature = "runtime")]
 pub mod media;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod web;
 
 #[cfg(feature = "runtime")]
