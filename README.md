@@ -187,6 +187,12 @@ must not be compared with a benchmark that includes those phases. Prompt
 processing and token generation are different workloads and should be reported
 separately, as llama.cpp does with `pp` and `tg` tests.
 
+CUDA device initialization eagerly loads the Rust PTX module and resolves every
+kernel entry point before MRML reports the model ready. This moves PTX JIT and
+CUDA lazy-loader work out of first-token latency without generating a synthetic
+warm-up response or modifying model state. GPU clock selection remains under
+the NVIDIA driver; MRML does not require privileged clock locking.
+
 Enable per-token phase timing with:
 
 ```powershell
