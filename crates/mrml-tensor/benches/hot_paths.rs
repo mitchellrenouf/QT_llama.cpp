@@ -1,10 +1,22 @@
+#![no_std]
+#![no_main]
+
+use core::hint::black_box;
+use core::time::Duration;
+use mrml_runtime::{Instant, Vector as Vec, mrml_println as println};
 use mrml_tensor::ops::{
     mat_vec_mul_q4_0, mat_vec_mul_q4_0_q8_0, q8_0_size, rope_1d, rope_1d_batched,
 };
 use mrml_tensor::quant::{f16_to_f32, f32_to_f16, quantize_f32_to_q8_0, vec_dot_q8_0_q8_0};
 use mrml_tensor::{KvCacheFormat, KvCacheRow};
-use std::hint::black_box;
-use std::time::{Duration, Instant};
+
+macro_rules! vec {
+    ($value:expr; $length:expr) => {{
+        let mut values = Vec::new();
+        values.resize($length, $value);
+        values
+    }};
+}
 
 fn elapsed_best(mut f: impl FnMut(), rounds: usize) -> Duration {
     (0..rounds)
@@ -17,7 +29,7 @@ fn elapsed_best(mut f: impl FnMut(), rounds: usize) -> Duration {
         .unwrap()
 }
 
-fn main() {
+fn application_main() -> Result<(), &'static str> {
     let (rows, cols) = (1024, 2816);
     let mut weights = vec![0u8; rows * (cols / 32) * 18];
     for (b, block) in weights.chunks_exact_mut(18).enumerate() {
@@ -26,7 +38,7 @@ fn main() {
             *q = (b.wrapping_mul(17).wrapping_add(i * 13)) as u8;
         }
     }
-    let input: Vec<f32> = (0..cols).map(|i| (i as f32 * 0.017).sin()).collect();
+    let input: Vec<f32> = (0..cols).map(|i| mrml_math::sin(i as f32 * 0.017)).collect();
     let mut outputs = [vec![0.0f32; rows], vec![0.0; rows], vec![0.0; rows]];
 
     let repeated = elapsed_best(
@@ -52,7 +64,7 @@ fn main() {
     );
 
     let scores: Vec<(f32, i32)> = (0..262_144)
-        .map(|i| (((i as f32 * 0.73).sin()), i))
+        .map(|i| (mrml_math::sin(i as f32 * 0.73), i))
         .collect();
     let full_sort = elapsed_best(
         || {
@@ -77,7 +89,7 @@ fn main() {
     let heads = 16;
     let head_dim = 256;
     let rope_input: Vec<f32> = (0..heads * head_dim)
-        .map(|i| (i as f32 * 0.017).cos())
+        .map(|i| mrml_math::cos(i as f32 * 0.017))
         .collect();
     let per_head_rope = elapsed_best(
         || {
@@ -166,8 +178,8 @@ fn main() {
     let kv_dim = 1024;
     let context = 8192;
     let head_dim = 256;
-    let kv_values: Vec<f32> = (0..kv_dim).map(|i| (i as f32 * 0.031).sin()).collect();
-    let query: Vec<f32> = (0..head_dim).map(|i| (i as f32 * 0.021).cos()).collect();
+    let kv_values: Vec<f32> = (0..kv_dim).map(|i| mrml_math::sin(i as f32 * 0.031)).collect();
+    let query: Vec<f32> = (0..head_dim).map(|i| mrml_math::cos(i as f32 * 0.021)).collect();
     let mut query_q8 = vec![0; head_dim / 32 * 34];
     quantize_f32_to_q8_0(&query, &mut query_q8);
     for format in [KvCacheFormat::F32, KvCacheFormat::Q8, KvCacheFormat::Q4] {
@@ -196,4 +208,21 @@ fn main() {
             (bytes * context) as f64 / 1_048_576.0
         );
     }
+    Ok(())
+}
+
+#[panic_handler]
+fn panic(_information: &core::panic::PanicInfo<'_>) -> ! {
+    mrml_runtime::exit_process(101)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_eh_personality() {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn main(
+    _argument_count: core::ffi::c_int,
+    _argument_values: *const *const core::ffi::c_char,
+) -> core::ffi::c_int {
+    application_main().map_or(1, |()| 0)
 }

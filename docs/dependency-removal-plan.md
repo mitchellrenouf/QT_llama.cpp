@@ -1,5 +1,10 @@
 # Third-party Rust crate removal plan
 
+> Status: complete. The lockfile contains only local `mrml-*` packages, and
+> production, example, benchmark, CUDA, and build-script targets are `no_std`
+> without Rust's global `alloc` crate. Test-only modules may use `std` through
+> the Rust test harness to compare native behavior.
+
 ## Goal and boundary
 
 The end state is a workspace whose manifests contain only local `mrml-*` path

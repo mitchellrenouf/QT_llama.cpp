@@ -1,8 +1,19 @@
-#[cfg(feature = "cuda")]
-fn main() -> mrml_tensor::anyhow::Result<()> {
+#![no_std]
+#![no_main]
+
+use mrml_runtime::{Instant, Vector as Vec, mrml_println as println};
+
+macro_rules! vec {
+    ($value:expr; $length:expr) => {{
+        let mut values = Vec::new();
+        values.resize($length, $value);
+        values
+    }};
+}
+
+fn application_main() -> mrml_tensor::anyhow::Result<()> {
     use mrml_tensor::cuda::{CudaBuffer, CudaDevice};
     use mrml_tensor::quant::f32_to_f16;
-    use std::time::Instant;
 
     const COLS: usize = 32;
     const ROWS: usize = 64;
@@ -108,7 +119,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
         HEADS,
         KV_HEADS,
         HEAD_DIM,
-        1.0 / (HEAD_DIM as f32).sqrt(),
+        1.0 / mrml_math::sqrt(HEAD_DIM as f32),
         None,
         BATCH,
         0,
@@ -160,7 +171,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
         let mut expected_probs = vec![0.0f32; 8];
         d_single_ids.copy_to_host(&mut expected_ids)?;
         d_single_probs.copy_to_host(&mut expected_probs)?;
-        assert_eq!(&router_ids[token * 8..(token + 1) * 8], expected_ids);
+        assert_eq!(&router_ids[token * 8..(token + 1) * 8], &expected_ids[..]);
         assert!(
             router_probs[token * 8..(token + 1) * 8]
                 .iter()
@@ -423,7 +434,4 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(feature = "cuda"))]
-fn main() {
-    eprintln!("cuda_prefill_primitives requires --features cuda");
-}
+mrml_runtime::mrml_entrypoint!(application_main);

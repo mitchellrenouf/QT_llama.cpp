@@ -1,6 +1,18 @@
-fn main() -> mrml_tensor::anyhow::Result<()> {
+#![no_std]
+#![no_main]
+
+use mrml_runtime::{Instant, Vector as Vec, mrml_println as println};
+
+macro_rules! vec {
+    ($value:expr; $length:expr) => {{
+        let mut values = Vec::new();
+        values.resize($length, $value);
+        values
+    }};
+}
+
+fn application_main() -> mrml_tensor::anyhow::Result<()> {
     use mrml_tensor::cuda::{CudaBuffer, CudaDevice};
-    use std::time::Instant;
 
     const ELEMENTS: usize = 1 << 22;
     const ITERATIONS: usize = 1_000;
@@ -39,7 +51,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
 
     const DIM: usize = 5_376;
     const BATCH: usize = 32;
-    let values: Vec<f32> = (0..DIM * BATCH).map(|i| (i as f32 * 0.001).sin()).collect();
+    let values: Vec<f32> = (0..DIM * BATCH).map(|i| mrml_math::sin(i as f32 * 0.001)).collect();
     let weights = vec![1.0f32; DIM];
     let d_values = CudaBuffer::from_host(&values)?;
     let d_weights = CudaBuffer::from_host(&weights)?;
@@ -280,7 +292,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
     );
     let qkv_dim = (HEADS + 2 * KV_HEADS) * HEAD_DIM;
     let qkv_values: Vec<f32> = (0..BATCH * qkv_dim)
-        .map(|i| (i as f32 * 0.001).sin())
+        .map(|i| mrml_math::sin(i as f32 * 0.001))
         .collect();
     let qkv_norm = vec![1.0f32; HEAD_DIM];
     let mut d_qkv = CudaBuffer::from_host(&qkv_values)?;
@@ -348,7 +360,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
     let d_moe_ids = CudaBuffer::from_host(&moe_ids)?;
     let d_moe_weights = CudaBuffer::from_host(&moe_weights)?;
     let moe_input: Vec<f32> = (0..MOE_BATCH * DIM)
-        .map(|i| (i as f32 * 0.001).sin())
+        .map(|i| mrml_math::sin(i as f32 * 0.001))
         .collect();
     let d_moe_input = CudaBuffer::from_host(&moe_input)?;
     let mut d_moe_act = CudaBuffer::alloc(MOE_BATCH * ACTIVE * EXP_DIM)?;
@@ -395,10 +407,10 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
 
     const ATTN_TOKENS: usize = 1024;
     let attn_q: Vec<f32> = (0..HEADS * HEAD_DIM)
-        .map(|i| (i as f32 * 0.003).sin())
+        .map(|i| mrml_math::sin(i as f32 * 0.003))
         .collect();
     let attn_cache: Vec<u16> = (0..ATTN_TOKENS * KV_HEADS * HEAD_DIM)
-        .map(|i| mrml_tensor::quant::f32_to_f16((i as f32 * 0.0001).sin()))
+        .map(|i| mrml_tensor::quant::f32_to_f16(mrml_math::sin(i as f32 * 0.0001)))
         .collect();
     let d_attn_q = CudaBuffer::from_host(&attn_q)?;
     let d_attn_k = CudaBuffer::from_host(&attn_cache)?;
@@ -415,7 +427,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
                 HEADS,
                 KV_HEADS,
                 HEAD_DIM,
-                1.0 / (HEAD_DIM as f32).sqrt(),
+                1.0 / mrml_math::sqrt(HEAD_DIM as f32),
                 Some(keys),
                 ATTN_TOKENS,
                 0,
@@ -435,7 +447,7 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
                 HEADS,
                 KV_HEADS,
                 HEAD_DIM,
-                1.0 / (HEAD_DIM as f32).sqrt(),
+                1.0 / mrml_math::sqrt(HEAD_DIM as f32),
                 Some(keys),
                 ATTN_TOKENS,
                 0,
@@ -450,3 +462,5 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
     }
     Ok(())
 }
+
+mrml_runtime::mrml_entrypoint!(application_main);

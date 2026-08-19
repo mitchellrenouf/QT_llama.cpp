@@ -1,8 +1,13 @@
+#![no_std]
+#![no_main]
+
+use mrml_runtime::{Vector as Vec, command_arguments, mrml_println as println};
 use mrml_tensor::gguf::GgufFile;
 
-fn main() -> mrml_tensor::anyhow::Result<()> {
-    let path = std::env::args()
-        .nth(1)
+fn application_main() -> mrml_tensor::anyhow::Result<()> {
+    let arguments = command_arguments();
+    let path = arguments
+        .get(1)
         .expect("usage: gguf_inspect <model.gguf>");
     let gguf = GgufFile::open(&path)?;
     let mut metadata: Vec<_> = gguf.metadata.iter().collect();
@@ -19,3 +24,5 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
     }
     Ok(())
 }
+
+mrml_runtime::mrml_entrypoint!(application_main);

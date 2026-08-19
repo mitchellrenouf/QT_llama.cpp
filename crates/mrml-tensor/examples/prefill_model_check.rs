@@ -1,10 +1,18 @@
+#![no_std]
+#![no_main]
+
+use mrml_runtime::{
+    Text as String, Vector as Vec, command_arguments, mrml_format as format,
+    mrml_println as println,
+};
 use mrml_tensor::MrmlModel;
 
-fn main() -> mrml_tensor::anyhow::Result<()> {
-    let path = std::env::args()
-        .nth(1)
+fn application_main() -> mrml_tensor::anyhow::Result<()> {
+    let arguments = command_arguments();
+    let path = arguments
+        .get(1)
         .expect("usage: prefill_model_check <model.gguf> [prompt]");
-    let user_prompt = std::env::args().nth(2).unwrap_or_else(|| "hi".to_string());
+    let user_prompt = arguments.get(2).map_or("hi", |value| value.as_str());
     let model = MrmlModel::load_from_gguf(&path, 8192)?;
     let prompt = format!("<bos><|turn>user\n{user_prompt}<turn|>\n<|turn>model\n");
     let tokens = model.tokenize(&prompt);
@@ -25,3 +33,5 @@ fn main() -> mrml_tensor::anyhow::Result<()> {
     );
     Ok(())
 }
+
+mrml_runtime::mrml_entrypoint!(application_main);
