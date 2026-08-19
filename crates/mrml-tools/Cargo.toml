@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["std"]
-alloc = [
+runtime = [
     "dep:anyhow",
     "dep:mrml-terminal-style",
     "dep:mrml-runtime",
@@ -15,7 +15,7 @@ alloc = [
     "dep:urlencoding",
 ]
 std = [
-    "alloc",
+    "runtime",
     "dep:mrml-linux",
     "dep:mrml-windows",
     "mrml-terminal-style/std",
