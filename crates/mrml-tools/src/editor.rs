@@ -47,7 +47,9 @@ impl Tool for ViewFileTool {
             return Err(anyhow!("File not found: {}", path_str));
         }
 
-        let content = fs::read_to_string(&full_path)?;
+        let content = mrml_runtime::read_file_text(
+            full_path.to_str().ok_or_else(|| anyhow!("Path is not valid UTF-8"))?,
+        )?;
         let lines: Vector<&str> = content.lines().collect();
 
         let start_line = args["start_line"].as_u64().map(|v| v as usize).unwrap_or(1);
@@ -108,13 +110,19 @@ impl Tool for WriteFileTool {
             .ok_or_else(|| anyhow!("Missing content"))?;
         let full_path = workspace_root.join(path_str);
 
-        let old_content = fs::read_to_string(&full_path).unwrap_or_default();
+        let old_content = full_path
+            .to_str()
+            .and_then(|path| mrml_runtime::read_file_text(path).ok())
+            .unwrap_or_default();
 
         if let Some(parent) = full_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        fs::write(&full_path, content)?;
+        mrml_runtime::write_file(
+            full_path.to_str().ok_or_else(|| anyhow!("Path is not valid UTF-8"))?,
+            content.as_bytes(),
+        )?;
 
         let diff_str = format_colorized_diff(path_str, &old_content, content);
         print!("{}", diff_str);
@@ -174,7 +182,9 @@ impl Tool for ReplaceFileContentTool {
             return Err(anyhow!("File not found: {}", path_str));
         }
 
-        let content = fs::read_to_string(&full_path)?;
+        let content = mrml_runtime::read_file_text(
+            full_path.to_str().ok_or_else(|| anyhow!("Path is not valid UTF-8"))?,
+        )?;
         if !content.contains(target) {
             return Err(anyhow!(
                 "Target content not found in file '{}'. Ensure exact match including whitespace.",
@@ -183,7 +193,10 @@ impl Tool for ReplaceFileContentTool {
         }
 
         let updated = content.replacen(target, replacement, 1);
-        fs::write(&full_path, &updated)?;
+        mrml_runtime::write_file(
+            full_path.to_str().ok_or_else(|| anyhow!("Path is not valid UTF-8"))?,
+            updated.as_bytes(),
+        )?;
 
         let diff_str = format_colorized_diff(path_str, &content, &updated);
         print!("{}", diff_str);
@@ -300,7 +313,9 @@ impl Tool for GrepSearchTool {
             {
                 continue;
             }
-            if let Ok(content) = fs::read_to_string(path) {
+            if let Some(path_text) = path.to_str()
+                && let Ok(content) = mrml_runtime::read_file_text(path_text)
+            {
                 for (line_no, line) in content.lines().enumerate() {
                     if pattern.is_match(line) {
                         matches.push(format!("{}:{}: {}", rel_str, line_no + 1, line.trim()));

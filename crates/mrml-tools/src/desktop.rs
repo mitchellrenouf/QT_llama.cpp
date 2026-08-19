@@ -131,7 +131,11 @@ impl Tool for TakeScreenshotTool {
             return Err(anyhow!("Screenshot file was not created at {}", path_str));
         }
 
-        let img_bytes = fs::read(&file_path)?;
+        let img_bytes = mrml_runtime::read_file(
+            file_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Screenshot path is not valid UTF-8"))?,
+        )?;
         let base64_str = crate::encoding::base64_encode(&img_bytes);
         let data_uri = format!("data:image/jpeg;base64,{}", base64_str);
 

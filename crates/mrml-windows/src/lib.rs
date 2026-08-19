@@ -84,6 +84,13 @@ unsafe extern "system" {
         read: *mut u32,
         overlapped: *mut c_void,
     ) -> i32;
+    fn WriteFile(
+        file: *mut c_void,
+        buffer: *const c_void,
+        bytes: u32,
+        written: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
     fn SetFilePointerEx(file: *mut c_void, distance: i64, position: *mut i64, method: u32) -> i32;
     fn GetFileSizeEx(file: *mut c_void, size: *mut i64) -> i32;
     fn CreateThread(
@@ -213,6 +220,27 @@ impl NativeFile {
         (handle as isize != -1).then_some(Self(handle))
     }
 
+    pub fn create_write(path: &[u16]) -> Option<Self> {
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        const FILE_SHARE_DELETE: u32 = 4;
+        const CREATE_ALWAYS: u32 = 2;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                core::ptr::null(),
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                core::ptr::null_mut(),
+            )
+        };
+        (handle as isize != -1).then_some(Self(handle))
+    }
+
     pub fn read(&self, buffer: &mut [u8]) -> Option<usize> {
         let amount = buffer.len().min(u32::MAX as usize) as u32;
         let mut read = 0;
@@ -226,6 +254,21 @@ impl NativeFile {
             )
         } != 0)
             .then_some(read as usize)
+    }
+
+    pub fn write(&self, buffer: &[u8]) -> Option<usize> {
+        let amount = buffer.len().min(u32::MAX as usize) as u32;
+        let mut written = 0;
+        (unsafe {
+            WriteFile(
+                self.0,
+                buffer.as_ptr().cast(),
+                amount,
+                &mut written,
+                core::ptr::null_mut(),
+            )
+        } != 0)
+            .then_some(written as usize)
     }
 
     pub fn seek_absolute(&self, position: u64) -> bool {

@@ -394,7 +394,12 @@ impl MrmlAgent {
         let serialized = serde_json::stringify(&serde_json::Value::Array(
             self.history.iter().map(ChatMessage::to_json).collect(),
         ));
-        fs::write(&file_path, serialized)?;
+        mrml_runtime::write_file(
+            file_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("session path is not valid UTF-8"))?,
+            serialized.as_bytes(),
+        )?;
         println!(
             "Session saved to: {}",
             file_path.display().to_string().cyan()
@@ -415,7 +420,11 @@ impl MrmlAgent {
                 file_path.display()
             ));
         }
-        let content = fs::read_to_string(&file_path)?;
+        let content = mrml_runtime::read_file_text(
+            file_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("session path is not valid UTF-8"))?,
+        )?;
         let value: serde_json::Value = serde_json::from_str(&content)?;
         let history = value
             .as_array()

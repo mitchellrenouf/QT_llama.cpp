@@ -437,7 +437,10 @@ impl Tool for BrowserScreenshotTool {
             "browser_screenshot_{}.jpg",
             crate::platform::local_timestamp_string()
         ));
-        fs::write(&p, &bytes)?;
+        mrml_runtime::write_file(
+            p.to_str().ok_or_else(|| anyhow!("Screenshot path is not valid UTF-8"))?,
+            &bytes,
+        )?;
         Ok(format!(
             "Screenshot captured at '{}' ({} bytes).\nDATA_URI:data:image/jpeg;base64,{}",
             p.display(),

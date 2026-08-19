@@ -147,7 +147,11 @@ impl Tool for RecordAudioTool {
             return Err(anyhow!("Audio file was not created at {}", path_str));
         }
 
-        let audio_bytes = fs::read(&file_path)?;
+        let audio_bytes = mrml_runtime::read_file(
+            file_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Audio path is not valid UTF-8"))?,
+        )?;
         let base64_str = crate::encoding::base64_encode(&audio_bytes);
 
         Ok(format!(

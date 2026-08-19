@@ -60,6 +60,12 @@ impl From<mrml_json::Error> for Error {
     }
 }
 
+impl From<mrml_runtime::FileError> for Error {
+    fn from(error: mrml_runtime::FileError) -> Self {
+        Self::with_source(error)
+    }
+}
+
 #[cfg(feature = "std")]
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {

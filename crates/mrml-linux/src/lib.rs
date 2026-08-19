@@ -68,6 +68,7 @@ unsafe extern "C" {
     fn getenv(name: *const i8) -> *mut i8;
     fn open(path: *const i8, flags: c_int, ...) -> c_int;
     fn read(file: c_int, buffer: *mut c_void, count: usize) -> isize;
+    fn write(file: c_int, buffer: *const c_void, count: usize) -> isize;
     fn lseek(file: c_int, offset: isize, whence: c_int) -> isize;
     fn close(file: c_int) -> c_int;
     fn pthread_create(
@@ -147,9 +148,22 @@ impl NativeFile {
         (file >= 0).then_some(Self(file))
     }
 
+    pub fn create_write(path: &CStr) -> Option<Self> {
+        const O_WRONLY: c_int = 1;
+        const O_CREAT: c_int = 64;
+        const O_TRUNC: c_int = 512;
+        let file = unsafe { open(path.as_ptr(), O_WRONLY | O_CREAT | O_TRUNC, 0o666) };
+        (file >= 0).then_some(Self(file))
+    }
+
     pub fn read(&self, buffer: &mut [u8]) -> Option<usize> {
         let read = unsafe { read(self.0, buffer.as_mut_ptr().cast(), buffer.len()) };
         (read >= 0).then_some(read as usize)
+    }
+
+    pub fn write(&self, buffer: &[u8]) -> Option<usize> {
+        let result = unsafe { write(self.0, buffer.as_ptr().cast(), buffer.len()) };
+        (result >= 0).then_some(result as usize)
     }
 
     pub fn seek_absolute(&self, position: u64) -> bool {

@@ -20,7 +20,7 @@ mod vector;
 pub use channel::{Receiver, RecvError, SendError, Sender, blocking_channel, sync_channel};
 pub use args::command_arguments;
 pub use env::environment_variable;
-pub use file::{File, FileError, read_file_text};
+pub use file::{File, FileError, read_file, read_file_text, write_file};
 pub use map::OrderedMap;
 pub use owned::Owned;
 pub use stdin::{StdinError, read_stdin_line, read_stdin_to_end};

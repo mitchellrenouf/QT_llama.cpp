@@ -10,9 +10,10 @@ pub enum FileError {
     SeekFailed,
     MetadataFailed,
     InvalidUtf8,
+    WriteFailed,
 }
 
-pub fn read_file_text(path: &str) -> Result<Text, FileError> {
+pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
     let mut file = File::open(path)?;
     let mut bytes = Vector::new();
     let mut chunk = [0u8; 8192];
@@ -25,7 +26,16 @@ pub fn read_file_text(path: &str) -> Result<Text, FileError> {
             .try_extend_from_slice(&chunk[..read])
             .map_err(|_| FileError::ReadFailed)?;
     }
-    Text::try_from_utf8(bytes).map_err(|_| FileError::InvalidUtf8)
+    Ok(bytes)
+}
+
+pub fn read_file_text(path: &str) -> Result<Text, FileError> {
+    Text::try_from_utf8(read_file(path)?).map_err(|_| FileError::InvalidUtf8)
+}
+
+pub fn write_file(path: &str, contents: &[u8]) -> Result<(), FileError> {
+    let mut file = File::create(path)?;
+    file.write_all(contents)
 }
 
 impl fmt::Display for FileError {
@@ -38,6 +48,7 @@ impl fmt::Display for FileError {
             Self::SeekFailed => "failed to seek file",
             Self::MetadataFailed => "failed to read file metadata",
             Self::InvalidUtf8 => "file is not valid UTF-8 text",
+            Self::WriteFailed => "failed to write file",
         })
     }
 }
@@ -83,6 +94,36 @@ impl File {
         }
     }
 
+    pub fn create(path: &str) -> Result<Self, FileError> {
+        #[cfg(windows)]
+        {
+            let mut encoded = Vector::with_capacity(path.len() + 1)
+                .map_err(|_| FileError::OpenFailed)?;
+            encoded.extend(path.encode_utf16());
+            encoded.push(0);
+            let inner = mrml_windows::NativeFile::create_write(&encoded)
+                .ok_or(FileError::OpenFailed)?;
+            Ok(Self { inner, position: 0 })
+        }
+        #[cfg(unix)]
+        {
+            if path.as_bytes().contains(&0) {
+                return Err(FileError::InvalidPath);
+            }
+            let mut encoded = Vector::with_capacity(path.len() + 1)
+                .map_err(|_| FileError::OpenFailed)?;
+            encoded
+                .try_extend_from_slice(path.as_bytes())
+                .map_err(|_| FileError::OpenFailed)?;
+            encoded.push(0);
+            let path = core::ffi::CStr::from_bytes_with_nul(&encoded)
+                .map_err(|_| FileError::InvalidPath)?;
+            let inner = mrml_linux::NativeFile::create_write(path)
+                .ok_or(FileError::OpenFailed)?;
+            Ok(Self { inner, position: 0 })
+        }
+    }
+
     pub fn read_exact(&mut self, mut buffer: &mut [u8]) -> Result<(), FileError> {
         while !buffer.is_empty() {
             let read = self.inner.read(buffer).ok_or(FileError::ReadFailed)?;
@@ -99,6 +140,18 @@ impl File {
         let read = self.inner.read(buffer).ok_or(FileError::ReadFailed)?;
         self.position = self.position.saturating_add(read as u64);
         Ok(read)
+    }
+
+    pub fn write_all(&mut self, mut buffer: &[u8]) -> Result<(), FileError> {
+        while !buffer.is_empty() {
+            let written = self.inner.write(buffer).ok_or(FileError::WriteFailed)?;
+            if written == 0 {
+                return Err(FileError::WriteFailed);
+            }
+            self.position = self.position.saturating_add(written as u64);
+            buffer = &buffer[written..];
+        }
+        Ok(())
     }
 
     pub fn seek(&mut self, position: u64) -> Result<(), FileError> {
@@ -131,14 +184,11 @@ impl File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn native_file_reads_seeks_and_reports_length() {
         let path = std::env::temp_dir().join(std::format!("mrml-file-{}.bin", std::process::id()));
-        let mut created = std::fs::File::create(&path).unwrap();
-        created.write_all(b"native file").unwrap();
-        drop(created);
+        write_file(path.to_str().unwrap(), b"native file").unwrap();
 
         let mut file = File::open(path.to_str().unwrap()).unwrap();
         assert_eq!(file.len().unwrap(), 11);
@@ -149,12 +199,11 @@ mod tests {
         drop(file);
         std::fs::remove_file(path).unwrap();
     }
-
-
     #[test]
-    fn reads_utf8_text_through_native_file() {
+    fn writes_truncates_and_reads_utf8_text_through_native_file() {
         let path = std::env::temp_dir().join(std::format!("mrml-text-{}.txt", std::process::id()));
-        std::fs::write(&path, "observatory λ").unwrap();
+        write_file(path.to_str().unwrap(), b"a longer discarded value").unwrap();
+        write_file(path.to_str().unwrap(), "observatory λ".as_bytes()).unwrap();
         assert_eq!(read_file_text(path.to_str().unwrap()).unwrap(), "observatory λ");
         std::fs::remove_file(path).unwrap();
     }
