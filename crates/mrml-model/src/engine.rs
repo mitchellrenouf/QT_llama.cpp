@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
 use mrml_tensor::MrmlEngine;
 use std::path::Path;
+use std::sync::mpsc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct ModelEngine {
@@ -48,7 +48,7 @@ impl ModelEngine {
         max_tokens: usize,
         temperature: f32,
     ) -> (mpsc::Receiver<Result<GenerationChunk>>, Arc<AtomicBool>) {
-        let (tx, rx) = mpsc::channel(4096);
+        let (tx, rx) = mpsc::sync_channel(4096);
         let cancel = self
             .inner
             .generate_stream(prompt, max_tokens, temperature, move |piece| {
@@ -56,7 +56,7 @@ impl ModelEngine {
                     text,
                     token_count: 1,
                 });
-                tx.blocking_send(chunk).is_ok()
+                tx.send(chunk).is_ok()
             });
         (rx, cancel)
     }

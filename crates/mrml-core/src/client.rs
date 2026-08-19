@@ -502,7 +502,7 @@ impl MrmlClient {
         let max_tokens = request.max_tokens.unwrap_or(8192) as usize;
         let temp = request.temperature.unwrap_or(0.7);
 
-        let (mut rx, _cancel) = engine.generate_stream(&prompt, max_tokens, temp);
+        let (rx, _cancel) = engine.generate_stream(&prompt, max_tokens, temp);
 
         let mut first_token_time: Option<std::time::Instant> = None;
         let mut token_count = 0usize;
@@ -513,7 +513,7 @@ impl MrmlClient {
         let mut in_thought = prompt.ends_with("<|channel>thought\n") || prompt.ends_with("<|channel>thought");
         let mut tool_calls = Vec::new();
 
-        while let Some(piece_res) = rx.recv().await {
+        while let Ok(piece_res) = rx.recv() {
             let chunk = match piece_res {
                 Ok(p) => p,
                 Err(e) => return Err(e.into()),

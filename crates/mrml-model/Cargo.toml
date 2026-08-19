@@ -7,7 +7,6 @@ license.workspace = true
 description = "MRML model and chat adapter for native in-process GGUF inference"
 
 [dependencies]
-tokio = { version = "1.43", features = ["sync", "rt"] }
 serde_json = { package = "mrml-json", path = "../mrml-json" }
 mrml-tensor = { path = "../mrml-tensor", default-features = false }
 
