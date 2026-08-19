@@ -12,3 +12,9 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 urlencoding = { package = "mrml-urlencoding", path = "../mrml-urlencoding" }
+
+[target.'cfg(windows)'.dependencies]
+mrml-windows = { path = "../mrml-windows" }
+
+[target.'cfg(unix)'.dependencies]
+mrml-linux = { path = "../mrml-linux" }

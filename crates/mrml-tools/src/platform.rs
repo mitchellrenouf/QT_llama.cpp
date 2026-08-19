@@ -2,16 +2,10 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy)]
-struct LocalTime {
-    year: u16,
-    month: u16,
-    day: u16,
-    weekday: u16,
-    hour: u16,
-    minute: u16,
-    second: u16,
-}
+#[cfg(windows)]
+use mrml_windows::LocalTime;
+#[cfg(unix)]
+use mrml_linux::LocalTime;
 
 pub fn unix_timestamp_millis() -> u128 {
     SystemTime::now()
@@ -68,82 +62,18 @@ pub fn local_timestamp_string() -> String {
 
 #[cfg(windows)]
 fn local_time() -> LocalTime {
-    #[repr(C)]
-    #[derive(Default)]
-    struct SystemTime {
-        year: u16,
-        month: u16,
-        weekday: u16,
-        day: u16,
-        hour: u16,
-        minute: u16,
-        second: u16,
-        milliseconds: u16,
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn GetLocalTime(time: *mut SystemTime);
-    }
-    let mut value = SystemTime::default();
-    unsafe { GetLocalTime(&mut value) };
-    LocalTime {
-        year: value.year,
-        month: value.month,
-        day: value.day,
-        weekday: value.weekday,
-        hour: value.hour,
-        minute: value.minute,
-        second: value.second,
-    }
+    mrml_windows::local_time()
 }
 
 #[cfg(unix)]
 fn local_time() -> LocalTime {
-    use std::ffi::{c_int, c_long};
-    #[repr(C)]
-    struct Tm {
-        second: c_int,
-        minute: c_int,
-        hour: c_int,
-        day: c_int,
-        month: c_int,
-        year: c_int,
-        weekday: c_int,
-        year_day: c_int,
-        daylight: c_int,
-        utc_offset: c_long,
-        zone: *const i8,
-    }
-    unsafe extern "C" {
-        fn localtime_r(clock: *const c_long, result: *mut Tm) -> *mut Tm;
-    }
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as c_long;
-    let mut value = std::mem::MaybeUninit::<Tm>::uninit();
-    let result = unsafe { localtime_r(&seconds, value.as_mut_ptr()) };
-    if result.is_null() {
-        return LocalTime {
-            year: 1970,
-            month: 1,
-            day: 1,
-            weekday: 4,
-            hour: 0,
-            minute: 0,
-            second: 0,
-        };
-    }
-    let value = unsafe { value.assume_init() };
-    LocalTime {
-        year: (value.year + 1900) as u16,
-        month: (value.month + 1) as u16,
-        day: value.day as u16,
-        weekday: value.weekday as u16,
-        hour: value.hour as u16,
-        minute: value.minute as u16,
-        second: value.second as u16,
-    }
+        .as_secs() as i64;
+    mrml_linux::local_time(seconds).unwrap_or(LocalTime {
+        year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0,
+    })
 }
 
 pub fn home_dir() -> Option<PathBuf> {

@@ -11,6 +11,8 @@ members = [
     "crates/mrml-terminal-style",
     "crates/mrml-tools",
     "crates/mrml-urlencoding",
+    "crates/mrml-windows",
+    "crates/mrml-linux",
 ]
 
 [workspace.package]

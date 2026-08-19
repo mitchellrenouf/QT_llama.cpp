@@ -1,0 +1,9 @@
+[package]
+name = "mrml-windows"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Allocation-free Windows primitives for MRML"
+
+[dependencies]

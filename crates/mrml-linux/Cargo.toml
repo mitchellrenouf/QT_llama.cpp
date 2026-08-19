@@ -1,0 +1,9 @@
+[package]
+name = "mrml-linux"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Allocation-free Linux and Unix primitives for MRML"
+
+[dependencies]

@@ -202,6 +202,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-linux"
+version = "0.4.0"
+
+[[package]]
 name = "mrml-machine"
 version = "0.4.0"
 dependencies = [
@@ -251,8 +255,10 @@ name = "mrml-tools"
 version = "0.4.0"
 dependencies = [
  "mrml-anyhow",
+ "mrml-linux",
  "mrml-terminal-style",
  "mrml-urlencoding",
+ "mrml-windows",
  "serde",
  "serde_json",
  "tokio",
@@ -260,6 +266,10 @@ dependencies = [
 
 [[package]]
 name = "mrml-urlencoding"
+version = "0.4.0"
+
+[[package]]
+name = "mrml-windows"
 version = "0.4.0"
 
 [[package]]
