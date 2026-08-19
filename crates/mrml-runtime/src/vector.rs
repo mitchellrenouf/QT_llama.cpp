@@ -16,6 +16,13 @@ pub struct Vector<T> {
     capacity: usize,
 }
 
+pub struct IntoIter<T> {
+    pointer: NonNull<T>,
+    capacity: usize,
+    front: usize,
+    back: usize,
+}
+
 unsafe impl<T: Send> Send for Vector<T> {}
 unsafe impl<T: Sync> Sync for Vector<T> {}
 
@@ -321,6 +328,66 @@ impl<'a, T> IntoIterator for &'a mut Vector<T> {
     }
 }
 
+impl<T> IntoIterator for Vector<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let (pointer, length, capacity) = self.into_raw_parts();
+        IntoIter {
+            pointer: NonNull::new(pointer).unwrap_or_else(NonNull::dangling),
+            capacity,
+            front: 0,
+            back: length,
+        }
+    }
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        if self.front == self.back {
+            return None;
+        }
+        let index = self.front;
+        self.front += 1;
+        Some(unsafe { self.pointer.as_ptr().add(index).read() })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.back - self.front;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T> DoubleEndedIterator for IntoIter<T> {
+    fn next_back(&mut self) -> Option<T> {
+        if self.front == self.back {
+            return None;
+        }
+        self.back -= 1;
+        Some(unsafe { self.pointer.as_ptr().add(self.back).read() })
+    }
+}
+
+impl<T> ExactSizeIterator for IntoIter<T> {}
+
+impl<T> Drop for IntoIter<T> {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+                self.pointer.as_ptr().add(self.front),
+                self.back - self.front,
+            ));
+        }
+        if self.capacity != 0 && core::mem::size_of::<T>() != 0 {
+            let layout = Layout::array::<T>(self.capacity).expect("valid vector layout");
+            unsafe { allocator().dealloc(self.pointer.as_ptr().cast(), layout) };
+        }
+    }
+}
+
 impl<T> Drop for Vector<T> {
     fn drop(&mut self) {
         self.clear();
@@ -373,5 +440,14 @@ mod tests {
         }
         assert_eq!(values.len(), 100);
         assert_eq!(values.capacity(), usize::MAX);
+    }
+
+    #[test]
+    fn owning_iterator_moves_values_and_drops_the_remainder() {
+        let values: Vector<String> = ["one".into(), "two".into(), "three".into()].into();
+        let mut iterator = values.into_iter();
+        assert_eq!(iterator.next().as_deref(), Some("one"));
+        assert_eq!(iterator.next_back().as_deref(), Some("three"));
+        assert_eq!(iterator.len(), 1);
     }
 }

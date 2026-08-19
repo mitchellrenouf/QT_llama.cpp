@@ -65,6 +65,21 @@ impl Text {
         // Construction only accepts UTF-8 strings and encoded `char` values.
         unsafe { core::str::from_utf8_unchecked(&self.bytes) }
     }
+
+    pub fn replace(&self, needle: &str, replacement: &str) -> Self {
+        if needle.is_empty() {
+            return self.clone();
+        }
+        let mut output = Self::with_capacity(self.len()).expect("MRML allocation failed");
+        let mut remainder = self.as_str();
+        while let Some(index) = remainder.find(needle) {
+            output.push_str(&remainder[..index]);
+            output.push_str(replacement);
+            remainder = &remainder[index + needle.len()..];
+        }
+        output.push_str(remainder);
+        output
+    }
 }
 
 impl Deref for Text {
@@ -130,5 +145,10 @@ mod tests {
         text.try_push('✓').unwrap();
         assert_eq!(text, "MRML runtime 4✓");
         assert!(core::str::from_utf8(&text.bytes).is_ok());
+    }
+
+    #[test]
+    fn replaces_substrings_without_rust_alloc() {
+        assert_eq!(Text::from("a<>b<>c").replace("<>", "-"), "a-b-c");
     }
 }
