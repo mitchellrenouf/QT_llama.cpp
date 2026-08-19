@@ -77,6 +77,13 @@ unsafe extern "C" {
         argument: *mut c_void,
     ) -> c_int;
     fn pthread_detach(thread: usize) -> c_int;
+    fn sysconf(name: c_int) -> c_long;
+}
+
+#[cfg(unix)]
+pub fn processor_count() -> usize {
+    const SC_NPROCESSORS_ONLN: c_int = 84;
+    unsafe { sysconf(SC_NPROCESSORS_ONLN) }.max(1) as usize
 }
 
 #[cfg(unix)]

@@ -1,6 +1,13 @@
 use crate::Vector;
 use core::ffi::c_void;
 
+pub fn available_parallelism() -> usize {
+    #[cfg(windows)]
+    return mrml_windows::processor_count();
+    #[cfg(unix)]
+    return mrml_linux::processor_count();
+}
+
 struct ThreadStart<F> {
     operation: F,
     _non_zero_sized: u8,

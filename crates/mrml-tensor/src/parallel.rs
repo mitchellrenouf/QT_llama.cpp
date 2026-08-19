@@ -23,14 +23,13 @@ struct Pool {
 fn pool() -> &'static Pool {
     static POOL: OnceCell<Pool> = OnceCell::new();
     POOL.get_or_init(|| {
-        let workers = std::thread::available_parallelism().map_or(1, usize::from);
+        let workers = mrml_runtime::available_parallelism();
         let (sender, receiver) = mpsc::channel::<Work>();
         let receiver = Shared::new(Mutex::new(receiver));
         for index in 0..workers {
             let receiver = receiver.clone();
-            std::thread::Builder::new()
-                .name(format!("mrml-worker-{index}"))
-                .spawn(move || {
+            assert!(
+                mrml_runtime::spawn_detached(move || {
                     loop {
                         let work = match receiver.lock().unwrap().recv() {
                             Ok(work) => work,
@@ -46,7 +45,9 @@ fn pool() -> &'static Pool {
                         let _ = work.done.send(());
                     }
                 })
-                .expect("failed to start MRML worker");
+                .is_ok(),
+                "failed to start MRML worker {index}"
+            );
         }
         Pool { sender, workers }
     })

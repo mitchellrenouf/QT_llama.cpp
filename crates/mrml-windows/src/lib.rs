@@ -91,7 +91,13 @@ unsafe extern "system" {
         creation_flags: u32,
         thread_id: *mut u32,
     ) -> *mut c_void;
+    fn GetActiveProcessorCount(group_number: u16) -> u32;
     fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[cfg(windows)]
+pub fn processor_count() -> usize {
+    unsafe { GetActiveProcessorCount(u16::MAX) }.max(1) as usize
 }
 
 #[cfg(windows)]

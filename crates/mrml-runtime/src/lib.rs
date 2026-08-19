@@ -15,6 +15,6 @@ pub use file::{File, FileError};
 pub use map::OrderedMap;
 pub use sync::{OnceCell, Shared, SpinMutex, SpinMutexGuard};
 pub use text::Text;
-pub use thread::spawn_detached;
+pub use thread::{available_parallelism, spawn_detached};
 pub use time::Instant;
 pub use vector::{TryReserveError, Vector};
