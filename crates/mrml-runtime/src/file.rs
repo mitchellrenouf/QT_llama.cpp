@@ -19,6 +19,7 @@ pub enum FileError {
 pub struct DirectoryEntry {
     pub name: Text,
     pub is_directory: bool,
+    pub is_symlink: bool,
 }
 
 pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
@@ -161,13 +162,13 @@ pub fn read_directory(path: &str) -> Result<Vector<DirectoryEntry>, FileError> {
         let mut directory = mrml_windows::NativeDirectory::open(&pattern)
             .ok_or(FileError::DirectoryFailed)?;
         let mut wide_name = [0u16; 260];
-        while let Some((length, is_directory)) = directory.next(&mut wide_name) {
+        while let Some((length, is_directory, is_symlink)) = directory.next(&mut wide_name) {
             let mut name = Text::new();
             for character in core::char::decode_utf16(wide_name[..length].iter().copied()) {
                 name.push(character.map_err(|_| FileError::InvalidUtf8)?);
             }
             if name != "." && name != ".." {
-                entries.push(DirectoryEntry { name, is_directory });
+                entries.push(DirectoryEntry { name, is_directory, is_symlink });
             }
         }
     }
@@ -179,10 +180,10 @@ pub fn read_directory(path: &str) -> Result<Vector<DirectoryEntry>, FileError> {
         let mut directory = mrml_linux::NativeDirectory::open(path)
             .ok_or(FileError::DirectoryFailed)?;
         let mut name_buffer = [0u8; 256];
-        while let Some((name, is_directory)) = directory.next(&mut name_buffer) {
+        while let Some((name, is_directory, is_symlink)) = directory.next(&mut name_buffer) {
             let name = core::str::from_utf8(name).map_err(|_| FileError::InvalidUtf8)?;
             if name != "." && name != ".." {
-                entries.push(DirectoryEntry { name: name.into(), is_directory });
+                entries.push(DirectoryEntry { name: name.into(), is_directory, is_symlink });
             }
         }
     }

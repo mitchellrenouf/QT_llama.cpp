@@ -1,6 +1,5 @@
 //! Dependency-free workspace traversal for search and browser discovery.
 use mrml_runtime::Vector;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct Paths {
@@ -18,15 +17,19 @@ impl Iterator for Paths {
 
     fn next(&mut self) -> Option<Self::Item> {
         let path = self.pending.pop()?;
-        if path.is_dir() {
-            if let Ok(entries) = fs::read_dir(&path) {
-                self.pending
-                    .extend(entries.filter_map(Result::ok).filter_map(|entry| {
-                        entry
-                            .file_type()
-                            .ok()
-                            .and_then(|kind| (!kind.is_symlink()).then(|| entry.path()))
-                    }));
+        if path
+            .to_str()
+            .is_some_and(mrml_runtime::path_is_directory)
+        {
+            if let Some(path_text) = path.to_str() {
+                if let Ok(entries) = mrml_runtime::read_directory(path_text) {
+                    self.pending.extend(
+                        entries
+                            .into_iter()
+                            .filter(|entry| !entry.is_symlink)
+                            .map(|entry| path.join(entry.name.as_str())),
+                    );
+                }
             }
         }
         Some(path)

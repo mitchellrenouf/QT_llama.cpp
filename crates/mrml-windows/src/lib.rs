@@ -218,7 +218,7 @@ impl NativeDirectory {
         (find != INVALID_HANDLE_VALUE).then_some(Self { find, data, first: true })
     }
 
-    pub fn next(&mut self, name: &mut [u16; 260]) -> Option<(usize, bool)> {
+    pub fn next(&mut self, name: &mut [u16; 260]) -> Option<(usize, bool, bool)> {
         if self.first {
             self.first = false;
         } else if unsafe { FindNextFileW(self.find, &mut self.data) } == 0 {
@@ -226,7 +226,13 @@ impl NativeDirectory {
         }
         let len = self.data.file_name.iter().position(|unit| *unit == 0)?;
         name[..len].copy_from_slice(&self.data.file_name[..len]);
-        Some((len, self.data.attributes & 0x10 != 0))
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        Some((
+            len,
+            self.data.attributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+            self.data.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        ))
     }
 }
 

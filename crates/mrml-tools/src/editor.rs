@@ -3,7 +3,6 @@ use crate::diff::format_colorized_diff;
 use anyhow::{Result, anyhow};
 use mrml_runtime::Vector;
 use serde_json::json;
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -236,26 +235,35 @@ impl Tool for ListDirTool {
         let rel_path = args["path"].as_str().unwrap_or(".");
         let full_path = workspace_root.join(rel_path);
 
-        if !full_path.exists() {
+        let full_path_text = full_path
+            .to_str()
+            .ok_or_else(|| anyhow!("Directory path is not valid UTF-8"))?;
+        if !mrml_runtime::path_is_directory(full_path_text) {
             return Err(anyhow!("Directory not found: {}", rel_path));
         }
 
         let mut output = String::new();
-        let entries = fs::read_dir(&full_path)?;
+        let entries = mrml_runtime::read_directory(full_path_text)?;
 
         output.push_str(&format!("Contents of '{}':\n", rel_path));
         for entry in entries {
-            let entry = entry?;
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            let file_type = entry.file_type()?;
+            let file_name = entry.name;
 
             if file_name.starts_with('.') || file_name == "target" {
                 continue;
             }
 
-            let kind = if file_type.is_dir() { "DIR " } else { "FILE" };
-            let size = if file_type.is_file() {
-                format!(" ({} bytes)", entry.metadata()?.len())
+            let kind = if entry.is_directory { "DIR " } else { "FILE" };
+            let size = if !entry.is_directory && !entry.is_symlink {
+                let entry_path = full_path.join(file_name.as_str());
+                mrml_runtime::File::open(
+                    entry_path
+                        .to_str()
+                        .ok_or_else(|| anyhow!("Entry path is not valid UTF-8"))?,
+                )
+                .and_then(|file| file.len())
+                .map(|length| format!(" ({} bytes)", length))
+                .unwrap_or_default()
             } else {
                 String::new()
             };

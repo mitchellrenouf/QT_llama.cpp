@@ -284,14 +284,15 @@ impl NativeDirectory {
         NonNull::new(unsafe { opendir(path.as_ptr()) }).map(|directory| Self(directory.as_ptr()))
     }
 
-    pub fn next<'a>(&mut self, name: &'a mut [u8; 256]) -> Option<(&'a [u8], bool)> {
+    pub fn next<'a>(&mut self, name: &'a mut [u8; 256]) -> Option<(&'a [u8], bool, bool)> {
         let entry = unsafe { readdir(self.0).as_ref()? };
         let len = entry.name.iter().position(|byte| *byte == 0)?;
         for (target, source) in name[..len].iter_mut().zip(&entry.name[..len]) {
             *target = *source as u8;
         }
         const DT_DIR: u8 = 4;
-        Some((&name[..len], entry.kind == DT_DIR))
+        const DT_LNK: u8 = 10;
+        Some((&name[..len], entry.kind == DT_DIR, entry.kind == DT_LNK))
     }
 }
 
