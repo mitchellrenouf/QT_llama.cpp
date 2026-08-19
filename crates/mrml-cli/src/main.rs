@@ -1,5 +1,6 @@
 pub use mrml_core::config;
 use mrml_core::{AgentMode, Config, MrmlAgent};
+use mrml_runtime::Vector;
 use mrml_terminal_style::Colorize;
 use std::io::{self, BufRead, Write};
 
@@ -166,7 +167,7 @@ async fn async_main() -> anyhow::Result<()> {
             continue;
         }
 
-        let parts: Vec<&str> = input.split_whitespace().collect();
+        let parts: Vector<&str> = input.split_whitespace().collect();
         let cmd = parts.first().copied().unwrap_or("").to_lowercase();
 
         match cmd.as_str() {

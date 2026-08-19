@@ -22,4 +22,5 @@ sycl = ["mrml-core/sycl"]
 mrml-core = { path = "../mrml-core", default-features = false }
 mrml-tools = { path = "../mrml-tools" }
 mrml-terminal-style = { path = "../mrml-terminal-style" }
+mrml-runtime = { path = "../mrml-runtime" }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
