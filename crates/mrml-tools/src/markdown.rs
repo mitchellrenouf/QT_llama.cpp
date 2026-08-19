@@ -1,4 +1,5 @@
 //! Low-latency terminal Markdown presentation.
+use mrml_runtime::Text;
 use std::io::IsTerminal;
 
 const RESET: &str = "\x1b[0m";
@@ -9,7 +10,7 @@ fn colors_enabled() -> bool {
         && std::io::stdout().is_terminal()
 }
 
-fn push_styled(output: &mut String, text: &str, code: &str, styled: bool) {
+fn push_styled(output: &mut Text, text: &str, code: &str, styled: bool) {
     if styled {
         output.push_str("\x1b[");
         output.push_str(code);
@@ -21,7 +22,7 @@ fn push_styled(output: &mut String, text: &str, code: &str, styled: bool) {
     }
 }
 
-fn render_inline(text: &str, styled: bool, output: &mut String) {
+fn render_inline(text: &str, styled: bool, output: &mut Text) {
     let bytes = text.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
@@ -50,8 +51,8 @@ fn render_inline(text: &str, styled: bool, output: &mut String) {
     }
 }
 
-fn render_markdown(md_text: &str, styled: bool) -> String {
-    let mut output = String::with_capacity(md_text.len() + 64);
+fn render_markdown(md_text: &str, styled: bool) -> Text {
+    let mut output = Text::with_capacity(md_text.len() + 64).expect("MRML allocation failed");
     let mut in_code_block = false;
     for line in md_text.split_inclusive('\n') {
         let (content, newline) = line

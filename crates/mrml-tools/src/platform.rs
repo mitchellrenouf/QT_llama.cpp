@@ -1,4 +1,6 @@
 //! Native platform paths and timestamps shared by tools and the agent.
+use core::fmt::Write as _;
+use mrml_runtime::Text;
 use std::path::PathBuf;
 
 #[cfg(unix)]
@@ -49,7 +51,7 @@ pub fn exit_process(status: i32) -> ! {
     }
 }
 
-pub fn local_date_string() -> String {
+pub fn local_date_string() -> Text {
     const WEEKDAYS: [&str; 7] = [
         "Sunday",
         "Monday",
@@ -84,15 +86,22 @@ pub fn local_date_string() -> String {
         .and_then(|index| MONTHS.get(index as usize))
         .copied()
         .unwrap_or("Unknown");
-    format!("{weekday}, {month} {:2}, {}", time.day, time.year)
+    let mut output = Text::new();
+    write!(output, "{weekday}, {month} {:2}, {}", time.day, time.year)
+        .expect("MRML timestamp allocation failed");
+    output
 }
 
-pub fn local_timestamp_string() -> String {
+pub fn local_timestamp_string() -> Text {
     let time = local_time();
-    format!(
+    let mut output = Text::new();
+    write!(
+        output,
         "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
         time.year, time.month, time.day, time.hour, time.minute, time.second
     )
+    .expect("MRML timestamp allocation failed");
+    output
 }
 
 #[cfg(windows)]
