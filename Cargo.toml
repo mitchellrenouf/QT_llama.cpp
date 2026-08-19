@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mrml-runtime",
     "crates/mrml-model",
     "crates/mrml-math",
     "crates/mrml-tensor",

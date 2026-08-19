@@ -1,0 +1,13 @@
+[package]
+name = "mrml-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "MRML-owned no_std runtime containers and platform memory"
+
+[target.'cfg(windows)'.dependencies]
+mrml-windows = { path = "../mrml-windows" }
+
+[target.'cfg(unix)'.dependencies]
+mrml-linux = { path = "../mrml-linux" }

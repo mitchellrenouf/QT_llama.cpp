@@ -58,6 +58,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-runtime"
+version = "0.4.0"
+dependencies = [
+ "mrml-linux",
+ "mrml-windows",
+]
+
+[[package]]
 name = "mrml-server"
 version = "0.4.0"
 dependencies = [
