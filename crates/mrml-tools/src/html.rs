@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use alloc::collections::BTreeMap as HashMap;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Element {

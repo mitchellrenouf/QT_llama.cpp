@@ -5,8 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["std"]
+std = ["mrml-terminal-style/std"]
+
 [dependencies]
-mrml-terminal-style = { path = "../mrml-terminal-style" }
+mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
 serde_json = { package = "mrml-json", path = "../mrml-json" }
 urlencoding = { package = "mrml-urlencoding", path = "../mrml-urlencoding" }

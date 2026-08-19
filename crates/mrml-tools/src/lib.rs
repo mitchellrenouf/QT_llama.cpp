@@ -1,30 +1,54 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(feature = "std")]
 pub mod browser;
+#[cfg(feature = "std")]
 pub mod desktop;
+#[cfg(feature = "std")]
 pub mod editor;
+#[cfg(feature = "std")]
 pub mod git;
 pub mod html;
+#[cfg(feature = "std")]
 pub mod mcp;
+#[cfg(feature = "std")]
 pub mod media;
+#[cfg(feature = "std")]
 pub mod web;
 
 pub mod diff;
 pub mod encoding;
+#[cfg(feature = "std")]
 pub mod fs_walk;
+#[cfg(feature = "std")]
 pub mod markdown;
+#[cfg(feature = "std")]
 pub mod platform;
-mod simple_regex;
+pub mod simple_regex;
 
+#[cfg(feature = "std")]
 use anyhow::Result;
+#[cfg(feature = "std")]
 use serde_json::Value;
+#[cfg(feature = "std")]
 use std::collections::HashMap;
+#[cfg(feature = "std")]
 use std::future::Future;
+#[cfg(feature = "std")]
 use std::path::Path;
+#[cfg(feature = "std")]
 use std::pin::Pin;
+#[cfg(feature = "std")]
 use std::sync::Arc;
+#[cfg(feature = "std")]
 use std::task::{Context, Poll, Wake, Waker};
 
+#[cfg(feature = "std")]
 struct ThreadWaker(std::thread::Thread);
 
+#[cfg(feature = "std")]
 impl Wake for ThreadWaker {
     fn wake(self: Arc<Self>) {
         self.0.unpark();
@@ -35,6 +59,7 @@ impl Wake for ThreadWaker {
     }
 }
 
+#[cfg(feature = "std")]
 pub fn block_on<F: Future>(future: F) -> F::Output {
     let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
     let mut context = Context::from_waker(&waker);
@@ -47,12 +72,15 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
+#[cfg(feature = "std")]
 pub type ToolError = anyhow::Error;
 
+#[cfg(feature = "std")]
 pub fn tool_error(message: impl Into<String>) -> ToolError {
     anyhow::message(message)
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct FunctionDefinition {
     pub name: String,
@@ -60,12 +88,14 @@ pub struct FunctionDefinition {
     pub parameters: serde_json::Value,
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
     pub tool_type: String,
     pub function: FunctionDefinition,
 }
 
+#[cfg(feature = "std")]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -88,8 +118,10 @@ pub trait Tool: Send + Sync {
     }
 }
 
+#[cfg(feature = "std")]
 type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 
+#[cfg(feature = "std")]
 pub trait DynTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -98,6 +130,7 @@ pub trait DynTool: Send + Sync {
     fn to_tool_definition(&self) -> ToolDefinition;
 }
 
+#[cfg(feature = "std")]
 impl<T: Tool> DynTool for T {
     fn name(&self) -> &str {
         Tool::name(self)
@@ -120,11 +153,13 @@ impl<T: Tool> DynTool for T {
     }
 }
 
+#[cfg(feature = "std")]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn DynTool>>,
     order: Vec<String>,
 }
 
+#[cfg(feature = "std")]
 impl ToolRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
@@ -191,7 +226,7 @@ impl ToolRegistry {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 

@@ -1,5 +1,9 @@
 //! Line-oriented diff rendering used by editing tools.
 use mrml_terminal_style::Colorize;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Change<'a> {
@@ -9,6 +13,17 @@ enum Change<'a> {
 }
 
 const MAX_LCS_CELLS: usize = 4_000_000;
+
+fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
 
 fn lines(text: &str) -> Vec<&str> {
     text.split_inclusive('\n').collect()
@@ -99,7 +114,7 @@ pub fn format_colorized_diff(file_path: &str, old_text: &str, new_text: &str) ->
                 if line.len() > 120 {
                     output.push_str(&format!(
                         "  {}\n",
-                        crate::markdown::truncate_utf8(&line, 120).dimmed()
+                        truncate_utf8(&line, 120).dimmed()
                     ));
                 } else {
                     output.push_str(&format!("  {}", line.dimmed()));

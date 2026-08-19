@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Result};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 #[derive(Clone)]
 enum Atom {
@@ -79,7 +81,7 @@ impl Regex {
     pub fn is_match(&self, text: &str) -> bool {
         let chars: Vec<char> = text.chars().collect();
         let starts: Box<dyn Iterator<Item = usize>> = if self.anchored_start {
-            Box::new(std::iter::once(0))
+            Box::new(core::iter::once(0))
         } else {
             Box::new(0..=chars.len())
         };
