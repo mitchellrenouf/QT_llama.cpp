@@ -98,11 +98,15 @@ impl ApiServer {
             };
 
             let client = self.client.clone();
-            std::thread::spawn(move || {
+            if mrml_runtime::spawn_detached(move || {
                 if let Err(e) = handle_connection(socket, client) {
                     eprintln!("HTTP Handler Error: {}", e);
                 }
-            });
+            })
+            .is_err()
+            {
+                eprintln!("HTTP Handler Error: failed to start MRML connection thread");
+            }
         }
     }
 }
