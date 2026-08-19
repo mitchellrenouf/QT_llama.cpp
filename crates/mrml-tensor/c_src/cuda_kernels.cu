@@ -1208,35 +1208,6 @@ __global__ void k_vocab_topk_bitonic_f32(
     }
 }
 
-void cuda_op_vocab_topk(
-    const float* d_logits,
-    const uint8_t* d_valid,
-    const int32_t* d_recent,
-    float* d_scores,
-    int32_t* d_ids,
-    int vocab_size,
-    int n_recent,
-    int generated_count,
-    int k,
-    int partitions,
-    cudaStream_t stream
-) {
-    const int threads = 256;
-    const int max_partition = (vocab_size + partitions - 1) / partitions;
-    if (max_partition <= 2048 && k >= 8) {
-        k_vocab_topk_bitonic_f32<<<partitions, threads, 0, stream>>>(
-            d_logits, d_valid, d_recent, d_scores, d_ids,
-            vocab_size, n_recent, generated_count, k
-        );
-    } else {
-        const int shared = (32 * (sizeof(float) + sizeof(int32_t))) + k * sizeof(int32_t);
-        k_vocab_topk_f32<<<partitions, threads, shared, stream>>>(
-            d_logits, d_valid, d_recent, d_scores, d_ids,
-            vocab_size, n_recent, generated_count, k
-        );
-    }
-}
-
 void cuda_op_attention(
     const float* d_q,
     const uint8_t* d_k_cache,

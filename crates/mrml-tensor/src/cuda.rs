@@ -94,19 +94,6 @@ extern "C" {
     fn cudaDeviceSynchronize() -> i32;
 
     // Exported custom kernel launches from cuda_kernels.cu
-    fn cuda_op_vocab_topk(
-        d_logits: *const f32,
-        d_valid: *const u8,
-        d_recent: *const i32,
-        d_scores: *mut f32,
-        d_ids: *mut i32,
-        vocab_size: i32,
-        n_recent: i32,
-        generated_count: i32,
-        k: i32,
-        partitions: i32,
-        stream: CudaStream,
-    );
     fn cuda_op_attention(
         d_q: *const f32,
         d_k_cache: *const u16,
@@ -2394,7 +2381,7 @@ impl CudaDevice {
         unsafe {
             cudaSetDevice(self.device_id);
             let max_partition = vocab_size.div_ceil(partitions);
-            if env_flag_enabled("MRML_RUST_CUDA") && max_partition <= 2048 && k >= 8 {
+            {
                 let mut logits_arg = logits.as_ptr();
                 let mut valid_arg = valid.as_ptr();
                 let mut recent_arg = recent.as_ptr();
@@ -2417,29 +2404,21 @@ impl CudaDevice {
                     &mut k_arg as *mut _ as *mut c_void,
                     &mut partition_arg as *mut _ as *mut c_void,
                 ];
+                let kernel = if max_partition <= 2048 {
+                    "rust_cuda_vocab_topk_f32"
+                } else {
+                    "rust_cuda_vocab_topk_generic_f32"
+                };
+                let threads = if max_partition <= 2048 { 256 } else { 1 };
                 launch_rust_kernel(
-                    "rust_cuda_vocab_topk_f32",
+                    kernel,
                     (partitions as u32, 1, 1),
-                    (256, 1, 1),
+                    (threads, 1, 1),
                     self.stream,
                     &mut args,
                 )
                 .expect("Rust CUDA vocabulary top-k failed");
-                return;
             }
-            cuda_op_vocab_topk(
-                logits.as_ptr(),
-                valid.as_ptr(),
-                recent.as_ptr(),
-                scores.as_mut_ptr(),
-                ids.as_mut_ptr(),
-                vocab_size as i32,
-                n_recent as i32,
-                generated_count as i32,
-                k as i32,
-                partitions as i32,
-                self.stream,
-            );
         }
     }
 }

@@ -1136,6 +1136,66 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_vocab_topk_f32(
 }
 
 #[no_mangle]
+pub unsafe extern "ptx-kernel" fn rust_cuda_vocab_topk_generic_f32(
+    logits: *const f32,
+    valid: *const u8,
+    recent: *const i32,
+    out_scores: *mut f32,
+    out_ids: *mut i32,
+    vocab_size: i32,
+    n_recent: i32,
+    generated_count: i32,
+    k: i32,
+    partitions: i32,
+) {
+    let partition = _block_idx_x() as i32;
+    if partition >= partitions || _thread_idx_x() != 0 {
+        return;
+    }
+    let start = (vocab_size as i64 * partition as i64 / partitions as i64) as i32;
+    let end = (vocab_size as i64 * (partition + 1) as i64 / partitions as i64) as i32;
+    let output = (partition * k) as usize;
+    let mut rank = 0;
+    while rank < k {
+        let mut best_score = f32::NEG_INFINITY;
+        let mut best_id = -1;
+        let mut id = start;
+        while id < end {
+            let mut selected = false;
+            let mut previous = 0;
+            while previous < rank {
+                if *out_ids.add(output + previous as usize) == id {
+                    selected = true;
+                    break;
+                }
+                previous += 1;
+            }
+            if !selected
+                && *valid.add(id as usize) != 0
+                && !(generated_count < 4 && (id == 1 || id == 2 || id == 105 || id == 106))
+            {
+                let mut score = *logits.add(id as usize);
+                let mut r = 0;
+                while r < n_recent {
+                    if *recent.add(r as usize) == id {
+                        score -= 1.8;
+                    }
+                    r += 1;
+                }
+                if score > best_score || (score == best_score && (best_id < 0 || id < best_id)) {
+                    best_score = score;
+                    best_id = id;
+                }
+            }
+            id += 1;
+        }
+        *out_scores.add(output + rank as usize) = best_score;
+        *out_ids.add(output + rank as usize) = best_id;
+        rank += 1;
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "ptx-kernel" fn rust_cuda_qkv_postprocess(
     qkv: *mut f32,
     q_norm: *const f32,
