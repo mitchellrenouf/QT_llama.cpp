@@ -1,15 +1,15 @@
 use anyhow::Result;
 use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use mrml_json::{Value, object};
-use mrml_runtime::Shared;
+use mrml_runtime::{Shared, Text, Vector};
 use mrml_terminal_style::Colorize;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 #[derive(Debug)]
 pub struct OpenAiChatRequest {
-    pub model: Option<String>,
-    pub messages: Vec<OpenAiMessage>,
+    pub model: Option<Text>,
+    pub messages: Vector<OpenAiMessage>,
     pub stream: Option<bool>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
@@ -17,8 +17,8 @@ pub struct OpenAiChatRequest {
 
 #[derive(Debug, Clone)]
 pub struct OpenAiMessage {
-    pub role: String,
-    pub content: String,
+    pub role: Text,
+    pub content: Text,
 }
 
 impl OpenAiChatRequest {
@@ -36,20 +36,17 @@ impl OpenAiChatRequest {
                         .get("role")
                         .and_then(Value::as_str)
                         .ok_or_else(|| "message role must be a string".to_owned())?
-                        .to_owned(),
+                        .into(),
                     content: message
                         .get("content")
                         .and_then(Value::as_str)
                         .ok_or_else(|| "message content must be a string".to_owned())?
-                        .to_owned(),
+                        .into(),
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vector<_>, String>>()?;
         Ok(Self {
-            model: value
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            model: value.get("model").and_then(Value::as_str).map(Text::from),
             messages,
             stream: value.get("stream").and_then(Value::as_bool),
             temperature: value
@@ -205,7 +202,7 @@ fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Resul
         };
 
         let stream_mode = chat_req.stream.unwrap_or(false);
-        let messages: Vec<ChatMessage> = chat_req
+        let messages: Vector<ChatMessage> = chat_req
             .messages
             .into_iter()
             .map(|m| ChatMessage {
@@ -221,10 +218,8 @@ fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Resul
         let req = ChatCompletionRequest {
             model: chat_req
                 .model
-                .unwrap_or_else(|| "gemma-4-26B-A4B-it".to_string())
-                .as_str()
-                .into(),
-            messages: messages.into_iter().collect(),
+                .unwrap_or_else(|| "gemma-4-26B-A4B-it".into()),
+            messages,
             tools: None,
             stream: Some(stream_mode),
             temperature: chat_req.temperature,
@@ -295,7 +290,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn sse_chunk(created: u64, content: Option<String>, finish_reason: Option<&str>) -> String {
+fn sse_chunk(created: u64, content: Option<String>, finish_reason: Option<&str>) -> Text {
     let delta = content
         .map(|content| object([("content", Value::text(content))]))
         .unwrap_or_else(|| Value::Object(Default::default()));
@@ -313,7 +308,6 @@ fn sse_chunk(created: u64, content: Option<String>, finish_reason: Option<&str>)
             ])]),
         ),
     ]))
-    .to_string()
 }
 
 fn chat_message_value(message: ChatMessage) -> Value {
