@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, SpinMutex};
+use mrml_runtime::{Shared, SpinMutex, Text, Vector};
 use std::io::{self, BufRead};
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
@@ -114,12 +114,11 @@ impl Args {
                             prompt = Some(
                                 tail.get(index)
                                     .ok_or_else(|| "--prompt requires a value".to_owned())?
-                                    .clone(),
+                                    .as_str()
+                                    .into(),
                             );
                         }
-                        value if value.starts_with("--prompt=") => {
-                            prompt = Some(value[9..].to_owned())
-                        }
+                        value if value.starts_with("--prompt=") => prompt = Some(value[9..].into()),
                         value => return Err(format!("unknown chat argument '{value}'")),
                     }
                     index += 1;
@@ -188,7 +187,7 @@ enum Command {
     /// Run one prompt and emit a single JSON result record.
     Chat {
         /// Prompt text. Use --stdin to read it from standard input instead.
-        prompt: Option<String>,
+        prompt: Option<Text>,
 
         /// Read the complete prompt from standard input.
         stdin: bool,
@@ -203,7 +202,7 @@ enum Command {
 
 #[derive(Debug)]
 enum SessionRequest {
-    Chat { id: Option<Value>, prompt: String },
+    Chat { id: Option<Value>, prompt: Text },
     Health { id: Option<Value> },
     Reset { id: Option<Value> },
     Exit { id: Option<Value> },
@@ -223,7 +222,7 @@ impl SessionRequest {
                     .ok_or_else(|| {
                         mrml_json::Error::message("chat request requires a string prompt")
                     })?
-                    .to_owned(),
+                    .into(),
             },
             "health" => Self::Health { id },
             "reset" => Self::Reset { id },
@@ -239,8 +238,8 @@ impl SessionRequest {
 
 #[derive(Debug)]
 struct ToolEvent {
-    name: String,
-    result: String,
+    name: Text,
+    result: Text,
 }
 
 #[derive(Debug, Default)]
@@ -253,8 +252,8 @@ struct TurnMetrics {
 
 #[derive(Debug, Default)]
 struct TurnCapture {
-    tools: Vec<ToolEvent>,
-    finish_reason: Option<String>,
+    tools: Vector<ToolEvent>,
+    finish_reason: Option<Text>,
     token_count: Option<usize>,
     generation_seconds: Option<f64>,
     tokens_per_second: Option<f64>,
@@ -274,7 +273,10 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
             let mut state = event_capture.lock();
             match event {
                 StreamEvent::ToolExecuted { name, result } => {
-                    state.tools.push(ToolEvent { name, result });
+                    state.tools.push(ToolEvent {
+                        name: name.as_str().into(),
+                        result: result.as_str().into(),
+                    });
                 }
                 StreamEvent::Metrics {
                     token_count,
@@ -285,7 +287,7 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
                     state.generation_seconds = Some(elapsed_secs);
                     state.tokens_per_second = Some(tokens_per_sec);
                 }
-                StreamEvent::Finish(reason) => state.finish_reason = Some(reason),
+                StreamEvent::Finish(reason) => state.finish_reason = Some(reason.as_str().into()),
                 StreamEvent::Reasoning(_)
                 | StreamEvent::Content(_)
                 | StreamEvent::ToolCallAssembled(_) => {}
@@ -431,7 +433,9 @@ async fn async_main() -> Result<()> {
     match args.command {
         Command::Chat { prompt, stdin } => {
             let prompt = if stdin {
-                io::read_to_string(io::stdin()).context("failed reading prompt from stdin")?
+                let prompt =
+                    io::read_to_string(io::stdin()).context("failed reading prompt from stdin")?;
+                Text::from(prompt.as_str())
             } else {
                 prompt.context("chat requires --prompt or --stdin")?
             };
