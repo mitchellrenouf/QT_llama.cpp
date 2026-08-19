@@ -29,3 +29,4 @@ mrml-terminal-style = { path = "../mrml-terminal-style", default-features = fals
 mrml-tools = { path = "../mrml-tools", default-features = false, optional = true }
 anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow", optional = true }
 serde_json = { package = "mrml-json", path = "../mrml-json", optional = true }
+mrml-runtime = { path = "../mrml-runtime" }

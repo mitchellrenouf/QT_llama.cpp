@@ -475,11 +475,11 @@ impl MrmlAgent {
             let call_id = format!("clock-{}", self.history.len());
             let args = serde_json::json!({ "command_line": (command.as_str()) });
             let tool_call = crate::client::ToolCall {
-                id: call_id.clone(),
-                tool_type: "function".to_string(),
+                id: call_id.as_str().into(),
+                tool_type: "function".into(),
                 function: crate::client::FunctionCall {
-                    name: "run_command".to_string(),
-                    arguments: args.to_string(),
+                    name: "run_command".into(),
+                    arguments: args.to_string().as_str().into(),
                 },
             };
             println!(
@@ -489,7 +489,7 @@ impl MrmlAgent {
                 args.to_string().dimmed()
             );
             self.history
-                .push(ChatMessage::assistant(None, Some(vec![tool_call])));
+                .push(ChatMessage::assistant(None, Some([tool_call].into())));
             let result = self
                 .registry
                 .get("run_command")
@@ -511,7 +511,7 @@ impl MrmlAgent {
                             event_sink(StreamEvent::Content(answer.clone()));
                             event_sink(StreamEvent::Finish("stop".to_string()));
                             self.history
-                                .push(ChatMessage::assistant(Some(answer.clone()), None));
+                                .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
                             return Ok((answer, String::new()));
                         }
                     } else {
@@ -519,7 +519,7 @@ impl MrmlAgent {
                             event_sink(StreamEvent::Content(answer.clone()));
                             event_sink(StreamEvent::Finish("stop".to_string()));
                             self.history
-                                .push(ChatMessage::assistant(Some(answer.clone()), None));
+                                .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
                             return Ok((answer, String::new()));
                         }
                     }
@@ -588,7 +588,7 @@ impl MrmlAgent {
             let tool_calls = assistant_msg
                 .tool_calls
                 .clone()
-                .unwrap_or(assembled_tool_calls);
+                .unwrap_or_else(|| assembled_tool_calls.into_iter().collect());
             if tool_calls.is_empty() {
                 break;
             }
@@ -619,7 +619,7 @@ impl MrmlAgent {
                 match tool_result {
                     Ok(output) => {
                         event_sink(StreamEvent::ToolExecuted {
-                            name: name.clone(),
+                            name: name.to_string(),
                             result: output.clone(),
                         });
                         self.history.push(ChatMessage::tool(
@@ -631,7 +631,7 @@ impl MrmlAgent {
                     Err(e) => {
                         let err_msg = format!("Tool execution failed: {}", e);
                         event_sink(StreamEvent::ToolExecuted {
-                            name: name.clone(),
+                            name: name.to_string(),
                             result: err_msg.clone(),
                         });
                         self.history
@@ -664,11 +664,11 @@ impl MrmlAgent {
             let call_id = format!("clock-{}", self.history.len());
             let args = serde_json::json!({ "command_line": (command.as_str()) });
             let tool_call = crate::client::ToolCall {
-                id: call_id.clone(),
-                tool_type: "function".to_string(),
+                id: call_id.as_str().into(),
+                tool_type: "function".into(),
                 function: crate::client::FunctionCall {
-                    name: "run_command".to_string(),
-                    arguments: args.to_string(),
+                    name: "run_command".into(),
+                    arguments: args.to_string().as_str().into(),
                 },
             };
             println!(
@@ -678,7 +678,7 @@ impl MrmlAgent {
                 args.to_string().dimmed()
             );
             self.history
-                .push(ChatMessage::assistant(None, Some(vec![tool_call])));
+                .push(ChatMessage::assistant(None, Some([tool_call].into())));
             println!("⚡ Executing {}", "run_command".cyan());
             let result = self
                 .registry
@@ -698,7 +698,7 @@ impl MrmlAgent {
                             print_rich_markdown(&answer);
                             println!("{}", "────────────────────────────────".dimmed());
                             self.history
-                                .push(ChatMessage::assistant(Some(answer), None));
+                                .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
                             return Ok(());
                         }
                     } else {
@@ -708,7 +708,7 @@ impl MrmlAgent {
                             print_rich_markdown(&answer);
                             println!("{}", "────────────────────────────────".dimmed());
                             self.history
-                                .push(ChatMessage::assistant(Some(answer), None));
+                                .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
                             return Ok(());
                         }
                     }
@@ -882,7 +882,7 @@ impl MrmlAgent {
             let tool_calls = assistant_msg
                 .tool_calls
                 .clone()
-                .unwrap_or(assembled_tool_calls);
+                .unwrap_or_else(|| assembled_tool_calls.into_iter().collect());
             if tool_calls.is_empty() {
                 break;
             }

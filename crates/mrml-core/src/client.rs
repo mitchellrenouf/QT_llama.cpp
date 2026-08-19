@@ -285,11 +285,13 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
                 args.to_string()
             };
             return Some(ToolCall {
-                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
-                tool_type: "function".to_string(),
+                id: format!("call_{}", crate::platform::unix_timestamp_millis())
+                    .as_str()
+                    .into(),
+                tool_type: "function".into(),
                 function: FunctionCall {
-                    name: name.to_string(),
-                    arguments: args_str,
+                    name: name.into(),
+                    arguments: args_str.as_str().into(),
                 },
             });
         }
@@ -303,11 +305,13 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
         if !name.is_empty() {
             let normalized_args = normalize_relaxed_json(args_part);
             return Some(ToolCall {
-                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
-                tool_type: "function".to_string(),
+                id: format!("call_{}", crate::platform::unix_timestamp_millis())
+                    .as_str()
+                    .into(),
+                tool_type: "function".into(),
                 function: FunctionCall {
-                    name: name.to_string(),
-                    arguments: normalized_args,
+                    name: name.into(),
+                    arguments: normalized_args.as_str().into(),
                 },
             });
         }
@@ -318,11 +322,13 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
         if !name.is_empty() {
             let normalized_args = parse_kwargs_to_json(args_part);
             return Some(ToolCall {
-                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
-                tool_type: "function".to_string(),
+                id: format!("call_{}", crate::platform::unix_timestamp_millis())
+                    .as_str()
+                    .into(),
+                tool_type: "function".into(),
                 function: FunctionCall {
-                    name: name.to_string(),
-                    arguments: normalized_args,
+                    name: name.into(),
+                    arguments: normalized_args.as_str().into(),
                 },
             });
         }
@@ -514,8 +520,8 @@ impl MrmlClient {
             tools
                 .iter()
                 .map(|tool| mrml_model::TemplateTool {
-                    name: tool.function.name.clone(),
-                    description: tool.function.description.clone(),
+                    name: tool.function.name.as_str().into(),
+                    description: tool.function.description.as_str().into(),
                     parameters: tool.function.parameters.clone(),
                 })
                 .collect::<Vec<_>>()
@@ -836,11 +842,13 @@ impl MrmlClient {
                                 args.to_string()
                             };
                             let tc = ToolCall {
-                                id: format!("call_{}", crate::platform::unix_timestamp_millis()),
-                                tool_type: "function".to_string(),
+                                id: format!("call_{}", crate::platform::unix_timestamp_millis())
+                                    .as_str()
+                                    .into(),
+                                tool_type: "function".into(),
                                 function: FunctionCall {
-                                    name: name.to_string(),
-                                    arguments: args_str,
+                                    name: name.into(),
+                                    arguments: args_str.as_str().into(),
                                 },
                             };
                             callback(StreamEvent::ToolCallAssembled(tc.clone()));
@@ -926,8 +934,11 @@ impl MrmlClient {
             Some(tool_calls)
         };
 
-        let mut msg = ChatMessage::assistant(content_opt, tool_calls_opt);
-        msg.reasoning_content = reasoning_opt;
+        let mut msg = ChatMessage::assistant(
+            content_opt.map(|content| content.as_str().into()),
+            tool_calls_opt.map(|calls| calls.into_iter().collect()),
+        );
+        msg.reasoning_content = reasoning_opt.map(|reasoning| reasoning.as_str().into());
         Ok(msg)
     }
 }

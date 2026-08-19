@@ -61,7 +61,7 @@ impl From<mrml_tensor::anyhow::Error> for Error {
     }
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(feature = "runtime")]
 impl From<serde_json::Error> for Error {
     fn from(error: serde_json::Error) -> Self {
         Self::with_source(error)

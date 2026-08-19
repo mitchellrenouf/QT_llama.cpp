@@ -1,18 +1,16 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(feature = "alloc")]
-extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-#[cfg(feature = "alloc")]
+#[cfg(feature = "runtime")]
 pub mod chat;
 #[cfg(feature = "std")]
 pub mod engine;
 pub mod error;
 pub mod portable;
 
-#[cfg(feature = "alloc")]
+#[cfg(feature = "runtime")]
 pub use chat::*;
 #[cfg(feature = "std")]
 pub use engine::*;

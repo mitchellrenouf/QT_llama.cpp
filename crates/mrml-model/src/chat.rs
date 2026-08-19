@@ -1,10 +1,14 @@
 use crate::error::{Error as ModelError, Result};
-use alloc::borrow::ToOwned;
-use alloc::format;
-use alloc::string::{String, ToString};
-#[cfg(test)]
-use alloc::vec;
-use alloc::vec::Vec;
+use core::fmt::Write;
+use mrml_runtime::{Text as String, Vector as Vec};
+
+macro_rules! format {
+    ($($argument:tt)*) => {{
+        let mut output = String::new();
+        write!(output, $($argument)*).expect("writing to MRML text cannot fail");
+        output
+    }};
+}
 
 #[derive(Debug, Clone)]
 pub struct FunctionCall {
@@ -47,10 +51,10 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
-    pub fn system(content: impl Into<String>) -> Self {
+    pub fn system(content: impl AsRef<str>) -> Self {
         Self {
-            role: "system".to_string(),
-            content: Some(MessageContent::Text(content.into())),
+            role: "system".into(),
+            content: Some(MessageContent::Text(content.as_ref().into())),
             name: None,
             tool_call_id: None,
             tool_calls: None,
@@ -58,10 +62,10 @@ impl ChatMessage {
         }
     }
 
-    pub fn user(content: impl Into<String>) -> Self {
+    pub fn user(content: impl AsRef<str>) -> Self {
         Self {
-            role: "user".to_string(),
-            content: Some(MessageContent::Text(content.into())),
+            role: "user".into(),
+            content: Some(MessageContent::Text(content.as_ref().into())),
             name: None,
             tool_call_id: None,
             tool_calls: None,
@@ -71,7 +75,7 @@ impl ChatMessage {
 
     pub fn assistant(content: Option<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
         Self {
-            role: "assistant".to_string(),
+            role: "assistant".into(),
             content: content.map(MessageContent::Text),
             name: None,
             tool_call_id: None,
@@ -81,15 +85,15 @@ impl ChatMessage {
     }
 
     pub fn tool(
-        tool_call_id: impl Into<String>,
-        name: impl Into<String>,
-        content: impl Into<String>,
+        tool_call_id: impl AsRef<str>,
+        name: impl AsRef<str>,
+        content: impl AsRef<str>,
     ) -> Self {
         Self {
-            role: "tool".to_string(),
-            content: Some(MessageContent::Text(content.into())),
-            name: Some(name.into()),
-            tool_call_id: Some(tool_call_id.into()),
+            role: "tool".into(),
+            content: Some(MessageContent::Text(content.as_ref().into())),
+            name: Some(name.as_ref().into()),
+            tool_call_id: Some(tool_call_id.as_ref().into()),
             tool_calls: None,
             reasoning_content: None,
         }
@@ -186,10 +190,10 @@ impl ChatMessage {
             .get("role")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ModelError::message("chat message role must be a string"))?
-            .to_owned();
+            .into();
         let content = match value.get("content") {
             None | Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::String(text)) => Some(MessageContent::Text(text.to_string())),
+            Some(serde_json::Value::String(text)) => Some(MessageContent::Text(text.clone())),
             Some(serde_json::Value::Array(parts)) => Some(MessageContent::Parts(
                 parts
                     .iter()
@@ -200,7 +204,7 @@ impl ChatMessage {
                                     .get("text")
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or("")
-                                    .to_owned(),
+                                    .into(),
                             }),
                             Some("image_url") => Ok(ContentPart::ImageUrl {
                                 image_url: ImageUrlDetail {
@@ -209,7 +213,7 @@ impl ChatMessage {
                                         .and_then(|image| image.get("url"))
                                         .and_then(serde_json::Value::as_str)
                                         .unwrap_or("")
-                                        .to_owned(),
+                                        .into(),
                                 },
                             }),
                             _ => Err(ModelError::message("unknown chat content part")),
@@ -234,23 +238,23 @@ impl ChatMessage {
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .unwrap_or("")
-                                .to_owned(),
+                                .into(),
                             tool_type: call
                                 .get("type")
                                 .and_then(serde_json::Value::as_str)
                                 .unwrap_or("function")
-                                .to_owned(),
+                                .into(),
                             function: FunctionCall {
                                 name: function
                                     .get("name")
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or("")
-                                    .to_owned(),
+                                    .into(),
                                 arguments: function
                                     .get("arguments")
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or("{}")
-                                    .to_owned(),
+                                    .into(),
                             },
                         })
                     })
@@ -263,42 +267,42 @@ impl ChatMessage {
             name: value
                 .get("name")
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
+                .map(String::from),
             tool_call_id: value
                 .get("tool_call_id")
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
+                .map(String::from),
             tool_calls,
             reasoning_content: value
                 .get("reasoning_content")
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
+                .map(String::from),
         })
     }
 }
 
 pub fn format_argument_canonical(val: &serde_json::Value) -> String {
     match val {
-        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Null => "null".into(),
         serde_json::Value::Bool(b) => {
             if *b {
-                "true".to_string()
+                "true".into()
             } else {
-                "false".to_string()
+                "false".into()
             }
         }
-        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Number(n) => format!("{n}"),
         serde_json::Value::String(s) => format!("<|\"|>{}<|\"|>", s),
         serde_json::Value::Array(arr) => {
             let items: Vec<String> = arr.iter().map(format_argument_canonical).collect();
-            format!("[{}]", items.join(","))
+            format!("[{}]", join_text(&items, ","))
         }
         serde_json::Value::Object(map) => {
             let mut entries = Vec::new();
             for (k, v) in map {
                 entries.push(format!("{}:{}", k, format_argument_canonical(v)));
             }
-            format!("{{{}}}", entries.join(","))
+            format!("{{{}}}", join_text(&entries, ","))
         }
     }
 }
@@ -319,11 +323,12 @@ pub fn format_tool_declaration_canonical(
                 .get("description")
                 .and_then(|d| d.as_str())
                 .unwrap_or("");
-            let p_type = prop_val
-                .get("type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("string")
-                .to_uppercase();
+            let p_type = uppercase(
+                prop_val
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("string"),
+            );
             prop_entries.push(format!(
                 "{}:{{description:<|\"|>{}<|\"|>,type:<|\"|>{}<|\"|>}}",
                 prop_name, desc, p_type
@@ -331,11 +336,32 @@ pub fn format_tool_declaration_canonical(
         }
         s.push_str(&format!(
             ",parameters:{{properties:{{{}}},type:<|\"|>OBJECT<|\"|>}}",
-            prop_entries.join(",")
+            join_text(&prop_entries, ",")
         ));
     }
     s.push('}');
     s
+}
+
+fn join_text(values: &[String], separator: &str) -> String {
+    let mut output = String::new();
+    for (index, value) in values.iter().enumerate() {
+        if index != 0 {
+            output.push_str(separator);
+        }
+        output.push_str(value);
+    }
+    output
+}
+
+fn uppercase(value: &str) -> String {
+    let mut output = String::with_capacity(value.len()).expect("MRML allocation failed");
+    for character in value.chars() {
+        for upper in character.to_uppercase() {
+            output.push(upper);
+        }
+    }
+    output
 }
 
 pub fn format_gemma_chat(messages: &[ChatMessage], system_prompt: Option<&str>) -> String {
@@ -385,7 +411,7 @@ fn render_gemma4_template(
         .filter(|message| message.role == "system" || message.role == "developer");
     let system = system_prompt
         .filter(|text| !text.trim().is_empty())
-        .map(str::to_owned)
+        .map(String::from)
         .or_else(|| leading_system.and_then(ChatMessage::get_text_content));
     if system_prompt.is_none() && leading_system.is_some() {
         first = 1;
@@ -604,14 +630,17 @@ mod template_tests {
     fn chat_message_json_round_trip_preserves_tool_calls() {
         let mut message = ChatMessage::assistant(
             Some("done".into()),
-            Some(vec![ToolCall {
-                id: "call-9".into(),
-                tool_type: "function".into(),
-                function: FunctionCall {
-                    name: "clock".into(),
-                    arguments: r#"{"timezone":"UTC"}"#.into(),
-                },
-            }]),
+            Some(
+                [ToolCall {
+                    id: "call-9".into(),
+                    tool_type: "function".into(),
+                    function: FunctionCall {
+                        name: "clock".into(),
+                        arguments: r#"{"timezone":"UTC"}"#.into(),
+                    },
+                }]
+                .into(),
+            ),
         );
         message.reasoning_content = Some("checked the clock".into());
 
@@ -661,7 +690,7 @@ mod template_tests {
         };
         let rendered = render_chat_template(
             GEMMA_TEMPLATE,
-            &[ChatMessage::assistant(None, Some(vec![call]))],
+            &[ChatMessage::assistant(None, Some([call].into()))],
             None,
             None,
             false,
@@ -685,7 +714,7 @@ mod template_tests {
         let rendered = render_chat_template(
             GEMMA_TEMPLATE,
             &[
-                ChatMessage::assistant(None, Some(vec![call])),
+                ChatMessage::assistant(None, Some([call].into())),
                 ChatMessage::tool("call-7", "ignored", "10:59"),
             ],
             None,
@@ -708,6 +737,6 @@ mod template_tests {
             false,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("not a supported Gemma 4"));
+        assert!(format!("{error}").contains("not a supported Gemma 4"));
     }
 }

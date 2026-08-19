@@ -27,6 +27,7 @@ dependencies = [
  "mrml-anyhow",
  "mrml-json",
  "mrml-model",
+ "mrml-runtime",
  "mrml-terminal-style",
  "mrml-tools",
 ]

@@ -205,8 +205,8 @@ fn handle_connection(mut socket: TcpStream, client: Arc<MrmlClient>) -> Result<(
             .messages
             .into_iter()
             .map(|m| ChatMessage {
-                role: m.role,
-                content: Some(mrml_model::MessageContent::Text(m.content)),
+                role: m.role.as_str().into(),
+                content: Some(mrml_model::MessageContent::Text(m.content.as_str().into())),
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
