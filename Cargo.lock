@@ -81,8 +81,13 @@ dependencies = [
  "mrml-json",
  "mrml-linux",
  "mrml-terminal-style",
+ "mrml-urlencoding",
  "mrml-windows",
 ]
+
+[[package]]
+name = "mrml-urlencoding"
+version = "0.4.0"
 
 [[package]]
 name = "mrml-windows"

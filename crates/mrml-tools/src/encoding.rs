@@ -1,59 +1,4 @@
 //! Encoding primitives used by media and browser tools.
-use std::borrow::Cow;
-
-pub fn percent_encode(input: &str) -> Cow<'_, str> {
-    if input.bytes().all(is_unreserved) {
-        return Cow::Borrowed(input);
-    }
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut output = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        if is_unreserved(byte) {
-            output.push(byte as char);
-        } else {
-            output.push('%');
-            output.push(HEX[(byte >> 4) as usize] as char);
-            output.push(HEX[(byte & 15) as usize] as char);
-        }
-    }
-    Cow::Owned(output)
-}
-
-pub fn percent_decode(input: &str) -> Result<Cow<'_, str>, &'static str> {
-    if !input.as_bytes().contains(&b'%') {
-        return Ok(Cow::Borrowed(input));
-    }
-    let bytes = input.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let high = hex(*bytes.get(index + 1).ok_or("incomplete percent escape")?)?;
-            let low = hex(*bytes.get(index + 2).ok_or("incomplete percent escape")?)?;
-            output.push(high << 4 | low);
-            index += 3;
-        } else {
-            output.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(output)
-        .map(Cow::Owned)
-        .map_err(|_| "percent-decoded bytes are not UTF-8")
-}
-
-fn is_unreserved(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
-}
-
-fn hex(byte: u8) -> Result<u8, &'static str> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err("invalid percent escape"),
-    }
-}
 #[cold]
 #[inline(never)]
 pub fn base64_encode(input: &[u8]) -> String {
@@ -122,8 +67,6 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     #[test]
     fn base64_matches_standard_vectors() {
         for (raw, encoded) in [
@@ -138,14 +81,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn percent_encoding_borrows_and_round_trips_unicode() {
-        assert!(matches!(super::percent_encode("solar-panels"), Cow::Borrowed(_)));
-        assert!(matches!(super::percent_decode("solar-panels"), Ok(Cow::Borrowed(_))));
-        let encoded = super::percent_encode("solar panels/效率 + cost");
-        assert_eq!(super::percent_decode(&encoded).unwrap(), "solar panels/效率 + cost");
-        assert!(super::percent_decode("%ZZ").is_err());
-        assert!(super::percent_decode("%F0%28%8C%28").is_err());
-        assert!(super::percent_decode("trailing%").is_err());
-    }
 }
