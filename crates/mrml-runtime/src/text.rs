@@ -2,22 +2,37 @@ use crate::{TryReserveError, Vector};
 use core::fmt::{self, Write};
 use core::ops::Deref;
 
-#[derive(Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Default)]
 pub struct Text {
     bytes: Vector<u8>,
+    inline: [u8; Self::INLINE_CAPACITY],
+    inline_len: u8,
+    heap_backed: bool,
 }
 
 impl Text {
+    const INLINE_CAPACITY: usize = 23;
+
     pub const fn new() -> Self {
         Self {
             bytes: Vector::new(),
+            inline: [0; Self::INLINE_CAPACITY],
+            inline_len: 0,
+            heap_backed: false,
         }
     }
 
     pub fn with_capacity(capacity: usize) -> Result<Self, TryReserveError> {
-        Ok(Self {
-            bytes: Vector::with_capacity(capacity)?,
-        })
+        if capacity <= Self::INLINE_CAPACITY {
+            Ok(Self::new())
+        } else {
+            Ok(Self {
+                bytes: Vector::with_capacity(capacity)?,
+                inline: [0; Self::INLINE_CAPACITY],
+                inline_len: 0,
+                heap_backed: true,
+            })
+        }
     }
 
     pub fn try_from_str(value: &str) -> Result<Self, TryReserveError> {
@@ -27,14 +42,37 @@ impl Text {
     }
 
     pub fn try_from_utf8(bytes: Vector<u8>) -> Result<Self, Vector<u8>> {
-        if core::str::from_utf8(&bytes).is_ok() {
-            Ok(Self { bytes })
-        } else {
-            Err(bytes)
+        if core::str::from_utf8(&bytes).is_err() {
+            return Err(bytes);
         }
+        if bytes.len() <= Self::INLINE_CAPACITY {
+            return Ok(
+                Self::try_from_str(unsafe { core::str::from_utf8_unchecked(&bytes) })
+                    .expect("inline text cannot fail to allocate"),
+            );
+        }
+        Ok(Self {
+            bytes,
+            inline: [0; Self::INLINE_CAPACITY],
+            inline_len: 0,
+            heap_backed: true,
+        })
     }
 
     pub fn try_push_str(&mut self, value: &str) -> Result<(), TryReserveError> {
+        if !self.heap_backed {
+            let current = self.inline_len as usize;
+            let needed = current.saturating_add(value.len());
+            if needed <= Self::INLINE_CAPACITY {
+                self.inline[current..needed].copy_from_slice(value.as_bytes());
+                self.inline_len = needed as u8;
+                return Ok(());
+            }
+            let mut bytes = Vector::with_capacity(needed)?;
+            bytes.try_extend_from_slice(&self.inline[..current])?;
+            self.bytes = bytes;
+            self.heap_backed = true;
+        }
         self.bytes.try_extend_from_slice(value.as_bytes())
     }
     pub fn push_str(&mut self, value: &str) {
@@ -50,20 +88,37 @@ impl Text {
     }
 
     pub fn clear(&mut self) {
-        self.bytes.clear();
+        if self.heap_backed {
+            self.bytes.clear();
+        } else {
+            self.inline_len = 0;
+        }
     }
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        if self.heap_backed {
+            self.bytes.len()
+        } else {
+            self.inline_len as usize
+        }
     }
     pub fn capacity(&self) -> usize {
-        self.bytes.capacity()
+        if self.heap_backed {
+            self.bytes.capacity()
+        } else {
+            Self::INLINE_CAPACITY
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
     pub fn as_str(&self) -> &str {
         // Construction only accepts UTF-8 strings and encoded `char` values.
-        unsafe { core::str::from_utf8_unchecked(&self.bytes) }
+        let bytes = if self.heap_backed {
+            &self.bytes[..]
+        } else {
+            &self.inline[..self.inline_len as usize]
+        };
+        unsafe { core::str::from_utf8_unchecked(bytes) }
     }
 
     pub fn replace(&self, needle: &str, replacement: &str) -> Self {
@@ -86,6 +141,22 @@ impl Deref for Text {
     type Target = str;
     fn deref(&self) -> &str {
         self.as_str()
+    }
+}
+impl PartialEq for Text {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+impl Eq for Text {}
+impl PartialOrd for Text {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Text {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
     }
 }
 impl core::borrow::Borrow<str> for Text {
@@ -150,5 +221,30 @@ mod tests {
     #[test]
     fn replaces_substrings_without_rust_alloc() {
         assert_eq!(Text::from("a<>b<>c").replace("<>", "-"), "a-b-c");
+    }
+
+    #[test]
+    fn stores_short_text_inline_and_promotes_without_data_loss() {
+        let mut text = Text::from("short token");
+        assert!(!text.heap_backed);
+        assert_eq!(text.capacity(), Text::INLINE_CAPACITY);
+
+        text.push_str(" that exceeds inline storage");
+        assert!(text.heap_backed);
+        assert_eq!(text, "short token that exceeds inline storage");
+
+        text.clear();
+        text.push_str("reused");
+        assert_eq!(text, "reused");
+    }
+
+    #[test]
+    fn lexical_order_is_independent_of_storage() {
+        let inline = Text::from("model.layers");
+        let mut promoted = Text::with_capacity(64).unwrap();
+        promoted.push_str("model.layers");
+        assert_eq!(inline, promoted);
+        assert_eq!(inline.cmp(&promoted), core::cmp::Ordering::Equal);
+        assert!(Text::from("a") < Text::from("z"));
     }
 }

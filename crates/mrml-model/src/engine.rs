@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use core::sync::atomic::AtomicBool;
-use mrml_runtime::{Shared, Vector};
+use mrml_runtime::{Shared, Text, Vector};
 use mrml_tensor::MrmlEngine;
 use std::sync::mpsc;
 
@@ -10,7 +10,7 @@ pub struct ModelEngine {
 }
 
 pub struct GenerationChunk {
-    pub text: String,
+    pub text: Text,
     pub token_count: usize,
 }
 
@@ -64,7 +64,7 @@ impl ModelEngine {
         Ok(self.inner.tokenize(text, add_special)?)
     }
 
-    pub fn token_to_piece(&self, token: i32) -> Result<String> {
+    pub fn token_to_piece(&self, token: i32) -> Result<Text> {
         Ok(self.inner.token_to_piece(token)?)
     }
 

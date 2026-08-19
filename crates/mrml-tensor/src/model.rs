@@ -8,6 +8,7 @@ use crate::quant::dequantize_q8_0;
 use crate::sync as parking_lot;
 use core::cmp::Ordering as CompareOrdering;
 use core::ffi::CStr;
+use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use mrml_runtime::{File, Instant, OrderedMap, Shared, Text, Vector};
@@ -2220,26 +2221,38 @@ impl MrmlModel {
     }
 
     /// Detokenize token ID to text string
-    pub fn token_to_piece(&self, token_id: i32) -> String {
+    pub fn token_to_piece(&self, token_id: i32) -> Text {
         if token_id < 0 {
-            return String::new();
+            return Text::new();
         }
 
         if let Some(piece) = self.vocab.get(token_id as usize) {
             if piece.starts_with("<0x") && piece.ends_with('>') && piece.len() == 6 {
                 if let Ok(byte_val) = u8::from_str_radix(&piece[3..5], 16) {
-                    return String::from_utf8_lossy(&[byte_val]).to_string();
+                    if byte_val.is_ascii() {
+                        let mut output = Text::new();
+                        output.push(byte_val as char);
+                        return output;
+                    }
+                    return Text::from("\u{fffd}");
                 }
             }
-            return piece.as_str().replace('\u{2581}', " ");
+            return piece.replace("\u{2581}", " ");
         }
 
         if token_id >= 100 && token_id <= 355 {
             let byte = (token_id - 100) as u8;
-            return String::from_utf8_lossy(&[byte]).to_string();
+            if byte.is_ascii() {
+                let mut output = Text::new();
+                output.push(byte as char);
+                return output;
+            }
+            return Text::from("\u{fffd}");
         }
 
-        format!("_{}", token_id)
+        let mut output = Text::new();
+        write!(output, "_{token_id}").expect("MRML allocation failed");
+        output
     }
 
     pub fn is_eog_token(&self, token: i32) -> bool {

@@ -20,7 +20,7 @@ impl MrmlEngine {
         Ok(guard.tokenize(text))
     }
 
-    pub fn token_to_piece(&self, token: i32) -> Result<String> {
+    pub fn token_to_piece(&self, token: i32) -> Result<mrml_runtime::Text> {
         let guard = self.model.lock();
         Ok(guard.token_to_piece(token))
     }
@@ -69,7 +69,7 @@ impl MrmlEngine {
         mut emit: F,
     ) -> Shared<AtomicBool>
     where
-        F: FnMut(Result<String>) -> bool + Send + 'static,
+        F: FnMut(Result<mrml_runtime::Text>) -> bool + Send + 'static,
     {
         let cancelled = Shared::new(AtomicBool::new(false));
         let cancel_flag = cancelled.clone();
