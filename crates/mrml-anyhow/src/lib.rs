@@ -1,8 +1,16 @@
-use std::error::Error as StdError;
-use std::fmt::{self, Display};
+#![no_std]
+
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use core::error::Error as StdError;
+use core::fmt::{self, Display};
 
 pub type Error = Box<dyn StdError + Send + Sync + 'static>;
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 #[derive(Debug)]
 pub struct MessageError(String);
@@ -23,6 +31,10 @@ impl StdError for MessageError {}
 
 pub fn message(text: impl Into<String>) -> Error {
     Box::new(MessageError::new(text.into()))
+}
+
+pub fn formatted(arguments: fmt::Arguments<'_>) -> Error {
+    message(alloc::fmt::format(arguments))
 }
 
 #[derive(Debug)]
@@ -51,7 +63,7 @@ pub trait Context<T> {
         F: FnOnce() -> C;
 }
 
-impl<T, E> Context<T> for std::result::Result<T, E>
+impl<T, E> Context<T> for core::result::Result<T, E>
 where
     E: StdError + Send + Sync + 'static,
 {
@@ -98,7 +110,7 @@ macro_rules! anyhow {
         $crate::message($message)
     };
     ($format:expr, $($argument:tt)*) => {
-        $crate::message(format!($format, $($argument)*))
+        $crate::formatted(format_args!($format, $($argument)*))
     };
     ($error:expr $(,)?) => {
         $crate::message($error.to_string())

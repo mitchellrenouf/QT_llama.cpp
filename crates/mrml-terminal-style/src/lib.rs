@@ -1,4 +1,12 @@
-use std::fmt::{self, Display};
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt::{self, Display};
+#[cfg(feature = "std")]
 use std::io::IsTerminal;
 
 #[derive(Clone, Debug)]
@@ -34,9 +42,16 @@ impl Display for StyledContent {
 }
 
 fn colors_enabled() -> bool {
-    std::env::var_os("NO_COLOR").is_none()
-        && std::env::var("CLICOLOR").map_or(true, |value| value != "0")
-        && std::io::stdout().is_terminal()
+    #[cfg(feature = "std")]
+    {
+        std::env::var_os("NO_COLOR").is_none()
+            && std::env::var("CLICOLOR").map_or(true, |value| value != "0")
+            && std::io::stdout().is_terminal()
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        false
+    }
 }
 
 pub trait Colorize: Display {
