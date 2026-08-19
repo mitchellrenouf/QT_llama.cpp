@@ -1,5 +1,5 @@
+use crate::anyhow::{Result, anyhow};
 use crate::types::{DType, Shape};
-use crate::anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

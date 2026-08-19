@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +37,7 @@ impl HfModelSpec {
             _ => {
                 return Err(anyhow!(
                     "Invalid HuggingFace repo format. Expected 'user/model' or 'user/model:quant'"
-                ))
+                ));
             }
         };
 
@@ -357,7 +357,10 @@ where
         loop {
             if let Some(status) = child.try_wait()? {
                 if !status.success() {
-                    return Err(anyhow!("Failed to download {}. Check network or HF_TOKEN.", filename));
+                    return Err(anyhow!(
+                        "Failed to download {}. Check network or HF_TOKEN.",
+                        filename
+                    ));
                 }
                 break;
             }
@@ -365,7 +368,10 @@ where
             if let Ok(meta) = part_path.metadata() {
                 let cur_len = meta.len();
                 let mb = cur_len as f64 / (1024.0 * 1024.0);
-                let msg = format!("⬇️ [File {}/{}] {} ({:.1} MB downloaded)...", file_num, total_files, filename, mb);
+                let msg = format!(
+                    "⬇️ [File {}/{}] {} ({:.1} MB downloaded)...",
+                    file_num, total_files, filename, mb
+                );
                 let file_pct = (mb / 4000.0).clamp(0.05, 0.95) as f32;
                 let overall = ((file_num as f32 - 1.0) + file_pct) / total_files as f32;
                 progress_cb(&msg, overall, file_num, total_files);

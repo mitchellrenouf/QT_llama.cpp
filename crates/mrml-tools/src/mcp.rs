@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -59,7 +59,10 @@ impl McpClient {
 
     pub async fn call_method(&self, method: &str, params: Option<Value>) -> Result<Value> {
         let id = {
-            let mut id_guard = self.req_id.lock().map_err(|_| anyhow!("MCP request ID lock poisoned"))?;
+            let mut id_guard = self
+                .req_id
+                .lock()
+                .map_err(|_| anyhow!("MCP request ID lock poisoned"))?;
             let current = *id_guard;
             *id_guard += 1;
             current
@@ -70,19 +73,27 @@ impl McpClient {
             ("id", id.into()),
             ("method", method.into()),
         ]);
-        if let Some(params) = params { request["params"] = params; }
+        if let Some(params) = params {
+            request["params"] = params;
+        }
         let mut req_str = serde_json::to_string(&request)?;
         req_str.push('\n');
 
         {
-            let mut stdin_guard = self.stdin.lock().map_err(|_| anyhow!("MCP stdin lock poisoned"))?;
+            let mut stdin_guard = self
+                .stdin
+                .lock()
+                .map_err(|_| anyhow!("MCP stdin lock poisoned"))?;
             stdin_guard.write_all(req_str.as_bytes())?;
             stdin_guard.flush()?;
         }
 
         let mut line = String::new();
         {
-            let mut reader_guard = self.reader.lock().map_err(|_| anyhow!("MCP stdout lock poisoned"))?;
+            let mut reader_guard = self
+                .reader
+                .lock()
+                .map_err(|_| anyhow!("MCP stdout lock poisoned"))?;
             reader_guard.read_line(&mut line)?;
         }
 
@@ -90,7 +101,8 @@ impl McpClient {
         if let Some(err) = resp.get("error").filter(|value| !value.is_null()) {
             return Err(anyhow!("MCP Error: {}", err));
         }
-        resp.get("result").cloned()
+        resp.get("result")
+            .cloned()
             .ok_or_else(|| anyhow!("Empty result from MCP server"))
     }
 
@@ -145,10 +157,7 @@ impl Tool for McpTool {
     }
 
     async fn execute(&self, _workspace_root: &Path, args: Value) -> Result<String> {
-        let params = serde_json::object([
-            ("name", self.name.as_str().into()),
-            ("arguments", args),
-        ]);
+        let params = serde_json::object([("name", self.name.as_str().into()), ("arguments", args)]);
 
         let res = self.client.call_method("tools/call", Some(params)).await?;
         if let Some(content_arr) = res.get("content").and_then(|c| c.as_array()) {

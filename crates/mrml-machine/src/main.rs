@@ -19,11 +19,20 @@ struct Args {
 impl Args {
     fn parse() -> Self {
         let arguments = std::env::args().collect::<Vec<_>>();
-        if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
-            println!("Usage: mrml-machine [OPTIONS] <chat|health|session>\n\n{}", Config::help());
+        if arguments
+            .iter()
+            .any(|argument| argument == "--help" || argument == "-h")
+        {
+            println!(
+                "Usage: mrml-machine [OPTIONS] <chat|health|session>\n\n{}",
+                Config::help()
+            );
             mrml_core::tools::platform::exit_process(0);
         }
-        if arguments.iter().any(|argument| argument == "--version" || argument == "-V") {
+        if arguments
+            .iter()
+            .any(|argument| argument == "--version" || argument == "-V")
+        {
             println!("{}", env!("CARGO_PKG_VERSION"));
             mrml_core::tools::platform::exit_process(0);
         }
@@ -41,25 +50,48 @@ impl Args {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let all = arguments.into_iter().map(Into::into).collect::<Vec<String>>();
-        let program = all.first().cloned().unwrap_or_else(|| "mrml-machine".into());
-        let command_index = all.iter().position(|arg| matches!(arg.as_str(), "chat" | "health" | "session"))
+        let all = arguments
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<String>>();
+        let program = all
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "mrml-machine".into());
+        let command_index = all
+            .iter()
+            .position(|arg| matches!(arg.as_str(), "chat" | "health" | "session"))
             .ok_or_else(|| "a chat, health, or session command is required".to_owned())?;
         let mut common = vec![program];
         let mut require_full_gpu = std::env::var("MRML_REQUIRE_FULL_GPU")
-            .ok().map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")).unwrap_or(false);
-        let mut gpu_load_retries = std::env::var("MRML_GPU_LOAD_RETRIES").ok().and_then(|value| value.parse().ok()).unwrap_or(0);
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        let mut gpu_load_retries = std::env::var("MRML_GPU_LOAD_RETRIES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
         let mut index = 1;
         while index < command_index {
             match all[index].as_str() {
                 "--require-full-gpu" => require_full_gpu = true,
                 "--gpu-load-retries" => {
                     index += 1;
-                    gpu_load_retries = all.get(index).ok_or_else(|| "--gpu-load-retries requires a value".to_owned())?
-                        .parse().map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
+                    gpu_load_retries = all
+                        .get(index)
+                        .ok_or_else(|| "--gpu-load-retries requires a value".to_owned())?
+                        .parse()
+                        .map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
                 }
                 value if value.starts_with("--gpu-load-retries=") => {
-                    gpu_load_retries = value[19..].parse().map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
+                    gpu_load_retries = value[19..]
+                        .parse()
+                        .map_err(|_| "invalid --gpu-load-retries value".to_owned())?;
                 }
                 _ => common.push(all[index].clone()),
             }
@@ -79,19 +111,32 @@ impl Args {
                         "--stdin" => stdin = true,
                         "--prompt" => {
                             index += 1;
-                            prompt = Some(tail.get(index).ok_or_else(|| "--prompt requires a value".to_owned())?.clone());
+                            prompt = Some(
+                                tail.get(index)
+                                    .ok_or_else(|| "--prompt requires a value".to_owned())?
+                                    .clone(),
+                            );
                         }
-                        value if value.starts_with("--prompt=") => prompt = Some(value[9..].to_owned()),
+                        value if value.starts_with("--prompt=") => {
+                            prompt = Some(value[9..].to_owned())
+                        }
                         value => return Err(format!("unknown chat argument '{value}'")),
                     }
                     index += 1;
                 }
-                if stdin && prompt.is_some() { return Err("--stdin conflicts with --prompt".to_owned()); }
+                if stdin && prompt.is_some() {
+                    return Err("--stdin conflicts with --prompt".to_owned());
+                }
                 Command::Chat { prompt, stdin }
             }
             command => return Err(format!("unexpected arguments after {command}")),
         };
-        Ok(Self { config, require_full_gpu, gpu_load_retries, command })
+        Ok(Self {
+            config,
+            require_full_gpu,
+            gpu_load_retries,
+            command,
+        })
     }
 }
 
@@ -103,18 +148,31 @@ fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
             Some((resident, total)) if resident == total => return Ok(agent),
             Some(_) if !strict => return Ok(agent),
             Some((resident, total)) => {
-                let reason = format!("only {resident}/{total} transformer layers are fully GPU-resident");
+                let reason =
+                    format!("only {resident}/{total} transformer layers are fully GPU-resident");
                 if attempt == args.gpu_load_retries {
-                    anyhow::bail!("GPU residency requirement failed after {} load attempt(s): {reason}. Close other GPU applications or reduce context/cache memory, then retry", attempt + 1);
+                    anyhow::bail!(
+                        "GPU residency requirement failed after {} load attempt(s): {reason}. Close other GPU applications or reduce context/cache memory, then retry",
+                        attempt + 1
+                    );
                 }
-                eprintln!("[mrml-machine] Load attempt {} rejected: {reason}; releasing the model and retrying", attempt + 1);
+                eprintln!(
+                    "[mrml-machine] Load attempt {} rejected: {reason}; releasing the model and retrying",
+                    attempt + 1
+                );
             }
             None if !strict => return Ok(agent),
             None => {
                 if attempt == args.gpu_load_retries {
-                    anyhow::bail!("GPU residency requirement failed after {} load attempt(s): no CUDA model engine was loaded. Verify --features cuda, --backend cuda, and the model path", attempt + 1);
+                    anyhow::bail!(
+                        "GPU residency requirement failed after {} load attempt(s): no CUDA model engine was loaded. Verify --features cuda, --backend cuda, and the model path",
+                        attempt + 1
+                    );
                 }
-                eprintln!("[mrml-machine] Load attempt {} did not create a CUDA model engine; retrying", attempt + 1);
+                eprintln!(
+                    "[mrml-machine] Load attempt {} did not create a CUDA model engine; retrying",
+                    attempt + 1
+                );
             }
         }
         drop(agent);
@@ -159,14 +217,22 @@ impl SessionRequest {
         Ok(match operation {
             "chat" => Self::Chat {
                 id,
-                prompt: value.get("prompt").and_then(Value::as_str)
-                    .ok_or_else(|| mrml_json::Error::message("chat request requires a string prompt"))?
+                prompt: value
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        mrml_json::Error::message("chat request requires a string prompt")
+                    })?
                     .to_owned(),
             },
             "health" => Self::Health { id },
             "reset" => Self::Reset { id },
             "exit" => Self::Exit { id },
-            _ => return Err(mrml_json::Error::message(format!("unknown session operation '{operation}'"))),
+            _ => {
+                return Err(mrml_json::Error::message(format!(
+                    "unknown session operation '{operation}'"
+                )));
+            }
         })
     }
 }
@@ -236,40 +302,56 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
             / 1_000_000_000.0,
     };
 
-    let tools = std::mem::take(&mut state.tools).into_iter().map(|tool| object([
-        ("name", tool.name.into()), ("result", tool.result.into())
-    ])).collect();
+    let tools = std::mem::take(&mut state.tools)
+        .into_iter()
+        .map(|tool| object([("name", tool.name.into()), ("result", tool.result.into())]))
+        .collect();
     Ok(object([
-        ("schema_version", 1usize.into()), ("type", "chat_result".into()),
-        ("id", id.into()), ("ok", true.into()), ("content", content.into()),
-        ("reasoning", reasoning.into()), ("tool_events", Value::Array(tools)),
+        ("schema_version", 1usize.into()),
+        ("type", "chat_result".into()),
+        ("id", id.into()),
+        ("ok", true.into()),
+        ("content", content.into()),
+        ("reasoning", reasoning.into()),
+        ("tool_events", Value::Array(tools)),
         ("finish_reason", state.finish_reason.clone().into()),
-        ("metrics", object([
-            ("token_count", metrics.token_count.into()),
-            ("generation_seconds", metrics.generation_seconds.into()),
-            ("tokens_per_second", metrics.tokens_per_second.into()),
-            ("wall_seconds", metrics.wall_seconds.into()),
-        ])),
+        (
+            "metrics",
+            object([
+                ("token_count", metrics.token_count.into()),
+                ("generation_seconds", metrics.generation_seconds.into()),
+                ("tokens_per_second", metrics.tokens_per_second.into()),
+                ("wall_seconds", metrics.wall_seconds.into()),
+            ]),
+        ),
     ]))
 }
 
 async fn health(agent: &MrmlAgent, id: Option<Value>) -> Value {
     match agent.health_check().await {
         Ok(message) => object([
-            ("schema_version", 1usize.into()), ("type", "health_result".into()),
-            ("id", id.into()), ("ok", true.into()), ("message", message.into()),
+            ("schema_version", 1usize.into()),
+            ("type", "health_result".into()),
+            ("id", id.into()),
+            ("ok", true.into()),
+            ("message", message.into()),
         ]),
         Err(error) => object([
-            ("schema_version", 1usize.into()), ("type", "health_result".into()),
-            ("id", id.into()), ("ok", false.into()), ("error", error.to_string().into()),
+            ("schema_version", 1usize.into()),
+            ("type", "health_result".into()),
+            ("id", id.into()),
+            ("ok", false.into()),
+            ("error", error.to_string().into()),
         ]),
     }
 }
 
 async fn run_session(mut agent: MrmlAgent) -> Result<()> {
     emit(object([
-        ("schema_version", 1usize.into()), ("type", "ready".into()),
-        ("ok", true.into()), ("protocol", "mrml-machine-jsonl-v1".into()),
+        ("schema_version", 1usize.into()),
+        ("type", "ready".into()),
+        ("ok", true.into()),
+        ("protocol", "mrml-machine-jsonl-v1".into()),
     ]))?;
 
     for line in io::stdin().lock().lines() {
@@ -281,8 +363,10 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
             Ok(request) => request,
             Err(error) => {
                 emit(object([
-                    ("schema_version", 1usize.into()), ("type", "error".into()),
-                    ("ok", false.into()), ("error", "invalid_request".into()),
+                    ("schema_version", 1usize.into()),
+                    ("type", "error".into()),
+                    ("ok", false.into()),
+                    ("error", "invalid_request".into()),
                     ("message", error.to_string().into()),
                 ]))?;
                 continue;
@@ -295,14 +379,18 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
             SessionRequest::Reset { id } => {
                 agent.reset_context();
                 Ok(object([
-                    ("schema_version", 1usize.into()), ("type", "reset_result".into()),
-                    ("id", id.into()), ("ok", true.into()),
+                    ("schema_version", 1usize.into()),
+                    ("type", "reset_result".into()),
+                    ("id", id.into()),
+                    ("ok", true.into()),
                 ]))
             }
             SessionRequest::Exit { id } => {
                 emit(object([
-                    ("schema_version", 1usize.into()), ("type", "exit_result".into()),
-                    ("id", id.into()), ("ok", true.into()),
+                    ("schema_version", 1usize.into()),
+                    ("type", "exit_result".into()),
+                    ("id", id.into()),
+                    ("ok", true.into()),
                 ]))?;
                 break;
             }
@@ -311,8 +399,10 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
         match response {
             Ok(value) => emit(value)?,
             Err(error) => emit(object([
-                ("schema_version", 1usize.into()), ("type", "error".into()),
-                ("ok", false.into()), ("error", "operation_failed".into()),
+                ("schema_version", 1usize.into()),
+                ("type", "error".into()),
+                ("ok", false.into()),
+                ("error", "operation_failed".into()),
                 ("message", error.to_string().into()),
             ]))?,
         }
@@ -375,8 +465,15 @@ mod tests {
 
     #[test]
     fn parses_strict_gpu_residency_options() {
-        let args=Args::try_parse_from(["mrml-machine","--require-full-gpu","--gpu-load-retries","3","health"]).unwrap();
+        let args = Args::try_parse_from([
+            "mrml-machine",
+            "--require-full-gpu",
+            "--gpu-load-retries",
+            "3",
+            "health",
+        ])
+        .unwrap();
         assert!(args.require_full_gpu);
-        assert_eq!(args.gpu_load_retries,3);
+        assert_eq!(args.gpu_load_retries, 3);
     }
 }

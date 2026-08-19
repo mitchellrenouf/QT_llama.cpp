@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use anyhow::{Result, anyhow};
 
 #[derive(Clone)]
 enum Atom {
@@ -33,7 +33,9 @@ impl Regex {
     pub fn new(pattern: &str) -> Result<Self> {
         let mut chars = pattern.chars().peekable();
         let anchored_start = matches!(chars.peek(), Some('^'));
-        if anchored_start { chars.next(); }
+        if anchored_start {
+            chars.next();
+        }
         let mut pieces: Vec<Piece> = Vec::new();
         let mut anchored_end = false;
         while let Some(ch) = chars.next() {
@@ -43,39 +45,76 @@ impl Regex {
             }
             let atom = match ch {
                 '.' => Atom::Any,
-                '\\' => Atom::Literal(chars.next().ok_or_else(|| anyhow!("trailing regex escape"))?),
+                '\\' => Atom::Literal(
+                    chars
+                        .next()
+                        .ok_or_else(|| anyhow!("trailing regex escape"))?,
+                ),
                 '[' => {
                     let negated = matches!(chars.peek(), Some('^'));
-                    if negated { chars.next(); }
+                    if negated {
+                        chars.next();
+                    }
                     let mut class = Vec::new();
                     let mut closed = false;
                     while let Some(item) = chars.next() {
-                        if item == ']' { closed = true; break; }
-                        let value = if item == '\\' { chars.next().ok_or_else(|| anyhow!("trailing class escape"))? } else { item };
+                        if item == ']' {
+                            closed = true;
+                            break;
+                        }
+                        let value = if item == '\\' {
+                            chars
+                                .next()
+                                .ok_or_else(|| anyhow!("trailing class escape"))?
+                        } else {
+                            item
+                        };
                         if matches!(chars.peek(), Some('-')) {
                             chars.next();
-                            let end = chars.next().ok_or_else(|| anyhow!("unfinished character range"))?;
-                            if value > end { return Err(anyhow!("reversed character range")); }
+                            let end = chars
+                                .next()
+                                .ok_or_else(|| anyhow!("unfinished character range"))?;
+                            if value > end {
+                                return Err(anyhow!("reversed character range"));
+                            }
                             class.extend(value..=end);
                         } else {
                             class.push(value);
                         }
                     }
-                    if !closed { return Err(anyhow!("unclosed character class")); }
-                    Atom::Class { chars: class, negated }
+                    if !closed {
+                        return Err(anyhow!("unclosed character class"));
+                    }
+                    Atom::Class {
+                        chars: class,
+                        negated,
+                    }
                 }
                 '*' | '+' | '?' => return Err(anyhow!("regex quantifier has no preceding atom")),
                 other => Atom::Literal(other),
             };
             let repeat = match chars.peek() {
-                Some('*') => { chars.next(); Repeat::ZeroOrMore }
-                Some('+') => { chars.next(); Repeat::OneOrMore }
-                Some('?') => { chars.next(); Repeat::ZeroOrOne }
+                Some('*') => {
+                    chars.next();
+                    Repeat::ZeroOrMore
+                }
+                Some('+') => {
+                    chars.next();
+                    Repeat::OneOrMore
+                }
+                Some('?') => {
+                    chars.next();
+                    Repeat::ZeroOrOne
+                }
                 _ => Repeat::One,
             };
             pieces.push(Piece { atom, repeat });
         }
-        Ok(Self { pieces, anchored_start, anchored_end })
+        Ok(Self {
+            pieces,
+            anchored_start,
+            anchored_end,
+        })
     }
 
     pub fn is_match(&self, text: &str) -> bool {
@@ -85,7 +124,9 @@ impl Regex {
         } else {
             Box::new(0..=chars.len())
         };
-        starts.into_iter().any(|start| self.matches_from(&chars, 0, start))
+        starts
+            .into_iter()
+            .any(|start| self.matches_from(&chars, 0, start))
     }
 
     fn matches_from(&self, text: &[char], piece: usize, position: usize) -> bool {
@@ -96,14 +137,22 @@ impl Regex {
         let accepts = |index: usize| index < text.len() && atom_matches(&current.atom, text[index]);
         match current.repeat {
             Repeat::One => accepts(position) && self.matches_from(text, piece + 1, position + 1),
-            Repeat::ZeroOrOne => self.matches_from(text, piece + 1, position)
-                || (accepts(position) && self.matches_from(text, piece + 1, position + 1)),
+            Repeat::ZeroOrOne => {
+                self.matches_from(text, piece + 1, position)
+                    || (accepts(position) && self.matches_from(text, piece + 1, position + 1))
+            }
             Repeat::ZeroOrMore | Repeat::OneOrMore => {
                 let minimum = usize::from(matches!(current.repeat, Repeat::OneOrMore));
                 let mut end = position;
-                while accepts(end) { end += 1; }
-                if end - position < minimum { return false; }
-                (position + minimum..=end).rev().any(|next| self.matches_from(text, piece + 1, next))
+                while accepts(end) {
+                    end += 1;
+                }
+                if end - position < minimum {
+                    return false;
+                }
+                (position + minimum..=end)
+                    .rev()
+                    .any(|next| self.matches_from(text, piece + 1, next))
             }
         }
     }

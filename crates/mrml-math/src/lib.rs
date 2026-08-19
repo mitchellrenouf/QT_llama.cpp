@@ -19,13 +19,34 @@ unsafe extern "C" {
     fn native_round(value: f32) -> f32;
 }
 
-#[inline] pub fn sqrt(value: f32) -> f32 { unsafe { native_sqrt(value) } }
-#[inline] pub fn pow(value: f32, exponent: f32) -> f32 { unsafe { native_pow(value, exponent) } }
-#[inline] pub fn cos(value: f32) -> f32 { unsafe { native_cos(value) } }
-#[inline] pub fn sin(value: f32) -> f32 { unsafe { native_sin(value) } }
-#[inline] pub fn tanh(value: f32) -> f32 { unsafe { native_tanh(value) } }
-#[inline] pub fn exp(value: f32) -> f32 { unsafe { native_exp(value) } }
-#[inline] pub fn round(value: f32) -> f32 { unsafe { native_round(value) } }
+#[inline]
+pub fn sqrt(value: f32) -> f32 {
+    unsafe { native_sqrt(value) }
+}
+#[inline]
+pub fn pow(value: f32, exponent: f32) -> f32 {
+    unsafe { native_pow(value, exponent) }
+}
+#[inline]
+pub fn cos(value: f32) -> f32 {
+    unsafe { native_cos(value) }
+}
+#[inline]
+pub fn sin(value: f32) -> f32 {
+    unsafe { native_sin(value) }
+}
+#[inline]
+pub fn tanh(value: f32) -> f32 {
+    unsafe { native_tanh(value) }
+}
+#[inline]
+pub fn exp(value: f32) -> f32 {
+    unsafe { native_exp(value) }
+}
+#[inline]
+pub fn round(value: f32) -> f32 {
+    unsafe { native_round(value) }
+}
 
 #[cfg(test)]
 mod tests {

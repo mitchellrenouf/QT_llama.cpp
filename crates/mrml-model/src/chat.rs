@@ -108,11 +108,7 @@ impl ChatMessage {
                         text.push_str(t);
                     }
                 }
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(text)
-                }
+                if text.is_empty() { None } else { Some(text) }
             }
             None => None,
         }
@@ -121,64 +117,159 @@ impl ChatMessage {
     pub fn to_json(&self) -> serde_json::Value {
         let content = match &self.content {
             Some(MessageContent::Text(text)) => text.clone().into(),
-            Some(MessageContent::Parts(parts)) => serde_json::Value::Array(parts.iter().map(|part| match part {
-                ContentPart::Text { text } => serde_json::object([("type", "text".into()), ("text", text.as_str().into())]),
-                ContentPart::ImageUrl { image_url } => serde_json::object([
-                    ("type", "image_url".into()),
-                    ("image_url", serde_json::object([("url", image_url.url.as_str().into())])),
-                ]),
-            }).collect()),
+            Some(MessageContent::Parts(parts)) => serde_json::Value::Array(
+                parts
+                    .iter()
+                    .map(|part| match part {
+                        ContentPart::Text { text } => serde_json::object([
+                            ("type", "text".into()),
+                            ("text", text.as_str().into()),
+                        ]),
+                        ContentPart::ImageUrl { image_url } => serde_json::object([
+                            ("type", "image_url".into()),
+                            (
+                                "image_url",
+                                serde_json::object([("url", image_url.url.as_str().into())]),
+                            ),
+                        ]),
+                    })
+                    .collect(),
+            ),
             None => serde_json::Value::Null,
         };
-        let calls = self.tool_calls.as_ref().map(|calls| serde_json::Value::Array(calls.iter().map(|call| serde_json::object([
-            ("id", call.id.as_str().into()),
-            ("type", call.tool_type.as_str().into()),
-            ("function", serde_json::object([
-                ("name", call.function.name.as_str().into()),
-                ("arguments", call.function.arguments.as_str().into()),
-            ])),
-        ])).collect())).unwrap_or(serde_json::Value::Null);
+        let calls = self
+            .tool_calls
+            .as_ref()
+            .map(|calls| {
+                serde_json::Value::Array(
+                    calls
+                        .iter()
+                        .map(|call| {
+                            serde_json::object([
+                                ("id", call.id.as_str().into()),
+                                ("type", call.tool_type.as_str().into()),
+                                (
+                                    "function",
+                                    serde_json::object([
+                                        ("name", call.function.name.as_str().into()),
+                                        ("arguments", call.function.arguments.as_str().into()),
+                                    ]),
+                                ),
+                            ])
+                        })
+                        .collect(),
+                )
+            })
+            .unwrap_or(serde_json::Value::Null);
         let fields = [
-            ("role", self.role.as_str().into()), ("content", content),
-            ("name", self.name.clone().into()), ("tool_call_id", self.tool_call_id.clone().into()),
-            ("tool_calls", calls), ("reasoning_content", self.reasoning_content.clone().into()),
+            ("role", self.role.as_str().into()),
+            ("content", content),
+            ("name", self.name.clone().into()),
+            ("tool_call_id", self.tool_call_id.clone().into()),
+            ("tool_calls", calls),
+            ("reasoning_content", self.reasoning_content.clone().into()),
         ];
-        serde_json::Value::Object(fields.into_iter().filter(|(_, value)| !value.is_null())
-            .map(|(key, value)| (key.into(), value)).collect())
+        serde_json::Value::Object(
+            fields
+                .into_iter()
+                .filter(|(_, value)| !value.is_null())
+                .map(|(key, value)| (key.into(), value))
+                .collect(),
+        )
     }
 
     pub fn from_json(value: &serde_json::Value) -> Result<Self> {
-        let role = value.get("role").and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ModelError::message("chat message role must be a string"))?.to_owned();
+        let role = value
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ModelError::message("chat message role must be a string"))?
+            .to_owned();
         let content = match value.get("content") {
             None | Some(serde_json::Value::Null) => None,
             Some(serde_json::Value::String(text)) => Some(MessageContent::Text(text.clone())),
-            Some(serde_json::Value::Array(parts)) => Some(MessageContent::Parts(parts.iter().map(|part| {
-                match part.get("type").and_then(serde_json::Value::as_str) {
-                    Some("text") => Ok(ContentPart::Text { text: part.get("text").and_then(serde_json::Value::as_str).unwrap_or("").to_owned() }),
-                    Some("image_url") => Ok(ContentPart::ImageUrl { image_url: ImageUrlDetail { url: part.get("image_url").and_then(|image| image.get("url")).and_then(serde_json::Value::as_str).unwrap_or("").to_owned() } }),
-                    _ => Err(ModelError::message("unknown chat content part")),
-                }
-            }).collect::<Result<Vec<_>>>()?)),
+            Some(serde_json::Value::Array(parts)) => Some(MessageContent::Parts(
+                parts
+                    .iter()
+                    .map(
+                        |part| match part.get("type").and_then(serde_json::Value::as_str) {
+                            Some("text") => Ok(ContentPart::Text {
+                                text: part
+                                    .get("text")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_owned(),
+                            }),
+                            Some("image_url") => Ok(ContentPart::ImageUrl {
+                                image_url: ImageUrlDetail {
+                                    url: part
+                                        .get("image_url")
+                                        .and_then(|image| image.get("url"))
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("")
+                                        .to_owned(),
+                                },
+                            }),
+                            _ => Err(ModelError::message("unknown chat content part")),
+                        },
+                    )
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             _ => return Err(ModelError::message("chat message content has invalid type")),
         };
-        let tool_calls = value.get("tool_calls").and_then(serde_json::Value::as_array).map(|calls| calls.iter().map(|call| {
-            let function = call.get("function").ok_or_else(|| ModelError::message("tool call is missing function"))?;
-            Ok(ToolCall {
-                id: call.get("id").and_then(serde_json::Value::as_str).unwrap_or("").to_owned(),
-                tool_type: call.get("type").and_then(serde_json::Value::as_str).unwrap_or("function").to_owned(),
-                function: FunctionCall {
-                    name: function.get("name").and_then(serde_json::Value::as_str).unwrap_or("").to_owned(),
-                    arguments: function.get("arguments").and_then(serde_json::Value::as_str).unwrap_or("{}").to_owned(),
-                },
+        let tool_calls = value
+            .get("tool_calls")
+            .and_then(serde_json::Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .map(|call| {
+                        let function = call
+                            .get("function")
+                            .ok_or_else(|| ModelError::message("tool call is missing function"))?;
+                        Ok(ToolCall {
+                            id: call
+                                .get("id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_owned(),
+                            tool_type: call
+                                .get("type")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("function")
+                                .to_owned(),
+                            function: FunctionCall {
+                                name: function
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("")
+                                    .to_owned(),
+                                arguments: function
+                                    .get("arguments")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("{}")
+                                    .to_owned(),
+                            },
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
             })
-        }).collect::<Result<Vec<_>>>()).transpose()?;
+            .transpose()?;
         Ok(Self {
-            role, content,
-            name: value.get("name").and_then(serde_json::Value::as_str).map(str::to_owned),
-            tool_call_id: value.get("tool_call_id").and_then(serde_json::Value::as_str).map(str::to_owned),
+            role,
+            content,
+            name: value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            tool_call_id: value
+                .get("tool_call_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
             tool_calls,
-            reasoning_content: value.get("reasoning_content").and_then(serde_json::Value::as_str).map(str::to_owned),
+            reasoning_content: value
+                .get("reasoning_content")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
         })
     }
 }
@@ -270,7 +361,12 @@ pub fn render_chat_template(
             "the embedded GGUF chat template is not a supported Gemma 4 canonical template",
         ));
     }
-    render_gemma4_template(messages, tools.unwrap_or(&[]), system_prompt, enable_thinking)
+    render_gemma4_template(
+        messages,
+        tools.unwrap_or(&[]),
+        system_prompt,
+        enable_thinking,
+    )
 }
 
 fn render_gemma4_template(
@@ -281,9 +377,9 @@ fn render_gemma4_template(
 ) -> Result<String> {
     let mut output = String::from("<bos>");
     let mut first = 0;
-    let leading_system = messages.first().filter(|message| {
-        message.role == "system" || message.role == "developer"
-    });
+    let leading_system = messages
+        .first()
+        .filter(|message| message.role == "system" || message.role == "developer");
     let system = system_prompt
         .filter(|text| !text.trim().is_empty())
         .map(str::to_owned)
@@ -314,20 +410,32 @@ fn render_gemma4_template(
             index += 1;
             continue;
         }
-        let role = if message.role == "assistant" { "model" } else { &message.role };
+        let role = if message.role == "assistant" {
+            "model"
+        } else {
+            &message.role
+        };
         output.push_str("<|turn>");
         output.push_str(role);
         output.push('\n');
         if message.role == "assistant" {
-            if let Some(reasoning) = message.reasoning_content.as_deref().filter(|text| !text.is_empty()) {
+            if let Some(reasoning) = message
+                .reasoning_content
+                .as_deref()
+                .filter(|text| !text.is_empty())
+            {
                 output.push_str("<|channel>thought\n");
                 output.push_str(reasoning);
                 output.push_str("\n<channel|>");
             }
             if let Some(calls) = &message.tool_calls {
                 for call in calls {
-                    let arguments: serde_json::Value = serde_json::from_str(&call.function.arguments)
-                        .map_err(|error| ModelError::message(format!("invalid tool-call arguments passed to chat template: {error}")))?;
+                    let arguments: serde_json::Value =
+                        serde_json::from_str(&call.function.arguments).map_err(|error| {
+                            ModelError::message(format!(
+                                "invalid tool-call arguments passed to chat template: {error}"
+                            ))
+                        })?;
                     let arguments = arguments.as_object().ok_or_else(|| {
                         ModelError::message("tool-call arguments must be a JSON object")
                     })?;
@@ -335,7 +443,9 @@ fn render_gemma4_template(
                     output.push_str(&call.function.name);
                     output.push('{');
                     for (position, (key, value)) in arguments.iter().enumerate() {
-                        if position != 0 { output.push(','); }
+                        if position != 0 {
+                            output.push(',');
+                        }
                         output.push_str(key);
                         output.push(':');
                         output.push_str(&format_argument_canonical(value));
@@ -345,7 +455,8 @@ fn render_gemma4_template(
                 let mut follow = index + 1;
                 while follow < messages.len() && messages[follow].role == "tool" {
                     let response = &messages[follow];
-                    let name = calls.iter()
+                    let name = calls
+                        .iter()
                         .find(|call| response.tool_call_id.as_deref() == Some(call.id.as_str()))
                         .map(|call| call.function.name.as_str())
                         .or(response.name.as_deref())
@@ -500,7 +611,10 @@ mod template_tests {
         let restored = ChatMessage::from_json(&message.to_json()).unwrap();
         assert_eq!(restored.role, "assistant");
         assert_eq!(restored.get_text_content().as_deref(), Some("done"));
-        assert_eq!(restored.reasoning_content.as_deref(), Some("checked the clock"));
+        assert_eq!(
+            restored.reasoning_content.as_deref(),
+            Some("checked the clock")
+        );
         let call = &restored.tool_calls.unwrap()[0];
         assert_eq!(call.id, "call-9");
         assert_eq!(call.function.name, "clock");
@@ -546,7 +660,9 @@ mod template_tests {
             false,
         )
         .unwrap();
-        assert!(rendered.contains("<|tool_call>call:run_command{command_line:<|\"|>Get-Date<|\"|>}<tool_call|>"));
+        assert!(rendered.contains(
+            "<|tool_call>call:run_command{command_line:<|\"|>Get-Date<|\"|>}<tool_call|>"
+        ));
     }
 
     #[test]

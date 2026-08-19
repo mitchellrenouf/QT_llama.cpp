@@ -35,14 +35,28 @@ fn requests_live_local_time(input: &str) -> bool {
 }
 
 fn verified_time_answer(tool_output: &str) -> Option<String> {
-    let stdout = tool_output.split("--- STDOUT ---").nth(1)?.split("--- STDERR ---").next()?;
-    let value = stdout.lines().map(str::trim).find(|line| !line.is_empty() && *line != "(empty)")?;
+    let stdout = tool_output
+        .split("--- STDOUT ---")
+        .nth(1)?
+        .split("--- STDERR ---")
+        .next()?;
+    let value = stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && *line != "(empty)")?;
     Some(format!("The current local time is **{value}**."))
 }
 
 fn verified_command_answer(tool_output: &str) -> Option<String> {
-    let stdout = tool_output.split("--- STDOUT ---").nth(1)?.split("--- STDERR ---").next()?.trim();
-    if stdout.is_empty() || stdout == "(empty)" { None } else {
+    let stdout = tool_output
+        .split("--- STDOUT ---")
+        .nth(1)?
+        .split("--- STDERR ---")
+        .next()?
+        .trim();
+    if stdout.is_empty() || stdout == "(empty)" {
+        None
+    } else {
         Some(format!("The command printed:\n\n```text\n{}\n```", stdout))
     }
 }
@@ -55,7 +69,9 @@ fn explicitly_requested_command(input: &str) -> Option<String> {
     let start = normalized.find("execute ")? + "execute ".len();
     let remainder = &input[start..];
     let end = [", then", ", and then", " then tell", " and tell"]
-        .iter().filter_map(|marker| remainder.to_ascii_lowercase().find(marker)).min()
+        .iter()
+        .filter_map(|marker| remainder.to_ascii_lowercase().find(marker))
+        .min()
         .unwrap_or(remainder.len());
     let command = remainder[..end].trim().trim_matches(['`', '\'', '"']);
     (!command.is_empty()).then(|| command.to_string())
@@ -103,7 +119,8 @@ impl MrmlAgent {
 
     pub fn set_mode(&mut self, mode: AgentMode) {
         self.config.mode = mode;
-        self.client.set_thinking_enabled(crate::client::thinking_enabled_for_mode(mode));
+        self.client
+            .set_thinking_enabled(crate::client::thinking_enabled_for_mode(mode));
         println!("Switched to mode: {}", mode.to_string().cyan());
         self.reset_context();
     }
@@ -388,9 +405,12 @@ impl MrmlAgent {
         }
         let content = fs::read_to_string(&file_path)?;
         let value: serde_json::Value = serde_json::from_str(&content)?;
-        let history = value.as_array()
+        let history = value
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("session history must be a JSON array"))?
-            .iter().map(ChatMessage::from_json).collect::<mrml_model::error::Result<Vec<_>>>()?;
+            .iter()
+            .map(ChatMessage::from_json)
+            .collect::<mrml_model::error::Result<Vec<_>>>()?;
         self.history = history;
         println!("Loaded session: {}", name.cyan());
         Ok(file_path)
@@ -466,29 +486,38 @@ impl MrmlAgent {
                 "run_command".cyan(),
                 args.to_string().dimmed()
             );
-            self.history.push(ChatMessage::assistant(None, Some(vec![tool_call])));
-            let result = self.registry.get("run_command").unwrap()
-                .execute(&self.config.workspace_root, args).await;
+            self.history
+                .push(ChatMessage::assistant(None, Some(vec![tool_call])));
+            let result = self
+                .registry
+                .get("run_command")
+                .unwrap()
+                .execute(&self.config.workspace_root, args)
+                .await;
             match result {
                 Ok(output) => {
                     println!("⚡ Executing {}", "run_command".cyan());
                     println!("📥 Tool Output:\n{}", output.dimmed());
-                    self.history.push(ChatMessage::tool(call_id, "run_command", output.clone()));
+                    self.history
+                        .push(ChatMessage::tool(call_id, "run_command", output.clone()));
                     event_sink(StreamEvent::ToolExecuted {
-                        name: "run_command".to_string(), result: output.clone(),
+                        name: "run_command".to_string(),
+                        result: output.clone(),
                     });
                     if is_clock_request {
                         if let Some(answer) = verified_time_answer(&output) {
-                        event_sink(StreamEvent::Content(answer.clone()));
-                        event_sink(StreamEvent::Finish("stop".to_string()));
-                        self.history.push(ChatMessage::assistant(Some(answer.clone()), None));
-                        return Ok((answer, String::new()));
+                            event_sink(StreamEvent::Content(answer.clone()));
+                            event_sink(StreamEvent::Finish("stop".to_string()));
+                            self.history
+                                .push(ChatMessage::assistant(Some(answer.clone()), None));
+                            return Ok((answer, String::new()));
                         }
                     } else {
                         if let Some(answer) = verified_command_answer(&output) {
                             event_sink(StreamEvent::Content(answer.clone()));
                             event_sink(StreamEvent::Finish("stop".to_string()));
-                            self.history.push(ChatMessage::assistant(Some(answer.clone()), None));
+                            self.history
+                                .push(ChatMessage::assistant(Some(answer.clone()), None));
                             return Ok((answer, String::new()));
                         }
                     }
@@ -496,7 +525,8 @@ impl MrmlAgent {
                 Err(error) => {
                     let output = format!("Tool execution failed: {error}");
                     println!("{}: {}", "✖".red(), output);
-                    self.history.push(ChatMessage::tool(call_id, "run_command", output));
+                    self.history
+                        .push(ChatMessage::tool(call_id, "run_command", output));
                 }
             }
         }
@@ -578,7 +608,10 @@ impl MrmlAgent {
                 let tool_opt = self.registry.get(name);
                 let tool_result = match tool_opt {
                     Some(tool) => tool.execute(&self.config.workspace_root, parsed_args).await,
-                    None => Err(mrml_tools::tool_error(format!("Unknown tool requested: {}", name))),
+                    None => Err(mrml_tools::tool_error(format!(
+                        "Unknown tool requested: {}",
+                        name
+                    ))),
                 };
 
                 match tool_result {
@@ -638,24 +671,33 @@ impl MrmlAgent {
             };
             println!(
                 "\n{} Requesting tool {} with args: {}",
-                "🔧 [Tool Call]".bold().yellow(), "run_command".cyan(), args.to_string().dimmed()
+                "🔧 [Tool Call]".bold().yellow(),
+                "run_command".cyan(),
+                args.to_string().dimmed()
             );
-            self.history.push(ChatMessage::assistant(None, Some(vec![tool_call])));
+            self.history
+                .push(ChatMessage::assistant(None, Some(vec![tool_call])));
             println!("⚡ Executing {}", "run_command".cyan());
-            let result = self.registry.get("run_command").unwrap()
-                .execute(&self.config.workspace_root, args).await;
+            let result = self
+                .registry
+                .get("run_command")
+                .unwrap()
+                .execute(&self.config.workspace_root, args)
+                .await;
             match result {
                 Ok(output) => {
                     println!("📥 Tool Output:\n{}", output.dimmed());
-                    self.history.push(ChatMessage::tool(call_id, "run_command", output.clone()));
+                    self.history
+                        .push(ChatMessage::tool(call_id, "run_command", output.clone()));
                     if is_clock_request {
                         if let Some(answer) = verified_time_answer(&output) {
-                        print!("\n{}: {}", "🤖 MRML".bold().green(), answer);
-                        println!("\n{}", "─── 🎨 Rich Formatted Output ───".dimmed());
-                        print_rich_markdown(&answer);
-                        println!("{}", "────────────────────────────────".dimmed());
-                        self.history.push(ChatMessage::assistant(Some(answer), None));
-                        return Ok(());
+                            print!("\n{}: {}", "🤖 MRML".bold().green(), answer);
+                            println!("\n{}", "─── 🎨 Rich Formatted Output ───".dimmed());
+                            print_rich_markdown(&answer);
+                            println!("{}", "────────────────────────────────".dimmed());
+                            self.history
+                                .push(ChatMessage::assistant(Some(answer), None));
+                            return Ok(());
                         }
                     } else {
                         if let Some(answer) = verified_command_answer(&output) {
@@ -663,7 +705,8 @@ impl MrmlAgent {
                             println!("\n{}", "─── 🎨 Rich Formatted Output ───".dimmed());
                             print_rich_markdown(&answer);
                             println!("{}", "────────────────────────────────".dimmed());
-                            self.history.push(ChatMessage::assistant(Some(answer), None));
+                            self.history
+                                .push(ChatMessage::assistant(Some(answer), None));
                             return Ok(());
                         }
                     }
@@ -671,7 +714,8 @@ impl MrmlAgent {
                 Err(error) => {
                     let output = format!("Tool execution failed: {error}");
                     println!("{}: {}", "✖".red(), output);
-                    self.history.push(ChatMessage::tool(call_id, "run_command", output));
+                    self.history
+                        .push(ChatMessage::tool(call_id, "run_command", output));
                 }
             }
         }
@@ -869,7 +913,10 @@ impl MrmlAgent {
                         println!("⚡ Executing {}", name.cyan());
                         tool.execute(&self.config.workspace_root, parsed_args).await
                     }
-                    None => Err(mrml_tools::tool_error(format!("Unknown tool requested: {}", name))),
+                    None => Err(mrml_tools::tool_error(format!(
+                        "Unknown tool requested: {}",
+                        name
+                    ))),
                 };
 
                 match tool_result {
@@ -905,21 +952,31 @@ impl MrmlAgent {
 
 #[cfg(test)]
 mod tests {
-    use super::{explicitly_requested_command, requests_live_local_time, verified_command_answer, verified_time_answer};
+    use super::{
+        explicitly_requested_command, requests_live_local_time, verified_command_answer,
+        verified_time_answer,
+    };
 
     #[test]
     fn routes_only_live_clock_questions() {
         assert!(requests_live_local_time("What time is it?"));
         assert!(requests_live_local_time("Tell me the current time please"));
-        assert!(!requests_live_local_time("Explain algorithm time complexity"));
-        assert!(!requests_live_local_time("What time did the meeting start?"));
+        assert!(!requests_live_local_time(
+            "Explain algorithm time complexity"
+        ));
+        assert!(!requests_live_local_time(
+            "What time did the meeting start?"
+        ));
     }
 
     #[test]
     fn formats_only_verified_command_stdout() {
-        let output = "Exit Code: 0\n--- STDOUT ---\n2026-08-18 12:49:24 -02:30\n--- STDERR ---\n(empty)";
-        assert_eq!(verified_time_answer(output).as_deref(),
-            Some("The current local time is **2026-08-18 12:49:24 -02:30**."));
+        let output =
+            "Exit Code: 0\n--- STDOUT ---\n2026-08-18 12:49:24 -02:30\n--- STDERR ---\n(empty)";
+        assert_eq!(
+            verified_time_answer(output).as_deref(),
+            Some("The current local time is **2026-08-18 12:49:24 -02:30**.")
+        );
         assert!(verified_time_answer("Tool execution failed").is_none());
     }
 
@@ -934,7 +991,9 @@ mod tests {
     #[test]
     fn formats_verified_command_stdout() {
         let output = "Exit Code: 0\n--- STDOUT ---\nMRML_TOOL_OK\n--- STDERR ---\n(empty)";
-        assert_eq!(verified_command_answer(output).as_deref(),
-            Some("The command printed:\n\n```text\nMRML_TOOL_OK\n```"));
+        assert_eq!(
+            verified_command_answer(output).as_deref(),
+            Some("The command printed:\n\n```text\nMRML_TOOL_OK\n```")
+        );
     }
 }

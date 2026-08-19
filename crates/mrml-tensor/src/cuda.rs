@@ -113,8 +113,8 @@ unsafe fn cuda_driver_symbol(name: &str) -> Result<*mut c_void> {
         return Err(anyhow!("invalid CUDA driver symbol"));
     }
     bytes[..name.len()].copy_from_slice(name.as_bytes());
-    let name_c = CStr::from_bytes_until_nul(&bytes)
-        .map_err(|_| anyhow!("invalid CUDA driver symbol"))?;
+    let name_c =
+        CStr::from_bytes_until_nul(&bytes).map_err(|_| anyhow!("invalid CUDA driver symbol"))?;
     cuda_driver_library()?
         .symbol(name_c)
         .ok_or_else(|| anyhow!("CUDA driver symbol {name:?} is unavailable"))

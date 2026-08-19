@@ -240,7 +240,15 @@ async fn async_main() -> anyhow::Result<()> {
                         Err(e) => println!("{} Failed to switch backend: {}", "✖".red(), e),
                     }
                 } else {
-                    println!("\nActive backend: {}\nUsage: /backend cuda | rocm | sycl | vulkan | cpu | auto\n", agent.get_config().backend.to_string().bright_yellow().bold());
+                    println!(
+                        "\nActive backend: {}\nUsage: /backend cuda | rocm | sycl | vulkan | cpu | auto\n",
+                        agent
+                            .get_config()
+                            .backend
+                            .to_string()
+                            .bright_yellow()
+                            .bold()
+                    );
                 }
                 continue;
             }
@@ -250,7 +258,10 @@ async fn async_main() -> anyhow::Result<()> {
                         "general" => agent.set_mode(AgentMode::General),
                         "coder" | "coding" => agent.set_mode(AgentMode::Coder),
                         "automatic" | "auto" => agent.set_mode(AgentMode::Automatic),
-                        _ => println!("{} Invalid mode. Use '/mode general', '/mode coder', or '/mode automatic'.", "✖".red()),
+                        _ => println!(
+                            "{} Invalid mode. Use '/mode general', '/mode coder', or '/mode automatic'.",
+                            "✖".red()
+                        ),
                     }
                 } else {
                     println!(
@@ -342,16 +353,26 @@ async fn async_main() -> anyhow::Result<()> {
                     "{}",
                     "==================================================".cyan()
                 );
-                println!("  /hf [repo:quant]               - Download & load Hugging Face GGUF model (default: ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0)");
+                println!(
+                    "  /hf [repo:quant]               - Download & load Hugging Face GGUF model (default: ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0)"
+                );
                 println!("  /model <path>                  - Load a local .gguf model file");
-                println!("  /backend [cuda|rocm|sycl|vulkan|cpu|auto] - Switch active GPU/CPU compute backend");
+                println!(
+                    "  /backend [cuda|rocm|sycl|vulkan|cpu|auto] - Switch active GPU/CPU compute backend"
+                );
                 println!("  /speech                        - Toggle Text-to-Speech audio output");
-                println!("  /mode [general|coder|automatic] - Switch between General, Coding & Automatic Modes");
+                println!(
+                    "  /mode [general|coder|automatic] - Switch between General, Coding & Automatic Modes"
+                );
                 println!(
                     "  /automatic, /auto              - Switch instantly into Autonomous Mode"
                 );
-                println!("  /status                        - View system telemetry, active mode, rules & token stats");
-                println!("  /save [name]                   - Save current session history to .mrml/sessions/");
+                println!(
+                    "  /status                        - View system telemetry, active mode, rules & token stats"
+                );
+                println!(
+                    "  /save [name]                   - Save current session history to .mrml/sessions/"
+                );
                 println!("  /load [name]                   - Load a saved session history file");
                 println!("  /sessions                      - List all saved sessions");
                 println!(

@@ -34,7 +34,8 @@ unsafe extern "system" {
     fn GetSystemTimeAsFileTime(time: *mut FileTime);
     fn GetProcessHeap() -> *mut c_void;
     fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
-    fn HeapReAlloc(heap: *mut c_void, flags: u32, memory: *mut c_void, bytes: usize) -> *mut c_void;
+    fn HeapReAlloc(heap: *mut c_void, flags: u32, memory: *mut c_void, bytes: usize)
+    -> *mut c_void;
     fn HeapFree(heap: *mut c_void, flags: u32, memory: *mut c_void) -> i32;
     fn QueryPerformanceCounter(value: *mut i64) -> i32;
     fn QueryPerformanceFrequency(value: *mut i64) -> i32;
@@ -185,10 +186,14 @@ pub fn local_time() -> LocalTime {
 pub fn sleep_millis(_: u64) {}
 
 #[cfg(not(windows))]
-pub fn monotonic_nanos() -> u64 { 0 }
+pub fn monotonic_nanos() -> u64 {
+    0
+}
 
 #[cfg(not(windows))]
-pub fn unix_time_millis() -> u64 { 0 }
+pub fn unix_time_millis() -> u64 {
+    0
+}
 
 #[cfg(not(windows))]
 pub fn local_time() -> LocalTime {
@@ -242,13 +247,18 @@ mod tests {
         use std::io::Write;
         use std::os::windows::io::AsRawHandle;
 
-        let path = std::env::temp_dir().join(std::format!("mrml-windows-map-{}.bin", std::process::id()));
+        let path =
+            std::env::temp_dir().join(std::format!("mrml-windows-map-{}.bin", std::process::id()));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(b"native mapping").unwrap();
         drop(file);
         let file = std::fs::File::open(&path).unwrap();
-        let mapping = unsafe { super::map_file_read_only(file.as_raw_handle().cast(), 14) }.unwrap();
-        assert_eq!(unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) }, b"native mapping");
+        let mapping =
+            unsafe { super::map_file_read_only(file.as_raw_handle().cast(), 14) }.unwrap();
+        assert_eq!(
+            unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) },
+            b"native mapping"
+        );
         assert!(unsafe { super::unmap_file(mapping, 14) });
         drop(file);
         std::fs::remove_file(path).unwrap();

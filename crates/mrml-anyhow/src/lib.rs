@@ -140,8 +140,13 @@ mod tests {
 
     #[test]
     fn adds_context_to_results_and_options() {
-        let error = std::fs::read("definitely-missing").context("read failed").unwrap_err();
+        let error = std::fs::read("definitely-missing")
+            .context("read failed")
+            .unwrap_err();
         assert!(error.to_string().starts_with("read failed:"));
-        assert_eq!(None::<u8>.context("value missing").unwrap_err().to_string(), "value missing");
+        assert_eq!(
+            None::<u8>.context("value missing").unwrap_err().to_string(),
+            "value missing"
+        );
     }
 }

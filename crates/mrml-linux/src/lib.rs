@@ -54,7 +54,14 @@ unsafe extern "C" {
     fn dlopen(name: *const i8, flags: c_int) -> *mut c_void;
     fn dlsym(module: *mut c_void, name: *const i8) -> *mut c_void;
     fn dlclose(module: *mut c_void) -> c_int;
-    fn mmap(address: *mut c_void, len: usize, protection: c_int, flags: c_int, file: c_int, offset: isize) -> *mut c_void;
+    fn mmap(
+        address: *mut c_void,
+        len: usize,
+        protection: c_int,
+        flags: c_int,
+        file: c_int,
+        offset: isize,
+    ) -> *mut c_void;
     fn munmap(address: *mut c_void, len: usize) -> c_int;
     fn _exit(status: c_int) -> !;
 }
@@ -140,7 +147,10 @@ pub fn sleep_millis(milliseconds: u64) {
 #[cfg(unix)]
 pub fn monotonic_nanos() -> u64 {
     const CLOCK_MONOTONIC: c_int = 1;
-    let mut value = Timespec { seconds: 0, nanoseconds: 0 };
+    let mut value = Timespec {
+        seconds: 0,
+        nanoseconds: 0,
+    };
     if unsafe { clock_gettime(CLOCK_MONOTONIC, &mut value) } != 0 {
         return 0;
     }
@@ -150,7 +160,10 @@ pub fn monotonic_nanos() -> u64 {
 #[cfg(unix)]
 pub fn unix_time_millis() -> u64 {
     const CLOCK_REALTIME: c_int = 0;
-    let mut value = Timespec { seconds: 0, nanoseconds: 0 };
+    let mut value = Timespec {
+        seconds: 0,
+        nanoseconds: 0,
+    };
     if unsafe { clock_gettime(CLOCK_REALTIME, &mut value) } != 0 {
         return 0;
     }
@@ -188,10 +201,14 @@ pub fn local_time(_: i64) -> Option<LocalTime> {
 pub fn sleep_millis(_: u64) {}
 
 #[cfg(not(unix))]
-pub fn monotonic_nanos() -> u64 { 0 }
+pub fn monotonic_nanos() -> u64 {
+    0
+}
 
 #[cfg(not(unix))]
-pub fn unix_time_millis() -> u64 { 0 }
+pub fn unix_time_millis() -> u64 {
+    0
+}
 
 #[cfg(all(test, unix))]
 mod tests {
@@ -228,13 +245,17 @@ mod tests {
         use std::io::Write;
         use std::os::fd::AsRawFd;
 
-        let path = std::env::temp_dir().join(std::format!("mrml-linux-map-{}.bin", std::process::id()));
+        let path =
+            std::env::temp_dir().join(std::format!("mrml-linux-map-{}.bin", std::process::id()));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(b"native mapping").unwrap();
         drop(file);
         let file = std::fs::File::open(&path).unwrap();
         let mapping = unsafe { super::map_file_read_only(file.as_raw_fd(), 14) }.unwrap();
-        assert_eq!(unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) }, b"native mapping");
+        assert_eq!(
+            unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) },
+            b"native mapping"
+        );
         assert!(unsafe { super::unmap_file(mapping, 14) });
         drop(file);
         std::fs::remove_file(path).unwrap();

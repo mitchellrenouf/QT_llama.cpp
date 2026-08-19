@@ -11,7 +11,13 @@ fn test_q8_0_quant_dequant_roundtrip() {
 
     for i in 0..64 {
         let diff = (original[i] - restored[i]).abs();
-        assert!(diff < 0.05, "Mismatch at index {}: original={}, restored={}", i, original[i], restored[i]);
+        assert!(
+            diff < 0.05,
+            "Mismatch at index {}: original={}, restored={}",
+            i,
+            original[i],
+            restored[i]
+        );
     }
 }
 

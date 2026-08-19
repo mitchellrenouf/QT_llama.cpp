@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
-pub use mrml_model::{format_gemma_chat, ChatMessage, FunctionCall, ModelEngine, ToolCall};
+use anyhow::{Result, anyhow};
+pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,8 +43,15 @@ pub enum StreamEvent {
     Reasoning(String),
     Content(String),
     ToolCallAssembled(ToolCall),
-    ToolExecuted { name: String, result: String },
-    Metrics { token_count: usize, elapsed_secs: f64, tokens_per_sec: f64 },
+    ToolExecuted {
+        name: String,
+        result: String,
+    },
+    Metrics {
+        token_count: usize,
+        elapsed_secs: f64,
+        tokens_per_sec: f64,
+    },
     Finish(String),
 }
 
@@ -215,9 +222,16 @@ pub fn parse_kwargs_to_json(args: &str) -> String {
     for part in split_kwargs(args) {
         if let Some((key, raw_value)) = part.split_once('=') {
             let key = key.trim();
-            if key.is_empty() || !key.bytes().enumerate().all(|(index, byte)| {
-                byte == b'_' || if index == 0 { byte.is_ascii_alphabetic() } else { byte.is_ascii_alphanumeric() }
-            }) {
+            if key.is_empty()
+                || !key.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_'
+                        || if index == 0 {
+                            byte.is_ascii_alphabetic()
+                        } else {
+                            byte.is_ascii_alphanumeric()
+                        }
+                })
+            {
                 continue;
             }
             let raw_val = raw_value.trim().trim_end_matches(')');
@@ -225,15 +239,21 @@ pub fn parse_kwargs_to_json(args: &str) -> String {
                 && ((raw_val.starts_with('"') && raw_val.ends_with('"'))
                     || (raw_val.starts_with('\'') && raw_val.ends_with('\'')))
             {
-                map.insert(key.to_string(), serde_json::Value::String(raw_val[1..raw_val.len() - 1].to_string()));
+                map.insert(
+                    key.to_string(),
+                    serde_json::Value::String(raw_val[1..raw_val.len() - 1].to_string()),
+                );
             } else {
-            if let Ok(n) = raw_val.parse::<i64>() {
-                map.insert(key.to_string(), serde_json::json!(n));
-            } else if let Ok(b) = raw_val.parse::<bool>() {
-                map.insert(key.to_string(), serde_json::json!(b));
-            } else {
-                map.insert(key.to_string(), serde_json::Value::String(raw_val.to_string()));
-            }
+                if let Ok(n) = raw_val.parse::<i64>() {
+                    map.insert(key.to_string(), serde_json::json!(n));
+                } else if let Ok(b) = raw_val.parse::<bool>() {
+                    map.insert(key.to_string(), serde_json::json!(b));
+                } else {
+                    map.insert(
+                        key.to_string(),
+                        serde_json::Value::String(raw_val.to_string()),
+                    );
+                }
             }
         }
     }
@@ -258,7 +278,10 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
     // Format 1: JSON with "name" and "arguments"
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
         if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
-            let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let args = val
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
             let args_str = if args.is_string() {
                 args.as_str().unwrap().to_string()
             } else {
@@ -351,7 +374,11 @@ impl MrmlClient {
         self.engine.is_some()
     }
 
-    pub fn with_engine(engine: Arc<ModelEngine>, system_prompt: Option<String>, enable_thinking: bool) -> Self {
+    pub fn with_engine(
+        engine: Arc<ModelEngine>,
+        system_prompt: Option<String>,
+        enable_thinking: bool,
+    ) -> Self {
         Self {
             engine: Some(engine),
             system_prompt,
@@ -414,7 +441,9 @@ impl MrmlClient {
         if self.engine.is_some() {
             Ok("Native MRML Engine Active".to_string())
         } else {
-            Err(anyhow!("No active native MRML engine loaded. (Place a .gguf model in .cache/gemma or pass --model <path>)"))
+            Err(anyhow!(
+                "No active native MRML engine loaded. (Place a .gguf model in .cache/gemma or pass --model <path>)"
+            ))
         }
     }
 
@@ -447,7 +476,10 @@ impl MrmlClient {
         })
     }
 
-    pub async fn send_completion(&self, request: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
+    pub async fn send_completion(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse> {
         self.chat_completion(request).await
     }
 
@@ -468,26 +500,29 @@ impl MrmlClient {
         let chat_template = engine.chat_template();
         if chat_template.is_none() {
             if let Some(tools) = &request.tools {
-            for tool in tools {
-                sys_prompt.push_str(&format!(
-                    "<|tool|>{}<tool|>\n",
-                    mrml_model::format_tool_declaration_canonical(
-                        &tool.function.name,
-                        &tool.function.description,
-                        &tool.function.parameters
-                    )
-                ));
-            }
+                for tool in tools {
+                    sys_prompt.push_str(&format!(
+                        "<|tool|>{}<tool|>\n",
+                        mrml_model::format_tool_declaration_canonical(
+                            &tool.function.name,
+                            &tool.function.description,
+                            &tool.function.parameters
+                        )
+                    ));
+                }
             }
         }
 
-        let template_tools = request.tools.as_ref().map(|tools| tools.iter().map(|tool| {
-            mrml_model::TemplateTool {
-                name: tool.function.name.clone(),
-                description: tool.function.description.clone(),
-                parameters: tool.function.parameters.clone(),
-            }
-        }).collect::<Vec<_>>());
+        let template_tools = request.tools.as_ref().map(|tools| {
+            tools
+                .iter()
+                .map(|tool| mrml_model::TemplateTool {
+                    name: tool.function.name.clone(),
+                    description: tool.function.description.clone(),
+                    parameters: tool.function.parameters.clone(),
+                })
+                .collect::<Vec<_>>()
+        });
         let prompt = if let Some(template) = chat_template {
             mrml_model::render_chat_template(
                 &template,
@@ -510,7 +545,8 @@ impl MrmlClient {
         let mut raw_acc = String::new();
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
-        let mut in_thought = prompt.ends_with("<|channel>thought\n") || prompt.ends_with("<|channel>thought");
+        let mut in_thought =
+            prompt.ends_with("<|channel>thought\n") || prompt.ends_with("<|channel>thought");
         let mut tool_calls = Vec::new();
 
         while let Ok(piece_res) = rx.recv() {
@@ -541,7 +577,9 @@ impl MrmlClient {
 
             loop {
                 // 1. Check for tool calls: "<|call>" or "<|tool_call>"
-                let tool_start_opt = raw_acc.find("<|call>").or_else(|| raw_acc.find("<|tool_call>"));
+                let tool_start_opt = raw_acc
+                    .find("<|call>")
+                    .or_else(|| raw_acc.find("<|tool_call>"));
                 if let Some(tool_start) = tool_start_opt {
                     let end_opt = raw_acc[tool_start..]
                         .find("<call|>")
@@ -676,8 +714,20 @@ impl MrmlClient {
 
                     // Prefix check for potential tags
                     let prefixes = [
-                        "<", "<|", "<|c", "<|ch", "<|channel", "<|t", "<|tool", "<|tool_call",
-                        "<t", "<th", "<thought", "<e", "<end", "<end_of_turn",
+                        "<",
+                        "<|",
+                        "<|c",
+                        "<|ch",
+                        "<|channel",
+                        "<|t",
+                        "<|tool",
+                        "<|tool_call",
+                        "<t",
+                        "<th",
+                        "<thought",
+                        "<e",
+                        "<end",
+                        "<end_of_turn",
                     ];
                     if let Some(&prefix) = prefixes.iter().find(|&&p| raw_acc.ends_with(p)) {
                         let keep_len = prefix.len();
@@ -704,7 +754,11 @@ impl MrmlClient {
                         .map(|p| (p, "</channel>".len()))
                         .or_else(|| raw_acc.find("<channel|>").map(|p| (p, "<channel|>".len())))
                         .or_else(|| raw_acc.find("</thought>").map(|p| (p, "</thought>".len())))
-                        .or_else(|| raw_acc.find("<end_of_turn>").map(|p| (p, "<end_of_turn>".len())));
+                        .or_else(|| {
+                            raw_acc
+                                .find("<end_of_turn>")
+                                .map(|p| (p, "<end_of_turn>".len()))
+                        });
 
                     if let Some((pos, tag_len)) = close_opt {
                         let thought_part = &raw_acc[..pos];
@@ -723,9 +777,23 @@ impl MrmlClient {
 
                     // Prefix check for closing tags
                     let prefixes = [
-                        "<", "</", "</c", "</ch", "</channel", "<c", "<ch", "<channel",
-                        "<channel|", "</t", "</th", "</thought", "<e", "<end", "<end_of_turn",
-                        "<|t", "<|tool",
+                        "<",
+                        "</",
+                        "</c",
+                        "</ch",
+                        "</channel",
+                        "<c",
+                        "<ch",
+                        "<channel",
+                        "<channel|",
+                        "</t",
+                        "</th",
+                        "</thought",
+                        "<e",
+                        "<end",
+                        "<end_of_turn",
+                        "<|t",
+                        "<|tool",
                     ];
                     if let Some(&prefix) = prefixes.iter().find(|&&p| raw_acc.ends_with(p)) {
                         let keep_len = prefix.len();
@@ -760,7 +828,10 @@ impl MrmlClient {
                     if let Some(json_match) = block.split("```").next().map(str::trim) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_match) {
                             let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                            let args = val
+                                .get("arguments")
+                                .cloned()
+                                .unwrap_or(serde_json::json!({}));
                             let args_str = if args.is_string() {
                                 args.as_str().unwrap().to_string()
                             } else {
@@ -812,7 +883,9 @@ impl MrmlClient {
             }
         }
 
-        let total_elapsed = first_token_time.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
+        let total_elapsed = first_token_time
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
         let final_tps = if token_count > 1 && total_elapsed > 0.0001 {
             (token_count - 1) as f64 / total_elapsed
         } else if total_elapsed > 0.0001 {
@@ -877,10 +950,19 @@ pub fn get_model_cache_roots() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-            roots.push(PathBuf::from(&local_appdata).join("huggingface").join("hub"));
+            roots.push(
+                PathBuf::from(&local_appdata)
+                    .join("huggingface")
+                    .join("hub"),
+            );
         }
         if let Ok(userprofile) = std::env::var("USERPROFILE") {
-            roots.push(PathBuf::from(&userprofile).join(".cache").join("huggingface").join("hub"));
+            roots.push(
+                PathBuf::from(&userprofile)
+                    .join(".cache")
+                    .join("huggingface")
+                    .join("hub"),
+            );
         }
     }
 
@@ -916,8 +998,16 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
             if repo_dir.is_dir() {
                 let mut best_match = None;
                 for path in crate::fs_walk::paths(&repo_dir) {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                    if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
+                    if name.ends_with(".gguf")
+                        && !name.ends_with(".part")
+                        && !name.contains("mmproj")
+                        && !name.contains("mtp")
+                    {
                         if name.contains(&target_quant) {
                             return Some(path);
                         }
@@ -935,8 +1025,16 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
             let legacy_dir = root.join(format!("{}_{}", spec.user, spec.model));
             if legacy_dir.is_dir() {
                 for path in crate::fs_walk::paths(&legacy_dir) {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                    if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
+                    if name.ends_with(".gguf")
+                        && !name.ends_with(".part")
+                        && !name.contains("mmproj")
+                        && !name.contains("mtp")
+                    {
                         if name.contains(&target_quant) {
                             return Some(path);
                         }
@@ -949,8 +1047,16 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     // 2. Scan whole cache roots for matching model file
     for root in &cache_roots {
         for path in crate::fs_walk::paths(root) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            if name.ends_with(".gguf") && !name.ends_with(".part") && !name.contains("mmproj") && !name.contains("mtp") {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            if name.ends_with(".gguf")
+                && !name.ends_with(".part")
+                && !name.contains("mmproj")
+                && !name.contains("mtp")
+            {
                 if name.contains("gemma-4") || name.contains("gemma") {
                     return Some(path);
                 }
@@ -961,8 +1067,13 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     let candidates = [
         PathBuf::from("models").join(model_arg),
         PathBuf::from(model_arg).with_extension("gguf"),
-        crate::platform::home_dir().unwrap_or_default().join(".cache/gemma").join(model_arg),
-        crate::platform::home_dir().unwrap_or_default().join(".cache/gemma/gemma-4-26b-it-q4_0.gguf"),
+        crate::platform::home_dir()
+            .unwrap_or_default()
+            .join(".cache/gemma")
+            .join(model_arg),
+        crate::platform::home_dir()
+            .unwrap_or_default()
+            .join(".cache/gemma/gemma-4-26b-it-q4_0.gguf"),
         PathBuf::from("/models/gemma-4-26b-it-q4_0.gguf"),
     ];
 
@@ -981,9 +1092,13 @@ mod tests {
 
     #[test]
     fn thinking_is_reserved_for_automatic_mode() {
-        assert!(!thinking_enabled_for_mode(crate::config::AgentMode::General));
+        assert!(!thinking_enabled_for_mode(
+            crate::config::AgentMode::General
+        ));
         assert!(!thinking_enabled_for_mode(crate::config::AgentMode::Coder));
-        assert!(thinking_enabled_for_mode(crate::config::AgentMode::Automatic));
+        assert!(thinking_enabled_for_mode(
+            crate::config::AgentMode::Automatic
+        ));
     }
 
     #[test]

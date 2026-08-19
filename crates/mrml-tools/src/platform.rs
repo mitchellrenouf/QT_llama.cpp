@@ -1,10 +1,10 @@
 //! Native platform paths and timestamps shared by tools and the agent.
 use std::path::PathBuf;
 
-#[cfg(windows)]
-use mrml_windows::LocalTime;
 #[cfg(unix)]
 use mrml_linux::LocalTime;
+#[cfg(windows)]
+use mrml_windows::LocalTime;
 
 pub fn unix_timestamp_millis() -> u128 {
     platform_unix_time_millis() as u128
@@ -22,10 +22,14 @@ pub fn monotonic_timestamp_nanos() -> u64 {
 }
 
 #[cfg(windows)]
-fn platform_unix_time_millis() -> u64 { mrml_windows::unix_time_millis() }
+fn platform_unix_time_millis() -> u64 {
+    mrml_windows::unix_time_millis()
+}
 
 #[cfg(unix)]
-fn platform_unix_time_millis() -> u64 { mrml_linux::unix_time_millis() }
+fn platform_unix_time_millis() -> u64 {
+    mrml_linux::unix_time_millis()
+}
 
 pub fn sleep_millis(milliseconds: u64) {
     #[cfg(windows)]
@@ -100,7 +104,13 @@ fn local_time() -> LocalTime {
 fn local_time() -> LocalTime {
     let seconds = (mrml_linux::unix_time_millis() / 1000) as i64;
     mrml_linux::local_time(seconds).unwrap_or(LocalTime {
-        year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0,
+        year: 1970,
+        month: 1,
+        day: 1,
+        weekday: 4,
+        hour: 0,
+        minute: 0,
+        second: 0,
     })
 }
 

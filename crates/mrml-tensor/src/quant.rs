@@ -2,19 +2,27 @@
 
 #[cfg(feature = "std")]
 #[inline]
-fn round(value: f32) -> f32 { value.round() }
+fn round(value: f32) -> f32 {
+    value.round()
+}
 
 #[cfg(not(feature = "std"))]
 #[inline]
-fn round(value: f32) -> f32 { mrml_math::round(value) }
+fn round(value: f32) -> f32 {
+    mrml_math::round(value)
+}
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn avx2_enabled() -> bool {
     #[cfg(feature = "std")]
-    { std::is_x86_feature_detected!("avx2") }
+    {
+        std::is_x86_feature_detected!("avx2")
+    }
     #[cfg(not(feature = "std"))]
-    { cfg!(target_feature = "avx2") }
+    {
+        cfg!(target_feature = "avx2")
+    }
 }
 
 /// Fast bitwise conversion from IEEE 754 half-precision float (f16) to single-precision float (f32)
@@ -370,9 +378,13 @@ pub fn quantize_f32_to_q4_0(src: &[f32], dst: &mut [u8]) {
 #[inline]
 fn avx_vnni_enabled() -> bool {
     #[cfg(feature = "std")]
-    { std::is_x86_feature_detected!("avxvnni") }
+    {
+        std::is_x86_feature_detected!("avxvnni")
+    }
     #[cfg(not(feature = "std"))]
-    { cfg!(target_feature = "avxvnni") }
+    {
+        cfg!(target_feature = "avxvnni")
+    }
 }
 
 #[cfg(test)]

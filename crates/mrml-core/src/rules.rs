@@ -54,7 +54,14 @@ mod tests {
 
     #[test]
     fn test_rules_discovery() {
-        let unique_id = format!("gemma_rules_test_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let unique_id = format!(
+            "gemma_rules_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let temp_dir = std::env::temp_dir().join(unique_id);
         let _ = fs::create_dir_all(&temp_dir);
         let rule_file = temp_dir.join("MRML.md");
@@ -62,7 +69,11 @@ mod tests {
 
         let rules = WorkspaceRules::discover(&temp_dir);
         assert!(rules.has_rules());
-        assert!(rules.combined_instructions.contains("Always write unit tests"));
+        assert!(
+            rules
+                .combined_instructions
+                .contains("Always write unit tests")
+        );
 
         let _ = fs::remove_file(rule_file);
         let _ = fs::remove_dir_all(temp_dir);

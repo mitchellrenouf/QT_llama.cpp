@@ -1,6 +1,6 @@
+pub use crate::modes::{AgentMode, BackendChoice};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-pub use crate::modes::{AgentMode, BackendChoice};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -42,15 +42,23 @@ impl Default for Config {
             workspace_root: PathBuf::from(env("WORKSPACE_ROOT", ".")),
             temperature: 0.7,
             max_tokens: 8192,
-            ctx_size: std::env::var("MRML_CTX_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(8192),
+            ctx_size: std::env::var("MRML_CTX_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8192),
             cache_type_k: env("MRML_CACHE_TYPE_K", "auto"),
             cache_type_v: env("MRML_CACHE_TYPE_V", "auto"),
             max_context_tokens: 256_000,
             auto_approve: true,
             system_prompt: None,
             prompt: None,
-            n_gpu_layers: std::env::var("MRML_GPU_LAYERS").ok().and_then(|v| v.parse().ok()),
-            backend: std::env::var("MRML_BACKEND").ok().and_then(|v| v.parse().ok()).unwrap_or(BackendChoice::Auto),
+            n_gpu_layers: std::env::var("MRML_GPU_LAYERS")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            backend: std::env::var("MRML_BACKEND")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(BackendChoice::Auto),
             browser_exe: std::env::var("BROWSER_EXE").ok(),
             browser_profile: std::env::var("BROWSER_PROFILE").ok(),
             serve: false,
@@ -63,11 +71,17 @@ impl Default for Config {
 impl Config {
     pub fn parse() -> Self {
         let arguments = std::env::args().collect::<Vec<_>>();
-        if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
+        if arguments
+            .iter()
+            .any(|argument| argument == "--help" || argument == "-h")
+        {
             println!("{}", Self::help());
             crate::platform::exit_process(0);
         }
-        if arguments.iter().any(|argument| argument == "--version" || argument == "-V") {
+        if arguments
+            .iter()
+            .any(|argument| argument == "--version" || argument == "-V")
+        {
             println!("{}", env!("CARGO_PKG_VERSION"));
             crate::platform::exit_process(0);
         }
@@ -96,8 +110,17 @@ impl Config {
             if raw == "--version" || raw == "-V" {
                 return Err(env!("CARGO_PKG_VERSION").to_owned());
             }
-            let (name, inline) = raw.split_once('=').map_or((raw.as_str(), None), |(name, value)| (name, Some(value.to_owned())));
-            let mut value = || inline.clone().or_else(|| args.next()).ok_or_else(|| format!("{name} requires a value"));
+            let (name, inline) = raw
+                .split_once('=')
+                .map_or((raw.as_str(), None), |(name, value)| {
+                    (name, Some(value.to_owned()))
+                });
+            let mut value = || {
+                inline
+                    .clone()
+                    .or_else(|| args.next())
+                    .ok_or_else(|| format!("{name} requires a value"))
+            };
             match name {
                 "--server-url" => config.server_url = value()?,
                 "--api-key" => config.api_key = value()?,
@@ -114,7 +137,9 @@ impl Config {
                 "--auto-approve" => {
                     config.auto_approve = if let Some(value) = inline.as_deref() {
                         parse_bool(value)?
-                    } else if let Some(candidate) = args.peek().filter(|value| parse_bool(value).is_ok()) {
+                    } else if let Some(candidate) =
+                        args.peek().filter(|value| parse_bool(value).is_ok())
+                    {
                         let parsed = parse_bool(candidate)?;
                         args.next();
                         parsed
@@ -144,7 +169,9 @@ impl Config {
 }
 
 fn parse_value<T: FromStr>(name: &str, value: &str) -> Result<T, String> {
-    value.parse().map_err(|_| format!("invalid value '{value}' for {name}"))
+    value
+        .parse()
+        .map_err(|_| format!("invalid value '{value}' for {name}"))
 }
 
 fn parse_bool(value: &str) -> Result<bool, String> {
@@ -156,8 +183,14 @@ fn parse_bool(value: &str) -> Result<bool, String> {
 }
 
 fn parse_cache_type(name: &str, value: String) -> Result<String, String> {
-    const TYPES: &[&str] = &["auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"];
-    if TYPES.contains(&value.as_str()) { Ok(value) } else { Err(format!("invalid cache type '{value}' for {name}")) }
+    const TYPES: &[&str] = &[
+        "auto", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+    ];
+    if TYPES.contains(&value.as_str()) {
+        Ok(value)
+    } else {
+        Err(format!("invalid cache type '{value}' for {name}"))
+    }
 }
 
 #[cfg(test)]
@@ -167,10 +200,20 @@ mod parser_tests {
     #[test]
     fn parses_values_flags_aliases_and_repeated_options() {
         let config = Config::try_parse_from([
-            "mrml", "--model", "model.gguf", "-p", "hello", "--ctx-size=4096",
-            "--backend", "cuda", "--no-auto-approve", "--mcp-server", "one",
+            "mrml",
+            "--model",
+            "model.gguf",
+            "-p",
+            "hello",
+            "--ctx-size=4096",
+            "--backend",
+            "cuda",
+            "--no-auto-approve",
+            "--mcp-server",
+            "one",
             "--mcp-server=two",
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(config.model, "model.gguf");
         assert_eq!(config.prompt.as_deref(), Some("hello"));
         assert_eq!(config.ctx_size, 4096);

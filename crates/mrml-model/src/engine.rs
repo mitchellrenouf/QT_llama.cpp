@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
 use mrml_tensor::MrmlEngine;
 use std::path::Path;
-use std::sync::mpsc;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 
 #[derive(Clone)]
 pub struct ModelEngine {
@@ -76,7 +76,6 @@ impl ModelEngine {
     pub fn chat_template(&self) -> Option<String> {
         self.inner.chat_template()
     }
-
 
     pub fn gpu_layer_residency(&self) -> Option<(usize, usize)> {
         self.inner.gpu_layer_residency()

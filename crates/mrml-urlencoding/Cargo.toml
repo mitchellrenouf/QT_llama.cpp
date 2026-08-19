@@ -5,3 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Dependency-free percent encoding for MRML"
+
+[features]
+default = ["alloc"]
+alloc = []

@@ -82,5 +82,4 @@ mod tests {
             assert_eq!(super::base64_decode(encoded).unwrap(), raw);
         }
     }
-
 }

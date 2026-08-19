@@ -1,9 +1,9 @@
 use crate::anyhow::{self, Result};
-use alloc::vec;
-use alloc::vec::Vec;
 use crate::quant::{
     f16_to_f32, quantize_f32_to_q4_0, quantize_f32_to_q8_0, vec_dot_q4_0_q8_0, vec_dot_q8_0_q8_0,
 };
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum KvCacheFormat {

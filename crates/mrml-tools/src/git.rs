@@ -1,5 +1,5 @@
 use crate::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::json;
 use std::path::Path;
 use std::process::Command;
@@ -56,7 +56,10 @@ impl Tool for GitCheckpointTool {
                 .output()?;
 
             if store_output.status.success() {
-                Ok(format!("Successfully created Git Checkpoint [{}] ('{}'). Use git_rollback to revert if needed.", commit_hash, msg))
+                Ok(format!(
+                    "Successfully created Git Checkpoint [{}] ('{}'). Use git_rollback to revert if needed.",
+                    commit_hash, msg
+                ))
             } else {
                 Ok(format!(
                     "Checkpoint hash generated: {}. Uncommitted changes snapshotted.",

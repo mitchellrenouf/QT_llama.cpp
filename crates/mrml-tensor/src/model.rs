@@ -231,12 +231,16 @@ impl MrmlModel {
         #[cfg(feature = "cuda")]
         {
             self.cuda_dev.as_ref()?;
-            let resident = self.layers.iter().filter(|layer| {
-                layer.gpu_attn_q.is_some()
-                    && layer.gpu_attn_output.is_some()
-                    && layer.gpu_ffn_gate_up_exps.is_some()
-                    && layer.gpu_ffn_down_exps.is_some()
-            }).count();
+            let resident = self
+                .layers
+                .iter()
+                .filter(|layer| {
+                    layer.gpu_attn_q.is_some()
+                        && layer.gpu_attn_output.is_some()
+                        && layer.gpu_ffn_gate_up_exps.is_some()
+                        && layer.gpu_ffn_down_exps.is_some()
+                })
+                .count();
             Some((resident, self.layers.len()))
         }
         #[cfg(not(feature = "cuda"))]
@@ -1001,9 +1005,15 @@ impl MrmlModel {
             dim,
             config.max_context,
             vocab.len(),
-            layer_devices.iter().filter(|d| matches!(d, DeviceType::Cuda(_))).count(),
+            layer_devices
+                .iter()
+                .filter(|d| matches!(d, DeviceType::Cuda(_)))
+                .count(),
             resident_layers,
-            layer_devices.iter().filter(|d| matches!(d, DeviceType::Cpu)).count(),
+            layer_devices
+                .iter()
+                .filter(|d| matches!(d, DeviceType::Cpu))
+                .count(),
         );
         eprintln!("[mrml] Execution plan: {execution_plan}");
         #[cfg(feature = "cuda")]
@@ -1184,14 +1194,7 @@ impl MrmlModel {
 
             #[cfg(feature = "cuda")]
             let gpu_qkv_pipeline = if layer.is_swa || k_cache[l].len() < layer.gpu_kv_capacity {
-                if let (
-                    Some(dev),
-                    Some(g_q),
-                    Some(g_k),
-                    Some(g_v),
-                    Some(q_norm),
-                    Some(k_norm),
-                ) = (
+                if let (Some(dev), Some(g_q), Some(g_k), Some(g_v), Some(q_norm), Some(k_norm)) = (
                     &self.cuda_dev,
                     &layer.gpu_attn_q,
                     &layer.gpu_attn_k,
@@ -1498,29 +1501,28 @@ impl MrmlModel {
             #[cfg(not(feature = "cuda"))]
             let resident_ffn_capable = false;
             #[cfg(feature = "cuda")]
-            let out_used_gpu = if let (Some(dev), Some(g_out)) =
-                (&self.cuda_dev, &layer.gpu_attn_output)
-            {
-                let mut in_guard = layer.gpu_d_attn_in.lock();
-                let mut out_guard = layer.gpu_d_attn_out.lock();
-                if let (Some(ref mut d_in), Some(ref mut d_out)) =
-                    (in_guard.as_mut(), out_guard.as_mut())
-                {
-                    if attention_used_gpu || dev.copy_from_host_async(d_in, &attn_out).is_ok() {
-                        dev.gemv_q4_0(g_out, d_in, d_out, dim, layer.q_dim);
-                        if !resident_ffn_capable {
-                            let _ = d_out.copy_to_host(&mut attn_proj);
+            let out_used_gpu =
+                if let (Some(dev), Some(g_out)) = (&self.cuda_dev, &layer.gpu_attn_output) {
+                    let mut in_guard = layer.gpu_d_attn_in.lock();
+                    let mut out_guard = layer.gpu_d_attn_out.lock();
+                    if let (Some(ref mut d_in), Some(ref mut d_out)) =
+                        (in_guard.as_mut(), out_guard.as_mut())
+                    {
+                        if attention_used_gpu || dev.copy_from_host_async(d_in, &attn_out).is_ok() {
+                            dev.gemv_q4_0(g_out, d_in, d_out, dim, layer.q_dim);
+                            if !resident_ffn_capable {
+                                let _ = d_out.copy_to_host(&mut attn_proj);
+                            }
+                            true
+                        } else {
+                            false
                         }
-                        true
                     } else {
                         false
                     }
                 } else {
                     false
-                }
-            } else {
-                false
-            };
+                };
 
             #[cfg(not(feature = "cuda"))]
             let out_used_gpu = false;
@@ -1728,15 +1730,17 @@ impl MrmlModel {
             let (mlp_queued, moe_queued) = if let Some(ref dev) = self.cuda_dev {
                 let graph_queued = if resident_ffn_prepared {
                     let graph = layer.gpu_ffn_graph.lock();
-                    graph.as_ref().is_some_and(|graph| match dev.launch_graph(graph) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            if std::env::var_os("MRML_GRAPH_DEBUG").is_some() {
-                                eprintln!("[mrml] FFN/MoE CUDA graph replay failed: {error}");
+                    graph
+                        .as_ref()
+                        .is_some_and(|graph| match dev.launch_graph(graph) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                if std::env::var_os("MRML_GRAPH_DEBUG").is_some() {
+                                    eprintln!("[mrml] FFN/MoE CUDA graph replay failed: {error}");
+                                }
+                                false
                             }
-                            false
-                        }
-                    })
+                        })
                 } else {
                     false
                 };
@@ -2559,107 +2563,106 @@ impl MrmlModel {
         let generated_count = state.generated_count;
 
         #[cfg(feature = "cuda")]
-        let gpu_scored: Option<Vec<(f32, i32)>> = if let (Some(dev), Some(g_table)) =
-            (&self.cuda_dev, &self.gpu_token_embd_table)
-        {
-            let mut hid_guard = self.gpu_d_normalized_hidden.lock();
-            let mut log_guard = self.gpu_d_vocab_logits.lock();
-            let mut recent_guard = self.gpu_d_recent_tokens.lock();
-            let mut scores_guard = self.gpu_d_topk_scores.lock();
-            let mut ids_guard = self.gpu_d_topk_ids.lock();
-            if let (
-                Some(ref mut d_hid),
-                Some(ref mut d_log),
-                Some(ref valid),
-                Some(ref mut d_recent),
-                Some(ref mut d_scores),
-                Some(ref mut d_ids),
-            ) = (
-                hid_guard.as_mut(),
-                log_guard.as_mut(),
-                self.gpu_valid_vocab.as_ref(),
-                recent_guard.as_mut(),
-                scores_guard.as_mut(),
-                ids_guard.as_mut(),
-            ) {
-                let resident_ready = self.gpu_normalized_ready.swap(false, Ordering::AcqRel);
-                if resident_ready || dev.copy_from_host_async(d_hid, &state.hidden).is_ok() {
-                    dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
-                    if std::env::var_os("MRML_FULL_LOGITS").is_some() {
-                        let mut logits = vec![0.0f32; self.config.vocab_size];
-                        if d_log.copy_to_host(&mut logits).is_ok() {
-                            for &token in &recent_tokens {
-                                if let Some(logit) = logits.get_mut(token.max(0) as usize) {
-                                    *logit -= 1.8;
+        let gpu_scored: Option<Vec<(f32, i32)>> =
+            if let (Some(dev), Some(g_table)) = (&self.cuda_dev, &self.gpu_token_embd_table) {
+                let mut hid_guard = self.gpu_d_normalized_hidden.lock();
+                let mut log_guard = self.gpu_d_vocab_logits.lock();
+                let mut recent_guard = self.gpu_d_recent_tokens.lock();
+                let mut scores_guard = self.gpu_d_topk_scores.lock();
+                let mut ids_guard = self.gpu_d_topk_ids.lock();
+                if let (
+                    Some(ref mut d_hid),
+                    Some(ref mut d_log),
+                    Some(ref valid),
+                    Some(ref mut d_recent),
+                    Some(ref mut d_scores),
+                    Some(ref mut d_ids),
+                ) = (
+                    hid_guard.as_mut(),
+                    log_guard.as_mut(),
+                    self.gpu_valid_vocab.as_ref(),
+                    recent_guard.as_mut(),
+                    scores_guard.as_mut(),
+                    ids_guard.as_mut(),
+                ) {
+                    let resident_ready = self.gpu_normalized_ready.swap(false, Ordering::AcqRel);
+                    if resident_ready || dev.copy_from_host_async(d_hid, &state.hidden).is_ok() {
+                        dev.gemv_q8_0(g_table, d_hid, d_log, self.config.vocab_size, dim);
+                        if std::env::var_os("MRML_FULL_LOGITS").is_some() {
+                            let mut logits = vec![0.0f32; self.config.vocab_size];
+                            if d_log.copy_to_host(&mut logits).is_ok() {
+                                for &token in &recent_tokens {
+                                    if let Some(logit) = logits.get_mut(token.max(0) as usize) {
+                                        *logit -= 1.8;
+                                    }
                                 }
-                            }
-                            Some(
-                                logits
-                                    .into_iter()
-                                    .enumerate()
-                                    .filter_map(|(tid, score)| {
-                                        if !self.valid_vocab_token[tid]
-                                            || (generated_count < 4
-                                                && matches!(tid, 1 | 2 | 105 | 106))
-                                        {
-                                            None
-                                        } else {
-                                            Some((score, tid as i32))
-                                        }
-                                    })
-                                    .collect(),
-                            )
-                        } else {
-                            None
-                        }
-                    } else {
-                        let mut recent_upload = [0i32; 32];
-                        recent_upload[..recent_tokens.len()].copy_from_slice(&recent_tokens);
-                        if dev.copy_from_host_async(d_recent, &recent_upload).is_ok() {
-                            const PARTITIONS: usize = 128;
-                            let candidate_count = if temperature <= 0.0 { 1 } else { 40 };
-                            dev.vocab_topk(
-                                d_log,
-                                valid,
-                                d_recent,
-                                d_scores,
-                                d_ids,
-                                self.config.vocab_size,
-                                recent_tokens.len(),
-                                generated_count,
-                                candidate_count,
-                                PARTITIONS,
-                            );
-                            let mut scores = vec![0.0f32; PARTITIONS * 40];
-                            let mut ids = vec![0i32; PARTITIONS * 40];
-                            if d_scores.copy_to_host(&mut scores).is_ok()
-                                && d_ids.copy_to_host(&mut ids).is_ok()
-                            {
-                                scores.truncate(PARTITIONS * candidate_count);
-                                ids.truncate(PARTITIONS * candidate_count);
                                 Some(
-                                    scores
+                                    logits
                                         .into_iter()
-                                        .zip(ids)
-                                        .filter(|(_, id)| *id >= 0)
+                                        .enumerate()
+                                        .filter_map(|(tid, score)| {
+                                            if !self.valid_vocab_token[tid]
+                                                || (generated_count < 4
+                                                    && matches!(tid, 1 | 2 | 105 | 106))
+                                            {
+                                                None
+                                            } else {
+                                                Some((score, tid as i32))
+                                            }
+                                        })
                                         .collect(),
                                 )
                             } else {
                                 None
                             }
                         } else {
-                            None
+                            let mut recent_upload = [0i32; 32];
+                            recent_upload[..recent_tokens.len()].copy_from_slice(&recent_tokens);
+                            if dev.copy_from_host_async(d_recent, &recent_upload).is_ok() {
+                                const PARTITIONS: usize = 128;
+                                let candidate_count = if temperature <= 0.0 { 1 } else { 40 };
+                                dev.vocab_topk(
+                                    d_log,
+                                    valid,
+                                    d_recent,
+                                    d_scores,
+                                    d_ids,
+                                    self.config.vocab_size,
+                                    recent_tokens.len(),
+                                    generated_count,
+                                    candidate_count,
+                                    PARTITIONS,
+                                );
+                                let mut scores = vec![0.0f32; PARTITIONS * 40];
+                                let mut ids = vec![0i32; PARTITIONS * 40];
+                                if d_scores.copy_to_host(&mut scores).is_ok()
+                                    && d_ids.copy_to_host(&mut ids).is_ok()
+                                {
+                                    scores.truncate(PARTITIONS * candidate_count);
+                                    ids.truncate(PARTITIONS * candidate_count);
+                                    Some(
+                                        scores
+                                            .into_iter()
+                                            .zip(ids)
+                                            .filter(|(_, id)| *id >= 0)
+                                            .collect(),
+                                    )
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
                         }
+                    } else {
+                        None
                     }
                 } else {
                     None
                 }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         #[cfg(not(feature = "cuda"))]
         let gpu_scored: Option<Vec<(f32, i32)>> = None;

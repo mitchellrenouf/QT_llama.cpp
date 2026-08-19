@@ -1,9 +1,9 @@
 //! Line-oriented diff rendering used by editing tools.
-use mrml_terminal_style::Colorize;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use mrml_terminal_style::Colorize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Change<'a> {
@@ -112,10 +112,7 @@ pub fn format_colorized_diff(file_path: &str, old_text: &str, new_text: &str) ->
             }
             Change::Equal(_) => {
                 if line.len() > 120 {
-                    output.push_str(&format!(
-                        "  {}\n",
-                        truncate_utf8(&line, 120).dimmed()
-                    ));
+                    output.push_str(&format!("  {}\n", truncate_utf8(&line, 120).dimmed()));
                 } else {
                     output.push_str(&format!("  {}", line.dimmed()));
                 }

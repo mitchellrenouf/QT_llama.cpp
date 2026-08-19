@@ -1,5 +1,5 @@
 use crate::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -45,7 +45,10 @@ impl Tool for SpeakTextTool {
             .ok_or_else(|| anyhow!("Missing text"))?;
 
         if !is_speech_enabled() {
-            return Ok(format!("Text-to-Speech synthesis is currently disabled. (Type '/speech' in CLI to enable audio output).\nText provided: '{}'", text));
+            return Ok(format!(
+                "Text-to-Speech synthesis is currently disabled. (Type '/speech' in CLI to enable audio output).\nText provided: '{}'",
+                text
+            ));
         }
 
         if crate::desktop::is_executable_in_path("spd-say").is_some() {
@@ -60,7 +63,10 @@ impl Tool for SpeakTextTool {
             let _ = Command::new("espeak").arg(text).output();
             return Ok(format!("Spoke text aloud via espeak: '{}'", text));
         }
-        Ok(format!("Spoke text (TTS engine not installed on Linux; install 'speech-dispatcher' or 'espeak-ng' to enable hardware voice): '{}'", text))
+        Ok(format!(
+            "Spoke text (TTS engine not installed on Linux; install 'speech-dispatcher' or 'espeak-ng' to enable hardware voice): '{}'",
+            text
+        ))
     }
 }
 

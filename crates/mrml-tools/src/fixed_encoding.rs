@@ -14,8 +14,7 @@ pub const fn base64_encoded_len(input_len: usize) -> Option<usize> {
 }
 
 pub fn base64_encode_into(input: &[u8], output: &mut [u8]) -> Result<usize, BufferTooSmall> {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let required = base64_encoded_len(input.len()).unwrap_or(usize::MAX);
     if output.len() < required {
         return Err(BufferTooSmall {
@@ -29,8 +28,16 @@ pub fn base64_encode_into(input: &[u8], output: &mut [u8]) -> Result<usize, Buff
     while source < input.len() {
         let remaining = input.len() - source;
         let a = input[source] as u32;
-        let b = if remaining > 1 { input[source + 1] as u32 } else { 0 };
-        let c = if remaining > 2 { input[source + 2] as u32 } else { 0 };
+        let b = if remaining > 1 {
+            input[source + 1] as u32
+        } else {
+            0
+        };
+        let c = if remaining > 2 {
+            input[source + 2] as u32
+        } else {
+            0
+        };
         let bits = a << 16 | b << 8 | c;
         output[target] = ALPHABET[((bits >> 18) & 63) as usize];
         output[target + 1] = ALPHABET[((bits >> 12) & 63) as usize];
@@ -73,7 +80,10 @@ mod tests {
     fn reports_required_capacity() {
         assert_eq!(
             base64_encode_into(b"foo", &mut [0u8; 3]),
-            Err(BufferTooSmall { required: 4, available: 3 }),
+            Err(BufferTooSmall {
+                required: 4,
+                available: 3
+            }),
         );
     }
 }

@@ -1,4 +1,4 @@
-use crate::anyhow::{anyhow, Result};
+use crate::anyhow::{Result, anyhow};
 use crate::types::{DType, Shape, Strides};
 use alloc::vec;
 use alloc::vec::Vec;

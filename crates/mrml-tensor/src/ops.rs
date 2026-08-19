@@ -4,9 +4,15 @@ use alloc::vec;
 macro_rules! math_fn {
     ($name:ident, $method:ident, $native:path) => {
         #[cfg(feature = "std")]
-        #[inline] fn $name(value: f32) -> f32 { value.$method() }
+        #[inline]
+        fn $name(value: f32) -> f32 {
+            value.$method()
+        }
         #[cfg(not(feature = "std"))]
-        #[inline] fn $name(value: f32) -> f32 { $native(value) }
+        #[inline]
+        fn $name(value: f32) -> f32 {
+            $native(value)
+        }
     };
 }
 math_fn!(sqrt, sqrt, mrml_math::sqrt);
@@ -16,9 +22,15 @@ math_fn!(tanh, tanh, mrml_math::tanh);
 math_fn!(exp, exp, mrml_math::exp);
 
 #[cfg(feature = "std")]
-#[inline] fn pow(value: f32, exponent: f32) -> f32 { value.powf(exponent) }
+#[inline]
+fn pow(value: f32, exponent: f32) -> f32 {
+    value.powf(exponent)
+}
 #[cfg(not(feature = "std"))]
-#[inline] fn pow(value: f32, exponent: f32) -> f32 { mrml_math::pow(value, exponent) }
+#[inline]
+fn pow(value: f32, exponent: f32) -> f32 {
+    mrml_math::pow(value, exponent)
+}
 
 /// In-place or out-of-place RMS Normalization: y = x / sqrt(mean(x^2) + eps) * weight
 pub fn rms_norm(x: &[f32], weight: Option<&[f32]>, eps: f32, out: &mut [f32]) {

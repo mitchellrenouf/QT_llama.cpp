@@ -1,5 +1,5 @@
 use crate::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::json;
 use std::path::Path;
 
@@ -219,7 +219,10 @@ impl Tool for WebSearchTool {
         }
 
         if results.is_empty() {
-            Ok(format!("Web search executed for '{}', but no public search results were returned. Try searching with more specific keywords or use browser_open.", query))
+            Ok(format!(
+                "Web search executed for '{}', but no public search results were returned. Try searching with more specific keywords or use browser_open.",
+                query
+            ))
         } else {
             Ok(results.join("\n\n"))
         }

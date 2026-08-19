@@ -1,6 +1,6 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 struct Work {
     context: usize,
@@ -28,19 +28,21 @@ fn pool() -> &'static Pool {
             let receiver = Arc::clone(&receiver);
             std::thread::Builder::new()
                 .name(format!("mrml-worker-{index}"))
-                .spawn(move || loop {
-                    let work = match receiver.lock().unwrap().recv() {
-                        Ok(work) => work,
-                        Err(_) => break,
-                    };
-                    if catch_unwind(AssertUnwindSafe(|| unsafe {
-                        (work.run)(work.context, work.start, work.end)
-                    }))
-                    .is_err()
-                    {
-                        work.failed.store(true, Ordering::Release);
+                .spawn(move || {
+                    loop {
+                        let work = match receiver.lock().unwrap().recv() {
+                            Ok(work) => work,
+                            Err(_) => break,
+                        };
+                        if catch_unwind(AssertUnwindSafe(|| unsafe {
+                            (work.run)(work.context, work.start, work.end)
+                        }))
+                        .is_err()
+                        {
+                            work.failed.store(true, Ordering::Release);
+                        }
+                        let _ = work.done.send(());
                     }
-                    let _ = work.done.send(());
                 })
                 .expect("failed to start MRML worker");
         }
@@ -129,9 +131,11 @@ mod tests {
     fn maps_every_item_once_in_order() {
         let values = super::map(10_000, 64, |index| index * 2);
         assert_eq!(values.len(), 10_000);
-        assert!(values
-            .iter()
-            .enumerate()
-            .all(|(index, value)| *value == index * 2));
+        assert!(
+            values
+                .iter()
+                .enumerate()
+                .all(|(index, value)| *value == index * 2)
+        );
     }
 }

@@ -1,6 +1,6 @@
 use crate::Tool;
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use std::{
     fs,
     io::{Read, Write},
@@ -26,7 +26,11 @@ impl CdpSocket {
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
         stream.set_write_timeout(Some(Duration::from_secs(15)))?;
         let mut s = Self { stream, next_id: 1 };
-        write!(s.stream,"GET /{} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: bXJtbC1lZGdlLWNkcA==\r\nSec-WebSocket-Version: 13\r\n\r\n",path,authority)?;
+        write!(
+            s.stream,
+            "GET /{} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: bXJtbC1lZGdlLWNkcA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            path, authority
+        )?;
         let h = read_http_header(&mut s.stream)?;
         if !h.starts_with("HTTP/1.1 101") {
             return Err(anyhow!(
@@ -357,7 +361,9 @@ impl Tool for BrowserOpenTool {
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let u = a["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
         let x = get_browser_controller().await?;
-        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x
+            .lock()
+            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
         c.get_or_create_page(Some(u))?;
         Ok(format!(
             "Opened '{}' in headless Edge (Title: '{}', URL: '{}').",
@@ -380,7 +386,9 @@ impl Tool for BrowserGetContentTool {
     }
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let x = get_browser_controller().await?;
-        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x
+            .lock()
+            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
         c.get_or_create_page(a["url"].as_str())?;
         let title = c.title()?;
         let text = crate::html::visible_text(&c.content()?);
@@ -416,7 +424,9 @@ impl Tool for BrowserScreenshotTool {
     }
     async fn execute(&self, r: &Path, _: Value) -> Result<String> {
         let x = get_browser_controller().await?;
-        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x
+            .lock()
+            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
         c.get_or_create_page(None)?;
         let data = c.cdp(
             "Page.captureScreenshot",
@@ -458,10 +468,14 @@ impl Tool for BrowserClickElementTool {
             .as_str()
             .ok_or_else(|| anyhow!("Missing target"))?;
         let x = get_browser_controller().await?;
-        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x
+            .lock()
+            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
         c.get_or_create_page(None)?;
         let q = serde_json::string(t);
-        let js=format!("(()=>{{const t={q};let e;try{{e=document.querySelector(t)}}catch(_){{}}if(!e)e=[...document.querySelectorAll('a,button,input,[role=button],[onclick]')].find(x=>(x.innerText||x.value||'').trim().includes(t));if(!e)return false;e.scrollIntoView({{block:'center'}});e.click();return true}})()");
+        let js = format!(
+            "(()=>{{const t={q};let e;try{{e=document.querySelector(t)}}catch(_){{}}if(!e)e=[...document.querySelectorAll('a,button,input,[role=button],[onclick]')].find(x=>(x.innerText||x.value||'').trim().includes(t));if(!e)return false;e.scrollIntoView({{block:'center'}});e.click();return true}})()"
+        );
         if c.eval(&js)?.as_bool() == Some(true) {
             Ok(format!("Clicked '{}'.", t))
         } else {
@@ -484,7 +498,9 @@ impl Tool for BrowserClickTool {
         let x = a["x"].as_f64().ok_or_else(|| anyhow!("Missing x"))?;
         let y = a["y"].as_f64().ok_or_else(|| anyhow!("Missing y"))?;
         let ctl = get_browser_controller().await?;
-        let mut c = ctl.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = ctl
+            .lock()
+            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
         c.get_or_create_page(None)?;
         for (k, b) in [
             ("mouseMoved", false),
@@ -515,7 +531,9 @@ impl Tool for BrowserTypeTool {
     async fn execute(&self, _: &Path, a: Value) -> Result<String> {
         let t = a["text"].as_str().ok_or_else(|| anyhow!("Missing text"))?;
         let x = get_browser_controller().await?;
-        let mut c = x.lock().map_err(|_| anyhow!("Browser controller lock poisoned"))?;
+        let mut c = x
+            .lock()
+            .map_err(|_| anyhow!("Browser controller lock poisoned"))?;
         c.get_or_create_page(None)?;
         c.cdp("Input.insertText", json!({"text":t}))?;
         Ok(format!("Typed '{}' into the browser page.", t))
@@ -546,34 +564,34 @@ mod tests {
             return;
         }
         crate::block_on(async {
-        let mut browser = EdgeController::ensure_latest_and_launch().unwrap();
-        browser.get_or_create_page(Some("data:text/html,<title>MRML%20Browser%20Test</title><input%20id='name'><button%20id='go'%20onclick=\"document.title=document.querySelector('%23name').value\">Go</button>")).unwrap();
-        assert_eq!(browser.title().unwrap(), "MRML Browser Test");
-        browser
-            .eval("document.querySelector('#name').focus()")
-            .unwrap();
-        browser
-            .cdp("Input.insertText", json!({"text":"typed correctly"}))
-            .unwrap();
-        assert_eq!(
+            let mut browser = EdgeController::ensure_latest_and_launch().unwrap();
+            browser.get_or_create_page(Some("data:text/html,<title>MRML%20Browser%20Test</title><input%20id='name'><button%20id='go'%20onclick=\"document.title=document.querySelector('%23name').value\">Go</button>")).unwrap();
+            assert_eq!(browser.title().unwrap(), "MRML Browser Test");
             browser
-                .eval("document.querySelector('#name').value")
-                .unwrap(),
-            "typed correctly"
-        );
-        assert_eq!(
+                .eval("document.querySelector('#name').focus()")
+                .unwrap();
             browser
-                .eval("document.querySelector('#go').click(); document.title")
-                .unwrap(),
-            "typed correctly"
-        );
-        let shot = browser
-            .cdp(
-                "Page.captureScreenshot",
-                json!({"format":"jpeg","quality":50}),
-            )
-            .unwrap();
-        assert!(shot["data"].as_str().is_some_and(|data| data.len() > 100));
+                .cdp("Input.insertText", json!({"text":"typed correctly"}))
+                .unwrap();
+            assert_eq!(
+                browser
+                    .eval("document.querySelector('#name').value")
+                    .unwrap(),
+                "typed correctly"
+            );
+            assert_eq!(
+                browser
+                    .eval("document.querySelector('#go').click(); document.title")
+                    .unwrap(),
+                "typed correctly"
+            );
+            let shot = browser
+                .cdp(
+                    "Page.captureScreenshot",
+                    json!({"format":"jpeg","quality":50}),
+                )
+                .unwrap();
+            assert!(shot["data"].as_str().is_some_and(|data| data.len() > 100));
         });
     }
 }

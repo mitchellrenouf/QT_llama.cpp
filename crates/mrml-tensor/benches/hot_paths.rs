@@ -2,9 +2,9 @@ use mrml_tensor::ops::{
     mat_vec_mul_q4_0, mat_vec_mul_q4_0_q8_0, q8_0_size, rope_1d, rope_1d_batched,
 };
 use mrml_tensor::quant::{f16_to_f32, f32_to_f16, quantize_f32_to_q8_0, vec_dot_q8_0_q8_0};
+use mrml_tensor::{KvCacheFormat, KvCacheRow};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
-use mrml_tensor::{KvCacheFormat, KvCacheRow};
 
 fn elapsed_best(mut f: impl FnMut(), rounds: usize) -> Duration {
     (0..rounds)
@@ -171,16 +171,29 @@ fn main() {
     let mut query_q8 = vec![0; head_dim / 32 * 34];
     quantize_f32_to_q8_0(&query, &mut query_q8);
     for format in [KvCacheFormat::F32, KvCacheFormat::Q8, KvCacheFormat::Q4] {
-        let cache: Vec<_> = (0..context).map(|_| KvCacheRow::from_f32(&kv_values, format)).collect();
-        let bytes = match format { KvCacheFormat::F32 => 4 * kv_dim, KvCacheFormat::Q8 => 34 * kv_dim / 32, KvCacheFormat::Q4 => 18 * kv_dim / 32 };
-        let scan = elapsed_best(|| {
-            let mut out = vec![0.0f32; head_dim];
-            for row in &cache {
-                let score = row.dot_head(&query, &query_q8, 0);
-                row.add_head_scaled(&mut out, 0, score * 0.0001);
-            }
-            black_box(out);
-        }, 5);
-        println!("{format:?} KV attention scan (8k): {:?}, {:.1} MiB", scan, (bytes * context) as f64 / 1_048_576.0);
+        let cache: Vec<_> = (0..context)
+            .map(|_| KvCacheRow::from_f32(&kv_values, format))
+            .collect();
+        let bytes = match format {
+            KvCacheFormat::F32 => 4 * kv_dim,
+            KvCacheFormat::Q8 => 34 * kv_dim / 32,
+            KvCacheFormat::Q4 => 18 * kv_dim / 32,
+        };
+        let scan = elapsed_best(
+            || {
+                let mut out = vec![0.0f32; head_dim];
+                for row in &cache {
+                    let score = row.dot_head(&query, &query_q8, 0);
+                    row.add_head_scaled(&mut out, 0, score * 0.0001);
+                }
+                black_box(out);
+            },
+            5,
+        );
+        println!(
+            "{format:?} KV attention scan (8k): {:?}, {:.1} MiB",
+            scan,
+            (bytes * context) as f64 / 1_048_576.0
+        );
     }
 }

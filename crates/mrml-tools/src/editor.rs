@@ -1,6 +1,6 @@
-use crate::diff::format_colorized_diff;
 use crate::Tool;
-use anyhow::{anyhow, Result};
+use crate::diff::format_colorized_diff;
+use anyhow::{Result, anyhow};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -293,7 +293,10 @@ impl Tool for GrepSearchTool {
             }
             let rel = path.strip_prefix(workspace_root).unwrap_or(path);
             let rel_str = rel.to_string_lossy();
-            if rel.components().any(|part| part.as_os_str() == ".git" || part.as_os_str() == "target") {
+            if rel
+                .components()
+                .any(|part| part.as_os_str() == ".git" || part.as_os_str() == "target")
+            {
                 continue;
             }
             if let Ok(content) = fs::read_to_string(path) {
@@ -411,26 +414,26 @@ mod tests {
     #[test]
     fn file_tools_write_view_replace_list_and_search() {
         crate::block_on(async {
-        let root = test_workspace();
-        let write = WriteFileTool
-            .execute(
-                &root,
-                json!({"path":"src/note.txt", "content":"alpha\nbeta\n"}),
-            )
-            .await
-            .unwrap();
-        assert!(write.contains("11 bytes"));
+            let root = test_workspace();
+            let write = WriteFileTool
+                .execute(
+                    &root,
+                    json!({"path":"src/note.txt", "content":"alpha\nbeta\n"}),
+                )
+                .await
+                .unwrap();
+            assert!(write.contains("11 bytes"));
 
-        let viewed = ViewFileTool
-            .execute(
-                &root,
-                json!({"path":"src/note.txt", "start_line":2, "end_line":2}),
-            )
-            .await
-            .unwrap();
-        assert!(viewed.contains("2 | beta"));
+            let viewed = ViewFileTool
+                .execute(
+                    &root,
+                    json!({"path":"src/note.txt", "start_line":2, "end_line":2}),
+                )
+                .await
+                .unwrap();
+            assert!(viewed.contains("2 | beta"));
 
-        ReplaceFileContentTool
+            ReplaceFileContentTool
             .execute(
                 &root,
                 json!({
@@ -439,35 +442,35 @@ mod tests {
             )
             .await
             .unwrap();
-        let listed = ListDirTool
-            .execute(&root, json!({"path":"src"}))
-            .await
-            .unwrap();
-        assert!(listed.contains("note.txt"));
-        let matches = GrepSearchTool
-            .execute(&root, json!({"query":"g.mm.", "path":"src"}))
-            .await
-            .unwrap();
-        assert!(matches.contains("gamma"));
-        let _ = std::fs::remove_dir_all(root);
+            let listed = ListDirTool
+                .execute(&root, json!({"path":"src"}))
+                .await
+                .unwrap();
+            assert!(listed.contains("note.txt"));
+            let matches = GrepSearchTool
+                .execute(&root, json!({"query":"g.mm.", "path":"src"}))
+                .await
+                .unwrap();
+            assert!(matches.contains("gamma"));
+            let _ = std::fs::remove_dir_all(root);
         });
     }
 
     #[test]
     fn run_command_captures_stdout_and_exit_status() {
         crate::block_on(async {
-        let root = test_workspace();
-        #[cfg(windows)]
-        let command = "Write-Output tool-ok";
-        #[cfg(not(windows))]
-        let command = "printf tool-ok";
-        let output = RunCommandTool
-            .execute(&root, json!({"command_line": command}))
-            .await
-            .unwrap();
-        assert!(output.contains("Exit Code: 0"));
-        assert!(output.contains("tool-ok"));
-        let _ = std::fs::remove_dir_all(root);
+            let root = test_workspace();
+            #[cfg(windows)]
+            let command = "Write-Output tool-ok";
+            #[cfg(not(windows))]
+            let command = "printf tool-ok";
+            let output = RunCommandTool
+                .execute(&root, json!({"command_line": command}))
+                .await
+                .unwrap();
+            assert!(output.contains("Exit Code: 0"));
+            assert!(output.contains("tool-ok"));
+            let _ = std::fs::remove_dir_all(root);
         });
     }
 }
