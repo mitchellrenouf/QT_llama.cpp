@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use mrml_runtime::{Text, Vector};
+use mrml_runtime::{Text, Vector, rename_file};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,7 +407,10 @@ where
 
         // Successfully downloaded: promote .part to final .gguf
         if part_path.exists() {
-            std::fs::rename(&part_path, &dest_path)?;
+            rename_file(
+                part_path.to_str().ok_or_else(|| anyhow!("Partial model path is not valid UTF-8"))?,
+                dest_path.to_str().ok_or_else(|| anyhow!("Model path is not valid UTF-8"))?,
+            )?;
         }
 
         let done_msg = format!(

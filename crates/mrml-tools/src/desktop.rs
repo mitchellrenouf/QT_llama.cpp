@@ -1,8 +1,7 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
-use mrml_runtime::Vector;
+use mrml_runtime::{Vector, remove_file, rename_file};
 use serde_json::json;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -126,9 +125,9 @@ impl Tool for TakeScreenshotTool {
                     &path_str,
                 ])
                 .output();
-            let _ = fs::remove_file(&temp_png);
+            let _ = remove_file(&temp_png_str);
         } else {
-            let _ = fs::rename(&temp_png, &file_path);
+            let _ = rename_file(&temp_png_str, &path_str);
         }
 
         if !file_path.exists() {

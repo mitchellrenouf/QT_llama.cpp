@@ -72,6 +72,8 @@ unsafe extern "C" {
     fn lseek(file: c_int, offset: isize, whence: c_int) -> isize;
     fn close(file: c_int) -> c_int;
     fn mkdir(path: *const i8, mode: u32) -> c_int;
+    fn unlink(path: *const i8) -> c_int;
+    fn rename(existing: *const i8, replacement: *const i8) -> c_int;
     fn pthread_create(
         thread: *mut usize,
         attributes: *const c_void,
@@ -248,6 +250,16 @@ pub fn path_is_directory(path: &CStr) -> bool {
 #[cfg(unix)]
 pub fn create_directory(path: &CStr) -> bool {
     (unsafe { mkdir(path.as_ptr(), 0o777) }) == 0 || path_is_directory(path)
+}
+
+#[cfg(unix)]
+pub fn delete_file(path: &CStr) -> bool {
+    (unsafe { unlink(path.as_ptr()) }) == 0
+}
+
+#[cfg(unix)]
+pub fn rename_file(existing: &CStr, replacement: &CStr) -> bool {
+    (unsafe { rename(existing.as_ptr(), replacement.as_ptr()) }) == 0
 }
 
 #[cfg(unix)]

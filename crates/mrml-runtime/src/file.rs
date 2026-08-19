@@ -12,6 +12,8 @@ pub enum FileError {
     InvalidUtf8,
     WriteFailed,
     DirectoryFailed,
+    RemoveFailed,
+    RenameFailed,
 }
 
 pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
@@ -51,6 +53,8 @@ impl fmt::Display for FileError {
             Self::InvalidUtf8 => "file is not valid UTF-8 text",
             Self::WriteFailed => "failed to write file",
             Self::DirectoryFailed => "failed to create directory",
+            Self::RemoveFailed => "failed to remove file",
+            Self::RenameFailed => "failed to rename file",
         })
     }
 }
@@ -109,6 +113,33 @@ pub fn create_dir_all(path: &str) -> Result<(), FileError> {
             .is_ok_and(mrml_linux::create_directory)
     });
     created.then_some(()).ok_or(FileError::DirectoryFailed)
+}
+
+pub fn remove_file(path: &str) -> Result<(), FileError> {
+    #[cfg(windows)]
+    let removed = encode_windows_path(path).is_some_and(|path| mrml_windows::delete_file_wide(&path));
+    #[cfg(unix)]
+    let removed = encode_unix_path(path).is_some_and(|path| {
+        core::ffi::CStr::from_bytes_with_nul(&path).is_ok_and(mrml_linux::delete_file)
+    });
+    removed.then_some(()).ok_or(FileError::RemoveFailed)
+}
+
+pub fn rename_file(existing: &str, replacement: &str) -> Result<(), FileError> {
+    #[cfg(windows)]
+    let renamed = encode_windows_path(existing).zip(encode_windows_path(replacement)).is_some_and(
+        |(existing, replacement)| mrml_windows::rename_file_wide(&existing, &replacement),
+    );
+    #[cfg(unix)]
+    let renamed = encode_unix_path(existing).zip(encode_unix_path(replacement)).is_some_and(
+        |(existing, replacement)| {
+            core::ffi::CStr::from_bytes_with_nul(&existing).is_ok_and(|existing| {
+                core::ffi::CStr::from_bytes_with_nul(&replacement)
+                    .is_ok_and(|replacement| mrml_linux::rename_file(existing, replacement))
+            })
+        },
+    );
+    renamed.then_some(()).ok_or(FileError::RenameFailed)
 }
 impl core::error::Error for FileError {}
 
@@ -263,7 +294,23 @@ mod tests {
         write_file(path.to_str().unwrap(), b"a longer discarded value").unwrap();
         write_file(path.to_str().unwrap(), "observatory λ".as_bytes()).unwrap();
         assert_eq!(read_file_text(path.to_str().unwrap()).unwrap(), "observatory λ");
-        std::fs::remove_file(path).unwrap();
+        remove_file(path.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn renames_replaces_and_removes_files_natively() {
+        let root = std::env::temp_dir().join(std::format!("mrml-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source-λ.txt");
+        let target = root.join("target-λ.txt");
+        write_file(source.to_str().unwrap(), b"new").unwrap();
+        write_file(target.to_str().unwrap(), b"old").unwrap();
+        rename_file(source.to_str().unwrap(), target.to_str().unwrap()).unwrap();
+        assert_eq!(&*read_file(target.to_str().unwrap()).unwrap(), b"new");
+        assert!(!source.exists());
+        remove_file(target.to_str().unwrap()).unwrap();
+        assert!(!target.exists());
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]

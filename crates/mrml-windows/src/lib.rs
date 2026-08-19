@@ -50,6 +50,8 @@ unsafe extern "system" {
     fn GetEnvironmentVariableW(name: *const u16, value: *mut u16, capacity: u32) -> u32;
     fn GetFileAttributesW(name: *const u16) -> u32;
     fn CreateDirectoryW(name: *const u16, security: *const c_void) -> i32;
+    fn DeleteFileW(name: *const u16) -> i32;
+    fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
     fn GetLastError() -> u32;
     fn SetLastError(error: u32);
     fn CreateFileMappingW(
@@ -155,6 +157,25 @@ pub fn create_directory_wide(name: &[u16]) -> bool {
     }
     (unsafe { CreateDirectoryW(name.as_ptr(), core::ptr::null()) }) != 0
         || (unsafe { GetLastError() } == ERROR_ALREADY_EXISTS && wide_path_is_directory(name))
+}
+
+#[cfg(windows)]
+pub fn delete_file_wide(name: &[u16]) -> bool {
+    name.last().copied() == Some(0) && unsafe { DeleteFileW(name.as_ptr()) } != 0
+}
+
+#[cfg(windows)]
+pub fn rename_file_wide(existing: &[u16], replacement: &[u16]) -> bool {
+    const MOVEFILE_REPLACE_EXISTING: u32 = 1;
+    existing.last().copied() == Some(0)
+        && replacement.last().copied() == Some(0)
+        && unsafe {
+            MoveFileExW(
+                existing.as_ptr(),
+                replacement.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING,
+            )
+        } != 0
 }
 
 #[cfg(windows)]
