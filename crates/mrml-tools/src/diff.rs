@@ -1,8 +1,6 @@
 //! Line-oriented diff rendering used by editing tools.
-use alloc::format;
-use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
+use core::fmt::Write;
+use mrml_runtime::{Text, Vector};
 use mrml_terminal_style::Colorize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,11 +23,11 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
     &text[..end]
 }
 
-fn lines(text: &str) -> Vec<&str> {
+fn lines(text: &str) -> Vector<&str> {
     text.split_inclusive('\n').collect()
 }
 
-fn line_diff<'a>(old_text: &'a str, new_text: &'a str) -> Vec<Change<'a>> {
+fn line_diff<'a>(old_text: &'a str, new_text: &'a str) -> Vector<Change<'a>> {
     let old = lines(old_text);
     let new = lines(new_text);
     let mut prefix = 0;
@@ -44,7 +42,7 @@ fn line_diff<'a>(old_text: &'a str, new_text: &'a str) -> Vec<Change<'a>> {
         new_end -= 1;
     }
 
-    let mut changes = Vec::with_capacity(old.len() + new.len());
+    let mut changes = Vector::with_capacity(old.len() + new.len()).expect("MRML allocation failed");
     changes.extend(old[..prefix].iter().copied().map(Change::Equal));
     let old_middle = &old[prefix..old_end];
     let new_middle = &new[prefix..new_end];
@@ -54,7 +52,8 @@ fn line_diff<'a>(old_text: &'a str, new_text: &'a str) -> Vec<Change<'a>> {
         changes.extend(new_middle.iter().copied().map(Change::Insert));
     } else {
         let columns = new_middle.len() + 1;
-        let mut lengths = vec![0u32; (old_middle.len() + 1) * columns];
+        let mut lengths = Vector::new();
+        lengths.resize((old_middle.len() + 1) * columns, 0u32);
         for old_index in (0..old_middle.len()).rev() {
             for new_index in (0..new_middle.len()).rev() {
                 let cell = old_index * columns + new_index;
@@ -91,36 +90,38 @@ fn line_diff<'a>(old_text: &'a str, new_text: &'a str) -> Vec<Change<'a>> {
     changes
 }
 
-pub fn format_colorized_diff(file_path: &str, old_text: &str, new_text: &str) -> String {
-    let mut output = String::new();
+pub fn format_colorized_diff(file_path: &str, old_text: &str, new_text: &str) -> Text {
+    let mut output = Text::new();
 
-    output.push_str(&format!(
-        "\n{}\n",
-        format!("--- diff for '{}' ---", file_path).cyan().bold()
-    ));
+    let mut heading = Text::new();
+    write!(heading, "--- diff for '{}' ---", file_path).expect("writing to text cannot fail");
+    writeln!(output, "\n{}", heading.cyan().bold()).expect("writing to text cannot fail");
 
-    for change in line_diff(old_text, new_text) {
+    let changes = line_diff(old_text, new_text);
+    for &change in &changes {
         let line = match change {
             Change::Delete(line) | Change::Insert(line) | Change::Equal(line) => line,
         };
         match change {
             Change::Delete(_) => {
-                output.push_str(&format!("- {}", line.red()));
+                write!(output, "- {}", line.red()).expect("writing to text cannot fail");
             }
             Change::Insert(_) => {
-                output.push_str(&format!("+ {}", line.green()));
+                write!(output, "+ {}", line.green()).expect("writing to text cannot fail");
             }
             Change::Equal(_) => {
                 if line.len() > 120 {
-                    output.push_str(&format!("  {}\n", truncate_utf8(&line, 120).dimmed()));
+                    writeln!(output, "  {}", truncate_utf8(line, 120).dimmed())
+                        .expect("writing to text cannot fail");
                 } else {
-                    output.push_str(&format!("  {}", line.dimmed()));
+                    write!(output, "  {}", line.dimmed()).expect("writing to text cannot fail");
                 }
             }
         }
     }
 
-    output.push_str(&format!("{}\n", "-----------------------".cyan().bold()));
+    writeln!(output, "{}", "-----------------------".cyan().bold())
+        .expect("writing to text cannot fail");
     output
 }
 
@@ -143,12 +144,12 @@ mod tests {
     fn line_diff_preserves_insertions_deletions_and_shared_lines() {
         assert_eq!(
             line_diff("one\ntwo\nfour\n", "one\nthree\nfour\n"),
-            vec![
+            [
                 Change::Equal("one\n"),
                 Change::Delete("two\n"),
                 Change::Insert("three\n"),
                 Change::Equal("four\n"),
-            ]
+            ][..]
         );
     }
 
@@ -156,11 +157,11 @@ mod tests {
     fn line_diff_handles_final_lines_without_newlines() {
         assert_eq!(
             line_diff("alpha\nbeta", "alpha\ngamma"),
-            vec![
+            [
                 Change::Equal("alpha\n"),
                 Change::Delete("beta"),
                 Change::Insert("gamma"),
-            ]
+            ][..]
         );
     }
 }

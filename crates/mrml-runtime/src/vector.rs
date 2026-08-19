@@ -294,6 +294,17 @@ impl<T> core::iter::FromIterator<T> for Vector<T> {
     }
 }
 
+impl<T> Extend<T> for Vector<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, values: I) {
+        let iterator = values.into_iter();
+        self.try_reserve(iterator.size_hint().0)
+            .expect("MRML allocation failed");
+        for value in iterator {
+            self.push(value);
+        }
+    }
+}
+
 impl<'a, T> IntoIterator for &'a Vector<T> {
     type Item = &'a T;
     type IntoIter = core::slice::Iter<'a, T>;
