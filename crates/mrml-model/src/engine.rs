@@ -2,7 +2,6 @@ use crate::error::{Error, Result};
 use core::sync::atomic::AtomicBool;
 use mrml_runtime::Shared;
 use mrml_tensor::MrmlEngine;
-use std::path::Path;
 use std::sync::mpsc;
 
 #[derive(Clone)]
@@ -16,8 +15,8 @@ pub struct GenerationChunk {
 }
 
 impl ModelEngine {
-    pub fn new<P: AsRef<Path>>(
-        model_path: P,
+    pub fn new(
+        model_path: &str,
         _n_gpu_layers: i32,
         ctx_size: u32,
         cache_type_k: &str,

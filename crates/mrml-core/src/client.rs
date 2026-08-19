@@ -349,7 +349,8 @@ impl MrmlClient {
     pub fn new(_server_url: &str, _api_key: &str) -> Self {
         let model_path = find_model_file("gemma-4-26b-it-q4_0.gguf");
         let engine = if let Some(path) = model_path {
-            match ModelEngine::new(&path, -1, 8192, "auto", "auto", None) {
+            let path_text = path.to_string_lossy();
+            match ModelEngine::new(&path_text, -1, 8192, "auto", "auto", None) {
                 Ok(eng) => Some(Shared::new(eng)),
                 Err(e) => {
                     eprintln!("Notice: MRML engine init deferred: {}", e);
@@ -405,10 +406,11 @@ impl MrmlClient {
 
         let engine = if let Some(path) = model_path {
             println!("Loading in-process GGUF model: {}", path.display());
+            let path_text = path.to_string_lossy();
             let n_layers = config.n_gpu_layers.unwrap_or(-1);
             let backend_str = config.backend.to_string();
             match ModelEngine::new(
-                &path,
+                &path_text,
                 n_layers,
                 config.ctx_size,
                 &config.cache_type_k,

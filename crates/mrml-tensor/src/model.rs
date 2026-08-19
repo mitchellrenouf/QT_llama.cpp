@@ -10,9 +10,8 @@ use core::cmp::Ordering as CompareOrdering;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use mrml_runtime::{File, Instant, Shared, Vector};
+use mrml_runtime::{File, Instant, Shared, Text, Vector};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 fn environment_is_set(name: &CStr) -> bool {
     #[cfg(windows)]
@@ -198,7 +197,7 @@ pub struct MrmlModel {
     pub vocab_to_id: HashMap<String, i32>,
     pub valid_vocab_token: Vec<bool>,
     pub chat_template: Option<String>,
-    pub gguf_path: PathBuf,
+    pub gguf_path: Text,
     pub cache_type_k: KvCacheFormat,
     pub cache_type_v: KvCacheFormat,
     pub execution_plan: crate::execution_plan::ExecutionPlan,
@@ -348,20 +347,18 @@ fn capture_layer_ffn_graph(
 }
 
 impl MrmlModel {
-    pub fn load_from_gguf<P: AsRef<Path>>(path: P, max_context: usize) -> Result<Self> {
+    pub fn load_from_gguf(path: &str, max_context: usize) -> Result<Self> {
         Self::load_from_gguf_with_cache(path, max_context, KvCacheFormat::F32, KvCacheFormat::F32)
     }
 
-    pub fn load_from_gguf_with_cache<P: AsRef<Path>>(
-        path: P,
+    pub fn load_from_gguf_with_cache(
+        path: &str,
         max_context: usize,
         cache_type_k: KvCacheFormat,
         cache_type_v: KvCacheFormat,
     ) -> Result<Self> {
-        let gguf_path = path.as_ref().to_path_buf();
-        let gguf_path_text = gguf_path
-            .to_str()
-            .ok_or_else(|| anyhow::Error::msg("model path is not valid UTF-8"))?;
+        let gguf_path = Text::from(path);
+        let gguf_path_text = path;
         let gguf = GgufFile::open(gguf_path_text)?;
         let chat_template = gguf
             .get_meta("tokenizer.chat_template")

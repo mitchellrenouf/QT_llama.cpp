@@ -198,8 +198,11 @@ impl MrmlAgent {
     pub fn reload_model(&mut self, model_path: &std::path::Path) -> Result<()> {
         let n_layers = self.config.n_gpu_layers.unwrap_or(-1);
         let backend_str = self.config.backend.to_string();
+        let model_path_text = model_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8"))?;
         let engine = mrml_model::ModelEngine::new(
-            model_path,
+            model_path_text,
             n_layers,
             self.config.ctx_size,
             &self.config.cache_type_k,

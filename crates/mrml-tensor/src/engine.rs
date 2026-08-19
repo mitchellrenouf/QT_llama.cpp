@@ -2,14 +2,13 @@ use crate::anyhow::Result;
 use crate::model::MrmlModel;
 use core::sync::atomic::{AtomicBool, Ordering};
 use mrml_runtime::{Instant, Shared, SpinMutex};
-use std::path::Path;
 
 pub struct MrmlEngine {
     pub model: Shared<SpinMutex<MrmlModel>>,
 }
 
 impl MrmlEngine {
-    pub fn new<P: AsRef<Path>>(model_path: P, max_context: usize) -> Result<Self> {
+    pub fn new(model_path: &str, max_context: usize) -> Result<Self> {
         let model = MrmlModel::load_from_gguf(model_path, max_context)?;
         Ok(Self {
             model: Shared::new(SpinMutex::new(model)),
@@ -31,8 +30,8 @@ impl MrmlEngine {
         guard.is_eog_token(token)
     }
 
-    pub fn new_with_cache<P: AsRef<Path>>(
-        model_path: P,
+    pub fn new_with_cache(
+        model_path: &str,
         max_context: usize,
         cache_type_k: &str,
         cache_type_v: &str,
