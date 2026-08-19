@@ -7,7 +7,16 @@ license.workspace = true
 
 [features]
 default = ["std", "auto"]
-std = ["mrml-model/std", "mrml-terminal-style/std", "mrml-tools/std"]
+std = [
+    "dep:anyhow",
+    "dep:mrml-model",
+    "dep:mrml-terminal-style",
+    "dep:mrml-tools",
+    "dep:serde_json",
+    "mrml-model/std",
+    "mrml-terminal-style/std",
+    "mrml-tools/std",
+]
 auto = ["std", "mrml-model/auto"]
 cuda = ["std", "mrml-model/cuda"]
 vulkan = ["std", "mrml-model/vulkan"]
@@ -15,8 +24,8 @@ hipblas = ["std", "mrml-model/hipblas"]
 sycl = ["std", "mrml-model/sycl"]
 
 [dependencies]
-mrml-model = { path = "../mrml-model", default-features = false }
-mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false }
-mrml-tools = { path = "../mrml-tools", default-features = false }
-anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
-serde_json = { package = "mrml-json", path = "../mrml-json" }
+mrml-model = { path = "../mrml-model", default-features = false, optional = true }
+mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false, optional = true }
+mrml-tools = { path = "../mrml-tools", default-features = false, optional = true }
+anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow", optional = true }
+serde_json = { package = "mrml-json", path = "../mrml-json", optional = true }

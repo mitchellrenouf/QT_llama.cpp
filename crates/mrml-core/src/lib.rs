@@ -1,7 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-extern crate alloc;
-
 pub mod modes;
 
 #[cfg(feature = "std")]
@@ -15,7 +13,9 @@ pub mod hf;
 #[cfg(feature = "std")]
 pub mod rules;
 
+#[cfg(feature = "std")]
 pub use mrml_tools as tools;
+#[cfg(feature = "std")]
 pub use mrml_tools::{diff, encoding};
 #[cfg(feature = "std")]
 pub use mrml_tools::{fs_walk, markdown, platform};

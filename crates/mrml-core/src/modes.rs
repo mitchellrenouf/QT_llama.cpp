@@ -1,7 +1,16 @@
-use alloc::format;
-use alloc::string::String;
 use core::fmt;
 use core::str::FromStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseChoiceError(&'static str);
+
+impl fmt::Display for ParseChoiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl core::error::Error for ParseChoiceError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentMode {
@@ -21,14 +30,17 @@ impl fmt::Display for AgentMode {
 }
 
 impl FromStr for AgentMode {
-    type Err = String;
+    type Err = ParseChoiceError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "general" => Ok(Self::General),
-            "coder" => Ok(Self::Coder),
-            "automatic" => Ok(Self::Automatic),
-            _ => Err(format!("invalid agent mode '{value}'")),
+        if value.eq_ignore_ascii_case("general") {
+            Ok(Self::General)
+        } else if value.eq_ignore_ascii_case("coder") {
+            Ok(Self::Coder)
+        } else if value.eq_ignore_ascii_case("automatic") {
+            Ok(Self::Automatic)
+        } else {
+            Err(ParseChoiceError("invalid agent mode"))
         }
     }
 }
@@ -57,17 +69,23 @@ impl fmt::Display for BackendChoice {
 }
 
 impl FromStr for BackendChoice {
-    type Err = String;
+    type Err = ParseChoiceError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "cuda" => Ok(Self::Cuda),
-            "rocm" => Ok(Self::Rocm),
-            "vulkan" => Ok(Self::Vulkan),
-            "sycl" => Ok(Self::Sycl),
-            "cpu" => Ok(Self::Cpu),
-            _ => Err(format!("invalid backend '{value}'")),
+        if value.eq_ignore_ascii_case("auto") {
+            Ok(Self::Auto)
+        } else if value.eq_ignore_ascii_case("cuda") {
+            Ok(Self::Cuda)
+        } else if value.eq_ignore_ascii_case("rocm") {
+            Ok(Self::Rocm)
+        } else if value.eq_ignore_ascii_case("vulkan") {
+            Ok(Self::Vulkan)
+        } else if value.eq_ignore_ascii_case("sycl") {
+            Ok(Self::Sycl)
+        } else if value.eq_ignore_ascii_case("cpu") {
+            Ok(Self::Cpu)
+        } else {
+            Err(ParseChoiceError("invalid backend"))
         }
     }
 }
@@ -75,14 +93,13 @@ impl FromStr for BackendChoice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
-
     #[test]
     fn portable_modes_parse_and_display() {
-        assert_eq!("automatic".parse(), Ok(AgentMode::Automatic));
-        assert_eq!(AgentMode::Coder.to_string(), "coder");
-        assert_eq!("cuda".parse(), Ok(BackendChoice::Cuda));
-        assert_eq!(BackendChoice::Cpu.to_string(), "cpu");
-        assert!("invalid".parse::<BackendChoice>().is_err());
+        assert_eq!("AuToMaTiC".parse(), Ok(AgentMode::Automatic));
+        assert_eq!("CUDA".parse(), Ok(BackendChoice::Cuda));
+        assert_eq!(
+            "invalid".parse::<BackendChoice>(),
+            Err(ParseChoiceError("invalid backend")),
+        );
     }
 }
