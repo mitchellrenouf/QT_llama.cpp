@@ -290,7 +290,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn sse_chunk(created: u64, content: Option<String>, finish_reason: Option<&str>) -> Text {
+fn sse_chunk(created: u64, content: Option<Text>, finish_reason: Option<&str>) -> Text {
     let delta = content
         .map(|content| object([("content", Value::text(content))]))
         .unwrap_or_else(|| Value::Object(Default::default()));

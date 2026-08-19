@@ -11,6 +11,24 @@ pub struct Text {
 }
 
 impl Text {
+    pub fn remove(&mut self, index: usize) -> char {
+        let character = self.as_str()[index..]
+            .chars()
+            .next()
+            .expect("cannot remove a character at the end of text");
+        let width = character.len_utf8();
+        if self.heap_backed {
+            for _ in 0..width {
+                self.bytes.remove(index);
+            }
+        } else {
+            let len = self.inline_len as usize;
+            self.inline.copy_within(index + width..len, index);
+            self.inline_len -= width as u8;
+        }
+        character
+    }
+
     const INLINE_CAPACITY: usize = 23;
 
     pub const fn new() -> Self {

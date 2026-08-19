@@ -1,7 +1,23 @@
 //! Native platform paths and timestamps shared by tools and the agent.
 use core::fmt::Write as _;
 use mrml_runtime::Text;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub fn path_is_file(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let mut wide = mrml_runtime::Vector::with_capacity(path.as_os_str().len() + 1)
+            .expect("MRML path allocation failed");
+        wide.extend(path.as_os_str().encode_wide());
+        wide.push(0);
+        mrml_windows::wide_path_is_file(&wide)
+    }
+    #[cfg(unix)]
+    {
+        path.is_file()
+    }
+}
 
 #[cfg(unix)]
 use mrml_linux::LocalTime;

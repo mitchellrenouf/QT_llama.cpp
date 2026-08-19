@@ -46,6 +46,7 @@ unsafe extern "system" {
     fn GetStdHandle(kind: u32) -> *mut c_void;
     fn GetConsoleMode(handle: *mut c_void, mode: *mut u32) -> i32;
     fn GetEnvironmentVariableA(name: *const i8, value: *mut i8, capacity: u32) -> u32;
+    fn GetFileAttributesW(name: *const u16) -> u32;
     fn GetLastError() -> u32;
     fn SetLastError(error: u32);
     fn CreateFileMappingW(
@@ -102,6 +103,17 @@ unsafe extern "system" {
     fn WakeByAddressSingle(address: *const c_void);
     fn WakeByAddressAll(address: *const c_void);
     fn ExitProcess(exit_code: u32) -> !;
+}
+
+#[cfg(windows)]
+pub fn wide_path_is_file(name: &[u16]) -> bool {
+    const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    if name.last().copied() != Some(0) {
+        return false;
+    }
+    let attributes = unsafe { GetFileAttributesW(name.as_ptr()) };
+    attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_DIRECTORY == 0
 }
 
 #[cfg(windows)]
@@ -171,13 +183,15 @@ impl NativeFile {
     pub fn open_read(path: &[u16]) -> Option<Self> {
         const GENERIC_READ: u32 = 0x8000_0000;
         const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        const FILE_SHARE_DELETE: u32 = 4;
         const OPEN_EXISTING: u32 = 3;
         const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
         let handle = unsafe {
             CreateFileW(
                 path.as_ptr(),
                 GENERIC_READ,
-                FILE_SHARE_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 core::ptr::null(),
                 OPEN_EXISTING,
                 FILE_ATTRIBUTE_NORMAL,

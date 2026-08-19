@@ -515,16 +515,16 @@ impl MrmlAgent {
                     });
                     if is_clock_request {
                         if let Some(answer) = verified_time_answer(&output) {
-                            event_sink(StreamEvent::Content(answer.clone()));
-                            event_sink(StreamEvent::Finish("stop".to_string()));
+                            event_sink(StreamEvent::Content(answer.as_str().into()));
+                            event_sink(StreamEvent::Finish("stop".into()));
                             self.history
                                 .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
                             return Ok((answer, String::new()));
                         }
                     } else {
                         if let Some(answer) = verified_command_answer(&output) {
-                            event_sink(StreamEvent::Content(answer.clone()));
-                            event_sink(StreamEvent::Finish("stop".to_string()));
+                            event_sink(StreamEvent::Content(answer.as_str().into()));
+                            event_sink(StreamEvent::Finish("stop".into()));
                             self.history
                                 .push(ChatMessage::assistant(Some(answer.as_str().into()), None));
                             return Ok((answer, String::new()));

@@ -40,8 +40,8 @@ pub struct ChatCompletionResponse {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    Reasoning(String),
-    Content(String),
+    Reasoning(Text),
+    Content(Text),
     ToolCallAssembled(ToolCall),
     ToolExecuted {
         name: String,
@@ -52,7 +52,7 @@ pub enum StreamEvent {
         elapsed_secs: f64,
         tokens_per_sec: f64,
     },
-    Finish(String),
+    Finish(Text),
 }
 
 fn quote_relaxed_keys(input: &str) -> String {
@@ -396,7 +396,7 @@ impl MrmlClient {
 
     pub fn with_config(config: &Config) -> Self {
         let explicit_model = PathBuf::from(config.model.as_str());
-        let model_path = if explicit_model.is_file() {
+        let model_path = if crate::platform::path_is_file(&explicit_model) {
             Some(explicit_model)
         } else if let Some(hf_spec_str) = config.hf.as_deref().filter(|s| !s.trim().is_empty()) {
             find_model_file(hf_spec_str).or_else(|| find_model_file(&config.model))
@@ -552,7 +552,7 @@ impl MrmlClient {
         let mut first_token_time: Option<Instant> = None;
         let mut token_count = 0usize;
 
-        let mut raw_acc = String::new();
+        let mut raw_acc = Text::new();
         let mut full_content = Text::new();
         let mut full_reasoning = Text::new();
         let mut in_thought =
@@ -614,11 +614,11 @@ impl MrmlClient {
                             if in_thought {
                                 let clean = before.trim().trim_start_matches("thought").trim();
                                 if !clean.is_empty() && clean != "thought" {
-                                    callback(StreamEvent::Reasoning(clean.to_string()));
+                                    callback(StreamEvent::Reasoning(clean.into()));
                                     full_reasoning.push_str(clean);
                                 }
                             } else {
-                                callback(StreamEvent::Content(before.to_string()));
+                                callback(StreamEvent::Content(before.into()));
                                 full_content.push_str(before);
                             }
                         }
@@ -629,7 +629,7 @@ impl MrmlClient {
                             tool_calls.push(tc);
                         }
 
-                        raw_acc = raw_acc[end_pos..].to_string();
+                        raw_acc = raw_acc[end_pos..].into();
                         if raw_acc.starts_with('\n') {
                             raw_acc.remove(0);
                         }
@@ -642,14 +642,14 @@ impl MrmlClient {
                             if in_thought {
                                 let clean = before.trim().trim_start_matches("thought").trim();
                                 if !clean.is_empty() && clean != "thought" {
-                                    callback(StreamEvent::Reasoning(clean.to_string()));
+                                    callback(StreamEvent::Reasoning(clean.into()));
                                     full_reasoning.push_str(clean);
                                 }
                             } else {
-                                callback(StreamEvent::Content(before.to_string()));
+                                callback(StreamEvent::Content(before.into()));
                                 full_content.push_str(before);
                             }
-                            raw_acc = raw_acc[tool_start..].to_string();
+                            raw_acc = raw_acc[tool_start..].into();
                         }
                         break;
                     }
@@ -660,15 +660,15 @@ impl MrmlClient {
                     if let Some(pos) = raw_acc.find("<|channel>") {
                         let before = &raw_acc[..pos];
                         if !before.is_empty() {
-                            callback(StreamEvent::Content(before.to_string()));
+                            callback(StreamEvent::Content(before.into()));
                             full_content.push_str(before);
                         }
-                        raw_acc = raw_acc[pos + "<|channel>".len()..].to_string();
+                        raw_acc = raw_acc[pos + "<|channel>".len()..].into();
                         let trimmed = raw_acc.trim_start();
                         if trimmed.starts_with("thought") {
                             raw_acc = trimmed["thought".len()..]
                                 .trim_start_matches(|c| c == '\n' || c == '\r' || c == ' ')
-                                .to_string();
+                                .into();
                         }
                         in_thought = true;
                         continue;
@@ -676,10 +676,10 @@ impl MrmlClient {
                     if let Some(pos) = raw_acc.find("<thought>") {
                         let before = &raw_acc[..pos];
                         if !before.is_empty() {
-                            callback(StreamEvent::Content(before.to_string()));
+                            callback(StreamEvent::Content(before.into()));
                             full_content.push_str(before);
                         }
-                        raw_acc = raw_acc[pos + "<thought>".len()..].to_string();
+                        raw_acc = raw_acc[pos + "<thought>".len()..].into();
                         if raw_acc.starts_with('\n') {
                             raw_acc.remove(0);
                         }
@@ -689,10 +689,10 @@ impl MrmlClient {
                     if let Some(pos) = raw_acc.find("<channel|>") {
                         let before = &raw_acc[..pos];
                         if !before.is_empty() {
-                            callback(StreamEvent::Content(before.to_string()));
+                            callback(StreamEvent::Content(before.into()));
                             full_content.push_str(before);
                         }
-                        raw_acc = raw_acc[pos + "<channel|>".len()..].to_string();
+                        raw_acc = raw_acc[pos + "<channel|>".len()..].into();
                         if raw_acc.starts_with('\n') {
                             raw_acc.remove(0);
                         }
@@ -701,10 +701,10 @@ impl MrmlClient {
                     if let Some(pos) = raw_acc.find("</channel>") {
                         let before = &raw_acc[..pos];
                         if !before.is_empty() {
-                            callback(StreamEvent::Content(before.to_string()));
+                            callback(StreamEvent::Content(before.into()));
                             full_content.push_str(before);
                         }
-                        raw_acc = raw_acc[pos + "</channel>".len()..].to_string();
+                        raw_acc = raw_acc[pos + "</channel>".len()..].into();
                         if raw_acc.starts_with('\n') {
                             raw_acc.remove(0);
                         }
@@ -715,10 +715,10 @@ impl MrmlClient {
                     if let Some(pos) = raw_acc.find("<end_of_turn>") {
                         let before = &raw_acc[..pos];
                         if !before.is_empty() {
-                            callback(StreamEvent::Content(before.to_string()));
+                            callback(StreamEvent::Content(before.into()));
                             full_content.push_str(before);
                         }
-                        raw_acc = raw_acc[pos + "<end_of_turn>".len()..].to_string();
+                        raw_acc = raw_acc[pos + "<end_of_turn>".len()..].into();
                         continue;
                     }
 
@@ -743,10 +743,10 @@ impl MrmlClient {
                         let keep_len = prefix.len();
                         let emit_len = raw_acc.len() - keep_len;
                         if emit_len > 0 {
-                            let to_emit = raw_acc[..emit_len].to_string();
+                            let to_emit: Text = raw_acc[..emit_len].into();
                             callback(StreamEvent::Content(to_emit.clone()));
                             full_content.push_str(&to_emit);
-                            raw_acc = raw_acc[emit_len..].to_string();
+                            raw_acc = raw_acc[emit_len..].into();
                         }
                         break;
                     }
@@ -774,10 +774,10 @@ impl MrmlClient {
                         let thought_part = &raw_acc[..pos];
                         let clean = thought_part.trim().trim_start_matches("thought").trim();
                         if !clean.is_empty() && clean != "thought" {
-                            callback(StreamEvent::Reasoning(clean.to_string()));
+                            callback(StreamEvent::Reasoning(clean.into()));
                             full_reasoning.push_str(clean);
                         }
-                        raw_acc = raw_acc[pos + tag_len..].to_string();
+                        raw_acc = raw_acc[pos + tag_len..].into();
                         if raw_acc.starts_with('\n') {
                             raw_acc.remove(0);
                         }
@@ -809,13 +809,13 @@ impl MrmlClient {
                         let keep_len = prefix.len();
                         let emit_len = raw_acc.len() - keep_len;
                         if emit_len > 0 {
-                            let to_emit = raw_acc[..emit_len].to_string();
+                            let to_emit: Text = raw_acc[..emit_len].into();
                             let clean = to_emit.trim();
                             if !clean.is_empty() && clean != "thought" {
                                 callback(StreamEvent::Reasoning(to_emit.clone()));
                                 full_reasoning.push_str(&to_emit);
                             }
-                            raw_acc = raw_acc[emit_len..].to_string();
+                            raw_acc = raw_acc[emit_len..].into();
                         }
                         break;
                     }
@@ -885,7 +885,7 @@ impl MrmlClient {
                 if in_thought {
                     let clean = clean_tail.trim().trim_start_matches("thought").trim();
                     if !clean.is_empty() && clean != "thought" {
-                        callback(StreamEvent::Reasoning(clean.to_string()));
+                        callback(StreamEvent::Reasoning(clean.into()));
                         full_reasoning.push_str(clean);
                     }
                 } else {
@@ -911,7 +911,7 @@ impl MrmlClient {
             tokens_per_sec: final_tps,
         });
 
-        callback(StreamEvent::Finish("stop".to_string()));
+        callback(StreamEvent::Finish("stop".into()));
 
         let clean_full_reasoning =
             Text::from(full_reasoning.trim().trim_start_matches("thought").trim());
@@ -994,7 +994,7 @@ pub fn get_model_cache_roots() -> Vec<PathBuf> {
 
 pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     let p = PathBuf::from(model_arg);
-    if p.is_file() {
+    if crate::platform::path_is_file(&p) {
         return Some(p);
     }
 
@@ -1090,7 +1090,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     ];
 
     for c in candidates {
-        if c.is_file() {
+        if crate::platform::path_is_file(&c) {
             return Some(c);
         }
     }
