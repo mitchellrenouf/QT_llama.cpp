@@ -198,16 +198,6 @@ extern "C" {
         partitions: i32,
         stream: CudaStream,
     );
-    fn cuda_op_moe_router(
-        d_weights: *const f32,
-        d_input: *const f32,
-        d_logits: *mut f32,
-        d_ids: *mut i32,
-        d_probabilities: *mut f32,
-        dim: i32,
-        n_experts: i32,
-        stream: CudaStream,
-    );
     fn cuda_op_prepare_ffn(
         d_hidden: *const f32,
         d_attn_proj: *const f32,
@@ -278,17 +268,6 @@ extern "C" {
         v_format: i32,
         stream: CudaStream,
     );
-    fn cuda_op_moe_router_batch(
-        d_weights: *const f32,
-        d_input: *const f32,
-        d_logits: *mut f32,
-        d_ids: *mut i32,
-        d_probabilities: *mut f32,
-        dim: i32,
-        n_experts: i32,
-        batch: i32,
-        stream: CudaStream,
-    );
     fn cuda_op_gemm_q4_0_geglu(
         d_w_gate: *const u8,
         d_w_up: *const u8,
@@ -315,35 +294,6 @@ extern "C" {
         cache_capacity: i32,
         k_format: i32,
         v_format: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_moe_topk_q4_0(
-        d_gate_up_exps: *const u8,
-        d_down_exps: *const u8,
-        d_active_exp_ids: *const i32,
-        d_active_exp_weights: *const f32,
-        d_down_exps_scale: *const f32,
-        d_x_in: *const f32,
-        d_act_scratch: *mut f32,
-        d_out_moe: *mut f32,
-        dim: i32,
-        exp_ffn_dim: i32,
-        n_active: i32,
-        stream: CudaStream,
-    );
-    fn cuda_op_moe_topk_batch_q4_0(
-        d_gate_up_exps: *const u8,
-        d_down_exps: *const u8,
-        d_active_exp_ids: *const i32,
-        d_active_exp_weights: *const f32,
-        d_down_exps_scale: *const f32,
-        d_x_in: *const f32,
-        d_act_scratch: *mut f32,
-        d_out_moe: *mut f32,
-        dim: i32,
-        exp_ffn_dim: i32,
-        n_active: i32,
-        batch: i32,
         stream: CudaStream,
     );
 }
@@ -582,14 +532,14 @@ unsafe fn launch_rust_gemm_q4(
         &mut cols_arg as *mut _ as *mut c_void,
         &mut batch_arg as *mut _ as *mut c_void,
     ];
-    let grid_x = (rows.max(0) as u32).div_ceil(16).max(1);
+    let grid_x = (rows.max(0) as u32).div_ceil(8).max(1);
     let grid_y = (batch.max(0) as u32).div_ceil(8).max(1);
     let status = (cuda_driver()?.launch_kernel)(
         function,
         grid_x,
         grid_y,
         1,
-        256,
+        128,
         1,
         1,
         0,
@@ -627,13 +577,13 @@ unsafe fn launch_rust_gemv_q4(
         &mut rows_arg as *mut _ as *mut c_void,
         &mut cols_arg as *mut _ as *mut c_void,
     ];
-    let grid_x = (rows.max(0) as u32).div_ceil(8).max(1);
+    let grid_x = (rows.max(0) as u32).div_ceil(16).max(1);
     let status = (cuda_driver()?.launch_kernel)(
         function,
         grid_x,
         1,
         1,
-        128,
+        256,
         1,
         1,
         0,
@@ -1477,8 +1427,6 @@ impl CudaDevice {
         };
         let rust_geglu = has_stage("geglu") || has_stage("dense");
         let rust_down = has_stage("down") || has_stage("dense");
-        let rust_router = has_stage("router");
-        let rust_moe = has_stage("moe");
         unsafe {
             if rust_geglu {
                 launch_rust_geglu_q4(
@@ -1521,62 +1469,17 @@ impl CudaDevice {
                     self.stream,
                 );
             }
-            if rust_router {
-                launch_rust_moe_router(
-                    router_weights.as_ptr(),
-                    router_in.as_ptr(),
-                    router_logits.as_mut_ptr(),
-                    expert_ids.as_mut_ptr(),
-                    expert_weights.as_mut_ptr(),
-                    dim as i32,
-                    128,
-                    1,
-                    self.stream,
-                )?;
-            } else {
-                cuda_op_moe_router(
-                    router_weights.as_ptr(),
-                    router_in.as_ptr(),
-                    router_logits.as_mut_ptr(),
-                    expert_ids.as_mut_ptr(),
-                    expert_weights.as_mut_ptr(),
-                    dim as i32,
-                    128,
-                    self.stream,
-                );
-            }
-            if rust_moe {
-                launch_rust_moe_topk(
-                    gate_up_exps.as_ptr(),
-                    down_exps.as_ptr(),
-                    expert_ids.as_ptr(),
-                    expert_weights.as_ptr(),
-                    down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
-                    moe_in.as_ptr(),
-                    moe_act.as_mut_ptr(),
-                    moe_out.as_mut_ptr(),
-                    dim as i32,
-                    exp_dim as i32,
-                    8,
-                    1,
-                    self.stream,
-                )?;
-            } else {
-                cuda_op_moe_topk_q4_0(
-                    gate_up_exps.as_ptr(),
-                    down_exps.as_ptr(),
-                    expert_ids.as_ptr(),
-                    expert_weights.as_ptr(),
-                    down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
-                    moe_in.as_ptr(),
-                    moe_act.as_mut_ptr(),
-                    moe_out.as_mut_ptr(),
-                    dim as i32,
-                    exp_dim as i32,
-                    8,
-                    self.stream,
-                );
-            }
+            launch_rust_moe_router(
+                router_weights.as_ptr(), router_in.as_ptr(), router_logits.as_mut_ptr(),
+                expert_ids.as_mut_ptr(), expert_weights.as_mut_ptr(), dim as i32, 128, 1,
+                self.stream,
+            )?;
+            launch_rust_moe_topk(
+                gate_up_exps.as_ptr(), down_exps.as_ptr(), expert_ids.as_ptr(),
+                expert_weights.as_ptr(), down_scales.map_or(ptr::null(), CudaBuffer::as_ptr),
+                moe_in.as_ptr(), moe_act.as_mut_ptr(), moe_out.as_mut_ptr(), dim as i32,
+                exp_dim as i32, 8, 1, self.stream,
+            )?;
         }
         Ok(())
     }
@@ -2555,8 +2458,7 @@ impl CudaDevice {
         let scale_ptr = d_down_exps_scale.map(|b| b.as_ptr()).unwrap_or(ptr::null());
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                launch_rust_moe_topk(
+            launch_rust_moe_topk(
                     d_gate_up_exps.as_ptr(),
                     d_down_exps.as_ptr(),
                     d_active_exp_ids.as_ptr(),
@@ -2571,23 +2473,7 @@ impl CudaDevice {
                     1,
                     self.stream,
                 )
-                .expect("Rust CUDA MoE expert computation failed");
-                return;
-            }
-            cuda_op_moe_topk_q4_0(
-                d_gate_up_exps.as_ptr(),
-                d_down_exps.as_ptr(),
-                d_active_exp_ids.as_ptr(),
-                d_active_exp_weights.as_ptr(),
-                scale_ptr,
-                d_x_in.as_ptr(),
-                d_act_scratch.as_mut_ptr(),
-                d_out_moe.as_mut_ptr(),
-                dim as i32,
-                exp_ffn_dim as i32,
-                n_active as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA MoE expert computation failed");
         }
     }
 
@@ -2608,8 +2494,7 @@ impl CudaDevice {
         assert!(d_probabilities.len() >= 8);
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                launch_rust_moe_router(
+            launch_rust_moe_router(
                     d_weights.as_ptr(),
                     d_input.as_ptr(),
                     d_logits.as_mut_ptr(),
@@ -2620,19 +2505,7 @@ impl CudaDevice {
                     1,
                     self.stream,
                 )
-                .expect("Rust CUDA MoE router failed");
-                return;
-            }
-            cuda_op_moe_router(
-                d_weights.as_ptr(),
-                d_input.as_ptr(),
-                d_logits.as_mut_ptr(),
-                d_ids.as_mut_ptr(),
-                d_probabilities.as_mut_ptr(),
-                dim as i32,
-                n_experts as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA MoE router failed");
         }
     }
 
@@ -2659,8 +2532,7 @@ impl CudaDevice {
         let scale_ptr = scales.map(|value| value.as_ptr()).unwrap_or(ptr::null());
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                launch_rust_moe_topk(
+            launch_rust_moe_topk(
                     gate_up.as_ptr(),
                     down.as_ptr(),
                     ids.as_ptr(),
@@ -2675,24 +2547,7 @@ impl CudaDevice {
                     batch as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA batched MoE expert computation failed");
-                return;
-            }
-            cuda_op_moe_topk_batch_q4_0(
-                gate_up.as_ptr(),
-                down.as_ptr(),
-                ids.as_ptr(),
-                weights.as_ptr(),
-                scale_ptr,
-                input.as_ptr(),
-                act.as_mut_ptr(),
-                output.as_mut_ptr(),
-                dim as i32,
-                exp_dim as i32,
-                n_active as i32,
-                batch as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA batched MoE expert computation failed");
         }
     }
 
@@ -2713,8 +2568,7 @@ impl CudaDevice {
         assert_eq!(probabilities.len(), 8 * batch);
         unsafe {
             cudaSetDevice(self.device_id);
-            if env_flag_enabled("MRML_RUST_CUDA") {
-                launch_rust_moe_router(
+            launch_rust_moe_router(
                     weights.as_ptr(),
                     input.as_ptr(),
                     logits.as_mut_ptr(),
@@ -2725,20 +2579,7 @@ impl CudaDevice {
                     batch as i32,
                     self.stream,
                 )
-                .expect("Rust CUDA batched MoE router failed");
-                return;
-            }
-            cuda_op_moe_router_batch(
-                weights.as_ptr(),
-                input.as_ptr(),
-                logits.as_mut_ptr(),
-                ids.as_mut_ptr(),
-                probabilities.as_mut_ptr(),
-                dim as i32,
-                n_experts as i32,
-                batch as i32,
-                self.stream,
-            );
+            .expect("Rust CUDA batched MoE router failed");
         }
     }
 

@@ -1366,24 +1366,6 @@ void cuda_op_vocab_topk(
     }
 }
 
-void cuda_op_moe_router(
-    const float* d_weights,
-    const float* d_input,
-    float* d_logits,
-    int32_t* d_ids,
-    float* d_probabilities,
-    int dim,
-    int n_experts,
-    cudaStream_t stream
-) {
-    k_moe_router_logits_f32<<<n_experts, 256, 0, stream>>>(
-        d_weights, d_input, d_logits, dim, n_experts
-    );
-    k_moe_router_top8_f32<<<1, 128, 0, stream>>>(
-        d_logits, d_ids, d_probabilities, n_experts
-    );
-}
-
 void cuda_op_prepare_ffn(
     const float* d_hidden, const float* d_attn_proj,
     const float* d_post_attn_norm, const float* d_ffn_norm,
@@ -1451,18 +1433,6 @@ void cuda_op_attention(
     else { MRML_DISPATCH_ATTN(false) }
 #undef MRML_DISPATCH_ATTN
 #undef MRML_LAUNCH_ATTN
-}
-
-void cuda_op_moe_router_batch(
-    const float* d_weights, const float* d_input, float* d_logits,
-    int32_t* d_ids, float* d_probabilities, int dim, int n_experts,
-    int batch, cudaStream_t stream
-) {
-    dim3 grid(n_experts, batch);
-    k_moe_router_logits_batch_f32<<<grid, 256, 0, stream>>>(
-        d_weights, d_input, d_logits, dim, n_experts, batch);
-    k_moe_router_top8_batch_f32<<<batch, 128, 0, stream>>>(
-        d_logits, d_ids, d_probabilities, n_experts, batch);
 }
 
 void cuda_op_gemm_q4_0_geglu(
@@ -1611,36 +1581,6 @@ __global__ void k_moe_down_topk_q4_0_f32(
     }
 }
 
-void cuda_op_moe_topk_q4_0(
-    const uint8_t* d_gate_up_exps,
-    const uint8_t* d_down_exps,
-    const int32_t* d_active_exp_ids,
-    const float* d_active_exp_weights,
-    const float* d_down_exps_scale,
-    const float* d_x_in,
-    float* d_act_scratch,
-    float* d_out_moe,
-    int dim,
-    int exp_ffn_dim,
-    int n_active,
-    cudaStream_t stream
-) {
-    cudaMemsetAsync(d_out_moe, 0, dim * sizeof(float), stream);
-
-    const int threads = 128;
-    const int rows_per_block = 2 * threads / WARP_SIZE;
-    dim3 grid_gu((exp_ffn_dim + rows_per_block - 1) / rows_per_block, n_active);
-    k_moe_gate_up_topk_q4_0_f32<<<grid_gu, threads, 0, stream>>>(
-        d_gate_up_exps, d_active_exp_ids, d_x_in, d_act_scratch, exp_ffn_dim, dim, n_active
-    );
-
-    dim3 grid_down((dim + rows_per_block - 1) / rows_per_block, n_active);
-    k_moe_down_topk_q4_0_f32<<<grid_down, threads, 0, stream>>>(
-        d_down_exps, d_active_exp_ids, d_active_exp_weights, d_down_exps_scale,
-        d_act_scratch, d_out_moe, dim, exp_ffn_dim, n_active
-    );
-}
-
 __global__ void k_moe_gate_up_topk_batch_q4_0_f32(
     const uint8_t* gate_up, const int32_t* ids, const float* x,
     float* act, int exp_dim, int dim, int n_active, int batch
@@ -1698,22 +1638,6 @@ __global__ void k_moe_down_topk_batch_q4_0_f32(
     }
     float value = half_warp_reduce_sum(sum);
     if (active && sublane == 0) atomicAdd(&out[(size_t)token * dim + row], value * alpha);
-}
-
-void cuda_op_moe_topk_batch_q4_0(
-    const uint8_t* gate_up, const uint8_t* down, const int32_t* ids,
-    const float* weights, const float* scales, const float* x,
-    float* act, float* out, int dim, int exp_dim, int n_active,
-    int batch, cudaStream_t stream
-) {
-    cudaMemsetAsync(out, 0, (size_t)batch * dim * sizeof(float), stream);
-    int threads = 128, rows = 2 * threads / WARP_SIZE;
-    dim3 gate_grid((exp_dim + rows - 1) / rows, n_active, batch);
-    k_moe_gate_up_topk_batch_q4_0_f32<<<gate_grid, threads, 0, stream>>>(
-        gate_up, ids, x, act, exp_dim, dim, n_active, batch);
-    dim3 down_grid((dim + rows - 1) / rows, n_active, batch);
-    k_moe_down_topk_batch_q4_0_f32<<<down_grid, threads, 0, stream>>>(
-        down, ids, weights, scales, act, out, dim, exp_dim, n_active, batch);
 }
 
 }
