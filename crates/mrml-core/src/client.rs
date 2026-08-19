@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
+use mrml_runtime::Instant;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -543,7 +544,7 @@ impl MrmlClient {
 
         let (rx, _cancel) = engine.generate_stream(&prompt, max_tokens, temp);
 
-        let mut first_token_time: Option<std::time::Instant> = None;
+        let mut first_token_time: Option<Instant> = None;
         let mut token_count = 0usize;
 
         let mut raw_acc = String::new();
@@ -560,7 +561,7 @@ impl MrmlClient {
             };
             let piece = chunk.text;
 
-            let start = first_token_time.get_or_insert_with(std::time::Instant::now);
+            let start = first_token_time.get_or_insert_with(Instant::now);
             token_count += chunk.token_count;
             let elapsed = start.elapsed().as_secs_f64();
             let tps = if token_count > 1 && elapsed > 0.0001 {
