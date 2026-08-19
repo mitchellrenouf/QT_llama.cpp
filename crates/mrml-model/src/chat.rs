@@ -1,4 +1,10 @@
 use crate::error::{Error as ModelError, Result};
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::{String, ToString};
+#[cfg(test)]
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone)]
 pub struct FunctionCall {

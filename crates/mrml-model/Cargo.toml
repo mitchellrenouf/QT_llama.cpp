@@ -8,12 +8,13 @@ description = "MRML model and chat adapter for native in-process GGUF inference"
 
 [dependencies]
 serde_json = { package = "mrml-json", path = "../mrml-json" }
-mrml-tensor = { path = "../mrml-tensor", default-features = false }
+mrml-tensor = { path = "../mrml-tensor", default-features = false, optional = true }
 
 [features]
-default = ["auto"]
-auto = ["mrml-tensor/cuda"]
-cuda = ["mrml-tensor/cuda"]
-vulkan = []
-hipblas = []
-sycl = []
+default = ["std", "auto"]
+std = ["dep:mrml-tensor"]
+auto = ["std", "mrml-tensor/cuda"]
+cuda = ["std", "mrml-tensor/cuda"]
+vulkan = ["std"]
+hipblas = ["std"]
+sycl = ["std"]
