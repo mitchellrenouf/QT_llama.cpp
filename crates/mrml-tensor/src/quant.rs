@@ -1,3 +1,5 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
 /// Fast bitwise conversion from IEEE 754 half-precision float (f16) to single-precision float (f32)
 #[inline]
 pub fn f16_to_f32(h: u16) -> f32 {

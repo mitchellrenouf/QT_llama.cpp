@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(abi_ptx, asm_experimental_arch, stdarch_nvptx)]
+#![allow(unsafe_op_in_unsafe_fn)]
 
 use core::arch::{
     asm, global_asm,
@@ -339,7 +340,7 @@ unsafe fn f32_to_f16(value: f32) -> u16 {
     output
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_gemm_q4_0_f32(
     weights: *const u8,
     input: *const f32,
@@ -398,7 +399,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemm_q4_0_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_gemm_q4_0_qkv_f32(
     wq: *const u8,
     wk: *const u8,
@@ -467,7 +468,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemm_q4_0_qkv_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q4_0_qkv_f32(
     wq: *const u8, wk: *const u8, wv: *const u8, input: *const f32, output: *mut f32,
     q_rows: i32, kv_rows: i32, cols: i32,
@@ -503,7 +504,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q4_0_qkv_f32(
     if active && sublane == 0 { *output.add(out_row) = total_sum; }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q4_0_f32(
     weights: *const u8,
     input: *const f32,
@@ -547,7 +548,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q4_0_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q8_0_f32(
     weights: *const u8,
     input: *const f32,
@@ -593,7 +594,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q8_0_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_gemm_q4_0_geglu_f32(
     wgate: *const u8,
     wup: *const u8,
@@ -671,7 +672,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemm_q4_0_geglu_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q4_0_geglu_f32(
     wgate: *const u8,
     wup: *const u8,
@@ -727,7 +728,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_gemv_q4_0_geglu_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_add_f32(
     a: *const f32,
     b: *const f32,
@@ -742,7 +743,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_add_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_embedding_f32(
     table: *const f32,
     out: *mut f32,
@@ -754,7 +755,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_embedding_f32(
         *out.add(i) = *table.add(token as usize * dim as usize + i)
     }
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_swiglu_f32(
     gate: *const f32,
     up: *const f32,
@@ -767,7 +768,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_swiglu_f32(
         *out.add(i) = g / (1.0 + fast_exp(-g)) * *up.add(i)
     }
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_geglu_f32(
     gate: *const f32,
     up: *const f32,
@@ -781,7 +782,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_geglu_f32(
         *out.add(i) = gelu * *up.add(i)
     }
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_rope_f32(
     vec: *mut f32,
     pos: i32,
@@ -808,7 +809,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_rope_f32(
         *vec.add(base + i + half) = a * s + b * c;
     }
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_rms_norm_f32(
     x: *const f32,
     weight: *const f32,
@@ -862,7 +863,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_rms_norm_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_router_logits_f32(
     weights: *const f32,
     input: *const f32,
@@ -903,7 +904,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_router_logits_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_router_top8_f32(
     logits: *const f32,
     ids: *mut i32,
@@ -961,7 +962,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_router_top8_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_prepare_ffn_f32(
     hidden: *const f32,
     attn: *const f32,
@@ -1010,7 +1011,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_prepare_ffn_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_finish_ffn_f32(
     attn_res: *const f32,
     dense: *mut f32,
@@ -1060,7 +1061,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_finish_ffn_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_vocab_topk_f32(
     logits: *const f32,
     valid: *const u8,
@@ -1145,7 +1146,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_vocab_topk_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_vocab_topk_generic_f32(
     logits: *const f32,
     valid: *const u8,
@@ -1205,7 +1206,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_vocab_topk_generic_f32(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_qkv_postprocess(
     qkv: *mut f32,
     q_norm: *const f32,
@@ -1349,7 +1350,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_qkv_postprocess(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_attention(
     q: *const f32,
     k_cache: *const u16,
@@ -1438,7 +1439,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_attention(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_attention_streaming(
     q: *const f32,
     k_cache: *const u16,
@@ -1538,7 +1539,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_attention_streaming(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_gate_up_q4(
     gate_up: *const u8,
     ids: *const i32,
@@ -1590,7 +1591,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_gate_up_q4(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_gate_up_q4_gemma4_26b(
     gate_up: *const u8,
     ids: *const i32,
@@ -1635,7 +1636,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_gate_up_q4_gemma4_26b(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4(
     down: *const u8,
     ids: *const i32,
@@ -1690,7 +1691,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4_combined(
     down: *const u8,
     ids: *const i32,
@@ -1746,7 +1747,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4_combined(
 // Gemma 4 26B decode uses this exact top-8 expert shape. Keeping the dimensions
 // out of kernel parameters lets LLVM fold the row strides and loop bounds that
 // otherwise sit in the hottest projection of every generated token.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4_gemma4_26b(
     down: *const u8,
     ids: *const i32,

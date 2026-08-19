@@ -1,11 +1,2 @@
-# Qt's headers require C++17 with MSVC.  `cc` (used by qtrs' generated Qt
-# bridge) reads this target-specific variable, so Windows users do not need to
-# set CXXFLAGS manually.
-[env]
-CXXFLAGS_x86_64_pc_windows_msvc = "/std:c++17 /Zc:__cplusplus /permissive-"
-CXXFLAGS_aarch64_pc_windows_msvc = "/std:c++17 /Zc:__cplusplus /permissive-"
-CXX_x86_64_pc_windows_msvc = { value = "scripts/mrml-cl.cmd", relative = true, force = true }
-AR_x86_64_pc_windows_msvc = { value = "scripts/mrml-lib.cmd", relative = true, force = true }
-
-[target.x86_64-pc-windows-msvc]
-linker = "scripts/mrml-link.cmd"
+# Workspace build configuration intentionally stays toolchain-native. CUDA PTX
+# is compiled by nightly rustc in mrml-tensor/build.rs and requires no C++ shim.

@@ -120,8 +120,11 @@ mod tests {
 
     #[test]
     fn styling_preserves_plain_text_when_colors_are_disabled() {
-        std::env::set_var("NO_COLOR", "1");
+        // SAFETY: this crate has a single unit test, so no sibling test thread
+        // can read or mutate NO_COLOR concurrently.
+        unsafe { std::env::set_var("NO_COLOR", "1") };
         assert_eq!("hello".green().bold().to_string(), "hello");
-        std::env::remove_var("NO_COLOR");
+        // SAFETY: paired with the serialized mutation above.
+        unsafe { std::env::remove_var("NO_COLOR") };
     }
 }

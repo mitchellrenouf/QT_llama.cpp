@@ -1,3 +1,5 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::anyhow::{anyhow, Result};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -50,7 +52,7 @@ pub enum CudaMemcpyKind {
 }
 
 #[allow(dead_code)]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "cudaSetDevice"]
     fn cuda_set_device_raw(device: i32) -> i32;
     fn cudaGetDevice(device: *mut i32) -> i32;

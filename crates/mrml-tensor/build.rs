@@ -28,7 +28,7 @@ fn main() {
                 "--crate-type",
                 "cdylib",
                 "--edition",
-                "2021",
+                "2024",
                 "--target",
                 "nvptx64-nvidia-cuda",
                 "-O",

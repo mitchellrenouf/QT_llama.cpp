@@ -931,7 +931,7 @@ impl MrmlModel {
         let row_bytes = (dim / 32) * 34;
         let mut token_embd_table = vec![0u8; vocab_size * row_bytes];
 
-        if let (Some(ref info), Ok(mut file)) = (&token_embd_info, File::open(&gguf_path)) {
+        if let (Some(info), Ok(mut file)) = (&token_embd_info, File::open(&gguf_path)) {
             let offset = gguf.data_offset + info.offset;
             if file.seek(SeekFrom::Start(offset)).is_ok() {
                 let _ = file.read_exact(&mut token_embd_table);
@@ -1185,12 +1185,12 @@ impl MrmlModel {
             #[cfg(feature = "cuda")]
             let gpu_qkv_pipeline = if layer.is_swa || k_cache[l].len() < layer.gpu_kv_capacity {
                 if let (
-                    Some(ref dev),
-                    Some(ref g_q),
-                    Some(ref g_k),
-                    Some(ref g_v),
-                    Some(ref q_norm),
-                    Some(ref k_norm),
+                    Some(dev),
+                    Some(g_q),
+                    Some(g_k),
+                    Some(g_v),
+                    Some(q_norm),
+                    Some(k_norm),
                 ) = (
                     &self.cuda_dev,
                     &layer.gpu_attn_q,
@@ -1498,7 +1498,7 @@ impl MrmlModel {
             #[cfg(not(feature = "cuda"))]
             let resident_ffn_capable = false;
             #[cfg(feature = "cuda")]
-            let out_used_gpu = if let (Some(ref dev), Some(ref g_out)) =
+            let out_used_gpu = if let (Some(dev), Some(g_out)) =
                 (&self.cuda_dev, &layer.gpu_attn_output)
             {
                 let mut in_guard = layer.gpu_d_attn_in.lock();
@@ -1743,7 +1743,7 @@ impl MrmlModel {
 
                 let mlp_q = if graph_queued {
                     true
-                } else if let (Some(ref g_gate), Some(ref g_up), Some(ref g_down)) =
+                } else if let (Some(g_gate), Some(g_up), Some(g_down)) =
                     (&layer.gpu_ffn_gate, &layer.gpu_ffn_up, &layer.gpu_ffn_down)
                 {
                     let mut in_g = layer.gpu_d_mlp_in.lock();
@@ -1785,7 +1785,7 @@ impl MrmlModel {
                 } else if layer.is_moe
                     && (resident_ffn_prepared || router_input.is_some() || !top8_experts.is_empty())
                 {
-                    if let (Some(ref g_gu_exps), Some(ref g_down_exps)) =
+                    if let (Some(g_gu_exps), Some(g_down_exps)) =
                         (&layer.gpu_ffn_gate_up_exps, &layer.gpu_ffn_down_exps)
                     {
                         let mut in_g = layer.gpu_d_moe_in.lock();
@@ -2559,7 +2559,7 @@ impl MrmlModel {
         let generated_count = state.generated_count;
 
         #[cfg(feature = "cuda")]
-        let gpu_scored: Option<Vec<(f32, i32)>> = if let (Some(ref dev), Some(ref g_table)) =
+        let gpu_scored: Option<Vec<(f32, i32)>> = if let (Some(dev), Some(g_table)) =
             (&self.cuda_dev, &self.gpu_token_embd_table)
         {
             let mut hid_guard = self.gpu_d_normalized_hidden.lock();
