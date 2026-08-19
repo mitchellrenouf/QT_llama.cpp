@@ -1,6 +1,7 @@
 use crate::Tool;
 use crate::diff::format_colorized_diff;
 use anyhow::{Result, anyhow};
+use mrml_runtime::Vector;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -47,7 +48,7 @@ impl Tool for ViewFileTool {
         }
 
         let content = fs::read_to_string(&full_path)?;
-        let lines: Vec<&str> = content.lines().collect();
+        let lines: Vector<&str> = content.lines().collect();
 
         let start_line = args["start_line"].as_u64().map(|v| v as usize).unwrap_or(1);
         let end_line = args["end_line"]

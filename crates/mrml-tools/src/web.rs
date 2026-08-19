@@ -1,5 +1,6 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
+use mrml_runtime::Vector;
 use serde_json::json;
 use std::path::Path;
 
@@ -151,7 +152,7 @@ impl Tool for WebSearchTool {
                 .take(4)
                 .map(|element| element.text.to_string())
                 .filter(|t| !t.is_empty() && t.len() > 20)
-                .collect::<Vec<_>>()
+                .collect::<Vector<_>>()
                 .join("\n\n");
 
             if !p_text.is_empty() || img_url.is_some() {

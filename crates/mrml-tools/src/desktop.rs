@@ -1,5 +1,6 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
+use mrml_runtime::Vector;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -172,7 +173,7 @@ impl Tool for OpenAppTool {
             .ok_or_else(|| anyhow!("Missing app_name"))?;
 
         if app_name.starts_with("flatpak run ") {
-            let parts: Vec<&str> = app_name.split_whitespace().collect();
+            let parts: Vector<&str> = app_name.split_whitespace().collect();
             Command::new("flatpak")
                 .args(&parts[1..])
                 .spawn()
