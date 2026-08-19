@@ -951,28 +951,28 @@ impl MrmlClient {
 pub fn get_model_cache_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
-    if let Ok(p) = std::env::var("HF_HUB_CACHE") {
-        roots.push(PathBuf::from(p));
+    if let Some(p) = mrml_runtime::environment_variable("HF_HUB_CACHE") {
+        roots.push(PathBuf::from(p.as_str()));
     }
-    if let Ok(p) = std::env::var("HF_HOME") {
-        roots.push(PathBuf::from(p).join("hub"));
+    if let Some(p) = mrml_runtime::environment_variable("HF_HOME") {
+        roots.push(PathBuf::from(p.as_str()).join("hub"));
     }
-    if let Ok(p) = std::env::var("MRML_CACHE") {
-        roots.push(PathBuf::from(p));
+    if let Some(p) = mrml_runtime::environment_variable("MRML_CACHE") {
+        roots.push(PathBuf::from(p.as_str()));
     }
 
     #[cfg(windows)]
     {
-        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        if let Some(local_appdata) = mrml_runtime::environment_variable("LOCALAPPDATA") {
             roots.push(
-                PathBuf::from(&local_appdata)
+                PathBuf::from(local_appdata.as_str())
                     .join("huggingface")
                     .join("hub"),
             );
         }
-        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        if let Some(userprofile) = mrml_runtime::environment_variable("USERPROFILE") {
             roots.push(
-                PathBuf::from(&userprofile)
+                PathBuf::from(userprofile.as_str())
                     .join(".cache")
                     .join("huggingface")
                     .join("hub"),

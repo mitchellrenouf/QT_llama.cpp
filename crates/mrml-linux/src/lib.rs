@@ -204,6 +204,20 @@ pub fn environment_variable_equals(name: &CStr, expected: &[u8]) -> bool {
 }
 
 #[cfg(unix)]
+pub fn environment_variable_bytes(name: &CStr, value: &mut [u8]) -> Result<usize, usize> {
+    let pointer = unsafe { getenv(name.as_ptr()) };
+    if pointer.is_null() {
+        return Err(0);
+    }
+    let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes();
+    if bytes.len() > value.len() {
+        return Err(bytes.len());
+    }
+    value[..bytes.len()].copy_from_slice(bytes);
+    Ok(bytes.len())
+}
+
+#[cfg(unix)]
 pub fn exit_process(status: i32) -> ! {
     unsafe { _exit(status) }
 }

@@ -67,20 +67,22 @@ impl HfModelSpec {
     }
 
     pub fn cache_dir() -> PathBuf {
-        if let Ok(path) = std::env::var("HF_HUB_CACHE") {
-            return PathBuf::from(path);
+        if let Some(path) = mrml_runtime::environment_variable("HF_HUB_CACHE") {
+            return PathBuf::from(path.as_str());
         }
-        if let Ok(hf_home) = std::env::var("HF_HOME") {
-            return PathBuf::from(hf_home).join("hub");
+        if let Some(hf_home) = mrml_runtime::environment_variable("HF_HOME") {
+            return PathBuf::from(hf_home.as_str()).join("hub");
         }
-        if let Ok(mrml_cache) = std::env::var("MRML_CACHE") {
-            return PathBuf::from(mrml_cache);
+        if let Some(mrml_cache) = mrml_runtime::environment_variable("MRML_CACHE") {
+            return PathBuf::from(mrml_cache.as_str());
         }
 
         #[cfg(windows)]
         {
-            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-                let p = PathBuf::from(local_appdata).join("huggingface").join("hub");
+            if let Some(local_appdata) = mrml_runtime::environment_variable("LOCALAPPDATA") {
+                let p = PathBuf::from(local_appdata.as_str())
+                    .join("huggingface")
+                    .join("hub");
                 return p;
             }
         }
@@ -154,7 +156,7 @@ pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vector<Text>> {
 
     let mut cmd = std::process::Command::new("curl");
     cmd.arg("-s").arg("-L").arg(&api_url);
-    if let Ok(token) = std::env::var("HF_TOKEN") {
+    if let Some(token) = mrml_runtime::environment_variable("HF_TOKEN") {
         cmd.arg("-H")
             .arg(format!("Authorization: Bearer {}", token));
     }
@@ -364,7 +366,7 @@ where
             .arg(&part_path)
             .arg(&download_url);
 
-        if let Ok(token) = std::env::var("HF_TOKEN") {
+        if let Some(token) = mrml_runtime::environment_variable("HF_TOKEN") {
             curl_cmd
                 .arg("-H")
                 .arg(format!("Authorization: Bearer {}", token));

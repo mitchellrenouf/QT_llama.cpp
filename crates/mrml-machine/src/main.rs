@@ -73,8 +73,7 @@ impl Args {
             .position(|arg| matches!(arg.as_str(), "chat" | "health" | "session"))
             .ok_or_else(|| Text::from("a chat, health, or session command is required"))?;
         let mut common = Vector::from([program]);
-        let mut require_full_gpu = std::env::var("MRML_REQUIRE_FULL_GPU")
-            .ok()
+        let mut require_full_gpu = mrml_runtime::environment_variable("MRML_REQUIRE_FULL_GPU")
             .map(|value| {
                 matches!(
                     value.to_ascii_lowercase().as_str(),
@@ -82,8 +81,7 @@ impl Args {
                 )
             })
             .unwrap_or(false);
-        let mut gpu_load_retries = std::env::var("MRML_GPU_LOAD_RETRIES")
-            .ok()
+        let mut gpu_load_retries = mrml_runtime::environment_variable("MRML_GPU_LOAD_RETRIES")
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
         let mut index = 1;

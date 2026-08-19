@@ -5,6 +5,7 @@
 extern crate std;
 
 mod channel;
+mod env;
 mod file;
 mod map;
 mod owned;
@@ -16,6 +17,7 @@ mod time;
 mod vector;
 
 pub use channel::{Receiver, RecvError, SendError, Sender, blocking_channel, sync_channel};
+pub use env::environment_variable;
 pub use file::{File, FileError};
 pub use map::OrderedMap;
 pub use owned::Owned;

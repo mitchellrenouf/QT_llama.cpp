@@ -46,6 +46,7 @@ unsafe extern "system" {
     fn GetStdHandle(kind: u32) -> *mut c_void;
     fn GetConsoleMode(handle: *mut c_void, mode: *mut u32) -> i32;
     fn GetEnvironmentVariableA(name: *const i8, value: *mut i8, capacity: u32) -> u32;
+    fn GetEnvironmentVariableW(name: *const u16, value: *mut u16, capacity: u32) -> u32;
     fn GetFileAttributesW(name: *const u16) -> u32;
     fn GetLastError() -> u32;
     fn SetLastError(error: u32);
@@ -287,6 +288,33 @@ pub fn environment_variable_equals(name: &CStr, expected: &[u8]) -> bool {
             .iter()
             .zip(expected)
             .all(|(&actual, &expected)| actual as u8 == expected)
+}
+
+#[cfg(windows)]
+pub fn environment_variable_wide(name: &[u16], value: &mut [u16]) -> Result<usize, usize> {
+    const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
+    if name.last().copied() != Some(0) {
+        return Err(0);
+    }
+    unsafe { SetLastError(0) };
+    let length = unsafe {
+        GetEnvironmentVariableW(
+            name.as_ptr(),
+            value.as_mut_ptr(),
+            value.len().min(u32::MAX as usize) as u32,
+        )
+    } as usize;
+    if length == 0 {
+        if unsafe { GetLastError() } == ERROR_ENVVAR_NOT_FOUND {
+            Err(0)
+        } else {
+            Ok(0)
+        }
+    } else if length >= value.len() {
+        Err(length)
+    } else {
+        Ok(length)
+    }
 }
 
 #[cfg(windows)]

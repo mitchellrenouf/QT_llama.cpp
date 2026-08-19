@@ -41,8 +41,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         fn env(name: &str, fallback: &str) -> Text {
-            let value = std::env::var(name).unwrap_or_else(|_| fallback.to_owned());
-            value.as_str().into()
+            mrml_runtime::environment_variable(name).unwrap_or_else(|| fallback.into())
         }
         Self {
             server_url: env("MRML_SERVER_URL", "http://localhost:8080/v1"),
@@ -53,8 +52,7 @@ impl Default for Config {
             workspace_root: PathBuf::from(env("WORKSPACE_ROOT", ".").as_str()),
             temperature: 0.7,
             max_tokens: 8192,
-            ctx_size: std::env::var("MRML_CTX_SIZE")
-                .ok()
+            ctx_size: mrml_runtime::environment_variable("MRML_CTX_SIZE")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8192),
             cache_type_k: env("MRML_CACHE_TYPE_K", "auto"),
@@ -63,19 +61,13 @@ impl Default for Config {
             auto_approve: true,
             system_prompt: None,
             prompt: None,
-            n_gpu_layers: std::env::var("MRML_GPU_LAYERS")
-                .ok()
+            n_gpu_layers: mrml_runtime::environment_variable("MRML_GPU_LAYERS")
                 .and_then(|v| v.parse().ok()),
-            backend: std::env::var("MRML_BACKEND")
-                .ok()
+            backend: mrml_runtime::environment_variable("MRML_BACKEND")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(BackendChoice::Auto),
-            browser_exe: std::env::var("BROWSER_EXE")
-                .ok()
-                .map(|value| Text::from(value.as_str())),
-            browser_profile: std::env::var("BROWSER_PROFILE")
-                .ok()
-                .map(|value| Text::from(value.as_str())),
+            browser_exe: mrml_runtime::environment_variable("BROWSER_EXE"),
+            browser_profile: mrml_runtime::environment_variable("BROWSER_PROFILE"),
             serve: false,
             port: 8080,
             mcp_servers: Vector::new(),
