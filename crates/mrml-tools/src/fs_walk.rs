@@ -1,14 +1,15 @@
 //! Dependency-free workspace traversal for search and browser discovery.
+use mrml_runtime::Vector;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct Paths {
-    pending: Vec<PathBuf>,
+    pending: Vector<PathBuf>,
 }
 
 pub fn paths(root: impl AsRef<Path>) -> Paths {
     Paths {
-        pending: vec![root.as_ref().to_path_buf()],
+        pending: [root.as_ref().to_path_buf()].into_iter().collect(),
     }
 }
 
