@@ -1,10 +1,8 @@
 use anyhow::Result;
 use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
+use mrml_runtime::{Shared, TcpListener, TcpStream, Text, Vector, mrml_eprintln as eprintln, mrml_println as println};
 use mrml_terminal_style::Colorize;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 
 #[derive(Debug)]
 pub struct OpenAiChatRequest {
@@ -72,8 +70,7 @@ impl ApiServer {
     }
 
     pub fn run(&self) -> Result<()> {
-        let addr = format!("0.0.0.0:{}", self.port);
-        let listener = TcpListener::bind(&addr)?;
+        let listener = TcpListener::bind([0, 0, 0, 0], self.port)?;
         println!(
             "{}",
             format!(
@@ -86,8 +83,8 @@ impl ApiServer {
         println!("   - Endpoints: /v1/models, /v1/chat/completions (supports SSE stream: true)");
 
         loop {
-            let (socket, _) = match listener.accept() {
-                Ok(conn) => conn,
+            let socket = match listener.accept() {
+                Ok(socket) => socket,
                 Err(e) => {
                     eprintln!("Socket accept error: {}", e);
                     continue;
@@ -391,22 +388,25 @@ mod json_tests {
     }
 
     #[test]
-    fn serves_models_over_standard_tcp() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
+    fn serves_models_over_native_tcp() {
+        let listener = TcpListener::bind([127, 0, 0, 1], 0).unwrap();
+        let port = listener.local_port().unwrap();
         let client = Shared::new(MrmlClient::new("", ""));
-        let server = std::thread::spawn(move || {
-            let (socket, _) = listener.accept().unwrap();
+        assert!(mrml_runtime::spawn_detached(move || {
+            let socket = listener.accept().unwrap();
             handle_connection(socket, client).unwrap();
-        });
+        }).is_ok());
 
-        let mut socket = TcpStream::connect(address).unwrap();
-        socket
-            .write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            .unwrap();
-        let mut response = String::new();
-        socket.read_to_string(&mut response).unwrap();
-        server.join().unwrap();
+        let mut socket = TcpStream::connect([127, 0, 0, 1], port).unwrap();
+        socket.write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let mut response = Vector::new();
+        let mut buffer = [0u8; 1024];
+        loop {
+            let read = socket.read(&mut buffer).unwrap();
+            if read == 0 { break; }
+            response.try_extend_from_slice(&buffer[..read]).unwrap();
+        }
+        let response = core::str::from_utf8(&response).unwrap();
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("gemma-4-26B-A4B-it"));
