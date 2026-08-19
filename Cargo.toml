@@ -10,7 +10,6 @@ members = [
     "crates/mrml-server",
     "crates/mrml-terminal-style",
     "crates/mrml-tools",
-    "crates/mrml-urlencoding",
     "crates/mrml-windows",
     "crates/mrml-linux",
     "crates/mrml-json",
