@@ -1,6 +1,5 @@
 use crate::Tool;
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -18,7 +17,6 @@ pub fn is_speech_enabled() -> bool {
 }
 
 pub struct SpeakTextTool;
-#[async_trait]
 impl Tool for SpeakTextTool {
     fn name(&self) -> &'static str {
         "speak_text"
@@ -67,7 +65,6 @@ impl Tool for SpeakTextTool {
 }
 
 pub struct RecordAudioTool;
-#[async_trait]
 impl Tool for RecordAudioTool {
     fn name(&self) -> &'static str {
         "record_audio"
@@ -158,7 +155,6 @@ impl Tool for RecordAudioTool {
 }
 
 pub struct CaptureWebcamTool;
-#[async_trait]
 impl Tool for CaptureWebcamTool {
     fn name(&self) -> &'static str {
         "capture_webcam"
@@ -186,7 +182,6 @@ impl Tool for CaptureWebcamTool {
 }
 
 pub struct RecordScreenVideoTool;
-#[async_trait]
 impl Tool for RecordScreenVideoTool {
     fn name(&self) -> &'static str {
         "record_screen_video"

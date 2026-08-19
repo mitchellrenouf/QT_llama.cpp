@@ -1,14 +1,12 @@
 use crate::diff::format_colorized_diff;
 use crate::Tool;
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 pub struct ViewFileTool;
-#[async_trait]
 impl Tool for ViewFileTool {
     fn name(&self) -> &'static str {
         "view_file"
@@ -74,7 +72,6 @@ impl Tool for ViewFileTool {
 }
 
 pub struct WriteFileTool;
-#[async_trait]
 impl Tool for WriteFileTool {
     fn name(&self) -> &'static str {
         "write_file"
@@ -130,7 +127,6 @@ impl Tool for WriteFileTool {
 }
 
 pub struct ReplaceFileContentTool;
-#[async_trait]
 impl Tool for ReplaceFileContentTool {
     fn name(&self) -> &'static str {
         "replace_file_content"
@@ -199,7 +195,6 @@ impl Tool for ReplaceFileContentTool {
 }
 
 pub struct ListDirTool;
-#[async_trait]
 impl Tool for ListDirTool {
     fn name(&self) -> &'static str {
         "list_dir"
@@ -257,7 +252,6 @@ impl Tool for ListDirTool {
 }
 
 pub struct GrepSearchTool;
-#[async_trait]
 impl Tool for GrepSearchTool {
     fn name(&self) -> &'static str {
         "grep_search"
@@ -327,7 +321,6 @@ impl Tool for GrepSearchTool {
 }
 
 pub struct RunCommandTool;
-#[async_trait]
 impl Tool for RunCommandTool {
     fn name(&self) -> &'static str {
         "run_command"

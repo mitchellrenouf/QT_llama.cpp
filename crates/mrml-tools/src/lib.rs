@@ -15,10 +15,11 @@ pub mod platform;
 mod simple_regex;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -43,12 +44,15 @@ pub struct ToolDefinition {
     pub function: FunctionDefinition,
 }
 
-#[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
-    async fn execute(&self, workspace_root: &Path, args: Value) -> Result<String>;
+    fn execute(
+        &self,
+        workspace_root: &Path,
+        args: Value,
+    ) -> impl Future<Output = Result<String>> + Send;
 
     fn to_tool_definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -62,8 +66,40 @@ pub trait Tool: Send + Sync {
     }
 }
 
+type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
+
+pub trait DynTool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn parameters(&self) -> Value;
+    fn execute<'a>(&'a self, workspace_root: &'a Path, args: Value) -> ToolFuture<'a>;
+    fn to_tool_definition(&self) -> ToolDefinition;
+}
+
+impl<T: Tool> DynTool for T {
+    fn name(&self) -> &str {
+        Tool::name(self)
+    }
+
+    fn description(&self) -> &str {
+        Tool::description(self)
+    }
+
+    fn parameters(&self) -> Value {
+        Tool::parameters(self)
+    }
+
+    fn execute<'a>(&'a self, workspace_root: &'a Path, args: Value) -> ToolFuture<'a> {
+        Box::pin(Tool::execute(self, workspace_root, args))
+    }
+
+    fn to_tool_definition(&self) -> ToolDefinition {
+        Tool::to_tool_definition(self)
+    }
+}
+
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn DynTool>>,
     order: Vec<String>,
 }
 
@@ -112,7 +148,7 @@ impl ToolRegistry {
         registry
     }
 
-    pub fn register(&mut self, tool: Arc<dyn Tool>) {
+    pub fn register(&mut self, tool: Arc<dyn DynTool>) {
         let name = tool.name().to_string();
         if !self.tools.contains_key(&name) {
             self.order.push(name.clone());
@@ -120,7 +156,7 @@ impl ToolRegistry {
         self.tools.insert(name, tool);
     }
 
-    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+    pub fn get(&self, name: &str) -> Option<Arc<dyn DynTool>> {
         self.tools.get(name).cloned()
     }
 

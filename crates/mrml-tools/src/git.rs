@@ -1,12 +1,10 @@
 use crate::Tool;
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use serde_json::json;
 use std::path::Path;
 use std::process::Command;
 
 pub struct GitCheckpointTool;
-#[async_trait]
 impl Tool for GitCheckpointTool {
     fn name(&self) -> &'static str {
         "git_checkpoint"
@@ -70,7 +68,6 @@ impl Tool for GitCheckpointTool {
 }
 
 pub struct GitRollbackTool;
-#[async_trait]
 impl Tool for GitRollbackTool {
     fn name(&self) -> &'static str {
         "git_rollback"
@@ -127,7 +124,6 @@ impl Tool for GitRollbackTool {
 }
 
 pub struct GitDiffTool;
-#[async_trait]
 impl Tool for GitDiffTool {
     fn name(&self) -> &'static str {
         "git_diff"

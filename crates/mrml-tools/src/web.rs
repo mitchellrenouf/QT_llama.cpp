@@ -1,6 +1,5 @@
 use crate::Tool;
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use serde_json::json;
 use std::path::Path;
 
@@ -63,7 +62,6 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
 
 pub struct WebSearchTool;
 
-#[async_trait]
 impl Tool for WebSearchTool {
     fn name(&self) -> &'static str {
         "web_search"
@@ -230,7 +228,6 @@ impl Tool for WebSearchTool {
 
 pub struct WebFetchTool;
 
-#[async_trait]
 impl Tool for WebFetchTool {
     fn name(&self) -> &'static str {
         "web_fetch"

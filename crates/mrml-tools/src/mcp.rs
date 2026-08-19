@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -9,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-use crate::Tool;
+use crate::{DynTool, Tool};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -117,9 +116,9 @@ impl McpClient {
             .ok_or_else(|| anyhow!("Empty result from MCP server"))
     }
 
-    pub async fn list_tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn Tool>>> {
+    pub async fn list_tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn DynTool>>> {
         let res = self.call_method("tools/list", None).await?;
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        let mut tools: Vec<Arc<dyn DynTool>> = Vec::new();
 
         if let Some(tools_arr) = res.get("tools").and_then(|t| t.as_array()) {
             for t in tools_arr {
@@ -154,7 +153,6 @@ pub struct McpTool {
     parameters: Value,
 }
 
-#[async_trait]
 impl Tool for McpTool {
     fn name(&self) -> &str {
         &self.name

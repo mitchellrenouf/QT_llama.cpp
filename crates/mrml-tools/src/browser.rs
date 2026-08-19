@@ -1,6 +1,5 @@
 use crate::Tool;
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -349,7 +348,6 @@ pub async fn get_browser_controller() -> Result<Arc<Mutex<EdgeController>>> {
 }
 
 pub struct BrowserOpenTool;
-#[async_trait]
 impl Tool for BrowserOpenTool {
     fn name(&self) -> &'static str {
         "browser_open"
@@ -374,7 +372,6 @@ impl Tool for BrowserOpenTool {
     }
 }
 pub struct BrowserGetContentTool;
-#[async_trait]
 impl Tool for BrowserGetContentTool {
     fn name(&self) -> &'static str {
         "browser_get_content"
@@ -411,7 +408,6 @@ impl Tool for BrowserGetContentTool {
     }
 }
 pub struct BrowserScreenshotTool;
-#[async_trait]
 impl Tool for BrowserScreenshotTool {
     fn name(&self) -> &'static str {
         "browser_screenshot"
@@ -451,7 +447,6 @@ impl Tool for BrowserScreenshotTool {
     }
 }
 pub struct BrowserClickElementTool;
-#[async_trait]
 impl Tool for BrowserClickElementTool {
     fn name(&self) -> &'static str {
         "browser_click_element"
@@ -479,7 +474,6 @@ impl Tool for BrowserClickElementTool {
     }
 }
 pub struct BrowserClickTool;
-#[async_trait]
 impl Tool for BrowserClickTool {
     fn name(&self) -> &'static str {
         "browser_click"
@@ -512,7 +506,6 @@ impl Tool for BrowserClickTool {
     }
 }
 pub struct BrowserTypeTool;
-#[async_trait]
 impl Tool for BrowserTypeTool {
     fn name(&self) -> &'static str {
         "browser_type"

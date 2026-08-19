@@ -1,6 +1,5 @@
 use crate::Tool;
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +25,6 @@ pub fn is_executable_in_path(cmd: &str) -> Option<PathBuf> {
 }
 
 pub struct TakeScreenshotTool;
-#[async_trait]
 impl Tool for TakeScreenshotTool {
     fn name(&self) -> &'static str {
         "take_screenshot"
@@ -146,7 +144,6 @@ impl Tool for TakeScreenshotTool {
 }
 
 pub struct OpenAppTool;
-#[async_trait]
 impl Tool for OpenAppTool {
     fn name(&self) -> &'static str {
         "open_app"
