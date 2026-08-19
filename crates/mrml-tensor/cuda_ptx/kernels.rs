@@ -1710,7 +1710,7 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4_gemma4_26b(
     act: *const f32,
     out: *mut f32,
 ) {
-    const DIM: usize = 5_376;
+    const DIM: usize = 2_816;
     const EXP_DIM: usize = 704;
     const ACTIVE: usize = 8;
     const BLOCKS: usize = EXP_DIM / 32;

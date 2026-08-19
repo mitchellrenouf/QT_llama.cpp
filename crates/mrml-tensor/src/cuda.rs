@@ -826,7 +826,7 @@ unsafe fn launch_rust_moe_topk(
         &mut na as *mut _ as *mut c_void,
         &mut b as *mut _ as *mut c_void,
     ];
-    if batch == 1 && dim == 5_376 && exp_dim == 704 && n_active == 8 {
+    if batch == 1 && dim == 2_816 && exp_dim == 704 && n_active == 8 {
         return launch_rust_kernel(
             "rust_cuda_moe_down_q4_gemma4_26b",
             ((dim as u32).div_ceil(8), 1, 1),
