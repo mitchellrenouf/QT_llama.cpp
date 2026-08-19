@@ -109,7 +109,7 @@ impl Text {
         }
     }
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.len() == 0
     }
     pub fn as_str(&self) -> &str {
         // Construction only accepts UTF-8 strings and encoded `char` values.
@@ -227,6 +227,7 @@ mod tests {
     fn stores_short_text_inline_and_promotes_without_data_loss() {
         let mut text = Text::from("short token");
         assert!(!text.heap_backed);
+        assert!(!text.is_empty());
         assert_eq!(text.capacity(), Text::INLINE_CAPACITY);
 
         text.push_str(" that exceeds inline storage");
