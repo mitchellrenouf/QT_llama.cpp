@@ -6,6 +6,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
 #[cfg(unix)]
 use core::ffi::{c_int, c_long};
+#[cfg(unix)]
+use core::ptr::NonNull;
 
 #[repr(C)]
 #[cfg(unix)]
@@ -52,6 +54,25 @@ unsafe extern "C" {
     fn dlopen(name: *const i8, flags: c_int) -> *mut c_void;
     fn dlsym(module: *mut c_void, name: *const i8) -> *mut c_void;
     fn dlclose(module: *mut c_void) -> c_int;
+    fn mmap(address: *mut c_void, len: usize, protection: c_int, flags: c_int, file: c_int, offset: isize) -> *mut c_void;
+    fn munmap(address: *mut c_void, len: usize) -> c_int;
+}
+
+#[cfg(unix)]
+pub unsafe fn map_file_read_only(file: c_int, len: usize) -> Option<NonNull<u8>> {
+    const PROT_READ: c_int = 1;
+    const MAP_PRIVATE: c_int = 2;
+    let view = unsafe { mmap(core::ptr::null_mut(), len, PROT_READ, MAP_PRIVATE, file, 0) };
+    if view as isize == -1 {
+        None
+    } else {
+        NonNull::new(view.cast())
+    }
+}
+
+#[cfg(unix)]
+pub unsafe fn unmap_file(address: NonNull<u8>, len: usize) -> bool {
+    unsafe { munmap(address.as_ptr().cast(), len) == 0 }
 }
 
 #[derive(Debug)]
@@ -168,6 +189,8 @@ pub fn unix_time_millis() -> u64 { 0 }
 
 #[cfg(all(test, unix))]
 mod tests {
+    extern crate std;
+
     use core::alloc::{GlobalAlloc, Layout};
 
     #[test]
@@ -192,5 +215,22 @@ mod tests {
         let library = super::DynamicLibrary::open(c"libc.so.6").unwrap();
         assert!(library.symbol(c"getpid").is_some());
         assert!(library.symbol(c"definitely_missing_symbol").is_none());
+    }
+
+    #[test]
+    fn maps_native_file_descriptor_read_only() {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+
+        let path = std::env::temp_dir().join(std::format!("mrml-linux-map-{}.bin", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"native mapping").unwrap();
+        drop(file);
+        let file = std::fs::File::open(&path).unwrap();
+        let mapping = unsafe { super::map_file_read_only(file.as_raw_fd(), 14) }.unwrap();
+        assert_eq!(unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) }, b"native mapping");
+        assert!(unsafe { super::unmap_file(mapping, 14) });
+        drop(file);
+        std::fs::remove_file(path).unwrap();
     }
 }

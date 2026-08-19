@@ -4,6 +4,8 @@
 use core::alloc::{GlobalAlloc, Layout};
 #[cfg(windows)]
 use core::ffi::c_void;
+#[cfg(windows)]
+use core::ptr::NonNull;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(C)]
@@ -39,6 +41,50 @@ unsafe extern "system" {
     fn LoadLibraryA(name: *const i8) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
+    fn CreateFileMappingW(
+        file: *mut c_void,
+        attributes: *const c_void,
+        protection: u32,
+        maximum_size_high: u32,
+        maximum_size_low: u32,
+        name: *const u16,
+    ) -> *mut c_void;
+    fn MapViewOfFile(
+        mapping: *mut c_void,
+        access: u32,
+        offset_high: u32,
+        offset_low: u32,
+        bytes: usize,
+    ) -> *mut c_void;
+    fn UnmapViewOfFile(address: *const c_void) -> i32;
+    fn CloseHandle(handle: *mut c_void) -> i32;
+}
+
+#[cfg(windows)]
+pub unsafe fn map_file_read_only(file: *mut c_void, len: usize) -> Option<NonNull<u8>> {
+    const PAGE_READONLY: u32 = 2;
+    const FILE_MAP_READ: u32 = 4;
+    let mapping = unsafe {
+        CreateFileMappingW(
+            file,
+            core::ptr::null(),
+            PAGE_READONLY,
+            0,
+            0,
+            core::ptr::null(),
+        )
+    };
+    if mapping.is_null() {
+        return None;
+    }
+    let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, len) };
+    let _ = unsafe { CloseHandle(mapping) };
+    NonNull::new(view.cast())
+}
+
+#[cfg(windows)]
+pub unsafe fn unmap_file(address: NonNull<u8>, _: usize) -> bool {
+    unsafe { UnmapViewOfFile(address.as_ptr().cast()) != 0 }
 }
 
 #[derive(Debug)]
@@ -144,6 +190,8 @@ pub fn local_time() -> LocalTime {
 
 #[cfg(all(test, windows))]
 mod tests {
+    extern crate std;
+
     use core::alloc::{GlobalAlloc, Layout};
 
     #[test]
@@ -180,5 +228,22 @@ mod tests {
         let library = super::DynamicLibrary::open(c"kernel32.dll").unwrap();
         assert!(library.symbol(c"GetCurrentProcessId").is_some());
         assert!(library.symbol(c"definitely_missing_symbol").is_none());
+    }
+
+    #[test]
+    fn maps_native_file_handle_read_only() {
+        use std::io::Write;
+        use std::os::windows::io::AsRawHandle;
+
+        let path = std::env::temp_dir().join(std::format!("mrml-windows-map-{}.bin", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"native mapping").unwrap();
+        drop(file);
+        let file = std::fs::File::open(&path).unwrap();
+        let mapping = unsafe { super::map_file_read_only(file.as_raw_handle().cast(), 14) }.unwrap();
+        assert_eq!(unsafe { core::slice::from_raw_parts(mapping.as_ptr(), 14) }, b"native mapping");
+        assert!(unsafe { super::unmap_file(mapping, 14) });
+        drop(file);
+        std::fs::remove_file(path).unwrap();
     }
 }

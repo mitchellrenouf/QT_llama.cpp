@@ -44,71 +44,26 @@ impl Drop for Mmap {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use std::{ffi::c_void, os::windows::io::AsRawHandle};
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn CreateFileMappingW(
-            f: *mut c_void,
-            a: *const c_void,
-            p: u32,
-            h: u32,
-            l: u32,
-            n: *const u16,
-        ) -> *mut c_void;
-        fn MapViewOfFile(m: *mut c_void, a: u32, h: u32, l: u32, b: usize) -> *mut c_void;
-        fn UnmapViewOfFile(p: *const c_void) -> i32;
-        fn CloseHandle(h: *mut c_void) -> i32;
-    }
+    use std::os::windows::io::AsRawHandle;
     pub fn map(file: &File, len: usize) -> io::Result<NonNull<u8>> {
-        unsafe {
-            let handle = CreateFileMappingW(
-                file.as_raw_handle().cast(),
-                std::ptr::null(),
-                2,
-                0,
-                0,
-                std::ptr::null(),
-            );
-            if handle.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            let view = MapViewOfFile(handle, 4, 0, 0, len);
-            let error = view.is_null().then(io::Error::last_os_error);
-            CloseHandle(handle);
-            if let Some(error) = error {
-                return Err(error);
-            }
-            Ok(NonNull::new_unchecked(view.cast()))
-        }
+        unsafe { mrml_windows::map_file_read_only(file.as_raw_handle().cast(), len) }
+            .ok_or_else(io::Error::last_os_error)
     }
     pub unsafe fn unmap(ptr: NonNull<u8>, _: usize) {
-        unsafe {
-            UnmapViewOfFile(ptr.as_ptr().cast());
-        }
+        let _ = unsafe { mrml_windows::unmap_file(ptr, 0) };
     }
 }
 
 #[cfg(unix)]
 mod platform {
     use super::*;
-    use std::{ffi::c_void, os::fd::AsRawFd};
-    unsafe extern "C" {
-        fn mmap(a: *mut c_void, l: usize, p: i32, f: i32, fd: i32, o: isize) -> *mut c_void;
-        fn munmap(a: *mut c_void, l: usize) -> i32;
-    }
+    use std::os::fd::AsRawFd;
     pub fn map(file: &File, len: usize) -> io::Result<NonNull<u8>> {
-        unsafe {
-            let view = mmap(std::ptr::null_mut(), len, 1, 2, file.as_raw_fd(), 0);
-            if view as isize == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            NonNull::new(view.cast()).ok_or_else(io::Error::last_os_error)
-        }
+        unsafe { mrml_linux::map_file_read_only(file.as_raw_fd(), len) }
+            .ok_or_else(io::Error::last_os_error)
     }
     pub unsafe fn unmap(ptr: NonNull<u8>, len: usize) {
-        unsafe {
-            munmap(ptr.as_ptr().cast(), len);
-        }
+        let _ = unsafe { mrml_linux::unmap_file(ptr, len) };
     }
 }
 
