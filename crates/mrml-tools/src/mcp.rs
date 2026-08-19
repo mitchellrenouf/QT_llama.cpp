@@ -2,7 +2,6 @@ use anyhow::{Result, anyhow};
 use mrml_runtime::{Shared, SpinMutex, Text, Vector};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::{DynTool, Tool};
@@ -147,7 +146,7 @@ impl Tool for McpTool {
         self.parameters.clone()
     }
 
-    async fn execute(&self, _workspace_root: &Path, args: Value) -> Result<String> {
+    async fn execute(&self, _workspace_root: &str, args: Value) -> Result<String> {
         let params = serde_json::object([("name", self.name.as_str().into()), ("arguments", args)]);
 
         let res = self.client.call_method("tools/call", Some(params)).await?;

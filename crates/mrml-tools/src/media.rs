@@ -38,7 +38,7 @@ impl Tool for SpeakTextTool {
         })
     }
 
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, _workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let text = args["text"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing text"))?;
@@ -91,8 +91,9 @@ impl Tool for RecordAudioTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let duration = args["duration_secs"].as_i64().unwrap_or(5);
+        let workspace_root = Path::new(workspace_root);
         let audio_dir = workspace_root.join(".mrml").join("audio");
         mrml_runtime::create_dir_all(
             audio_dir
@@ -184,7 +185,7 @@ impl Tool for CaptureWebcamTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let desk_tool = crate::desktop::TakeScreenshotTool;
         let result = desk_tool.execute(workspace_root, args).await?;
         Ok(format!(
@@ -216,7 +217,7 @@ impl Tool for RecordScreenVideoTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let duration = args["duration_secs"].as_i64().unwrap_or(3);
         let desk_tool = crate::desktop::TakeScreenshotTool;
 

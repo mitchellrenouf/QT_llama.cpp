@@ -522,7 +522,13 @@ impl MrmlAgent {
                 .registry
                 .get("run_command")
                 .unwrap()
-                .execute(&self.config.workspace_root, args)
+                .execute(
+                    self.config
+                        .workspace_root
+                        .to_str()
+                        .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                    args,
+                )
                 .await;
             match result {
                 Ok(output) => {
@@ -637,7 +643,16 @@ impl MrmlAgent {
 
                 let tool_opt = self.registry.get(name);
                 let tool_result = match tool_opt {
-                    Some(tool) => tool.execute(&self.config.workspace_root, parsed_args).await,
+                    Some(tool) => {
+                        tool.execute(
+                            self.config
+                                .workspace_root
+                                .to_str()
+                                .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                            parsed_args,
+                        )
+                        .await
+                    }
                     None => Err(mrml_tools::tool_error(format!(
                         "Unknown tool requested: {}",
                         name
@@ -712,7 +727,13 @@ impl MrmlAgent {
                 .registry
                 .get("run_command")
                 .unwrap()
-                .execute(&self.config.workspace_root, args)
+                .execute(
+                    self.config
+                        .workspace_root
+                        .to_str()
+                        .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                    args,
+                )
                 .await;
             match result {
                 Ok(output) => {
@@ -937,7 +958,14 @@ impl MrmlAgent {
                 let tool_result = match tool_opt {
                     Some(tool) => {
                         println!("⚡ Executing {}", name.cyan());
-                        tool.execute(&self.config.workspace_root, parsed_args).await
+                        tool.execute(
+                            self.config
+                                .workspace_root
+                                .to_str()
+                                .ok_or_else(|| anyhow!("Workspace path is not valid UTF-8"))?,
+                            parsed_args,
+                        )
+                        .await
                     }
                     None => Err(mrml_tools::tool_error(format!(
                         "Unknown tool requested: {}",

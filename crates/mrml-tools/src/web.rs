@@ -2,7 +2,6 @@ use crate::Tool;
 use anyhow::{Result, anyhow};
 use mrml_runtime::Vector;
 use serde_json::json;
-use std::path::Path;
 
 pub async fn fetch_http_text(url: &str) -> Result<String> {
     // 1. Try headless Chromium if browser controller is available
@@ -83,7 +82,7 @@ impl Tool for WebSearchTool {
         })
     }
 
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, _workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing query"))?;
@@ -256,7 +255,7 @@ impl Tool for WebFetchTool {
         })
     }
 
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, _workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let url_str = args["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
         let html = fetch_http_text(url_str).await?;
 

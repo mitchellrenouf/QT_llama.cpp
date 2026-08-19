@@ -1,7 +1,6 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use serde_json::json;
-use std::path::Path;
 use std::process::Command;
 
 pub struct GitCheckpointTool;
@@ -26,7 +25,7 @@ impl Tool for GitCheckpointTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let msg = args["message"].as_str().unwrap_or("gemma-vibe-checkpoint");
 
         let stash_output = Command::new("git")
@@ -92,7 +91,7 @@ impl Tool for GitRollbackTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
         if let Some(target) = args["checkpoint_id"].as_str() {
             let output = Command::new("git")
                 .args(["checkout", target, "--", "."])
@@ -143,7 +142,7 @@ impl Tool for GitDiffTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, _args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, _args: serde_json::Value) -> Result<String> {
         let output = Command::new("git")
             .args(["diff", "--stat"])
             .current_dir(workspace_root)

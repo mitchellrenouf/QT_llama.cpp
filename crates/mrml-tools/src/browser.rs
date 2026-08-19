@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Child, Command, Stdio},
 };
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
@@ -366,7 +366,7 @@ impl Tool for BrowserOpenTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})
     }
-    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+    async fn execute(&self, _: &str, a: Value) -> Result<String> {
         let u = a["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
         let x = get_browser_controller().await?;
         let mut c = x.lock();
@@ -390,7 +390,7 @@ impl Tool for BrowserGetContentTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"url":{"type":"string"}}})
     }
-    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+    async fn execute(&self, _: &str, a: Value) -> Result<String> {
         let x = get_browser_controller().await?;
         let mut c = x.lock();
         c.get_or_create_page(a["url"].as_str())?;
@@ -426,7 +426,7 @@ impl Tool for BrowserScreenshotTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{}})
     }
-    async fn execute(&self, r: &Path, _: Value) -> Result<String> {
+    async fn execute(&self, r: &str, _: Value) -> Result<String> {
         let x = get_browser_controller().await?;
         let mut c = x.lock();
         c.get_or_create_page(None)?;
@@ -439,7 +439,7 @@ impl Tool for BrowserScreenshotTool {
             .to_string();
         let bytes = crate::encoding::base64_decode(&data)
             .map_err(|e| anyhow!("Invalid screenshot: {}", e))?;
-        let dir = r.join(".mrml/screenshots");
+        let dir = PathBuf::from(r).join(".mrml/screenshots");
         mrml_runtime::create_dir_all(
             dir.to_str()
                 .ok_or_else(|| anyhow!("Screenshot directory is not valid UTF-8"))?,
@@ -471,7 +471,7 @@ impl Tool for BrowserClickElementTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"target":{"type":"string"}},"required":["target"]})
     }
-    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+    async fn execute(&self, _: &str, a: Value) -> Result<String> {
         let t = a["target"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing target"))?;
@@ -500,7 +500,7 @@ impl Tool for BrowserClickTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]})
     }
-    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+    async fn execute(&self, _: &str, a: Value) -> Result<String> {
         let x = a["x"].as_f64().ok_or_else(|| anyhow!("Missing x"))?;
         let y = a["y"].as_f64().ok_or_else(|| anyhow!("Missing y"))?;
         let ctl = get_browser_controller().await?;
@@ -532,7 +532,7 @@ impl Tool for BrowserTypeTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})
     }
-    async fn execute(&self, _: &Path, a: Value) -> Result<String> {
+    async fn execute(&self, _: &str, a: Value) -> Result<String> {
         let t = a["text"].as_str().ok_or_else(|| anyhow!("Missing text"))?;
         let x = get_browser_controller().await?;
         let mut c = x.lock();

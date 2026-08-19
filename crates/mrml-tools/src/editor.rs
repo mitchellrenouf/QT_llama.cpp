@@ -37,7 +37,8 @@ impl Tool for ViewFileTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
+        let workspace_root = Path::new(workspace_root);
         let path_str = args["path"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing path"))?;
@@ -103,7 +104,8 @@ impl Tool for WriteFileTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
+        let workspace_root = Path::new(workspace_root);
         let path_str = args["path"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing path"))?;
@@ -170,7 +172,8 @@ impl Tool for ReplaceFileContentTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
+        let workspace_root = Path::new(workspace_root);
         let path_str = args["path"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing path"))?;
@@ -237,7 +240,8 @@ impl Tool for ListDirTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
+        let workspace_root = Path::new(workspace_root);
         let rel_path = args["path"].as_str().unwrap_or(".");
         let full_path = workspace_root.join(rel_path);
 
@@ -308,7 +312,8 @@ impl Tool for GrepSearchTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
+        let workspace_root = Path::new(workspace_root);
         let query_str = args["query"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing query"))?;
@@ -387,7 +392,8 @@ impl Tool for RunCommandTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
+        let workspace_root = Path::new(workspace_root);
         let cmd_str = args["command_line"]
             .as_str()
             .or_else(|| args["command"].as_str())
@@ -458,7 +464,7 @@ mod tests {
             let root = test_workspace();
             let write = WriteFileTool
                 .execute(
-                    &root,
+                    root.to_str().unwrap(),
                     json!({"path":"src/note.txt", "content":"alpha\nbeta\n"}),
                 )
                 .await
@@ -467,7 +473,7 @@ mod tests {
 
             let viewed = ViewFileTool
                 .execute(
-                    &root,
+                    root.to_str().unwrap(),
                     json!({"path":"src/note.txt", "start_line":2, "end_line":2}),
                 )
                 .await
@@ -476,7 +482,7 @@ mod tests {
 
             ReplaceFileContentTool
             .execute(
-                &root,
+                root.to_str().unwrap(),
                 json!({
                     "path":"src/note.txt", "target_content":"beta", "replacement_content":"gamma"
                 }),
@@ -484,12 +490,12 @@ mod tests {
             .await
             .unwrap();
             let listed = ListDirTool
-                .execute(&root, json!({"path":"src"}))
+                .execute(root.to_str().unwrap(), json!({"path":"src"}))
                 .await
                 .unwrap();
             assert!(listed.contains("note.txt"));
             let matches = GrepSearchTool
-                .execute(&root, json!({"query":"g.mm.", "path":"src"}))
+                .execute(root.to_str().unwrap(), json!({"query":"g.mm.", "path":"src"}))
                 .await
                 .unwrap();
             assert!(matches.contains("gamma"));
@@ -506,7 +512,7 @@ mod tests {
             #[cfg(not(windows))]
             let command = "printf tool-ok";
             let output = RunCommandTool
-                .execute(&root, json!({"command_line": command}))
+                .execute(root.to_str().unwrap(), json!({"command_line": command}))
                 .await
                 .unwrap();
             assert!(output.contains("Exit Code: 0"));

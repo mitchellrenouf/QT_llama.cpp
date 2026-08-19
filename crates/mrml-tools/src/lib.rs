@@ -45,8 +45,6 @@ use mrml_runtime::{Owned, Shared, Text, Vector};
 #[cfg(feature = "std")]
 use serde_json::Value;
 #[cfg(feature = "std")]
-use std::path::Path;
-#[cfg(feature = "std")]
 #[cfg(feature = "std")]
 pub fn block_on<F: Future>(future: F) -> F::Output {
     unsafe fn clone(_: *const ()) -> RawWaker {
@@ -97,7 +95,7 @@ pub trait Tool: Send + Sync {
     fn parameters(&self) -> Value;
     fn execute(
         &self,
-        workspace_root: &Path,
+        workspace_root: &str,
         args: Value,
     ) -> impl Future<Output = Result<String>> + Send;
 
@@ -121,7 +119,7 @@ pub trait DynTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
-    fn execute<'a>(&'a self, workspace_root: &'a Path, args: Value) -> ToolFuture<'a>;
+    fn execute<'a>(&'a self, workspace_root: &'a str, args: Value) -> ToolFuture<'a>;
     fn to_tool_definition(&self) -> ToolDefinition;
 }
 
@@ -139,7 +137,7 @@ impl<T: Tool> DynTool for T {
         Tool::parameters(self)
     }
 
-    fn execute<'a>(&'a self, workspace_root: &'a Path, args: Value) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, workspace_root: &'a str, args: Value) -> ToolFuture<'a> {
         unsafe { Pin::new_unchecked(Owned::new(Tool::execute(self, workspace_root, args))) }
     }
 

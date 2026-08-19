@@ -41,7 +41,8 @@ impl Tool for TakeScreenshotTool {
         })
     }
 
-    async fn execute(&self, workspace_root: &Path, _args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, workspace_root: &str, _args: serde_json::Value) -> Result<String> {
+        let workspace_root = Path::new(workspace_root);
         let shot_dir = workspace_root.join(".mrml").join("screenshots");
         mrml_runtime::create_dir_all(
             shot_dir
@@ -174,7 +175,7 @@ impl Tool for OpenAppTool {
         })
     }
 
-    async fn execute(&self, _workspace_root: &Path, args: serde_json::Value) -> Result<String> {
+    async fn execute(&self, _workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let app_name = args["app_name"]
             .as_str()
             .ok_or_else(|| anyhow!("Missing app_name"))?;
