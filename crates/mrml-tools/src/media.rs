@@ -1,7 +1,9 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
 use core::sync::atomic::{AtomicBool, Ordering};
-use mrml_runtime::Command;
+use mrml_runtime::{Command, Vector};
+#[cfg(not(feature = "std"))]
+use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::json;
 
 pub static SPEECH_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -111,7 +113,7 @@ impl Tool for RecordAudioTool {
                     "-i",
                     "default",
                     "-t",
-                    &duration.to_string(),
+                    &format!("{}", duration),
                     "-ac",
                     "1",
                     "-ar",
@@ -128,7 +130,7 @@ impl Tool for RecordAudioTool {
 
         if !recorded && crate::desktop::is_executable_in_path("arecord").is_some() {
             let out = Command::new("arecord")
-                .args(["-d", &duration.to_string(), "-f", "cd", path_str.as_str()])
+                .args(["-d", &format!("{}", duration), "-f", "cd", path_str.as_str()])
                 .output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&path_str) {
@@ -215,7 +217,7 @@ impl Tool for RecordScreenVideoTool {
         let duration = args["duration_secs"].as_i64().unwrap_or(3);
         let desk_tool = crate::desktop::TakeScreenshotTool;
 
-        let mut frames_out = Vec::new();
+        let mut frames_out: Vector<String> = Vector::new();
         for i in 0..duration {
             if i > 0 {
                 crate::platform::sleep_millis(1000);

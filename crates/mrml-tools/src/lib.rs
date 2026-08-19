@@ -7,7 +7,7 @@ pub mod fixed_encoding;
 
 #[cfg(feature = "std")]
 pub mod browser;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod desktop;
 #[cfg(feature = "std")]
 pub mod editor;
@@ -17,7 +17,7 @@ pub mod git;
 pub mod html;
 #[cfg(feature = "std")]
 pub mod mcp;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod media;
 #[cfg(feature = "std")]
 pub mod web;
@@ -35,20 +35,25 @@ pub mod platform;
 #[cfg(feature = "runtime")]
 pub mod simple_regex;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 use anyhow::Result;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 use core::future::Future;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 use core::pin::Pin;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+#[cfg(feature = "runtime")]
+use mrml_runtime::{Owned, Text};
+#[cfg(all(feature = "runtime", not(feature = "std")))]
+use mrml_runtime::Text as String;
 #[cfg(feature = "std")]
-use mrml_runtime::{Owned, Shared, Text, Vector};
+use std::string::String;
 #[cfg(feature = "std")]
+use mrml_runtime::{Shared, Vector};
+#[cfg(feature = "runtime")]
 use serde_json::Value;
-#[cfg(feature = "std")]
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub fn block_on<F: Future>(future: F) -> F::Output {
     unsafe fn clone(_: *const ()) -> RawWaker {
         RawWaker::new(core::ptr::null(), &VTABLE)
@@ -68,15 +73,15 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub type ToolError = anyhow::Error;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub fn tool_error(message: impl core::fmt::Display) -> ToolError {
     anyhow::message(message)
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 #[derive(Debug, Clone)]
 pub struct FunctionDefinition {
     pub name: Text,
@@ -84,14 +89,14 @@ pub struct FunctionDefinition {
     pub parameters: serde_json::Value,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
     pub tool_type: Text,
     pub function: FunctionDefinition,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -114,10 +119,10 @@ pub trait Tool: Send + Sync {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 type ToolFuture<'a> = Pin<Owned<dyn Future<Output = Result<String>> + Send + 'a>>;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub trait DynTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -126,7 +131,7 @@ pub trait DynTool: Send + Sync {
     fn to_tool_definition(&self) -> ToolDefinition;
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 impl<T: Tool> DynTool for T {
     fn name(&self) -> &str {
         Tool::name(self)
