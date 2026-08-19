@@ -1591,6 +1591,51 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_moe_gate_up_q4(
 }
 
 #[no_mangle]
+pub unsafe extern "ptx-kernel" fn rust_cuda_moe_gate_up_q4_gemma4_26b(
+    gate_up: *const u8,
+    ids: *const i32,
+    input: *const f32,
+    act: *mut f32,
+) {
+    const DIM: usize = 2_816;
+    const EXP_DIM: usize = 704;
+    const ACTIVE: usize = 8;
+    const BLOCKS: usize = DIM / 32;
+    const ROW_BYTES: usize = BLOCKS * 18;
+    let lane = _thread_idx_x() & 31;
+    let sub = (lane & 15) as usize;
+    let warp = _thread_idx_x() >> 5;
+    let row = (_block_idx_x() * ((_block_dim_x() >> 5) * 2) + warp * 2 + (lane >> 4)) as usize;
+    let slot = _block_idx_y() as usize;
+    let active = row < EXP_DIM && slot < ACTIVE;
+    let expert = if active { *ids.add(slot) as usize } else { 0 };
+    let base = gate_up.add(expert * 2 * EXP_DIM * ROW_BYTES);
+    let gate = base.add(if active { row * ROW_BYTES } else { 0 });
+    let up = base.add((EXP_DIM + if active { row } else { 0 }) * ROW_BYTES);
+    let mut gs = 0.0f32;
+    let mut us = 0.0f32;
+    let mut block = 0usize;
+    while block < BLOCKS {
+        let off = block * 18;
+        let gd = f16_to_f32(*gate.add(off) as u16 | ((*gate.add(off + 1) as u16) << 8));
+        let ud = f16_to_f32(*up.add(off) as u16 | ((*up.add(off + 1) as u16) << 8));
+        let g = if active { *gate.add(off + 2 + sub) } else { 0 };
+        let u = if active { *up.add(off + 2 + sub) } else { 0 };
+        let x0 = *input.add(block * 32 + sub);
+        let x1 = *input.add(block * 32 + sub + 16);
+        gs += gd * (((g & 15) as i32 - 8) as f32 * x0 + ((g >> 4) as i32 - 8) as f32 * x1);
+        us += ud * (((u & 15) as i32 - 8) as f32 * x0 + ((u >> 4) as i32 - 8) as f32 * x1);
+        block += 1;
+    }
+    let gv = half_warp_sum(gs);
+    let uv = half_warp_sum(us);
+    if active && sub == 0 {
+        let gelu = 0.5 * gv * (1.0 + fast_tanh(0.7978845608 * gv * (1.0 + 0.044715 * gv * gv)));
+        *act.add(slot * EXP_DIM + row) = gelu * uv;
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "ptx-kernel" fn rust_cuda_moe_down_q4(
     down: *const u8,
     ids: *const i32,

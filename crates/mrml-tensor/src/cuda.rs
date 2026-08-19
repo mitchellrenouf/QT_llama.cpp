@@ -806,13 +806,23 @@ unsafe fn launch_rust_moe_topk(
         &mut na as *mut _ as *mut c_void,
         &mut b as *mut _ as *mut c_void,
     ];
-    launch_rust_kernel(
-        "rust_cuda_moe_gate_up_q4",
-        ((exp_dim as u32).div_ceil(8), n_active as u32, batch as u32),
-        (128, 1, 1),
-        stream,
-        &mut gate_args,
-    )?;
+    if batch == 1 && dim == 2_816 && exp_dim == 704 && n_active == 8 {
+        launch_rust_kernel(
+            "rust_cuda_moe_gate_up_q4_gemma4_26b",
+            ((exp_dim as u32).div_ceil(8), n_active as u32, 1),
+            (128, 1, 1),
+            stream,
+            &mut gate_args[..4],
+        )?;
+    } else {
+        launch_rust_kernel(
+            "rust_cuda_moe_gate_up_q4",
+            ((exp_dim as u32).div_ceil(8), n_active as u32, batch as u32),
+            (128, 1, 1),
+            stream,
+            &mut gate_args,
+        )?;
+    }
     let (mut d0, mut d1, mut d2, mut d3, mut d4, mut d5) = (down, ids, weights, scales, act, out);
     let mut down_args = [
         &mut d0 as *mut _ as *mut c_void,
