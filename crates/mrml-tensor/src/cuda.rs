@@ -204,15 +204,6 @@ fn rust_ptx_function(name: &str) -> Result<CuFunction> {
     Ok(function)
 }
 
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|value| {
-        !matches!(
-            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "off" | "no"
-        )
-    })
-}
-
 unsafe fn launch_rust_kernel(
     name: &str,
     grid: (u32, u32, u32),
