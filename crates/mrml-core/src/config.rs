@@ -246,31 +246,31 @@ mod parser_tests {
     }
 }
 
-pub fn detect_os_name() -> String {
+pub fn detect_os_name() -> Text {
     if cfg!(windows) {
-        return "Windows".to_string();
+        return "Windows".into();
     }
     if cfg!(target_os = "macos") {
-        return "macOS".to_string();
+        return "macOS".into();
     }
     if Path::new("/.flatpak-info").exists() {
-        return "Flatpak Sandbox (Freedesktop SDK 26.08)".to_string();
+        return "Flatpak Sandbox (Freedesktop SDK 26.08)".into();
     }
     if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
         for line in content.lines() {
             if let Some(pretty) = line.strip_prefix("PRETTY_NAME=") {
-                return pretty.trim_matches('"').to_string();
+                return pretty.trim_matches('"').into();
             }
             if let Some(name) = line.strip_prefix("NAME=") {
-                return name.trim_matches('"').to_string();
+                return name.trim_matches('"').into();
             }
         }
     }
-    "Linux".to_string()
+    "Linux".into()
 }
 
 impl Config {
-    pub fn get_system_prompt(&self, mode: AgentMode, rules_text: &str) -> String {
+    pub fn get_system_prompt(&self, mode: AgentMode, rules_text: &str) -> Text {
         let abs_workspace = std::fs::canonicalize(&self.workspace_root)
             .unwrap_or_else(|_| self.workspace_root.clone())
             .display()
@@ -280,9 +280,11 @@ impl Config {
         let os_name = detect_os_name();
 
         let rules_section = if rules_text.trim().is_empty() {
-            String::new()
+            Text::new()
         } else {
             format!("\nPROJECT CUSTOM RULES:\n{}\n", rules_text)
+                .as_str()
+                .into()
         };
 
         match mode {
@@ -308,7 +310,9 @@ DYNAMIC WEB FETCHING & SPEECH GUIDELINES:
 
 Available Tools:
 - `speak_text`, `record_audio`, `capture_webcam`, `record_screen_video`, `take_screenshot`, `open_app`, `browser_open`, `browser_get_content`, `browser_screenshot`, `browser_click_element`, `browser_click`, `browser_type`, `web_search`, `web_fetch`, `view_file`, `write_file`, `replace_file_content`, `list_dir`, `grep_search`, `run_command`, `git_checkpoint`, `git_rollback`, `git_diff`."#
-            ),
+            )
+            .as_str()
+            .into(),
             AgentMode::Coder => format!(
                 r#"You are Gemma Vibe-Coder, an elite autonomous AI coding assistant with Multimodal Vision, Audio/Speech, Video, and Desktop Control capabilities, powered by Gemma 4 26B.
 You work directly inside the user's workspace on {os_name}.
@@ -324,7 +328,9 @@ GUIDELINES FOR VIBE CODING:
 - Keep edits precise and clean.
 - Verify changes by running build or test commands (`run_command`) after making modifications.
 - Create a `git_checkpoint` before making large structural refactors so changes can be reverted if needed."#
-            ),
+            )
+            .as_str()
+            .into(),
             AgentMode::Automatic => format!(
                 r#"You are Gemma in AUTONOMOUS INNER MONOLOGUE MODE, powered by Gemma 4 26B.
 In this mode, you maintain a continuous, human-like inner monologue before taking any action or giving an answer.
@@ -338,7 +344,9 @@ HUMAN-LIKE INNER MONOLOGUE INSTRUCTIONS:
 
 Available Tools:
 - `speak_text`, `record_audio`, `capture_webcam`, `record_screen_video`, `take_screenshot`, `open_app`, `browser_open`, `browser_screenshot`, `browser_click`, `browser_type`, `web_search`, `web_fetch`, `view_file`, `write_file`, `replace_file_content`, `list_dir`, `grep_search`, `run_command`, `git_checkpoint`, `git_rollback`, `git_diff`."#
-            ),
+            )
+            .as_str()
+            .into(),
         }
     }
 }
