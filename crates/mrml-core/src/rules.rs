@@ -24,7 +24,10 @@ impl WorkspaceRules {
 
         for name in &candidate_names {
             let candidate_path = workspace_root.join(name);
-            if crate::platform::path_is_file(&candidate_path) {
+            if candidate_path
+                .to_str()
+                .is_some_and(crate::platform::path_is_file)
+            {
                 if let Some(path) = candidate_path.to_str() {
                     if let Ok(content) = mrml_runtime::read_file_text(path) {
                         if !content.trim().is_empty() {

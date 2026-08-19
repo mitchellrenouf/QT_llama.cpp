@@ -1,10 +1,8 @@
 //! Native platform paths and timestamps shared by tools and the agent.
 use core::fmt::Write as _;
 use mrml_runtime::Text;
-use std::path::Path;
-
-pub fn path_is_file(path: &Path) -> bool {
-    path.to_str().is_some_and(mrml_runtime::path_is_file)
+pub fn path_is_file(path: &str) -> bool {
+    mrml_runtime::path_is_file(path)
 }
 
 #[cfg(unix)]

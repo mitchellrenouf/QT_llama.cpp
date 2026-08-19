@@ -398,7 +398,10 @@ impl MrmlClient {
 
     pub fn with_config(config: &Config) -> Self {
         let explicit_model = PathBuf::from(config.model.as_str());
-        let model_path = if crate::platform::path_is_file(&explicit_model) {
+        let model_path = if explicit_model
+            .to_str()
+            .is_some_and(crate::platform::path_is_file)
+        {
             Some(explicit_model)
         } else if let Some(hf_spec_str) = config.hf.as_deref().filter(|s| !s.trim().is_empty()) {
             find_model_file(hf_spec_str).or_else(|| find_model_file(&config.model))
@@ -999,7 +1002,7 @@ pub fn get_model_cache_roots() -> Vec<PathBuf> {
 
 pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     let p = PathBuf::from(model_arg);
-    if crate::platform::path_is_file(&p) {
+    if p.to_str().is_some_and(crate::platform::path_is_file) {
         return Some(p);
     }
 
@@ -1111,7 +1114,7 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
     ];
 
     for c in candidates {
-        if crate::platform::path_is_file(&c) {
+        if c.to_str().is_some_and(crate::platform::path_is_file) {
             return Some(c);
         }
     }

@@ -10,12 +10,12 @@ pub fn is_executable_in_path(cmd: &str) -> Option<PathBuf> {
         let separator = if cfg!(windows) { ';' } else { ':' };
         for dir in path_var.split(separator) {
             let p = Path::new(dir).join(cmd);
-            if crate::platform::path_is_file(&p) {
+            if p.to_str().is_some_and(crate::platform::path_is_file) {
                 return Some(p);
             }
             if cfg!(windows) && !cmd.ends_with(".exe") {
                 let p_exe = Path::new(dir).join(format!("{}.exe", cmd));
-                if crate::platform::path_is_file(&p_exe) {
+                if p_exe.to_str().is_some_and(crate::platform::path_is_file) {
                     return Some(p_exe);
                 }
             }
@@ -63,7 +63,7 @@ impl Tool for TakeScreenshotTool {
                 .args(["-b", "-n", "-o", &temp_png_str])
                 .output();
             if let Ok(o) = out {
-                if o.status.success() && crate::platform::path_is_file(&temp_png) {
+                if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
                 }
             }
@@ -72,7 +72,7 @@ impl Tool for TakeScreenshotTool {
         if !captured && is_executable_in_path("grim").is_some() {
             let out = Command::new("grim").arg(&temp_png_str).output();
             if let Ok(o) = out {
-                if o.status.success() && crate::platform::path_is_file(&temp_png) {
+                if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
                 }
             }
@@ -81,7 +81,7 @@ impl Tool for TakeScreenshotTool {
         if !captured && is_executable_in_path("scrot").is_some() {
             let out = Command::new("scrot").arg(&temp_png_str).output();
             if let Ok(o) = out {
-                if o.status.success() && crate::platform::path_is_file(&temp_png) {
+                if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
                 }
             }
@@ -90,7 +90,7 @@ impl Tool for TakeScreenshotTool {
         if !captured && is_executable_in_path("maim").is_some() {
             let out = Command::new("maim").arg(&temp_png_str).output();
             if let Ok(o) = out {
-                if o.status.success() && crate::platform::path_is_file(&temp_png) {
+                if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
                 }
             }
@@ -101,7 +101,7 @@ impl Tool for TakeScreenshotTool {
                 .args(["-window", "root", &temp_png_str])
                 .output();
             if let Ok(o) = out {
-                if o.status.success() && crate::platform::path_is_file(&temp_png) {
+                if o.status.success() && crate::platform::path_is_file(&temp_png_str) {
                     captured = true;
                 }
             }
@@ -131,7 +131,7 @@ impl Tool for TakeScreenshotTool {
             let _ = rename_file(&temp_png_str, &path_str);
         }
 
-        if !crate::platform::path_is_file(&file_path) {
+        if !crate::platform::path_is_file(&path_str) {
             return Err(anyhow!("Screenshot file was not created at {}", path_str));
         }
 
@@ -190,7 +190,7 @@ impl Tool for OpenAppTool {
         }
 
         if is_executable_in_path(app_name).is_some()
-            || crate::platform::path_is_file(Path::new(app_name))
+            || crate::platform::path_is_file(app_name)
         {
             Command::new(app_name)
                 .spawn()

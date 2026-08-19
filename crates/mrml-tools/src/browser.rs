@@ -282,7 +282,7 @@ impl Drop for EdgeController {
 fn find_browser() -> Option<PathBuf> {
     if let Some(p) = mrml_runtime::environment_variable("BROWSER_EXE")
         .map(|value| PathBuf::from(value.as_str()))
-        .filter(|p| crate::platform::path_is_file(p))
+        .filter(|p| p.to_str().is_some_and(crate::platform::path_is_file))
     {
         return Some(p);
     }
@@ -304,7 +304,8 @@ fn find_browser() -> Option<PathBuf> {
         PathBuf::from("/usr/bin/google-chrome"),
         PathBuf::from("/usr/bin/chromium"),
     ]);
-    c.into_iter().find(|p| crate::platform::path_is_file(p))
+    c.into_iter()
+        .find(|p| p.to_str().is_some_and(crate::platform::path_is_file))
 }
 fn read_http_header(s: &mut TcpStream) -> Result<String> {
     let mut v = Vec::new();
