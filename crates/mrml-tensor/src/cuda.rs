@@ -2,7 +2,6 @@
 #![allow(non_snake_case)]
 
 use crate::anyhow::{Result, anyhow};
-use alloc::ffi::CString;
 use core::ffi::{CStr, c_void};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -437,7 +436,13 @@ fn rust_ptx_function(name: &str) -> Result<CuFunction> {
         let _ = RUST_PTX_MODULE.set(module as usize);
         module
     };
-    let symbol = CString::new(name).map_err(|_| anyhow!("invalid CUDA kernel name"))?;
+    let mut symbol = [0i8; 128];
+    if name.len() + 1 > symbol.len() || name.as_bytes().contains(&0) {
+        return Err(anyhow!("invalid CUDA kernel name"));
+    }
+    for (destination, source) in symbol.iter_mut().zip(name.bytes()) {
+        *destination = source as i8;
+    }
     let mut function = ptr::null_mut();
     let status = unsafe { (api.module_get_function)(&mut function, module, symbol.as_ptr()) };
     if status != 0 || function.is_null() {

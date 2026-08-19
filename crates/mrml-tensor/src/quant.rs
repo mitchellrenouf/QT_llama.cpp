@@ -390,20 +390,22 @@ fn avx_vnni_enabled() -> bool {
 #[cfg(test)]
 mod simd_tests {
     use super::*;
-    use alloc::vec;
-    use alloc::vec::Vec;
+    use mrml_runtime::Vector;
 
     #[test]
     fn dispatched_dots_match_scalar() {
-        let values: Vec<f32> = (0..256)
+        let values: Vector<f32> = (0..256)
             .map(|i| ((i * 37 % 101) as f32 - 50.0) / 13.0)
             .collect();
-        let other: Vec<f32> = (0..256)
+        let other: Vector<f32> = (0..256)
             .map(|i| ((i * 19 % 89) as f32 - 44.0) / 11.0)
             .collect();
-        let mut q4 = vec![0u8; values.len() / 32 * 18];
-        let mut q8_a = vec![0u8; values.len() / 32 * 34];
-        let mut q8_b = vec![0u8; other.len() / 32 * 34];
+        let mut q4 = Vector::new();
+        let mut q8_a = Vector::new();
+        let mut q8_b = Vector::new();
+        q4.resize(values.len() / 32 * 18, 0u8);
+        q8_a.resize(values.len() / 32 * 34, 0u8);
+        q8_b.resize(other.len() / 32 * 34, 0u8);
         quantize_f32_to_q4_0(&values, &mut q4);
         quantize_f32_to_q8_0(&values, &mut q8_a);
         quantize_f32_to_q8_0(&other, &mut q8_b);

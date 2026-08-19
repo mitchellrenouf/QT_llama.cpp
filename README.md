@@ -197,7 +197,7 @@ Run the deterministic kernel benchmarks with:
 
 ```powershell
 # CPU hot paths
-cargo bench -p mrml-tensor --bench hot_paths --no-default-features
+cargo bench -p mrml-tensor --bench hot_paths --no-default-features --features runtime
 
 # CUDA correctness and prefill benchmark
 cargo run --release -p mrml-tensor --example cuda_prefill_primitives --features cuda
