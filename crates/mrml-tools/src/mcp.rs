@@ -1,5 +1,7 @@
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Command, PipedChild, Shared, SpinMutex, Text, Vector};
+#[cfg(not(feature = "std"))]
+use mrml_runtime::Text as String;
 use serde_json::Value;
 
 use crate::{DynTool, Tool};
@@ -134,7 +136,7 @@ impl Tool for McpTool {
             }
             Ok(out)
         } else {
-            Ok(res.to_string())
+            Ok(serde_json::stringify(&res).as_str().into())
         }
     }
 }

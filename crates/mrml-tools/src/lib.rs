@@ -15,7 +15,7 @@ pub mod editor;
 pub mod git;
 #[cfg(feature = "runtime")]
 pub mod html;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod mcp;
 #[cfg(feature = "runtime")]
 pub mod media;
