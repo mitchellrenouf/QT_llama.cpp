@@ -227,12 +227,7 @@ impl MrmlAgent {
     {
         let spec = crate::hf::HfModelSpec::parse(spec_str)?;
         let files = crate::hf::resolve_or_fetch_hf_model(&spec, progress_cb).await?;
-        self.reload_model(
-            files
-                .primary_entry_file
-                .to_str()
-                .ok_or_else(|| anyhow!("Model path is not valid UTF-8"))?,
-        )?;
+        self.reload_model(&files.primary_entry_file)?;
         self.config.hf = Some(spec_str.into());
         Ok(())
     }

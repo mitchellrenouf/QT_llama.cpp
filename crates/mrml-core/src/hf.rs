@@ -1,9 +1,8 @@
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Text, Vector, mrml_println as println, rename_file};
-use std::path::{Path, PathBuf};
 
-fn native_file_len(path: &Path) -> Option<u64> {
-    mrml_runtime::File::open(path.to_str()?).ok()?.len().ok()
+fn native_file_len(path: &str) -> Option<u64> {
+    mrml_runtime::File::open(path).ok()?.len().ok()
 }
 
 fn path_file_name(path: &str) -> &str {
@@ -20,10 +19,10 @@ pub struct HfModelSpec {
 
 #[derive(Debug, Clone)]
 pub struct HfModelFiles {
-    pub primary_entry_file: PathBuf,
-    pub shard_files: Vector<PathBuf>,
-    pub mmproj_file: Option<PathBuf>,
-    pub speedup_draft_file: Option<PathBuf>,
+    pub primary_entry_file: Text,
+    pub shard_files: Vector<Text>,
+    pub mmproj_file: Option<Text>,
+    pub speedup_draft_file: Option<Text>,
 }
 
 impl HfModelSpec {
@@ -74,54 +73,54 @@ impl HfModelSpec {
         }
     }
 
-    pub fn cache_dir() -> PathBuf {
+    pub fn cache_dir() -> Text {
         if let Some(path) = mrml_runtime::environment_variable("HF_HUB_CACHE") {
-            return PathBuf::from(path.as_str());
+            return path;
         }
         if let Some(hf_home) = mrml_runtime::environment_variable("HF_HOME") {
-            return PathBuf::from(hf_home.as_str()).join("hub");
+            return mrml_runtime::join_path(&hf_home, "hub");
         }
         if let Some(mrml_cache) = mrml_runtime::environment_variable("MRML_CACHE") {
-            return PathBuf::from(mrml_cache.as_str());
+            return mrml_cache;
         }
 
         #[cfg(windows)]
         {
             if let Some(local_appdata) = mrml_runtime::environment_variable("LOCALAPPDATA") {
-                let p = PathBuf::from(local_appdata.as_str())
-                    .join("huggingface")
-                    .join("hub");
+                let p = mrml_runtime::join_path(
+                    &mrml_runtime::join_path(&local_appdata, "huggingface"),
+                    "hub",
+                );
                 return p;
             }
         }
 
         if let Some(home) = crate::platform::home_dir() {
-            return PathBuf::from(home.as_str())
-                .join(".cache")
-                .join("huggingface")
-                .join("hub");
+            return mrml_runtime::join_path(
+                &mrml_runtime::join_path(
+                    &mrml_runtime::join_path(&home, ".cache"),
+                    "huggingface",
+                ),
+                "hub",
+            );
         }
 
-        PathBuf::from(".cache").join("huggingface").join("hub")
+        mrml_runtime::join_path(&mrml_runtime::join_path(".cache", "huggingface"), "hub")
     }
 
-    pub fn get_model_dir(&self) -> PathBuf {
+    pub fn get_model_dir(&self) -> Text {
         let repo_slug = format!("models--{}--{}", self.user, self.model);
-        Self::cache_dir().join(repo_slug)
+        mrml_runtime::join_path(&Self::cache_dir(), &repo_slug)
     }
 
     pub fn is_cached(&self) -> bool {
         let model_dir = self.get_model_dir();
-        if !model_dir
-            .to_str()
-            .is_some_and(mrml_runtime::path_is_directory)
-        {
+        if !mrml_runtime::path_is_directory(&model_dir) {
             return false;
         }
 
         let target_quant_lower = self.quant.to_ascii_lowercase();
-        let Some(model_dir) = model_dir.to_str() else { return false };
-        for path in crate::fs_walk::paths(model_dir) {
+        for path in crate::fs_walk::paths(&model_dir) {
             let name = Text::from(path_file_name(&path)).to_ascii_lowercase();
             if name.ends_with(".gguf")
                 && name.contains(target_quant_lower.as_str())
@@ -204,13 +203,11 @@ where
         crate::client::find_model_file(&format!("{}:{}", spec.repo_id, spec.quant))
             .or_else(|| crate::client::find_model_file(&spec.model))
     {
+        let existing_primary: Text = existing_primary.to_string_lossy().as_ref().into();
         progress_cb(
             &format!(
                 "✓ Found local cached weights at {}",
-                existing_primary
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
+                path_file_name(&existing_primary)
             ),
             1.0,
             1,
@@ -225,11 +222,7 @@ where
     }
 
     let model_dir = spec.get_model_dir();
-    mrml_runtime::create_dir_all(
-        model_dir
-            .to_str()
-            .ok_or_else(|| anyhow!("model directory is not valid UTF-8"))?,
-    )?;
+    mrml_runtime::create_dir_all(&model_dir)?;
 
     progress_cb(
         &format!(
@@ -312,8 +305,8 @@ where
 
     for (idx, filename) in download_queue.iter().enumerate() {
         let file_num = idx + 1;
-        let dest_path = model_dir.join(filename.as_str());
-        let part_path = model_dir.join(format!("{}.part", filename));
+        let dest_path = mrml_runtime::join_path(&model_dir, filename);
+        let part_path = mrml_runtime::join_path(&model_dir, &format!("{}.part", filename));
 
         if native_file_len(&dest_path).is_some_and(|length| length > 10 * 1024 * 1024) {
             let msg = format!(
@@ -367,7 +360,7 @@ where
             .arg("-C")
             .arg("-") // Auto-resume from partial byte offset
             .arg("-o")
-            .arg(&part_path)
+            .arg(part_path.as_str())
             .arg(&download_url);
 
         if let Some(token) = mrml_runtime::environment_variable("HF_TOKEN") {
@@ -405,14 +398,8 @@ where
         }
 
         // Successfully downloaded: promote .part to final .gguf
-        if part_path
-            .to_str()
-            .is_some_and(mrml_runtime::path_is_file)
-        {
-            rename_file(
-                part_path.to_str().ok_or_else(|| anyhow!("Partial model path is not valid UTF-8"))?,
-                dest_path.to_str().ok_or_else(|| anyhow!("Model path is not valid UTF-8"))?,
-            )?;
+        if mrml_runtime::path_is_file(&part_path) {
+            rename_file(&part_path, &dest_path)?;
         }
 
         let done_msg = format!(
@@ -437,7 +424,7 @@ where
     }
 
     let primary_entry_file = downloaded_shard_paths.first().cloned().unwrap_or_else(|| {
-        model_dir.join(format!(
+        mrml_runtime::join_path(&model_dir, &format!(
             "{}-{}.gguf",
             spec.model.to_ascii_lowercase(),
             spec.quant.to_ascii_lowercase()
@@ -447,7 +434,7 @@ where
     let complete_msg = format!(
         "✨ All {} model weights ready in {}",
         total_files,
-        model_dir.display()
+        model_dir
     );
     println!("{}", complete_msg);
     progress_cb(&complete_msg, 1.0, total_files, total_files);
