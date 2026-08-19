@@ -164,7 +164,7 @@ impl MrmlAgent {
             let args = &parts[1..];
             println!("🔌 Connecting to MCP Server: {}...", server_cmd.cyan());
             match crate::tools::mcp::McpClient::spawn(program, args).await {
-                Ok(client) => match client.list_tools().await {
+                Ok(client) => match crate::tools::mcp::McpClient::list_tools(&client).await {
                     Ok(tools) => {
                         println!(
                             "   Loaded {} MCP tool(s):",

@@ -1,9 +1,10 @@
 use anyhow::{Result, anyhow};
+use mrml_runtime::Shared;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::{DynTool, Tool};
 
@@ -15,7 +16,7 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    pub async fn spawn(command: &str, args: &[&str]) -> Result<Arc<Self>> {
+    pub async fn spawn(command: &str, args: &[&str]) -> Result<Shared<Self>> {
         let mut child = Command::new(command)
             .args(args)
             .stdin(Stdio::piped())
@@ -33,7 +34,7 @@ impl McpClient {
             .ok_or_else(|| anyhow!("Failed to open MCP stdout"))?;
         let reader = BufReader::new(stdout);
 
-        let client = Arc::new(Self {
+        let client = Shared::new(Self {
             stdin: Mutex::new(stdin),
             reader: Mutex::new(reader),
             _child: Mutex::new(child),
@@ -106,9 +107,9 @@ impl McpClient {
             .ok_or_else(|| anyhow!("Empty result from MCP server"))
     }
 
-    pub async fn list_tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn DynTool>>> {
-        let res = self.call_method("tools/list", None).await?;
-        let mut tools: Vec<Arc<dyn DynTool>> = Vec::new();
+    pub async fn list_tools(client: &Shared<Self>) -> Result<Vec<Shared<dyn DynTool>>> {
+        let res = client.call_method("tools/list", None).await?;
+        let mut tools: Vec<Shared<dyn DynTool>> = Vec::new();
 
         if let Some(tools_arr) = res.get("tools").and_then(|t| t.as_array()) {
             for t in tools_arr {
@@ -122,12 +123,12 @@ impl McpClient {
                     }));
 
                     let mcp_tool = McpTool {
-                        client: self.clone(),
+                        client: client.clone(),
                         name: name.to_string(),
                         description: desc.to_string(),
                         parameters: schema,
                     };
-                    tools.push(Arc::new(mcp_tool));
+                    tools.push(Shared::new(mcp_tool));
                 }
             }
         }
@@ -137,7 +138,7 @@ impl McpClient {
 }
 
 pub struct McpTool {
-    client: Arc<McpClient>,
+    client: Shared<McpClient>,
     name: String,
     description: String,
     parameters: Value,

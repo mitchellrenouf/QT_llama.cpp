@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(coerce_unsized, unsize)]
 
 #[cfg(test)]
 extern crate std;

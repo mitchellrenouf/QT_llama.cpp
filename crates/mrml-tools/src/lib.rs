@@ -41,14 +41,12 @@ use core::pin::Pin;
 #[cfg(feature = "std")]
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 #[cfg(feature = "std")]
-use mrml_runtime::{Text, Vector};
+use mrml_runtime::{Shared, Text, Vector};
 #[cfg(feature = "std")]
 use serde_json::Value;
 #[cfg(feature = "std")]
 use std::path::Path;
 #[cfg(feature = "std")]
-use std::sync::Arc;
-
 #[cfg(feature = "std")]
 pub fn block_on<F: Future>(future: F) -> F::Output {
     unsafe fn clone(_: *const ()) -> RawWaker {
@@ -152,7 +150,7 @@ impl<T: Tool> DynTool for T {
 
 #[cfg(feature = "std")]
 pub struct ToolRegistry {
-    tools: Vector<Arc<dyn DynTool>>,
+    tools: Vector<Shared<dyn DynTool>>,
 }
 
 #[cfg(feature = "std")]
@@ -163,56 +161,56 @@ impl ToolRegistry {
         };
 
         // Editor & OS Tools
-        registry.register(Arc::new(editor::ViewFileTool));
-        registry.register(Arc::new(editor::WriteFileTool));
-        registry.register(Arc::new(editor::ReplaceFileContentTool));
-        registry.register(Arc::new(editor::ListDirTool));
-        registry.register(Arc::new(editor::GrepSearchTool));
-        registry.register(Arc::new(editor::RunCommandTool));
+        registry.register(Shared::new(editor::ViewFileTool));
+        registry.register(Shared::new(editor::WriteFileTool));
+        registry.register(Shared::new(editor::ReplaceFileContentTool));
+        registry.register(Shared::new(editor::ListDirTool));
+        registry.register(Shared::new(editor::GrepSearchTool));
+        registry.register(Shared::new(editor::RunCommandTool));
 
         // Git Safety Tools
-        registry.register(Arc::new(git::GitCheckpointTool));
-        registry.register(Arc::new(git::GitRollbackTool));
-        registry.register(Arc::new(git::GitDiffTool));
+        registry.register(Shared::new(git::GitCheckpointTool));
+        registry.register(Shared::new(git::GitRollbackTool));
+        registry.register(Shared::new(git::GitDiffTool));
 
         // Web Tools
-        registry.register(Arc::new(web::WebSearchTool));
-        registry.register(Arc::new(web::WebFetchTool));
+        registry.register(Shared::new(web::WebSearchTool));
+        registry.register(Shared::new(web::WebFetchTool));
 
         // Desktop Control Tools
-        registry.register(Arc::new(desktop::TakeScreenshotTool));
-        registry.register(Arc::new(desktop::OpenAppTool));
+        registry.register(Shared::new(desktop::TakeScreenshotTool));
+        registry.register(Shared::new(desktop::OpenAppTool));
 
         // Browser Automation Tools
-        registry.register(Arc::new(browser::BrowserOpenTool));
-        registry.register(Arc::new(browser::BrowserGetContentTool));
-        registry.register(Arc::new(browser::BrowserScreenshotTool));
-        registry.register(Arc::new(browser::BrowserClickElementTool));
-        registry.register(Arc::new(browser::BrowserClickTool));
-        registry.register(Arc::new(browser::BrowserTypeTool));
+        registry.register(Shared::new(browser::BrowserOpenTool));
+        registry.register(Shared::new(browser::BrowserGetContentTool));
+        registry.register(Shared::new(browser::BrowserScreenshotTool));
+        registry.register(Shared::new(browser::BrowserClickElementTool));
+        registry.register(Shared::new(browser::BrowserClickTool));
+        registry.register(Shared::new(browser::BrowserTypeTool));
 
         // Audio & Video Media Tools
-        registry.register(Arc::new(media::SpeakTextTool));
-        registry.register(Arc::new(media::RecordAudioTool));
-        registry.register(Arc::new(media::CaptureWebcamTool));
-        registry.register(Arc::new(media::RecordScreenVideoTool));
+        registry.register(Shared::new(media::SpeakTextTool));
+        registry.register(Shared::new(media::RecordAudioTool));
+        registry.register(Shared::new(media::CaptureWebcamTool));
+        registry.register(Shared::new(media::RecordScreenVideoTool));
 
         registry
     }
 
-    pub fn register(&mut self, tool: Arc<dyn DynTool>) {
+    pub fn register(&mut self, tool: Shared<dyn DynTool>) {
         if let Some(existing) = self
             .tools
             .iter_mut()
             .find(|existing| existing.name() == tool.name())
         {
-            *existing = tool;
+            existing.replace(tool);
         } else {
             self.tools.push(tool);
         }
     }
 
-    pub fn get(&self, name: &str) -> Option<Arc<dyn DynTool>> {
+    pub fn get(&self, name: &str) -> Option<Shared<dyn DynTool>> {
         self.tools.iter().find(|tool| tool.name() == name).cloned()
     }
 
@@ -300,7 +298,7 @@ mod tests {
             .into_iter()
             .map(|item| item.function.name)
             .collect();
-        registry.register(Arc::new(editor::ViewFileTool));
+        registry.register(Shared::new(editor::ViewFileTool));
         let after: Vec<_> = registry
             .definitions()
             .into_iter()

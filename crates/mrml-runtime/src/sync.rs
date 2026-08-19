@@ -1,8 +1,9 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::hint::spin_loop;
+use core::marker::Unsize;
 use core::mem::MaybeUninit;
-use core::ops::{Deref, DerefMut};
+use core::ops::{CoerceUnsized, Deref, DerefMut};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 
@@ -131,17 +132,19 @@ impl<T> Drop for OnceCell<T> {
 }
 
 #[repr(C)]
-struct SharedInner<T> {
+struct SharedInner<T: ?Sized> {
     references: AtomicUsize,
     value: T,
 }
 
-pub struct Shared<T> {
+pub struct Shared<T: ?Sized> {
     inner: NonNull<SharedInner<T>>,
 }
 
-unsafe impl<T: Send + Sync> Send for Shared<T> {}
-unsafe impl<T: Send + Sync> Sync for Shared<T> {}
+unsafe impl<T: Send + Sync + ?Sized> Send for Shared<T> {}
+unsafe impl<T: Send + Sync + ?Sized> Sync for Shared<T> {}
+
+impl<T: ?Sized, U: ?Sized> CoerceUnsized<Shared<U>> for Shared<T> where T: Unsize<U> {}
 
 impl<T> Shared<T> {
     pub fn new(value: T) -> Self {
@@ -158,7 +161,7 @@ impl<T> Shared<T> {
     }
 }
 
-impl<T> Clone for Shared<T> {
+impl<T: ?Sized> Clone for Shared<T> {
     fn clone(&self) -> Self {
         unsafe { self.inner.as_ref() }
             .references
@@ -170,14 +173,20 @@ impl<T> Clone for Shared<T> {
     }
 }
 
-impl<T> Deref for Shared<T> {
+impl<T: ?Sized> Shared<T> {
+    pub fn replace(&mut self, replacement: Self) {
+        *self = replacement;
+    }
+}
+
+impl<T: ?Sized> Deref for Shared<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &unsafe { self.inner.as_ref() }.value
     }
 }
 
-impl<T> Drop for Shared<T> {
+impl<T: ?Sized> Drop for Shared<T> {
     fn drop(&mut self) {
         if unsafe { self.inner.as_ref() }
             .references
@@ -188,8 +197,9 @@ impl<T> Drop for Shared<T> {
         }
         fence(Ordering::Acquire);
         unsafe {
+            let layout = Layout::for_value(self.inner.as_ref());
             self.inner.as_ptr().drop_in_place();
-            allocator().dealloc(self.inner.as_ptr().cast(), Layout::new::<SharedInner<T>>());
+            allocator().dealloc(self.inner.as_ptr().cast(), layout);
         }
     }
 }
@@ -207,6 +217,26 @@ fn allocator() -> mrml_linux::SystemAllocator {
 mod tests {
     use super::*;
 
+    static DYNAMIC_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    trait DynamicValue: Send + Sync {
+        fn value(&self) -> usize;
+    }
+
+    struct DynamicOwner(usize);
+
+    impl DynamicValue for DynamicOwner {
+        fn value(&self) -> usize {
+            self.0
+        }
+    }
+
+    impl Drop for DynamicOwner {
+        fn drop(&mut self) {
+            DYNAMIC_DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn mutex_once_and_shared_ownership_work_without_std_types() {
         let mutex = SpinMutex::new(3);
@@ -222,5 +252,17 @@ mod tests {
         assert_eq!(*shared, 17);
         drop(shared);
         assert_eq!(*clone, 17);
+    }
+
+    #[test]
+    fn shared_owns_dynamic_values_without_global_allocation() {
+        DYNAMIC_DROPS.store(0, Ordering::Relaxed);
+        let shared: Shared<dyn DynamicValue> = Shared::new(DynamicOwner(23));
+        let clone = shared.clone();
+        assert_eq!(shared.value(), 23);
+        drop(shared);
+        assert_eq!(DYNAMIC_DROPS.load(Ordering::Relaxed), 0);
+        drop(clone);
+        assert_eq!(DYNAMIC_DROPS.load(Ordering::Relaxed), 1);
     }
 }
