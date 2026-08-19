@@ -28,7 +28,7 @@ pub mod parallel;
 #[path = "parallel_nostd.rs"]
 pub mod parallel;
 pub mod quant;
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub mod speculative;
 #[doc(hidden)]
 pub mod sync;
@@ -52,7 +52,7 @@ pub use graph::{CGraph, Node, OpType};
 pub use kv_cache::{KvCacheFormat, KvCacheManager, KvCacheRow, LayerKvCache, PrefixCache};
 #[cfg(feature = "std")]
 pub use model::{ModelConfig, MrmlModel};
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime")]
 pub use speculative::SpeculativeDecoder;
 #[cfg(feature = "runtime")]
 pub use tensor::{Tensor, TensorStorage};

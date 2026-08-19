@@ -236,6 +236,11 @@ impl<T> AsRef<[T]> for Vector<T> {
         self
     }
 }
+impl<T> core::borrow::Borrow<[T]> for Vector<T> {
+    fn borrow(&self) -> &[T] {
+        self
+    }
+}
 impl<T: fmt::Debug> fmt::Debug for Vector<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.iter()).finish()

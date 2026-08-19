@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use mrml_runtime::{OrderedMap, Vector};
 
 /// Speculative Decoding Engine using fast N-Gram candidate prediction and batched verification
 pub struct SpeculativeDecoder {
@@ -7,7 +7,7 @@ pub struct SpeculativeDecoder {
     /// Number of speculative draft tokens to propose per step (e.g. 3 to 5)
     num_draft_tokens: usize,
     /// N-gram transitions map: Prefix [u32] -> Next candidate tokens
-    ngram_table: HashMap<Vec<i32>, Vec<i32>>,
+    ngram_table: OrderedMap<Vector<i32>, Vector<i32>>,
     /// Acceptance counter for performance metrics
     total_proposed: usize,
     total_accepted: usize,
@@ -18,7 +18,7 @@ impl SpeculativeDecoder {
         Self {
             n_gram_order: n_gram_order.max(2),
             num_draft_tokens: num_draft_tokens.max(1),
-            ngram_table: HashMap::new(),
+            ngram_table: OrderedMap::new(),
             total_proposed: 0,
             total_accepted: 0,
         }
@@ -31,20 +31,24 @@ impl SpeculativeDecoder {
         }
 
         for i in 0..tokens.len() - self.n_gram_order {
-            let key = tokens[i..i + self.n_gram_order].to_vec();
+            let key: Vector<i32> = tokens[i..i + self.n_gram_order].iter().copied().collect();
             let next_tok = tokens[i + self.n_gram_order];
 
-            let candidates = self.ngram_table.entry(key).or_default();
-            if !candidates.contains(&next_tok) {
-                candidates.push(next_tok);
+            if let Some(candidates) = self.ngram_table.get_mut(&key) {
+                if !candidates.contains(&next_tok) {
+                    candidates.push(next_tok);
+                }
+            } else {
+                self.ngram_table.insert(key, [next_tok].into());
             }
         }
     }
 
     /// Generate $K$ speculative draft tokens from current context history
-    pub fn propose_draft_tokens(&mut self, context: &[i32]) -> Vec<i32> {
-        let mut draft = Vec::with_capacity(self.num_draft_tokens);
-        let mut virtual_ctx = context.to_vec();
+    pub fn propose_draft_tokens(&mut self, context: &[i32]) -> Vector<i32> {
+        let mut draft =
+            Vector::with_capacity(self.num_draft_tokens).expect("MRML allocation failed");
+        let mut virtual_ctx: Vector<i32> = context.iter().copied().collect();
 
         for _ in 0..self.num_draft_tokens {
             if virtual_ctx.len() < self.n_gram_order {
