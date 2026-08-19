@@ -1,7 +1,6 @@
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use mrml_runtime::{OnceCell, Sender, Shared, Vector, blocking_channel};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
 struct Work {
     context: usize,
@@ -13,6 +12,27 @@ struct Work {
 }
 
 unsafe impl Send for Work {}
+
+struct Completion {
+    done: Sender<()>,
+    failed: Shared<AtomicBool>,
+    completed: bool,
+}
+
+impl Completion {
+    fn complete(mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for Completion {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.failed.store(true, Ordering::Release);
+        }
+        let _ = self.done.send(());
+    }
+}
 
 struct Pool {
     sender: Sender<Work>,
@@ -33,14 +53,13 @@ fn pool() -> &'static Pool {
                             Ok(work) => work,
                             Err(_) => break,
                         };
-                        if catch_unwind(AssertUnwindSafe(|| unsafe {
-                            (work.run)(work.context, work.start, work.end)
-                        }))
-                        .is_err()
-                        {
-                            work.failed.store(true, Ordering::Release);
-                        }
-                        let _ = work.done.send(());
+                        let completion = Completion {
+                            done: work.done,
+                            failed: work.failed,
+                            completed: false,
+                        };
+                        unsafe { (work.run)(work.context, work.start, work.end) };
+                        completion.complete();
                     }
                 })
                 .is_ok(),
