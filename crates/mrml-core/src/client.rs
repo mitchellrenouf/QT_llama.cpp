@@ -7,6 +7,10 @@ use std::sync::Arc;
 use crate::config::Config;
 pub use mrml_tools::{FunctionDefinition, ToolDefinition};
 
+pub(crate) fn thinking_enabled_for_mode(mode: crate::config::AgentMode) -> bool {
+    matches!(mode, crate::config::AgentMode::Automatic)
+}
+
 #[allow(dead_code)]
 pub type ToolFunction = FunctionDefinition;
 
@@ -190,6 +194,7 @@ pub fn parse_gemma_tool_call(raw: &str) -> Option<ToolCall> {
 pub struct MrmlClient {
     engine: Option<Arc<ModelEngine>>,
     system_prompt: Option<String>,
+    enable_thinking: bool,
 }
 
 impl MrmlClient {
@@ -211,6 +216,7 @@ impl MrmlClient {
         Self {
             engine,
             system_prompt: None,
+            enable_thinking: false,
         }
     }
 
@@ -224,11 +230,16 @@ impl MrmlClient {
         self.engine.is_some()
     }
 
-    pub fn with_engine(engine: Arc<ModelEngine>, system_prompt: Option<String>) -> Self {
+    pub fn with_engine(engine: Arc<ModelEngine>, system_prompt: Option<String>, enable_thinking: bool) -> Self {
         Self {
             engine: Some(engine),
             system_prompt,
+            enable_thinking,
         }
+    }
+
+    pub fn set_thinking_enabled(&mut self, enabled: bool) {
+        self.enable_thinking = enabled;
     }
 
     pub fn with_config(config: &Config) -> Self {
@@ -266,6 +277,7 @@ impl MrmlClient {
         Self {
             engine,
             system_prompt: config.system_prompt.clone(),
+            enable_thinking: thinking_enabled_for_mode(config.mode),
         }
     }
 
@@ -350,7 +362,7 @@ impl MrmlClient {
                 &request.messages,
                 request.tools.as_deref(),
                 Some(&sys_prompt),
-                true,
+                self.enable_thinking,
             )?
         } else {
             format_gemma_chat(&request.messages, Some(&sys_prompt))
@@ -835,6 +847,13 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thinking_is_reserved_for_automatic_mode() {
+        assert!(!thinking_enabled_for_mode(crate::config::AgentMode::General));
+        assert!(!thinking_enabled_for_mode(crate::config::AgentMode::Coder));
+        assert!(thinking_enabled_for_mode(crate::config::AgentMode::Automatic));
+    }
 
     #[test]
     fn test_explicit_model_path_wins_over_hf_default() {

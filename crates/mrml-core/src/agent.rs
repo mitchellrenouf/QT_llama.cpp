@@ -104,6 +104,7 @@ impl MrmlAgent {
 
     pub fn set_mode(&mut self, mode: AgentMode) {
         self.config.mode = mode;
+        self.client.set_thinking_enabled(crate::client::thinking_enabled_for_mode(mode));
         println!("Switched to mode: {}", mode.to_string().cyan());
         self.reset_context();
     }
@@ -188,6 +189,7 @@ impl MrmlAgent {
         self.client = crate::client::MrmlClient::with_engine(
             std::sync::Arc::new(engine),
             self.config.system_prompt.clone(),
+            crate::client::thinking_enabled_for_mode(self.config.mode),
         );
         self.config.model = model_path.display().to_string();
         Ok(())
