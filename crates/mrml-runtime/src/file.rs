@@ -99,6 +99,21 @@ pub fn path_is_directory(path: &str) -> bool {
     }
 }
 
+pub fn path_is_file(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        encode_windows_path(path).is_some_and(|path| mrml_windows::wide_path_is_file(&path))
+    }
+    #[cfg(unix)]
+    {
+        !path_is_directory(path) && File::open(path).is_ok()
+    }
+}
+
+pub fn path_exists(path: &str) -> bool {
+    path_is_directory(path) || path_is_file(path)
+}
+
 pub fn canonical_path(path: &str) -> Result<Text, FileError> {
     #[cfg(windows)]
     {

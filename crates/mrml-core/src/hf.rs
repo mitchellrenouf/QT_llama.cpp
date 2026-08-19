@@ -1,6 +1,10 @@
 use anyhow::{Result, anyhow};
 use mrml_runtime::{Text, Vector, rename_file};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn native_file_len(path: &Path) -> Option<u64> {
+    mrml_runtime::File::open(path.to_str()?).ok()?.len().ok()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HfModelSpec {
@@ -101,7 +105,10 @@ impl HfModelSpec {
 
     pub fn is_cached(&self) -> bool {
         let model_dir = self.get_model_dir();
-        if !model_dir.is_dir() {
+        if !model_dir
+            .to_str()
+            .is_some_and(mrml_runtime::path_is_directory)
+        {
             return false;
         }
 
@@ -121,11 +128,9 @@ impl HfModelSpec {
                 && !name.contains("mmproj")
                 && !name.contains("mtp")
             {
-                if let Ok(meta) = path.metadata() {
-                    if meta.len() > 10 * 1024 * 1024 {
-                        // > 10MB
-                        return true;
-                    }
+                if native_file_len(&path).is_some_and(|length| length > 10 * 1024 * 1024) {
+                    // > 10MB
+                    return true;
                 }
             }
         }
@@ -306,12 +311,7 @@ where
         let dest_path = model_dir.join(filename.as_str());
         let part_path = model_dir.join(format!("{}.part", filename));
 
-        if dest_path.exists()
-            && dest_path
-                .metadata()
-                .map(|m| m.len() > 10 * 1024 * 1024)
-                .unwrap_or(false)
-        {
+        if native_file_len(&dest_path).is_some_and(|length| length > 10 * 1024 * 1024) {
             let msg = format!(
                 "✓ [File {}/{}] {} (Cached)",
                 file_num, total_files, filename
@@ -339,11 +339,7 @@ where
             spec.user, spec.model, filename
         );
 
-        let initial_resume_bytes = if part_path.exists() {
-            part_path.metadata().map(|m| m.len()).unwrap_or(0)
-        } else {
-            0
-        };
+        let initial_resume_bytes = native_file_len(&part_path).unwrap_or(0);
 
         if initial_resume_bytes > 0 {
             let mb = initial_resume_bytes as f64 / (1024.0 * 1024.0);
@@ -392,8 +388,7 @@ where
                 break;
             }
             crate::platform::sleep_millis(500);
-            if let Ok(meta) = part_path.metadata() {
-                let cur_len = meta.len();
+            if let Some(cur_len) = native_file_len(&part_path) {
                 let mb = cur_len as f64 / (1024.0 * 1024.0);
                 let msg = format!(
                     "⬇️ [File {}/{}] {} ({:.1} MB downloaded)...",
@@ -406,7 +401,10 @@ where
         }
 
         // Successfully downloaded: promote .part to final .gguf
-        if part_path.exists() {
+        if part_path
+            .to_str()
+            .is_some_and(mrml_runtime::path_is_file)
+        {
             rename_file(
                 part_path.to_str().ok_or_else(|| anyhow!("Partial model path is not valid UTF-8"))?,
                 dest_path.to_str().ok_or_else(|| anyhow!("Model path is not valid UTF-8"))?,

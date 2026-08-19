@@ -42,7 +42,10 @@ impl Tool for ViewFileTool {
             .as_str()
             .ok_or_else(|| anyhow!("Missing path"))?;
         let full_path = workspace_root.join(path_str);
-        if !full_path.exists() {
+        if !full_path
+            .to_str()
+            .is_some_and(mrml_runtime::path_is_file)
+        {
             return Err(anyhow!("File not found: {}", path_str));
         }
 
@@ -179,7 +182,10 @@ impl Tool for ReplaceFileContentTool {
             .ok_or_else(|| anyhow!("Missing replacement_content"))?;
         let full_path = workspace_root.join(path_str);
 
-        if !full_path.exists() {
+        if !full_path
+            .to_str()
+            .is_some_and(mrml_runtime::path_is_file)
+        {
             return Err(anyhow!("File not found: {}", path_str));
         }
 
@@ -312,7 +318,7 @@ impl Tool for GrepSearchTool {
         let mut matches = Vec::new();
         for path in crate::fs_walk::paths(search_path) {
             let path = path.as_path();
-            if !path.is_file() {
+            if !path.to_str().is_some_and(mrml_runtime::path_is_file) {
                 continue;
             }
             let rel = path.strip_prefix(workspace_root).unwrap_or(path);

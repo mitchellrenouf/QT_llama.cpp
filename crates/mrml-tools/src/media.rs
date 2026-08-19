@@ -123,7 +123,7 @@ impl Tool for RecordAudioTool {
                 ])
                 .output();
             if let Ok(o) = out {
-                if o.status.success() && file_path.exists() {
+                if o.status.success() && crate::platform::path_is_file(&file_path) {
                     recorded = true;
                 }
             }
@@ -134,7 +134,7 @@ impl Tool for RecordAudioTool {
                 .args(["-d", &duration.to_string(), "-f", "cd", &path_str])
                 .output();
             if let Ok(o) = out {
-                if o.status.success() && file_path.exists() {
+                if o.status.success() && crate::platform::path_is_file(&file_path) {
                     recorded = true;
                 }
             }
@@ -146,7 +146,7 @@ impl Tool for RecordAudioTool {
             ));
         }
 
-        if !file_path.exists() {
+        if !crate::platform::path_is_file(&file_path) {
             return Err(anyhow!("Audio file was not created at {}", path_str));
         }
 

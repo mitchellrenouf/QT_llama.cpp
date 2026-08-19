@@ -417,7 +417,10 @@ impl MrmlAgent {
             .join(".mrml")
             .join("sessions")
             .join(format!("{}.json", name));
-        if !file_path.exists() {
+        if !file_path
+            .to_str()
+            .is_some_and(mrml_runtime::path_is_file)
+        {
             return Err(anyhow::anyhow!(
                 "Session file not found: {}",
                 file_path.display()
@@ -443,7 +446,10 @@ impl MrmlAgent {
 
     pub fn list_sessions(&self) -> Result<Vector<mrml_runtime::Text>> {
         let sessions_dir = self.config.workspace_root.join(".mrml").join("sessions");
-        if !sessions_dir.exists() {
+        if !sessions_dir
+            .to_str()
+            .is_some_and(mrml_runtime::path_is_directory)
+        {
             return Ok(Vector::new());
         }
 

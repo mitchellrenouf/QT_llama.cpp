@@ -2,7 +2,7 @@ pub use crate::modes::{AgentMode, BackendChoice};
 use core::fmt::Write as _;
 use core::str::FromStr;
 use mrml_runtime::{Text, Vector};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 macro_rules! text_format {
     ($($argument:tt)*) => {{
@@ -256,7 +256,7 @@ pub fn detect_os_name() -> Text {
     if cfg!(target_os = "macos") {
         return "macOS".into();
     }
-    if Path::new("/.flatpak-info").exists() {
+    if mrml_runtime::path_exists("/.flatpak-info") {
         return "Flatpak Sandbox (Freedesktop SDK 26.08)".into();
     }
     if let Ok(content) = mrml_runtime::read_file_text("/etc/os-release") {

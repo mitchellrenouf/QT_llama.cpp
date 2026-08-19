@@ -987,7 +987,9 @@ pub fn get_model_cache_roots() -> Vec<PathBuf> {
 
     let mut unique_roots = Vec::new();
     for r in roots {
-        if r.is_dir() && !unique_roots.contains(&r) {
+        if r.to_str().is_some_and(mrml_runtime::path_is_directory)
+            && !unique_roots.contains(&r)
+        {
             unique_roots.push(r);
         }
     }
@@ -1009,7 +1011,10 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
         // 1. Search for matching repo slug in Hugging Face cache directories
         for root in &cache_roots {
             let repo_dir = root.join(&repo_slug);
-            if repo_dir.is_dir() {
+            if repo_dir
+                .to_str()
+                .is_some_and(mrml_runtime::path_is_directory)
+            {
                 let mut best_match = None;
                 for path in crate::fs_walk::paths(&repo_dir) {
                     let name = path
@@ -1037,7 +1042,10 @@ pub fn find_model_file(model_arg: &str) -> Option<PathBuf> {
 
             // Legacy folder name check (e.g. user_model)
             let legacy_dir = root.join(format!("{}_{}", spec.user, spec.model));
-            if legacy_dir.is_dir() {
+            if legacy_dir
+                .to_str()
+                .is_some_and(mrml_runtime::path_is_directory)
+            {
                 for path in crate::fs_walk::paths(&legacy_dir) {
                     let name = path
                         .file_name()
