@@ -1,13 +1,13 @@
 use crate::Tool;
 use anyhow::{Result, anyhow};
-use mrml_runtime::{OnceCell, Shared, SpinMutex};
+use core::time::Duration;
+use mrml_runtime::{Instant, OnceCell, Shared, SpinMutex};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::{Duration, Instant},
 };
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
 
@@ -173,8 +173,8 @@ impl EdgeController {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| anyhow!("Failed to launch '{}': {}", exe.display(), e))?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
+        let deadline = Instant::now();
+        while deadline.elapsed() < Duration::from_secs(10) {
             if let Ok(version) = http_json(port, "GET", "/json/version") {
                 if let Some(ws) = version["webSocketDebuggerUrl"].as_str() {
                     if let Ok(browser) = CdpSocket::connect(ws) {
@@ -194,11 +194,11 @@ impl EdgeController {
     }
     pub fn get_or_create_page(&mut self, url: Option<&str>) -> Result<&mut Self> {
         if self.page.is_none() {
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now();
             let target = loop {
                 match http_json(self.port, "PUT", "/json/new?about%3Ablank") {
                     Ok(target) => break target,
-                    Err(error) if Instant::now() < deadline => {
+                    Err(error) if deadline.elapsed() < Duration::from_secs(3) => {
                         let _ = error;
                         crate::platform::sleep_millis(50);
                     }
@@ -226,8 +226,8 @@ impl EdgeController {
     }
     fn navigate(&mut self, url: &str) -> Result<()> {
         self.cdp("Page.navigate", json!({"url":url}))?;
-        let end = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < end {
+        let end = Instant::now();
+        while end.elapsed() < Duration::from_secs(15) {
             if self
                 .eval("document.readyState")?
                 .as_str()
