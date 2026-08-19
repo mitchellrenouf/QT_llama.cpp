@@ -48,31 +48,31 @@ pub struct TransformerLayer {
     pub rope_freq_base: f32,
     pub sliding_window: usize,
 
-    pub attn_norm: Vec<f32>,
+    pub attn_norm: Vector<f32>,
     pub attn_q: Vector<u8>,
     pub attn_k: Vector<u8>,
     pub attn_v: Vector<u8>,
     pub attn_output: Vector<u8>,
-    pub attn_q_norm: Vec<f32>,
-    pub attn_k_norm: Vec<f32>,
-    pub post_attention_norm: Vec<f32>,
+    pub attn_q_norm: Vector<f32>,
+    pub attn_k_norm: Vector<f32>,
+    pub post_attention_norm: Vector<f32>,
 
     // Dense shared FFN
-    pub ffn_norm: Vec<f32>,
+    pub ffn_norm: Vector<f32>,
     pub ffn_gate: Vector<u8>,
     pub ffn_up: Vector<u8>,
     pub ffn_down: Vector<u8>,
-    pub post_ffw_norm: Vec<f32>,
-    pub post_ffw_norm_1: Vec<f32>,
-    pub pre_ffw_norm_2: Vec<f32>,
-    pub post_ffw_norm_2: Vec<f32>,
+    pub post_ffw_norm: Vector<f32>,
+    pub post_ffw_norm_1: Vector<f32>,
+    pub pre_ffw_norm_2: Vector<f32>,
+    pub post_ffw_norm_2: Vector<f32>,
     pub layer_output_scale: f32,
 
     // MoE Router & Experts
     pub is_moe: bool,
-    pub ffn_gate_inp: Vec<f32>,        // [2816, 128]
-    pub ffn_gate_inp_scale: Vec<f32>,  // [2816]
-    pub ffn_down_exps_scale: Vec<f32>, // [128]
+    pub ffn_gate_inp: Vector<f32>,        // [2816, 128]
+    pub ffn_gate_inp_scale: Vector<f32>,  // [2816]
+    pub ffn_down_exps_scale: Vector<f32>, // [128]
     pub ffn_gate_up_exps_offset: u64,
     pub ffn_down_exps_offset: u64,
 
@@ -202,8 +202,8 @@ pub struct MrmlModel {
     pub execution_plan: crate::execution_plan::ExecutionPlan,
     prompt_prefix_state: parking_lot::Mutex<Option<GenerationState>>,
     pub token_embd_info: Option<GgufTensorInfo>,
-    pub output_norm_weights: Vec<f32>,
-    pub layers: Vec<TransformerLayer>,
+    pub output_norm_weights: Vector<f32>,
+    pub layers: Vector<TransformerLayer>,
     pub data_offset: u64,
     pub token_embd_table: Vector<u8>,
     pub mmap: Option<Shared<crate::mmap::Mmap>>,
@@ -457,7 +457,7 @@ impl MrmlModel {
         let output_norm_weights = if let Some(ref info) = output_norm_info {
             read_f32_tensor(&gguf, info)?
         } else {
-            vec![1.0f32; dim]
+            filled_vector(dim, 1.0f32)
         };
 
         #[cfg(feature = "cuda")]
@@ -515,7 +515,7 @@ impl MrmlModel {
         };
 
         // Load layer weights
-        let mut layers = Vec::with_capacity(n_layers);
+        let mut layers = Vector::with_capacity(n_layers).expect("MRML allocation failed");
         for l in 0..n_layers {
             let is_swa = (l % 6) != 5;
             let (head_dim, n_heads, n_kv_heads, rope_freq_base, sliding_window) = if is_swa {
@@ -2787,22 +2787,28 @@ impl MrmlModel {
     }
 }
 
-fn read_f32_tensor(gguf: &GgufFile, info: &GgufTensorInfo) -> Result<Vec<f32>> {
+fn read_f32_tensor(gguf: &GgufFile, info: &GgufTensorInfo) -> Result<Vector<f32>> {
     let bytes = gguf.read_tensor_bytes(info)?;
     let count = bytes.len() / 4;
-    let mut vals = vec![0.0f32; count];
+    let mut vals = filled_vector(count, 0.0f32);
     for (i, chunk) in bytes.chunks_exact(4).enumerate() {
         vals[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
     }
     Ok(vals)
 }
 
-fn read_f32_tensor_opt(gguf: &GgufFile, name: &str, default_len: usize) -> Result<Vec<f32>> {
+fn read_f32_tensor_opt(gguf: &GgufFile, name: &str, default_len: usize) -> Result<Vector<f32>> {
     if let Some(info) = gguf.tensors.get(name) {
         read_f32_tensor(gguf, info)
     } else {
-        Ok(vec![1.0f32; default_len])
+        Ok(filled_vector(default_len, 1.0f32))
     }
+}
+
+fn filled_vector<T: Clone>(len: usize, value: T) -> Vector<T> {
+    let mut output = Vector::with_capacity(len).expect("MRML allocation failed");
+    output.resize(len, value);
+    output
 }
 
 fn read_raw_tensor_opt(gguf: &GgufFile, name: &str) -> Result<Vector<u8>> {
