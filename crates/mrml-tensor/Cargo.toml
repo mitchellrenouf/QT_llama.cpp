@@ -27,3 +27,11 @@ mrml-linux = { path = "../mrml-linux" }
 [[bench]]
 name = "hot_paths"
 harness = false
+
+[[example]]
+name = "cuda_rust_compare"
+required-features = ["cuda"]
+
+[[example]]
+name = "cuda_prefill_primitives"
+required-features = ["cuda"]

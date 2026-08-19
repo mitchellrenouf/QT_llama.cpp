@@ -435,7 +435,11 @@ mod tests {
         #[cfg(windows)]
         let mut command = {
             let mut command = Command::new("powershell.exe");
-            command.args(["-NoProfile", "-Command", "$line=[Console]::In.ReadLine(); [Console]::Out.WriteLine($line)"]);
+            command.args([
+                "-NoProfile",
+                "-Command",
+                "$utf8=[Text.UTF8Encoding]::new($false); [Console]::InputEncoding=$utf8; [Console]::OutputEncoding=$utf8; $line=[Console]::In.ReadLine(); [Console]::Out.WriteLine($line)",
+            ]);
             command
         };
         #[cfg(unix)]

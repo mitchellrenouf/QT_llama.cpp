@@ -603,6 +603,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires launching an installed browser with an available DevTools port"]
     fn installed_browser_navigates_types_clicks_and_screenshots() {
         if find_browser().is_none() {
             return;
