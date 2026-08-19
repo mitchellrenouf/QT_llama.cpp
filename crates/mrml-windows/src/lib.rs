@@ -247,6 +247,27 @@ pub fn stdout_is_terminal() -> bool {
 }
 
 #[cfg(windows)]
+pub fn read_stdin(buffer: &mut [u8]) -> Option<usize> {
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle.is_null() || handle as isize == -1 {
+        return None;
+    }
+    let amount = buffer.len().min(u32::MAX as usize) as u32;
+    let mut read = 0;
+    (unsafe {
+        ReadFile(
+            handle,
+            buffer.as_mut_ptr().cast(),
+            amount,
+            &mut read,
+            core::ptr::null_mut(),
+        )
+    } != 0)
+        .then_some(read as usize)
+}
+
+#[cfg(windows)]
 pub fn environment_variable_is_set(name: &CStr) -> bool {
     const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
     unsafe { SetLastError(0) };

@@ -1,8 +1,8 @@
 pub use mrml_core::config;
 use mrml_core::{AgentMode, Config, MrmlAgent};
-use mrml_runtime::Vector;
+use mrml_runtime::{Text, Vector};
 use mrml_terminal_style::Colorize;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 
 fn main() -> anyhow::Result<()> {
     mrml_tools::block_on(async_main())
@@ -88,9 +88,6 @@ async fn async_main() -> anyhow::Result<()> {
         "--------------------------------------------------".dimmed()
     );
 
-    let stdin = io::stdin();
-    let mut handle = stdin.lock();
-
     if !agent.has_model_loaded() {
         if let Some(hf_spec) = config.hf.clone() {
             println!(
@@ -103,9 +100,8 @@ async fn async_main() -> anyhow::Result<()> {
                 "❓".yellow()
             );
             io::stdout().flush()?;
-            let mut ans = String::new();
-            if handle.read_line(&mut ans).is_ok() {
-                let trimmed = ans.trim().to_lowercase();
+            if let Ok(Some(ans)) = mrml_runtime::read_stdin_line() {
+                let trimmed = Text::from(ans.trim()).to_ascii_lowercase();
                 if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
                     println!(
                         "\nFetching and downloading Hugging Face model: {}...",
@@ -157,10 +153,11 @@ async fn async_main() -> anyhow::Result<()> {
         );
         io::stdout().flush()?;
 
-        let mut line = String::new();
-        if handle.read_line(&mut line)? == 0 {
+        let Some(line) = mrml_runtime::read_stdin_line()
+            .map_err(|_| anyhow::anyhow!("failed reading standard input"))?
+        else {
             break;
-        }
+        };
 
         let input = line.trim();
         if input.is_empty() {
@@ -168,7 +165,7 @@ async fn async_main() -> anyhow::Result<()> {
         }
 
         let parts: Vector<&str> = input.split_whitespace().collect();
-        let cmd = parts.first().copied().unwrap_or("").to_lowercase();
+        let cmd = Text::from(parts.first().copied().unwrap_or("")).to_ascii_lowercase();
 
         match cmd.as_str() {
             "/exit" | "/quit" => {

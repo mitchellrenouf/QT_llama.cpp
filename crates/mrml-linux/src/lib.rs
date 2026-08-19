@@ -184,6 +184,12 @@ pub fn stdout_is_terminal() -> bool {
 }
 
 #[cfg(unix)]
+pub fn read_stdin(buffer: &mut [u8]) -> Option<usize> {
+    let result = unsafe { read(0, buffer.as_mut_ptr().cast(), buffer.len()) };
+    (result >= 0).then_some(result as usize)
+}
+
+#[cfg(unix)]
 pub fn environment_variable_is_set(name: &CStr) -> bool {
     !unsafe { getenv(name.as_ptr()) }.is_null()
 }

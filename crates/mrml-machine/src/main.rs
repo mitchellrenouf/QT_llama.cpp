@@ -4,7 +4,6 @@ use mrml_core::client::StreamEvent;
 use mrml_core::{Config, MrmlAgent};
 use mrml_json::{Value, object};
 use mrml_runtime::{Shared, SpinMutex, Text, Vector};
-use std::io::{self, BufRead};
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
 
@@ -375,8 +374,9 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
         ("protocol", "mrml-machine-jsonl-v1".into()),
     ]))?;
 
-    for line in io::stdin().lock().lines() {
-        let line = line.context("failed reading session input")?;
+    while let Some(line) = mrml_runtime::read_stdin_line()
+        .map_err(|_| anyhow::anyhow!("failed reading session input"))?
+    {
         if line.trim().is_empty() {
             continue;
         }
@@ -444,9 +444,8 @@ async fn async_main() -> Result<()> {
     match args.command {
         Command::Chat { prompt, stdin } => {
             let prompt = if stdin {
-                let prompt =
-                    io::read_to_string(io::stdin()).context("failed reading prompt from stdin")?;
-                Text::from(prompt.as_str())
+                mrml_runtime::read_stdin_to_end()
+                    .map_err(|_| anyhow::anyhow!("failed reading prompt from stdin"))?
             } else {
                 prompt.context("chat requires --prompt or --stdin")?
             };

@@ -8,6 +8,7 @@ mod channel;
 mod file;
 mod map;
 mod owned;
+mod stdin;
 mod sync;
 mod text;
 mod thread;
@@ -18,6 +19,7 @@ pub use channel::{Receiver, RecvError, SendError, Sender, blocking_channel, sync
 pub use file::{File, FileError};
 pub use map::OrderedMap;
 pub use owned::Owned;
+pub use stdin::{StdinError, read_stdin_line, read_stdin_to_end};
 pub use sync::{OnceCell, Shared, SpinMutex, SpinMutexGuard};
 pub use text::Text;
 pub use thread::{available_parallelism, spawn_detached, yield_now};
