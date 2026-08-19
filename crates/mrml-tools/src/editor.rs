@@ -6,6 +6,33 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
+
+fn ripgrep_executable() -> Result<&'static Path> {
+    static RIPGREP: OnceLock<std::path::PathBuf> = OnceLock::new();
+    if let Some(path) = RIPGREP.get() {
+        return Ok(path.as_path());
+    }
+    let path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .flat_map(|directory| {
+            #[cfg(windows)]
+            let names = ["rg.exe", "rg"];
+            #[cfg(not(windows))]
+            let names = ["rg", "rg"];
+            names.map(move |name| directory.join(name))
+        })
+        .find(|candidate| {
+            candidate.is_file()
+                && Command::new(candidate)
+                    .arg("--version")
+                    .output()
+                    .map(|output| output.status.success())
+                    .unwrap_or(false)
+        })
+        .ok_or_else(|| anyhow!("ripgrep (rg) is required for regex workspace search"))?;
+    let _ = RIPGREP.set(path);
+    Ok(RIPGREP.get().unwrap().as_path())
+}
 
 pub struct ViewFileTool;
 #[async_trait]
@@ -289,35 +316,38 @@ impl Tool for GrepSearchTool {
             .as_str()
             .ok_or_else(|| anyhow!("Missing query"))?;
         let sub_path = args["path"].as_str().unwrap_or(".");
-        let search_path = workspace_root.join(sub_path);
+        let output = Command::new(ripgrep_executable()?)
+            .args([
+                "--line-number",
+                "--no-heading",
+                "--color",
+                "never",
+                "--glob",
+                "!.git/**",
+                "--glob",
+                "!target/**",
+                "--",
+                query_str,
+                sub_path,
+            ])
+            .current_dir(workspace_root)
+            .output()
+            .map_err(|error| anyhow!("Failed to run ripgrep: {}", error))?;
 
-        let re = regex::Regex::new(query_str)?;
-        let mut matches = Vec::new();
+        if !output.status.success() && output.status.code() != Some(1) {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Invalid search or ripgrep failure: {}", detail.trim()));
+        }
 
-        for path in crate::fs_walk::paths(search_path) {
-            let path = path.as_path();
-            if path.is_file() {
-                let rel = path.strip_prefix(workspace_root).unwrap_or(path);
-                let rel_str = rel.to_string_lossy();
-                if rel_str.contains(".git") || rel_str.contains("target") {
-                    continue;
-                }
-
-                if let Ok(content) = fs::read_to_string(path) {
-                    for (line_no, line) in content.lines().enumerate() {
-                        if re.is_match(line) {
-                            matches.push(format!("{}:{}: {}", rel_str, line_no + 1, line.trim()));
-                            if matches.len() >= 50 {
-                                matches.push("... (results truncated to 50 matches)".to_string());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if matches.len() >= 50 {
-                break;
-            }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut matches: Vec<String> = stdout
+            .lines()
+            .take(51)
+            .map(|line| line.trim_end().to_string())
+            .collect();
+        if matches.len() > 50 {
+            matches.truncate(50);
+            matches.push("... (results truncated to 50 matches)".to_string());
         }
 
         if matches.is_empty() {
