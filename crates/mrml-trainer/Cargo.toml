@@ -16,3 +16,4 @@ mrml-runtime = { path = "../mrml-runtime" }
 mrml-tokenizer = { path = "../mrml-tokenizer" }
 mrml-wikipedia = { path = "../mrml-wikipedia" }
 mrml-tensor = { path = "../mrml-tensor" }
+mrml-math = { path = "../mrml-math" }

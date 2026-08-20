@@ -139,6 +139,7 @@ dependencies = [
 name = "mrml-trainer"
 version = "0.4.0"
 dependencies = [
+ "mrml-math",
  "mrml-runtime",
  "mrml-tensor",
  "mrml-tokenizer",

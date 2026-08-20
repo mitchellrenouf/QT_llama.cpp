@@ -308,10 +308,14 @@ cargo run --release -p mrml-trainer -- `
   --article 0 --articles 1000 --vocab 384 --prompt hello
 ```
 
-The trainer reports extraction, tokenizer training, model training, GGUF export,
-validation, and total wall time separately. The resulting `mrml_bigram` model is
-a compact byte-BPE/bigram baseline for validating the dataset and training
-pipeline; it is not presented as a transformer or a competitive general LLM.
+The trainer reports extraction, tokenizer training, model construction, GGUF
+export, validation, and total wall time separately. The resulting
+`mrml_transformer` checkpoint is a compact causal decoder with token and
+position embeddings, four-head causal attention, residual/RMS normalization,
+GELU feed-forward layers, and a vocabulary head. Its first fast training stage
+fits the output projection from corpus transition statistics while attention
+and feed-forward weights use deterministic initialization. It is a research
+bootstrap checkpoint, not yet a fully gradient-trained competitive LLM.
 
 ## Development roadmap
 

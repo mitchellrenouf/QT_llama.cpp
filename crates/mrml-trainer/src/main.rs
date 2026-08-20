@@ -6,6 +6,9 @@ use mrml_runtime::{mrml_println, File, Instant, Text, Vector};
 use mrml_tokenizer::{Tokenizer, Trainer, EOS_ID};
 use mrml_wikipedia::{Article, ArticleReader};
 
+mod transformer;
+use transformer::{Transformer, CONTEXT, DIM, FFN, HEADS};
+
 const ALIGNMENT: usize = 32;
 
 struct Args {
@@ -37,30 +40,40 @@ fn run() -> Result<(), Text> {
     let tokenizer_time = tokenizer_start.elapsed();
 
     let model_start = Instant::now();
-    let weights = train_bigram(&tokens, tokenizer.vocab_size())?;
+    let transitions = train_bigram(&tokens, tokenizer.vocab_size())?;
+    let model = Transformer::from_transitions(&transitions, tokenizer.vocab_size());
     let model_time = model_start.elapsed();
 
     let export_start = Instant::now();
-    write_gguf(&args.output, &article, &tokenizer, &weights)?;
+    write_gguf(&args.output, &article, &tokenizer, &model)?;
     let export_time = export_start.elapsed();
 
     let verify_start = Instant::now();
     let gguf = mrml_tensor::GgufFile::open(&args.output)
         .map_err(|error| format_text(format_args!("verify GGUF: {error}")))?;
-    let tensor = gguf
+    gguf.tensors
+        .get("output.weight")
+        .ok_or_else(|| Text::from("exported GGUF is missing output.weight"))?;
+    let parameters: usize = gguf
         .tensors
-        .get("bigram.weight")
-        .ok_or_else(|| Text::from("exported GGUF is missing bigram.weight"))?;
+        .iter()
+        .map(|(_, tensor)| tensor.shape.numel())
+        .sum();
     let verify_time = verify_start.elapsed();
 
-    let response = generate(&tokenizer, &weights, &args.prompt, 80);
-    mrml_println!("Trained MRML language model");
+    let response = model.generate(&tokenizer, &args.prompt, 80);
+    mrml_println!("Trained MRML causal transformer");
     mrml_println!("  source  : {}", article.title);
     mrml_println!("  articles: {}", args.articles);
     mrml_println!("  chars   : {}", article.text.chars().count());
     mrml_println!("  tokens  : {}", tokens.len());
     mrml_println!("  vocab   : {}", tokenizer.vocab_size());
-    mrml_println!("  tensor  : {} F32 values", tensor.shape.numel());
+    mrml_println!("  model   : 1 layer, {DIM} dim, {HEADS} heads, {FFN} FFN, {CONTEXT} context");
+    mrml_println!(
+        "  params  : {} F32 values across {} tensors",
+        parameters,
+        gguf.tensors.len()
+    );
     mrml_println!("  output  : {}", args.output);
     mrml_println!("Benchmark");
     mrml_println!("  extract : {:.6}s", extract_time.as_secs_f64());
@@ -177,78 +190,95 @@ fn train_bigram(tokens: &[u32], vocab: usize) -> Result<Vector<f32>, Text> {
     Ok(weights)
 }
 
-fn generate(tokenizer: &Tokenizer, weights: &[f32], prompt: &str, maximum: usize) -> Text {
-    let prompt_tokens = tokenizer.encode(prompt, false);
-    let mut current = prompt_tokens.last().copied().unwrap_or(0) as usize;
-    let vocab = tokenizer.vocab_size();
-    let mut seed = prompt
-        .as_bytes()
-        .iter()
-        .fold(0x9e37_79b9u64, |state, byte| {
-            state.rotate_left(5) ^ *byte as u64
-        });
-    let mut generated = Vector::new();
-    for _ in 0..maximum {
-        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-        let sample = (seed >> 32) as u32 as f32 / u32::MAX as f32;
-        let row = &weights[current * vocab..(current + 1) * vocab];
-        let mut cumulative = 0.0f32;
-        let mut next = row.len().saturating_sub(1);
-        for (token, probability) in row.iter().enumerate() {
-            cumulative += *probability;
-            if sample <= cumulative {
-                next = token;
-                break;
-            }
-        }
-        if next as u32 == EOS_ID {
-            break;
-        }
-        generated.push(next as u32);
-        current = next;
-    }
-    Text::from_utf8_lossy(&tokenizer.decode(&generated))
-}
-
 fn write_gguf(
     path: &str,
     article: &Article,
     tokenizer: &Tokenizer,
-    weights: &[f32],
+    model: &Transformer,
 ) -> Result<(), Text> {
     let mut file =
         File::create(path).map_err(|error| format_text(format_args!("create GGUF: {error}")))?;
     write_u32(&mut file, 0x4655_4747)?;
     write_u32(&mut file, 3)?;
-    write_u64(&mut file, 1)?;
-    write_u64(&mut file, 8)?;
-    metadata_string(&mut file, "general.architecture", "mrml_bigram")?;
-    metadata_string(&mut file, "general.name", "MRML Wikipedia research model")?;
+    write_u64(&mut file, 9)?;
+    write_u64(&mut file, 12)?;
+    metadata_string(&mut file, "general.architecture", "mrml_transformer")?;
+    metadata_string(
+        &mut file,
+        "general.name",
+        "MRML Wikipedia causal transformer",
+    )?;
     metadata_u32(&mut file, "general.alignment", ALIGNMENT as u32)?;
     metadata_string(&mut file, "mrml.training.article_title", &article.title)?;
     metadata_u32(
         &mut file,
-        "mrml.bigram.vocab_size",
+        "mrml_transformer.vocab_size",
         tokenizer.vocab_size() as u32,
     )?;
+    metadata_u32(&mut file, "mrml_transformer.block_count", 1)?;
+    metadata_u32(&mut file, "mrml_transformer.embedding_length", DIM as u32)?;
+    metadata_u32(
+        &mut file,
+        "mrml_transformer.attention.head_count",
+        HEADS as u32,
+    )?;
+    metadata_u32(&mut file, "mrml_transformer.context_length", CONTEXT as u32)?;
     metadata_u32(&mut file, "tokenizer.ggml.bos_token_id", 0)?;
     metadata_u32(&mut file, "tokenizer.ggml.eos_token_id", EOS_ID)?;
     metadata_tokens(&mut file, tokenizer)?;
 
-    write_string(&mut file, "bigram.weight")?;
-    write_u32(&mut file, 2)?;
-    write_u64(&mut file, tokenizer.vocab_size() as u64)?;
-    write_u64(&mut file, tokenizer.vocab_size() as u64)?;
-    write_u32(&mut file, 0)?;
-    write_u64(&mut file, 0)?;
+    let tensors: [(&str, &[usize], &[f32]); 9] = [
+        ("token_embd.weight", &[DIM, model.vocab], &model.token_embd),
+        (
+            "position_embd.weight",
+            &[DIM, CONTEXT],
+            &model.position_embd,
+        ),
+        ("blk.0.attn_q.weight", &[DIM, DIM], &model.attn_q),
+        ("blk.0.attn_k.weight", &[DIM, DIM], &model.attn_k),
+        ("blk.0.attn_v.weight", &[DIM, DIM], &model.attn_v),
+        ("blk.0.attn_output.weight", &[DIM, DIM], &model.attn_output),
+        ("blk.0.ffn_up.weight", &[DIM, FFN], &model.ffn_up),
+        ("blk.0.ffn_down.weight", &[FFN, DIM], &model.ffn_down),
+        ("output.weight", &[DIM, model.vocab], &model.output),
+    ];
+    let mut offset = 0usize;
+    for (name, shape, values) in &tensors {
+        write_tensor_descriptor(&mut file, name, shape, offset as u64)?;
+        offset = align_up(offset + values.len() * 4);
+    }
     let padding = (ALIGNMENT - file.position() as usize % ALIGNMENT) % ALIGNMENT;
     file.write_all(&[0u8; ALIGNMENT][..padding])
         .map_err(|error| format_text(format_args!("write alignment: {error}")))?;
-    for value in weights {
-        file.write_all(&value.to_le_bytes())
-            .map_err(|error| format_text(format_args!("write tensor: {error}")))?;
+    for (_, _, values) in tensors {
+        for value in values {
+            file.write_all(&value.to_le_bytes())
+                .map_err(|error| format_text(format_args!("write tensor: {error}")))?;
+        }
+        let padding = (ALIGNMENT - file.position() as usize % ALIGNMENT) % ALIGNMENT;
+        file.write_all(&[0u8; ALIGNMENT][..padding])
+            .map_err(|error| format_text(format_args!("write tensor alignment: {error}")))?;
     }
     Ok(())
+}
+
+fn write_tensor_descriptor(
+    file: &mut File,
+    name: &str,
+    shape: &[usize],
+    offset: u64,
+) -> Result<(), Text> {
+    write_string(file, name)?;
+    write_u32(file, shape.len() as u32)?;
+    for dimension in shape {
+        write_u64(file, *dimension as u64)?;
+    }
+    write_u32(file, 0)?;
+    write_u64(file, offset)
+}
+
+const fn align_up(value: usize) -> usize {
+    (value + ALIGNMENT - 1) & !(ALIGNMENT - 1)
 }
 
 fn metadata_string(file: &mut File, key: &str, value: &str) -> Result<(), Text> {
@@ -326,7 +356,8 @@ mod tests {
     #[test]
     fn exported_model_reopens_with_mrml_gguf_reader() {
         let tokenizer = Tokenizer::byte_level();
-        let weights = train_bigram(&[0, 67, 68, 1], tokenizer.vocab_size()).unwrap();
+        let transitions = train_bigram(&[0, 67, 68, 1], tokenizer.vocab_size()).unwrap();
+        let model = Transformer::from_transitions(&transitions, tokenizer.vocab_size());
         let article = Article {
             index: 0,
             path: "A/Test".into(),
@@ -340,16 +371,16 @@ mod tests {
                 mrml_runtime::process_id()
             )),
         );
-        write_gguf(&path, &article, &tokenizer, &weights).unwrap();
+        write_gguf(&path, &article, &tokenizer, &model).unwrap();
         let gguf = mrml_tensor::GgufFile::open(&path).unwrap();
         assert_eq!(
             gguf.get_meta("general.architecture")
                 .and_then(|value| value.as_str()),
-            Some("mrml_bigram")
+            Some("mrml_transformer")
         );
         assert_eq!(
-            gguf.tensors.get("bigram.weight").unwrap().shape.numel(),
-            258 * 258
+            gguf.tensors.get("output.weight").unwrap().shape.numel(),
+            258 * DIM
         );
         mrml_runtime::remove_file(&path).unwrap();
     }
