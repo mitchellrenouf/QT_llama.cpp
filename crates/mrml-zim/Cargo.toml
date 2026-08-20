@@ -1,0 +1,9 @@
+[package]
+name = "mrml-zim"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+mrml-runtime = { path = "../mrml-runtime" }
