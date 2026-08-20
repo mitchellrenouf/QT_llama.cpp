@@ -138,6 +138,13 @@ pub struct Archive {
     header: Header,
     cluster_offsets: Vector<u64>,
     mime_types: Vector<Text>,
+    decoded_cluster: Option<DecodedCluster>,
+}
+
+struct DecodedCluster {
+    index: u32,
+    extended_offsets: bool,
+    bytes: Vector<u8>,
 }
 
 impl Archive {
@@ -177,6 +184,7 @@ impl Archive {
             header,
             cluster_offsets,
             mime_types,
+            decoded_cluster: None,
         })
     }
 
@@ -302,17 +310,27 @@ impl Archive {
         decoder: &mut D,
     ) -> Result<Vector<u8>> {
         let info = self.cluster_info(cluster)?;
-        match info.compression {
-            Compression::None => self.read_blob(cluster, blob),
-            Compression::Zstd => {
-                let compressed = self.read_cluster_payload(cluster)?;
-                let decompressed = decoder
-                    .decode_zstd(&compressed)
-                    .map_err(|_| Error::Decompression)?;
-                blob_from_cluster(&decompressed, info.extended_offsets, blob)
-            }
-            Compression::Unknown(kind) => Err(Error::UnsupportedCompression(kind)),
+        if self
+            .decoded_cluster
+            .as_ref()
+            .is_none_or(|cached| cached.index != cluster)
+        {
+            let payload = self.read_cluster_payload(cluster)?;
+            let bytes = match info.compression {
+                Compression::None => payload,
+                Compression::Zstd => decoder
+                    .decode_zstd(&payload)
+                    .map_err(|_| Error::Decompression)?,
+                Compression::Unknown(kind) => return Err(Error::UnsupportedCompression(kind)),
+            };
+            self.decoded_cluster = Some(DecodedCluster {
+                index: cluster,
+                extended_offsets: info.extended_offsets,
+                bytes,
+            });
         }
+        let cached = self.decoded_cluster.as_ref().ok_or(Error::InvalidCluster)?;
+        blob_from_cluster(&cached.bytes, cached.extended_offsets, blob)
     }
 }
 

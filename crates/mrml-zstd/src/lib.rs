@@ -1,5 +1,10 @@
 #![no_std]
 
+mod bits;
+mod fse;
+mod huffman;
+mod sequences;
+
 use core::fmt;
 use mrml_runtime::Vector;
 
@@ -13,9 +18,19 @@ pub enum Error {
     DictionaryRequired(u32),
     ReservedBlock,
     UnsupportedCompressedBlock,
+    InvalidLiteralsSection,
+    InvalidSequencesSection,
     ContentSizeMismatch,
     TrailingData,
     Allocation,
+    InvalidBitstream,
+    InvalidFseTable,
+    InvalidFseState,
+    InvalidHuffmanTree,
+    InvalidHuffmanStream,
+    HuffmanSymbolTruncated(u8, usize),
+    InvalidOffset,
+    BlockTooLarge,
 }
 
 impl fmt::Display for Error {
@@ -29,11 +44,26 @@ impl fmt::Display for Error {
             Self::UnsupportedCompressedBlock => {
                 output.write_str("compressed Zstandard blocks are not implemented yet")
             }
+            Self::InvalidLiteralsSection => output.write_str("invalid Zstandard literals section"),
+            Self::InvalidSequencesSection => {
+                output.write_str("invalid Zstandard sequences section")
+            }
             Self::ContentSizeMismatch => {
                 output.write_str("Zstandard content size does not match decoded data")
             }
             Self::TrailingData => output.write_str("trailing data after Zstandard frame"),
             Self::Allocation => output.write_str("not enough memory for Zstandard output"),
+            Self::InvalidBitstream => output.write_str("invalid Zstandard reverse bitstream"),
+            Self::InvalidFseTable => output.write_str("invalid Zstandard FSE table"),
+            Self::InvalidFseState => output.write_str("invalid Zstandard FSE state"),
+            Self::InvalidHuffmanTree => output.write_str("invalid Zstandard Huffman tree"),
+            Self::InvalidHuffmanStream => output.write_str("invalid Zstandard Huffman stream"),
+            Self::HuffmanSymbolTruncated(bits, remaining) => write!(
+                output,
+                "Zstandard Huffman symbol needs {bits} bits with {remaining} remaining"
+            ),
+            Self::InvalidOffset => output.write_str("invalid Zstandard match offset"),
+            Self::BlockTooLarge => output.write_str("Zstandard block exceeds 128 KiB"),
         }
     }
 }
@@ -115,6 +145,8 @@ pub fn decode(input: &[u8]) -> Result<Vector<u8>> {
         .and_then(|size| usize::try_from(size).ok())
         .unwrap_or(0);
     let mut output = Vector::with_capacity(capacity).map_err(|_| Error::Allocation)?;
+    let mut huffman_table = None;
+    let mut sequence_state = sequences::State::new();
     let mut cursor = info.header_bytes;
     loop {
         let header = read_u24(input, cursor)?;
@@ -139,7 +171,18 @@ pub fn decode(input: &[u8]) -> Result<Vector<u8>> {
                     output.push(byte);
                 }
             }
-            2 => return Err(Error::UnsupportedCompressedBlock),
+            2 => {
+                let block = input
+                    .get(cursor..cursor.checked_add(block_size).ok_or(Error::Truncated)?)
+                    .ok_or(Error::Truncated)?;
+                decode_compressed_block(
+                    block,
+                    &mut output,
+                    &mut huffman_table,
+                    &mut sequence_state,
+                )?;
+                cursor += block_size;
+            }
             _ => return Err(Error::ReservedBlock),
         }
         if last {
@@ -162,6 +205,165 @@ pub fn decode(input: &[u8]) -> Result<Vector<u8>> {
         return Err(Error::ContentSizeMismatch);
     }
     Ok(output)
+}
+
+enum Literals<'a> {
+    Raw(&'a [u8]),
+    Rle { byte: u8, count: usize },
+    Decoded(Vector<u8>),
+}
+
+fn decode_compressed_block(
+    block: &[u8],
+    output: &mut Vector<u8>,
+    huffman_table: &mut Option<huffman::Table>,
+    sequence_state: &mut sequences::State,
+) -> Result<()> {
+    let (literals, consumed) = parse_literals(block, huffman_table)?;
+    let commands = sequences::decode(
+        block
+            .get(consumed..)
+            .ok_or(Error::InvalidSequencesSection)?,
+        sequence_state,
+    )?;
+    match literals {
+        Literals::Raw(bytes) => sequences::execute(&commands, bytes, output)?,
+        Literals::Rle { byte, count } => {
+            let mut bytes = Vector::with_capacity(count).map_err(|_| Error::Allocation)?;
+            bytes.resize(count, byte);
+            sequences::execute(&commands, &bytes, output)?;
+        }
+        Literals::Decoded(bytes) => sequences::execute(&commands, &bytes, output)?,
+    }
+    Ok(())
+}
+
+fn parse_literals<'a>(
+    block: &'a [u8],
+    previous_table: &mut Option<huffman::Table>,
+) -> Result<(Literals<'a>, usize)> {
+    let first = *block.first().ok_or(Error::InvalidLiteralsSection)?;
+    let kind = first & 3;
+    let size_format = (first >> 2) & 3;
+    if kind >= 2 {
+        return parse_huffman_literals(block, kind == 3, size_format, previous_table);
+    }
+    let (header_bytes, regenerated_size): (usize, usize) = match size_format {
+        0 | 2 => (1, (first >> 3) as usize),
+        1 => {
+            let second = *block.get(1).ok_or(Error::InvalidLiteralsSection)?;
+            (2, (first as usize >> 4) | (second as usize) << 4)
+        }
+        _ => {
+            let second = *block.get(1).ok_or(Error::InvalidLiteralsSection)?;
+            let third = *block.get(2).ok_or(Error::InvalidLiteralsSection)?;
+            (
+                3,
+                (first as usize >> 4) | (second as usize) << 4 | (third as usize) << 12,
+            )
+        }
+    };
+    if kind == 0 {
+        let end = header_bytes
+            .checked_add(regenerated_size)
+            .ok_or(Error::InvalidLiteralsSection)?;
+        let bytes = block
+            .get(header_bytes..end)
+            .ok_or(Error::InvalidLiteralsSection)?;
+        Ok((Literals::Raw(bytes), end))
+    } else {
+        let byte = *block
+            .get(header_bytes)
+            .ok_or(Error::InvalidLiteralsSection)?;
+        Ok((
+            Literals::Rle {
+                byte,
+                count: regenerated_size,
+            },
+            header_bytes + 1,
+        ))
+    }
+}
+
+fn parse_huffman_literals<'a>(
+    block: &'a [u8],
+    reuse: bool,
+    size_format: u8,
+    previous_table: &mut Option<huffman::Table>,
+) -> Result<(Literals<'a>, usize)> {
+    let (regenerated, compressed, header_bytes, four_streams) = match size_format {
+        0 | 1 => {
+            let bytes = block.get(..3).ok_or(Error::InvalidLiteralsSection)?;
+            let regenerated = (bytes[0] as usize >> 4) | ((bytes[1] as usize & 0x3f) << 4);
+            let compressed = (bytes[1] as usize >> 6) | (bytes[2] as usize) << 2;
+            (regenerated, compressed, 3, size_format == 1)
+        }
+        2 => {
+            let bytes = block.get(..4).ok_or(Error::InvalidLiteralsSection)?;
+            let regenerated =
+                (bytes[0] as usize >> 4) | (bytes[1] as usize) << 4 | (bytes[2] as usize & 3) << 12;
+            let compressed = (bytes[2] as usize >> 2) | (bytes[3] as usize) << 6;
+            (regenerated, compressed, 4, true)
+        }
+        _ => {
+            let bytes = block.get(..5).ok_or(Error::InvalidLiteralsSection)?;
+            let packed = read_variable(bytes, 0, 5)?;
+            (
+                ((packed >> 4) & 0x3ffff) as usize,
+                ((packed >> 22) & 0x3ffff) as usize,
+                5,
+                true,
+            )
+        }
+    };
+    if regenerated > 128 * 1024 || compressed == 0 {
+        return Err(Error::InvalidLiteralsSection);
+    }
+    let payload = block
+        .get(header_bytes..header_bytes + compressed)
+        .ok_or(Error::InvalidLiteralsSection)?;
+    let (table, tree_bytes) = if reuse {
+        (previous_table.clone().ok_or(Error::InvalidHuffmanTree)?, 0)
+    } else {
+        huffman::parse_tree(payload)?
+    };
+    let streams = payload
+        .get(tree_bytes..)
+        .ok_or(Error::InvalidLiteralsSection)?;
+    let mut decoded = Vector::with_capacity(regenerated).map_err(|_| Error::Allocation)?;
+    if four_streams {
+        let jump = streams.get(..6).ok_or(Error::InvalidHuffmanStream)?;
+        let first = u16::from_le_bytes(jump[0..2].try_into().unwrap()) as usize;
+        let second = u16::from_le_bytes(jump[2..4].try_into().unwrap()) as usize;
+        let third = u16::from_le_bytes(jump[4..6].try_into().unwrap()) as usize;
+        let total = 6usize
+            .checked_add(first)
+            .and_then(|value| value.checked_add(second))
+            .and_then(|value| value.checked_add(third))
+            .ok_or(Error::InvalidHuffmanStream)?;
+        if total >= streams.len() || regenerated < 4 {
+            return Err(Error::InvalidHuffmanStream);
+        }
+        let per = regenerated.div_ceil(4);
+        let last = regenerated
+            .checked_sub(per * 3)
+            .ok_or(Error::InvalidHuffmanStream)?;
+        let starts = [6, 6 + first, 6 + first + second, total];
+        let ends = [6 + first, 6 + first + second, total, streams.len()];
+        let counts = [per, per, per, last];
+        for index in 0..4 {
+            huffman::decode_stream(
+                &streams[starts[index]..ends[index]],
+                &table,
+                counts[index],
+                &mut decoded,
+            )?;
+        }
+    } else {
+        huffman::decode_stream(streams, &table, regenerated, &mut decoded)?;
+    }
+    *previous_table = Some(table);
+    Ok((Literals::Decoded(decoded), header_bytes + compressed))
 }
 
 fn read_variable(input: &[u8], offset: usize, width: usize) -> Result<u64> {
@@ -213,5 +415,19 @@ mod tests {
         assert_eq!(info.window_size, 1 << 23);
         assert_eq!(info.content_size, None);
         assert_eq!(read_u24(&prefix, info.header_bytes).unwrap() >> 3, 5641);
+    }
+
+    #[test]
+    fn decodes_compressed_block_with_raw_literals_and_no_sequences() {
+        let frame = [
+            0x28, 0xb5, 0x2f, 0xfd, 0x20, 3, 0x2d, 0, 0, 0x18, b'a', b'b', b'c', 0,
+        ];
+        assert_eq!(&*decode(&frame).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn decodes_compressed_block_with_rle_literals_and_no_sequences() {
+        let frame = [0x28, 0xb5, 0x2f, 0xfd, 0x20, 5, 0x1d, 0, 0, 0x29, b'x', 0];
+        assert_eq!(&*decode(&frame).unwrap(), b"xxxxx");
     }
 }

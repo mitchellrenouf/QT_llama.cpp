@@ -31,6 +31,48 @@ impl From<mrml_zim::Error> for Error {
 }
 pub type Result<T> = core::result::Result<T, Error>;
 
+#[derive(Debug, Clone)]
+pub struct Article {
+    pub index: u32,
+    pub path: Text,
+    pub title: Text,
+    pub text: Text,
+}
+
+pub struct ArticleReader {
+    archive: Archive,
+    next_index: u32,
+}
+
+impl ArticleReader {
+    pub fn open(path: &str) -> Result<Self> {
+        Ok(Self {
+            archive: Archive::open(path)?,
+            next_index: 0,
+        })
+    }
+
+    pub fn next_article(&mut self) -> Result<Option<Article>> {
+        let count = self.archive.header().entry_count;
+        while self.next_index < count {
+            let index = self.next_index;
+            self.next_index += 1;
+            let entry = self.archive.entry(index)?;
+            if !is_article(&entry) || self.archive.mime_type(entry.mime_type) != Some("text/html") {
+                continue;
+            }
+            let text = entry_text(&mut self.archive, &entry)?;
+            return Ok(Some(Article {
+                index,
+                path: entry.path,
+                title: entry.title,
+                text,
+            }));
+        }
+        Ok(None)
+    }
+}
+
 struct NativeZstd;
 
 impl ClusterDecoder for NativeZstd {
@@ -53,6 +95,10 @@ pub fn article_text(archive: &mut Archive, index: u32) -> Result<Text> {
     if archive.mime_type(entry.mime_type) != Some("text/html") {
         return Err(Error::NotHtml);
     }
+    entry_text(archive, &entry)
+}
+
+fn entry_text(archive: &mut Archive, entry: &DirectoryEntry) -> Result<Text> {
     let EntryLocation::Blob { cluster, blob } = entry.location else {
         return Err(Error::NotArticle);
     };
@@ -269,5 +315,112 @@ mod tests {
         let mut redirect = article;
         redirect.location = EntryLocation::Redirect(1);
         assert!(!is_article(&redirect));
+    }
+
+    #[test]
+    fn decodes_external_kiwix_cluster_when_configured() {
+        let Some(path) = mrml_runtime::environment_variable("MRML_TEST_ZIM") else {
+            return;
+        };
+        let mut archive = Archive::open(&path).expect("open configured ZIM archive");
+        let count = archive.header().cluster_count;
+        let mut decoded_clusters = 0;
+        let exhaustive =
+            mrml_runtime::environment_variable("MRML_TEST_ZIM_ALL").as_deref() == Some("1");
+        let mut samples = mrml_runtime::Vector::new();
+        if exhaustive {
+            samples.extend(0..count);
+        } else {
+            samples.extend([0, count / 3, count / 2, count.saturating_sub(1)]);
+            if count > 141_232 {
+                samples.extend([83_034, 141_232]);
+            }
+        }
+        for cluster in samples {
+            if archive
+                .cluster_info(cluster)
+                .expect("inspect sampled cluster")
+                .compression
+                != mrml_zim::Compression::Zstd
+            {
+                continue;
+            }
+            let compressed = archive
+                .read_cluster_payload(cluster)
+                .expect("read sampled cluster");
+            let decoded = mrml_zstd::decode(&compressed).expect("decode sampled Zstandard cluster");
+            assert!(!decoded.is_empty());
+            if mrml_runtime::environment_variable("MRML_TEST_ZIM_HASHES").as_deref() == Some("1") {
+                let hash = decoded.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                    (hash ^ *byte as u64).wrapping_mul(0x100_0000_01b3)
+                });
+                mrml_runtime::mrml_println!(
+                    "cluster={cluster} bytes={} fnv64={hash:016x}",
+                    decoded.len()
+                );
+            }
+            decoded_clusters += 1;
+        }
+        assert!(decoded_clusters > 0);
+    }
+
+    #[test]
+    fn extracts_external_wikipedia_article_when_configured() {
+        let Some(path) = mrml_runtime::environment_variable("MRML_TEST_ZIM") else {
+            return;
+        };
+        let mut archive = Archive::open(&path).expect("open configured ZIM archive");
+        let count = archive.header().entry_count;
+        for index in 0..count {
+            let entry = archive.entry(index).expect("read directory entry");
+            if is_article(&entry) && archive.mime_type(entry.mime_type) == Some("text/html") {
+                let text = article_text(&mut archive, index).expect("extract Wikipedia article");
+                if text.len() > 100 && text.split_whitespace().count() > 20 {
+                    assert!(!text.contains("<html"));
+                    return;
+                }
+            }
+        }
+        panic!("configured ZIM contains no HTML Wikipedia article");
+    }
+
+    #[test]
+    fn streams_external_articles_when_configured() {
+        let Some(path) = mrml_runtime::environment_variable("MRML_TEST_ZIM") else {
+            return;
+        };
+        let mut reader = ArticleReader::open(&path).expect("open Wikipedia article stream");
+        let mut previous = None;
+        let mut count = 0;
+        while count < 100 {
+            let article = match reader.next_article() {
+                Ok(article) => article,
+                Err(error) => {
+                    let index = reader.next_index.saturating_sub(1);
+                    let entry = reader.archive.entry(index).expect("reread failing entry");
+                    let (cluster, detail) =
+                        if let EntryLocation::Blob { cluster, .. } = entry.location {
+                            let payload = reader
+                                .archive
+                                .read_cluster_payload(cluster)
+                                .expect("read failing cluster");
+                            (Some(cluster), mrml_zstd::decode(&payload).err())
+                        } else {
+                            (None, None)
+                        };
+                    panic!(
+                        "stream Wikipedia article at directory index {index}, cluster={cluster:?}: {error:?}, codec={detail:?}"
+                    )
+                }
+            };
+            let Some(article) = article else { break };
+            if let Some(index) = previous {
+                assert!(article.index > index);
+            }
+            assert!(!article.path.is_empty());
+            previous = Some(article.index);
+            count += 1;
+        }
+        assert!(count >= 10);
     }
 }

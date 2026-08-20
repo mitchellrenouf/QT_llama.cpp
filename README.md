@@ -272,6 +272,31 @@ cargo test -p mrml-tensor --release --features cuda
 
 CUDA tests require compatible NVIDIA hardware and a CUDA-enabled build.
 
+## Wikipedia ZIM datasets
+
+`mrml-zim`, `mrml-zstd`, and `mrml-wikipedia` provide a dependency-free,
+`no_std` path for streaming Kiwix Wikipedia archives. The native decoder handles
+modern Zstandard clusters, including Huffman literals, FSE sequences, repeated
+entropy tables and overlapping match copies. Only the current decoded cluster
+is cached, so a multi-gigabyte ZIM is never loaded into memory.
+
+```rust
+let mut articles = mrml_wikipedia::ArticleReader::open("wikipedia_en_all_nopic.zim")?;
+while let Some(article) = articles.next_article()? {
+    train_on_document(&article.title, &article.text)?;
+}
+```
+
+To validate a local archive, set `MRML_TEST_ZIM` to its path. Add
+`MRML_TEST_ZIM_ALL=1` to decode every compressed cluster rather than sampling
+the beginning, middle, and end:
+
+```powershell
+$env:MRML_TEST_ZIM = "C:\path\to\wikipedia.zim"
+$env:MRML_TEST_ZIM_ALL = "1"
+cargo test --release -p mrml-wikipedia external_ -- --nocapture
+```
+
 ## Development roadmap
 
 The staged [third-party Rust crate removal plan](docs/dependency-removal-plan.md)
