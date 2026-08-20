@@ -41,6 +41,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-http"
+version = "0.4.0"
+dependencies = [
+ "mrml-runtime",
+ "mrml-tls",
+]
+
+[[package]]
 name = "mrml-json"
 version = "0.4.0"
 dependencies = [
