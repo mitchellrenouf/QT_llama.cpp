@@ -27,6 +27,12 @@ impl CdpSocket {
             .ok_or_else(|| anyhow!("Unsupported DevTools URL: {}", url))?;
         let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
         let (ip, port) = parse_ipv4_authority(authority)?;
+        if ip != [127, 0, 0, 1] {
+            return Err(anyhow!("DevTools endpoint must use loopback"));
+        }
+        if !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+            return Err(anyhow!("Invalid DevTools request path"));
+        }
         let stream = TcpStream::connect(ip, port)?;
         stream.set_read_timeout_millis(15_000)?;
         stream.set_write_timeout_millis(15_000)?;
@@ -42,6 +48,11 @@ impl CdpSocket {
                 "DevTools WebSocket upgrade failed: {}",
                 h.lines().next().unwrap_or("empty response")
             ));
+        }
+        if !header_has_token(&h, "upgrade", "websocket")
+            || !header_has_token(&h, "connection", "upgrade")
+        {
+            return Err(anyhow!("Invalid DevTools WebSocket upgrade response"));
         }
         Ok(s)
     }
@@ -88,22 +99,49 @@ impl CdpSocket {
             f.try_extend_from_slice(&(p.len() as u64).to_be_bytes())
                 .expect("MRML allocation failed")
         }
-        let k = (self.next_id as u32).wrapping_mul(0x9e3779b9).to_be_bytes();
+        let mut k = [0u8; 4];
+        mrml_runtime::fill_random(&mut k)
+            .map_err(|_| anyhow!("Failed to generate WebSocket mask"))?;
         f.try_extend_from_slice(&k).expect("MRML allocation failed");
         f.extend(p.iter().enumerate().map(|(i, b)| b ^ k[i % 4]));
         self.stream.write_all(&f)?;
         Ok(())
     }
     fn read_message(&mut self) -> Result<(u8, Vector<u8>)> {
+        const MAX_MESSAGE: usize = 16 * 1024 * 1024;
         let mut all = Vector::new();
         let mut first = 0;
+        let mut fragmented = false;
         loop {
             let mut h = [0; 2];
             self.stream.read_exact(&mut h)?;
             let fin = h[0] & 128 != 0;
             let op = h[0] & 15;
-            if first == 0 && op != 0 {
-                first = op
+            if h[0] & 0x70 != 0 || h[1] & 0x80 != 0 {
+                return Err(anyhow!("Invalid DevTools WebSocket frame flags"));
+            }
+            let control = op & 0x08 != 0;
+            if control && (!fin || (h[1] & 0x7f) > 125) {
+                return Err(anyhow!("Invalid DevTools control frame"));
+            }
+            if !matches!(op, 0 | 1 | 2 | 8 | 9 | 10) {
+                return Err(anyhow!("Unsupported DevTools WebSocket opcode"));
+            }
+            if op == 0 {
+                if !fragmented {
+                    return Err(anyhow!("Unexpected WebSocket continuation"));
+                }
+            } else if control {
+                if fragmented {
+                    return Err(anyhow!("Interleaved WebSocket control frame"));
+                }
+                first = op;
+            } else if !control {
+                if fragmented {
+                    return Err(anyhow!("Interleaved WebSocket message"));
+                }
+                first = op;
+                fragmented = !fin;
             }
             let mut n = (h[1] & 127) as u64;
             if n == 126 {
@@ -113,24 +151,23 @@ impl CdpSocket {
             } else if n == 127 {
                 let mut b = [0; 8];
                 self.stream.read_exact(&mut b)?;
+                if b[0] & 0x80 != 0 {
+                    return Err(anyhow!("Invalid 64-bit WebSocket length"));
+                }
                 n = u64::from_be_bytes(b)
             }
-            if n > 64 * 1024 * 1024 {
+            let n = usize::try_from(n).map_err(|_| anyhow!("Oversized DevTools message"))?;
+            let end = all
+                .len()
+                .checked_add(n)
+                .filter(|length| *length <= MAX_MESSAGE)
+                .ok_or_else(|| anyhow!("Oversized DevTools message"))?;
+            if control && n > 125 {
                 return Err(anyhow!("Oversized DevTools message"));
             }
-            let masked = h[1] & 128 != 0;
-            let mut k = [0; 4];
-            if masked {
-                self.stream.read_exact(&mut k)?
-            }
             let start = all.len();
-            all.resize(start + n as usize, 0);
+            all.resize(end, 0);
             self.stream.read_exact(&mut all[start..])?;
-            if masked {
-                for (i, b) in all[start..].iter_mut().enumerate() {
-                    *b ^= k[i % 4]
-                }
-            }
             if fin {
                 return Ok((first, all));
             }
@@ -325,6 +362,17 @@ fn parse_ipv4_authority(authority: &str) -> Result<([u8; 4], u16)> {
         .map_err(|_| anyhow!("Invalid TCP port: {}", port))?;
     Ok((ip, port))
 }
+fn header_has_token(header: &str, wanted_name: &str, wanted_token: &str) -> bool {
+    header.lines().skip(1).any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case(wanted_name)
+            && value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case(wanted_token))
+    })
+}
 fn read_http_header(s: &mut TcpStream) -> Result<String> {
     let mut v = Vector::new();
     let mut b = [0];
@@ -338,6 +386,13 @@ fn read_http_header(s: &mut TcpStream) -> Result<String> {
     Err(anyhow!("HTTP header too large"))
 }
 fn http_json(port: u16, method: &str, path: &str) -> Result<Value> {
+    const MAX_BODY: usize = 16 * 1024 * 1024;
+    if !matches!(method, "GET" | "PUT")
+        || !path.starts_with('/')
+        || !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return Err(anyhow!("Invalid DevTools HTTP request"));
+    }
     let mut s = TcpStream::connect([127, 0, 0, 1], port)?;
     s.set_read_timeout_millis(2_000)?;
     let request = format!(
@@ -352,15 +407,23 @@ fn http_json(port: u16, method: &str, path: &str) -> Result<Value> {
             h.lines().next().unwrap_or("empty response")
         ));
     }
-    let length = h
-        .lines()
-        .find_map(|line| {
+    let mut length = None;
+    for line in h.lines() {
+        if let Some(parsed) = (|| {
             let (name, value) = line.split_once(':')?;
             name.eq_ignore_ascii_case("content-length")
                 .then(|| value.trim().parse::<usize>().ok())
                 .flatten()
-        })
-        .ok_or_else(|| anyhow!("DevTools response omitted Content-Length"))?;
+        })() {
+            if length.replace(parsed).is_some() {
+                return Err(anyhow!("Duplicate DevTools Content-Length"));
+            }
+        }
+    }
+    let length = length.ok_or_else(|| anyhow!("DevTools response omitted Content-Length"))?;
+    if length > MAX_BODY {
+        return Err(anyhow!("DevTools response body too large"));
+    }
     let mut body = Vector::with_capacity(length).expect("MRML allocation failed");
     body.resize(length, 0);
     s.read_exact(&mut body)?;
@@ -388,6 +451,7 @@ impl Tool for BrowserOpenTool {
     }
     async fn execute(&self, _: &str, a: Value) -> Result<String> {
         let u = a["url"].as_str().ok_or_else(|| anyhow!("Missing url"))?;
+        crate::web::validate_public_https_url(u)?;
         let x = get_browser_controller().await?;
         let mut c = x.lock();
         c.get_or_create_page(Some(u))?;
@@ -411,6 +475,9 @@ impl Tool for BrowserGetContentTool {
         json!({"type":"object","properties":{"url":{"type":"string"}}})
     }
     async fn execute(&self, _: &str, a: Value) -> Result<String> {
+        if let Some(url) = a["url"].as_str() {
+            crate::web::validate_public_https_url(url)?;
+        }
         let x = get_browser_controller().await?;
         let mut c = x.lock();
         c.get_or_create_page(a["url"].as_str())?;

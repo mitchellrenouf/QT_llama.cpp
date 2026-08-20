@@ -468,6 +468,8 @@ pub fn parse(source: &str) -> Result<Value, Error> {
     let mut parser = Parser {
         bytes: source.as_bytes(),
         position: 0,
+        depth: 0,
+        nodes: 0,
     };
     let value = parser.value()?;
     parser.whitespace();
@@ -573,10 +575,19 @@ fn write_string(value: &str, output: &mut String) {
 struct Parser<'a> {
     bytes: &'a [u8],
     position: usize,
+    depth: usize,
+    nodes: usize,
 }
 
 impl Parser<'_> {
     fn value(&mut self) -> Result<Value, Error> {
+        self.nodes = self
+            .nodes
+            .checked_add(1)
+            .ok_or_else(|| Error::new("JSON node limit exceeded", self.position))?;
+        if self.nodes > 1_000_000 {
+            return Err(Error::new("JSON node limit exceeded", self.position));
+        }
         self.whitespace();
         match self.peek() {
             Some(b'n') => {
@@ -600,10 +611,12 @@ impl Parser<'_> {
     }
 
     fn array(&mut self) -> Result<Value, Error> {
+        self.enter_container()?;
         self.position += 1;
         let mut values = Vec::new();
         self.whitespace();
         if self.take(b']') {
+            self.depth -= 1;
             return Ok(Value::Array(values));
         }
         loop {
@@ -614,14 +627,17 @@ impl Parser<'_> {
             }
             self.expect(b',')?;
         }
+        self.depth -= 1;
         Ok(Value::Array(values))
     }
 
     fn object(&mut self) -> Result<Value, Error> {
+        self.enter_container()?;
         self.position += 1;
         let mut values = BTreeMap::new();
         self.whitespace();
         if self.take(b'}') {
+            self.depth -= 1;
             return Ok(Value::Object(values));
         }
         loop {
@@ -630,6 +646,9 @@ impl Parser<'_> {
                 return Err(Error::new("expected object key", self.position));
             }
             let key = self.string()?;
+            if values.get(&key).is_some() {
+                return Err(Error::new("duplicate object key", self.position));
+            }
             self.whitespace();
             self.expect(b':')?;
             values.insert(key, self.value()?);
@@ -639,7 +658,16 @@ impl Parser<'_> {
             }
             self.expect(b',')?;
         }
+        self.depth -= 1;
         Ok(Value::Object(values))
+    }
+
+    fn enter_container(&mut self) -> Result<(), Error> {
+        if self.depth >= 128 {
+            return Err(Error::new("JSON nesting limit exceeded", self.position));
+        }
+        self.depth += 1;
+        Ok(())
     }
 
     fn string(&mut self) -> Result<String, Error> {
@@ -820,9 +848,17 @@ mod tests {
 
     #[test]
     fn rejects_trailing_data_bad_numbers_and_bad_surrogates() {
-        for source in ["null x", "01", "1.", r#""\ud800""#] {
+        for source in ["null x", "01", "1.", r#""\ud800""#, r#"{"a":1,"a":2}"#] {
             assert!(parse(source).is_err(), "accepted {source}");
         }
+        let mut nested = String::new();
+        for _ in 0..129 {
+            nested.push('[');
+        }
+        for _ in 0..129 {
+            nested.push(']');
+        }
+        assert!(parse(&nested).is_err());
     }
 }
 #[cfg(test)]

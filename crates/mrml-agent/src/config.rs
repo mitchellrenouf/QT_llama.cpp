@@ -11,7 +11,7 @@ macro_rules! text_format {
     }};
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub server_url: Text,
     pub api_key: Text,

@@ -121,6 +121,9 @@ impl PipedChild {
                     .try_push(byte[0])
                     .map_err(|_| ProcessError::OutputFailed)?,
             }
+            if bytes.len() > 1024 * 1024 {
+                return Err(ProcessError::OutputLimit);
+            }
         }
         if bytes.last() == Some(&b'\r') {
             bytes.pop();

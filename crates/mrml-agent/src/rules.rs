@@ -24,7 +24,9 @@ impl WorkspaceRules {
         for name in &candidate_names {
             let candidate_path = mrml_runtime::join_path(workspace_root, name);
             if crate::platform::path_is_file(&candidate_path) {
-                if let Ok(content) = mrml_runtime::read_file_text(&candidate_path) {
+                if let Ok(content) =
+                    mrml_runtime::read_file_text_bounded(&candidate_path, 1024 * 1024)
+                {
                     if !content.trim().is_empty() {
                         sources.push(candidate_path.clone());
                         write!(

@@ -386,6 +386,7 @@ impl MrmlAgent {
     }
 
     pub fn save_session(&self, name: &str) -> Result<mrml_runtime::Text> {
+        validate_session_name(name)?;
         let sessions_dir = mrml_runtime::join_path(
             &mrml_runtime::join_path(&self.config.workspace_root, ".mrml"),
             "sessions",
@@ -395,12 +396,16 @@ impl MrmlAgent {
         let serialized = serde_json::stringify(&serde_json::Value::Array(
             self.history.iter().map(ChatMessage::to_json).collect(),
         ));
+        if serialized.len() > 16 * 1024 * 1024 {
+            return Err(mrml_error::anyhow!("Session exceeds the 16 MiB limit"));
+        }
         mrml_runtime::write_file(&file_path, serialized.as_bytes())?;
         println!("Session saved to: {}", file_path.cyan());
         Ok(file_path)
     }
 
     pub fn load_session(&mut self, name: &str) -> Result<mrml_runtime::Text> {
+        validate_session_name(name)?;
         let file_path = mrml_runtime::join_path(
             &mrml_runtime::join_path(
                 &mrml_runtime::join_path(&self.config.workspace_root, ".mrml"),
@@ -411,11 +416,15 @@ impl MrmlAgent {
         if !mrml_runtime::path_is_file(&file_path) {
             return Err(mrml_error::anyhow!("Session file not found: {}", file_path));
         }
-        let content = mrml_runtime::read_file_text(&file_path)?;
+        let content = mrml_runtime::read_file_text_bounded(&file_path, 16 * 1024 * 1024)?;
         let value: serde_json::Value = serde_json::from_str(&content)?;
-        let history = value
+        let values = value
             .as_array()
-            .ok_or_else(|| mrml_error::anyhow!("session history must be a JSON array"))?
+            .ok_or_else(|| mrml_error::anyhow!("session history must be a JSON array"))?;
+        if values.len() > 4096 {
+            return Err(mrml_error::anyhow!("Session contains too many messages"));
+        }
+        let history = values
             .iter()
             .map(ChatMessage::from_json)
             .collect::<mrml_model::error::Result<Vector<_>>>()
@@ -952,11 +961,25 @@ impl MrmlAgent {
     }
 }
 
+fn validate_session_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(mrml_error::anyhow!(
+            "Session name must use 1-64 ASCII letters, digits, '-' or '_'"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        explicitly_requested_command, requests_live_local_time, verified_command_answer,
-        verified_time_answer,
+        explicitly_requested_command, requests_live_local_time, validate_session_name,
+        verified_command_answer, verified_time_answer,
     };
 
     #[test]
@@ -997,5 +1020,13 @@ mod tests {
             verified_command_answer(output).as_deref(),
             Some("The command printed:\n\n```text\nMRML_TOOL_OK\n```")
         );
+    }
+
+    #[test]
+    fn session_names_cannot_escape_the_session_directory() {
+        assert!(validate_session_name("safe-session_1").is_ok());
+        assert!(validate_session_name("../outside").is_err());
+        assert!(validate_session_name("folder/name").is_err());
+        assert!(validate_session_name("").is_err());
     }
 }

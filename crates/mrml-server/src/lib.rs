@@ -53,38 +53,54 @@ impl OpenAiChatRequest {
     fn parse(bytes: &[u8]) -> Result<Self, String> {
         let source = core::str::from_utf8(bytes).map_err(|error| format!("{}", error))?;
         let value = mrml_json::parse(source).map_err(|error| format!("{}", error))?;
-        let messages = value
+        let message_values = value
             .get("messages")
             .and_then(Value::as_array)
-            .ok_or_else(|| Text::from("messages must be an array"))?
+            .ok_or_else(|| Text::from("messages must be an array"))?;
+        if message_values.is_empty() || message_values.len() > 256 {
+            return Err("messages must contain between 1 and 256 entries".into());
+        }
+        let messages = message_values
             .iter()
             .map(|message| {
+                let role = message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Text::from("message role must be a string"))?;
+                if !matches!(role, "system" | "user" | "assistant" | "tool") {
+                    return Err(Text::from("message role is unsupported"));
+                }
+                let content = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Text::from("message content must be a string"))?;
+                if content.len() > 1024 * 1024 {
+                    return Err(Text::from("message content exceeds 1 MiB"));
+                }
                 Ok(OpenAiMessage {
-                    role: message
-                        .get("role")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| Text::from("message role must be a string"))?
-                        .into(),
-                    content: message
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| Text::from("message content must be a string"))?
-                        .into(),
+                    role: role.into(),
+                    content: content.into(),
                 })
             })
             .collect::<Result<Vector<_>, String>>()?;
+        let model = value.get("model").and_then(Value::as_str).map(Text::from);
+        if model.as_ref().is_some_and(|model| model.len() > 256) {
+            return Err("model name exceeds 256 bytes".into());
+        }
+        let temperature = value.get("temperature").and_then(Value::as_f64);
+        if temperature.is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value)) {
+            return Err("temperature must be finite and between 0 and 2".into());
+        }
+        let max_tokens = value.get("max_tokens").and_then(Value::as_u64);
+        if max_tokens.is_some_and(|value| value == 0 || value > 32_768) {
+            return Err("max_tokens must be between 1 and 32768".into());
+        }
         Ok(Self {
-            model: value.get("model").and_then(Value::as_str).map(Text::from),
+            model,
             messages,
             stream: value.get("stream").and_then(Value::as_bool),
-            temperature: value
-                .get("temperature")
-                .and_then(Value::as_f64)
-                .map(|value| value as f32),
-            max_tokens: value
-                .get("max_tokens")
-                .and_then(Value::as_u64)
-                .map(|value| value as u32),
+            temperature: temperature.map(|value| value as f32),
+            max_tokens: max_tokens.map(|value| value as u32),
         })
     }
 }
@@ -511,6 +527,21 @@ mod json_tests {
         assert_eq!(request.messages[0].content, "hello");
         assert_eq!(request.stream, Some(true));
         assert!(OpenAiChatRequest::parse(br#"{"messages":[{"role":"user"}]}"#).is_err());
+        assert!(
+            OpenAiChatRequest::parse(br#"{"messages":[{"role":"root","content":"x"}]}"#).is_err()
+        );
+        assert!(
+            OpenAiChatRequest::parse(
+                br#"{"messages":[{"role":"user","content":"x"}],"max_tokens":4294967296}"#
+            )
+            .is_err()
+        );
+        assert!(
+            OpenAiChatRequest::parse(
+                br#"{"messages":[{"role":"user","content":"x"}],"temperature":3}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

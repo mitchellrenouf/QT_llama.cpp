@@ -55,6 +55,11 @@ Changes that do not satisfy every rule must not be merged:
   workspace. Do not use `std`, `alloc`, third-party crates, or other crates
   shipped with Rust. Adding a dependency from crates.io, Git, the sysroot, or
   any external source is prohibited.
+- Keep implementations modular, cohesive, and easy to audit and read wherever
+  that does not conflict with security or measured performance. Security comes
+  first, measured performance second, and readability and convenience follow;
+  split large components behind narrow interfaces and document non-obvious
+  invariants at trust boundaries.
 - Every change must be built and tested on both Windows and Linux before it is
   accepted. Windows support is limited to Rust's MinGW-based native GNU/LLVM
   toolchain (`x86_64-pc-windows-gnullvm`) and facilities available through

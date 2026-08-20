@@ -4,6 +4,7 @@ use crate::{Text, Vector};
 pub enum StdinError {
     ReadFailed,
     InvalidUtf8,
+    TooLarge,
 }
 
 fn read_native(buffer: &mut [u8]) -> Option<usize> {
@@ -27,6 +28,9 @@ pub fn read_stdin_line() -> Result<Option<Text>, StdinError> {
             _ if byte[0] == b'\n' => break,
             _ => bytes.push(byte[0]),
         }
+        if bytes.len() > 1024 * 1024 {
+            return Err(StdinError::TooLarge);
+        }
     }
     if bytes.last() == Some(&b'\r') {
         bytes.pop();
@@ -43,6 +47,13 @@ pub fn read_stdin_to_end() -> Result<Text, StdinError> {
         let read = read_native(&mut chunk).ok_or(StdinError::ReadFailed)?;
         if read == 0 {
             break;
+        }
+        if bytes
+            .len()
+            .checked_add(read)
+            .is_none_or(|length| length > 64 * 1024 * 1024)
+        {
+            return Err(StdinError::TooLarge);
         }
         bytes
             .try_extend_from_slice(&chunk[..read])

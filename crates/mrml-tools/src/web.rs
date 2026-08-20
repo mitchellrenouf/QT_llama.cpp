@@ -22,6 +22,7 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
 }
 
 pub async fn fetch_http_text(url: &str) -> Result<String> {
+    validate_public_https_url(url)?;
     // 1. Try headless Chromium if browser controller is available
     if let Ok(browser_ctrl) = crate::browser::get_browser_controller().await {
         let mut guard = browser_ctrl.lock();
@@ -54,6 +55,39 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
         "Failed to fetch web content from '{}' via the browser or authenticated HTTPS client.",
         url
     ))
+}
+
+pub(crate) fn validate_public_https_url(input: &str) -> Result<()> {
+    let url =
+        mrml_http::Url::parse(input).map_err(|_| anyhow!("Only valid HTTPS URLs are allowed"))?;
+    let host = url.host.as_str();
+    if host == "localhost" || host.ends_with(".localhost") || is_non_public_ipv4(host) {
+        return Err(anyhow!("Local and private network URLs are not allowed"));
+    }
+    Ok(())
+}
+
+fn is_non_public_ipv4(host: &str) -> bool {
+    let mut octets = [0u8; 4];
+    let mut parts = host.split('.');
+    for octet in &mut octets {
+        let Some(part) = parts.next() else {
+            return false;
+        };
+        let Ok(value) = part.parse::<u8>() else {
+            return false;
+        };
+        *octet = value;
+    }
+    if parts.next().is_some() {
+        return false;
+    }
+    matches!(
+        octets,
+        [0, ..] | [10, ..] | [127, ..] | [169, 254, ..] | [192, 168, ..]
+    ) || octets[0] == 100 && (64..=127).contains(&octets[1])
+        || octets[0] == 172 && (16..=31).contains(&octets[1])
+        || octets[0] >= 224
 }
 
 pub struct WebSearchTool;
@@ -293,5 +327,10 @@ mod tests {
         assert_eq!(WebFetchTool.name(), "web_fetch");
         assert!(contains_ascii_case_insensitive("Find an IMAGE", "image"));
         assert!(!contains_ascii_case_insensitive("documentation", "photo"));
+        assert!(validate_public_https_url("https://example.com/path").is_ok());
+        assert!(validate_public_https_url("http://example.com").is_err());
+        assert!(validate_public_https_url("https://127.0.0.1/private").is_err());
+        assert!(validate_public_https_url("https://192.168.1.2/private").is_err());
+        assert!(validate_public_https_url("https://localhost/private").is_err());
     }
 }
