@@ -34,6 +34,19 @@ pub struct Capability {
     generation: u32,
 }
 
+impl Capability {
+    pub(crate) const fn token(self) -> u64 {
+        ((self.generation as u64) << 32) | self.slot as u64
+    }
+
+    pub(crate) const fn from_token(token: u64) -> Self {
+        Self {
+            slot: token as u32,
+            generation: (token >> 32) as u32,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Entry {
     generation: u32,

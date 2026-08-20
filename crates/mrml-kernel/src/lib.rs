@@ -9,8 +9,13 @@ mod capability;
 mod grant;
 mod ipc;
 mod platform;
+mod policy;
 
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
-pub use ipc::{Endpoint, IpcError, MAX_CAPABILITIES, MAX_INLINE_PAYLOAD, Message};
+pub use ipc::{
+    Endpoint, IpcError, MAX_CAPABILITIES, MAX_INLINE_PAYLOAD, MAX_WIRE_MESSAGE, Message, Receiver,
+    WIRE_HEADER_LENGTH,
+};
 pub use platform::{Architecture, Hypervisor, IsolationClass, VmRole};
+pub use policy::{DeviceAddress, DeviceGrant, MAX_VM_NAME, PolicyError, VmName, VmPolicy};
