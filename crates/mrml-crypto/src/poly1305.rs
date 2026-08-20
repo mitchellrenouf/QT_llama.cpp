@@ -75,7 +75,9 @@ pub fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
     let mut g3 = h3 + carry;
     carry = g3 >> 26;
     g3 &= 0x3ffffff;
-    let g4 = h4 + carry - (1 << 26);
+    // The underflow bit selects h when h is below the modulus. Wrapping is
+    // intentional and keeps the selection branch-free in checked builds too.
+    let g4 = (h4 + carry).wrapping_sub(1 << 26);
     let mask = (g4 >> 63).wrapping_sub(1);
     let inverse = !mask;
     h0 = (h0 & inverse) | (g0 & mask);

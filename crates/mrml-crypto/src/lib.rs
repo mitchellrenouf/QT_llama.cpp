@@ -1,6 +1,7 @@
 #![no_std]
 
 mod aead;
+mod aes_gcm;
 mod chacha20;
 mod hkdf;
 mod ml_kem;
@@ -10,6 +11,7 @@ mod sha3;
 mod x25519;
 
 pub use aead::{chacha20_poly1305_open, chacha20_poly1305_seal};
+pub use aes_gcm::{aes128_gcm_open, aes128_gcm_seal};
 pub use chacha20::{chacha20_block, chacha20_xor};
 pub use hkdf::{hkdf_expand, hkdf_expand_label, hkdf_extract, hmac_sha256};
 pub use ml_kem::{
