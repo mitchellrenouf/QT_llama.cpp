@@ -3,15 +3,22 @@
 pub mod modes;
 
 #[cfg(feature = "runtime")]
+pub mod model_locator;
+
+#[cfg(feature = "runtime")]
 pub mod agent;
 #[cfg(feature = "runtime")]
 pub mod client;
+#[cfg(feature = "runtime")]
+pub mod inference_client;
 #[cfg(feature = "runtime")]
 pub mod config;
 #[cfg(feature = "runtime")]
 pub mod hf;
 #[cfg(feature = "runtime")]
 pub mod rules;
+#[cfg(feature = "runtime")]
+pub mod tool_call;
 
 #[cfg(feature = "runtime")]
 pub use mrml_tools as tools;
