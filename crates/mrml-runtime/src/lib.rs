@@ -52,6 +52,9 @@ pub fn fill_random(output: &mut [u8]) -> Result<(), RandomError> {
     success.then_some(()).ok_or(RandomError)
 }
 
+#[cfg(windows)]
+pub fn visit_root_certificates(visitor: impl FnMut(&[u8]) -> bool) -> bool { mrml_windows::visit_root_certificates(visitor) }
+
 #[cfg(test)]
 mod random_tests {
     #[test]

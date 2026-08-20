@@ -1,7 +1,9 @@
 #![no_std]
 
 mod x509;
+mod trust;
 pub use x509::{Certificate, CertificateError};
+pub use trust::verify_server_chain;
 
 use core::fmt;
 use mrml_crypto::{Sha256, aes128_gcm_open, aes128_gcm_seal, hkdf_expand_label, hkdf_extract};

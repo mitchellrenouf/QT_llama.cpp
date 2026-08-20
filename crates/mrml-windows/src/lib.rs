@@ -443,6 +443,41 @@ pub fn unix_time_seconds() -> Option<u64> {
     ticks.checked_div(10_000_000)?.checked_sub(11_644_473_600)
 }
 
+#[repr(C)]
+#[cfg(windows)]
+struct CertificateContext { encoding: u32, encoded: *const u8, encoded_len: u32, info: *const c_void, store: *mut c_void }
+
+#[cfg(windows)]
+pub fn visit_root_certificates(mut visitor: impl FnMut(&[u8]) -> bool) -> bool {
+    type Open = unsafe extern "system" fn(*const i8, u32, *mut c_void, u32, *const c_void) -> *mut c_void;
+    type Next = unsafe extern "system" fn(*mut c_void, *const CertificateContext) -> *const CertificateContext;
+    type Close = unsafe extern "system" fn(*mut c_void, u32) -> i32;
+    let library = unsafe { LoadLibraryA(c"crypt32.dll".as_ptr()) }; if library.is_null() { return false; }
+    let open: *mut c_void = unsafe { GetProcAddress(library, c"CertOpenStore".as_ptr()) };
+    let next: *mut c_void = unsafe { GetProcAddress(library, c"CertEnumCertificatesInStore".as_ptr()) };
+    let close: *mut c_void = unsafe { GetProcAddress(library, c"CertCloseStore".as_ptr()) };
+    if open.is_null() || next.is_null() || close.is_null() { unsafe { FreeLibrary(library) }; return false; }
+    let open: Open = unsafe { core::mem::transmute(open) }; let next: Next = unsafe { core::mem::transmute(next) }; let close: Close = unsafe { core::mem::transmute(close) };
+    const CERT_STORE_PROV_SYSTEM_A: *const i8 = 9usize as *const i8;
+    const CERT_SYSTEM_STORE_CURRENT_USER: u32 = 0x0001_0000;
+    const CERT_SYSTEM_STORE_LOCAL_MACHINE: u32 = 0x0002_0000;
+    const CERT_STORE_READONLY_FLAG: u32 = 0x0000_8000;
+    let mut opened = false; let mut continuing = true;
+    for location in [CERT_SYSTEM_STORE_CURRENT_USER, CERT_SYSTEM_STORE_LOCAL_MACHINE] {
+        let store = unsafe { open(CERT_STORE_PROV_SYSTEM_A, 0, core::ptr::null_mut(), location | CERT_STORE_READONLY_FLAG, c"ROOT".as_ptr().cast()) }; if store.is_null() { continue; } opened = true;
+        let mut context = core::ptr::null();
+        while continuing {
+            context = unsafe { next(store, context) }; if context.is_null() { break; }
+            let certificate = unsafe { core::slice::from_raw_parts((*context).encoded, (*context).encoded_len as usize) };
+            continuing = visitor(certificate);
+        }
+        // FORCE releases the current enumeration context when the visitor stops early.
+        let _ = unsafe { close(store, 1) };
+        if !continuing { break; }
+    }
+    unsafe { FreeLibrary(library) }; opened
+}
+
 #[cfg(windows)]
 fn initialize_winsock() -> bool {
     static STATE: AtomicU8 = AtomicU8::new(0);

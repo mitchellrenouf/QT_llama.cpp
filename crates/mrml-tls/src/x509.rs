@@ -1,7 +1,7 @@
 use mrml_crypto::rsa_pkcs1_sha256_verify;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CertificateError { Malformed, UnsupportedAlgorithm, InvalidSignature, HostnameMismatch, NotCertificateAuthority, NotYetValid, Expired, ClockUnavailable }
+pub enum CertificateError { Malformed, UnsupportedAlgorithm, InvalidSignature, HostnameMismatch, NotCertificateAuthority, NotYetValid, Expired, ClockUnavailable, TrustStoreUnavailable, UntrustedIssuer }
 
 #[derive(Clone, Copy)]
 struct Element<'a> { tag: u8, value: &'a [u8], encoded: &'a [u8] }
@@ -41,7 +41,7 @@ fn algorithm(element: Element<'_>, expected: &[u8]) -> Result<(), CertificateErr
 }
 
 pub struct Certificate<'a> {
-    tbs: &'a [u8], issuer: &'a [u8], subject: &'a [u8], modulus: &'a [u8], exponent: &'a [u8], signature: &'a [u8], extensions: &'a [u8], not_before: u64, not_after: u64,
+    tbs: &'a [u8], modulus: &'a [u8], exponent: &'a [u8], signature: &'a [u8], extensions: &'a [u8], not_before: u64, not_after: u64,
 }
 
 impl<'a> Certificate<'a> {
@@ -70,11 +70,10 @@ impl<'a> Certificate<'a> {
         let exponent = if exponent.value[0] == 0 { &exponent.value[1..] } else { exponent.value };
         let mut extensions = &[][..];
         while body.position < body.bytes.len() { let element = body.next()?; if element.tag == 0xa3 { extensions = element.value; } else if element.tag != 0x81 && element.tag != 0x82 { return Err(CertificateError::Malformed); } }
-        Ok(Self { tbs: tbs.encoded, issuer: issuer.encoded, subject: subject.encoded, modulus, exponent, signature: &signature.value[1..], extensions, not_before, not_after })
+        Ok(Self { tbs: tbs.encoded, modulus, exponent, signature: &signature.value[1..], extensions, not_before, not_after })
     }
 
     pub fn verify_signed_by(&self, issuer: &Certificate<'_>) -> Result<(), CertificateError> {
-        if self.issuer != issuer.subject { return Err(CertificateError::InvalidSignature); }
         rsa_pkcs1_sha256_verify(issuer.modulus, issuer.exponent, self.tbs, self.signature).map_err(|_| CertificateError::InvalidSignature)
     }
 
@@ -157,6 +156,7 @@ mod tests {
         let leaf = Certificate::parse(&leaf_bytes).unwrap(); let issuer = Certificate::parse(&issuer_bytes).unwrap();
         leaf.verify_hostname("huggingface.co").unwrap(); leaf.verify_signed_by(&issuer).unwrap(); issuer.require_ca().unwrap();
         leaf.verify_time_now().unwrap(); issuer.verify_time_now().unwrap();
+        crate::verify_server_chain("huggingface.co", &[&leaf_bytes, &issuer_bytes]).unwrap();
         assert_eq!(leaf.verify_hostname("attacker.example"), Err(CertificateError::HostnameMismatch));
     }
     #[test] fn parses_utc_and_generalized_certificate_times() {
