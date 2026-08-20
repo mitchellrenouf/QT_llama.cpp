@@ -5,6 +5,7 @@
 //! machine code. Architecture and hypervisor implementations sit behind these
 //! narrow types so their unsafe boundaries can be reviewed independently.
 
+pub mod arch;
 mod capability;
 mod grant;
 mod ipc;

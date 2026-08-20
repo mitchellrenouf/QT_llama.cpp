@@ -1,0 +1,144 @@
+use crate::{PAGE_SIZE, PhysAddr};
+
+const MAX_PHYSICAL_ADDRESS: u64 = (1u64 << 52) - PAGE_SIZE;
+const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct VirtAddr(u64);
+
+impl VirtAddr {
+    pub const fn new(address: u64) -> Result<Self, PageError> {
+        let high = address >> 48;
+        let sign = (address >> 47) & 1;
+        if (sign == 0 && high != 0) || (sign == 1 && high != 0xffff) {
+            return Err(PageError::NonCanonical);
+        }
+        if address % PAGE_SIZE != 0 {
+            return Err(PageError::Unaligned);
+        }
+        Ok(Self(address))
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub const fn pml4_index(self) -> usize {
+        ((self.0 >> 39) & 0x1ff) as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PagePermissions(u8);
+
+impl PagePermissions {
+    pub const KERNEL_READ: Self = Self(0);
+    pub const KERNEL_READ_WRITE: Self = Self(1 << 0);
+    pub const KERNEL_READ_EXECUTE: Self = Self(1 << 1);
+    pub const USER_READ: Self = Self(1 << 2);
+    pub const USER_READ_WRITE: Self = Self((1 << 2) | (1 << 0));
+    pub const USER_READ_EXECUTE: Self = Self((1 << 2) | (1 << 1));
+
+    pub const fn writable(self) -> bool {
+        self.0 & (1 << 0) != 0
+    }
+
+    pub const fn executable(self) -> bool {
+        self.0 & (1 << 1) != 0
+    }
+
+    pub const fn user(self) -> bool {
+        self.0 & (1 << 2) != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PageError {
+    NonCanonical,
+    Unaligned,
+    PhysicalAddressTooLarge,
+    WritableExecutable,
+    InvalidEntry,
+}
+
+/// A hardware-format 4 KiB leaf entry. Constructors enforce W^X and set NX
+/// unless execution was explicitly requested.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct PageTableEntry(u64);
+
+impl PageTableEntry {
+    pub const fn leaf(frame: PhysAddr, permissions: PagePermissions) -> Result<Self, PageError> {
+        if frame.get() > MAX_PHYSICAL_ADDRESS {
+            return Err(PageError::PhysicalAddressTooLarge);
+        }
+        if permissions.writable() && permissions.executable() {
+            return Err(PageError::WritableExecutable);
+        }
+        let mut bits = frame.get() | 1;
+        if permissions.writable() {
+            bits |= 1 << 1;
+        }
+        if permissions.user() {
+            bits |= 1 << 2;
+        }
+        if !permissions.executable() {
+            bits |= 1 << 63;
+        }
+        Ok(Self(bits))
+    }
+
+    pub const fn table(frame: PhysAddr, user: bool) -> Result<Self, PageError> {
+        if frame.get() > MAX_PHYSICAL_ADDRESS {
+            return Err(PageError::PhysicalAddressTooLarge);
+        }
+        Ok(Self(frame.get() | 1 | (1 << 1) | ((user as u64) << 2)))
+    }
+
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+
+    pub const fn frame(self) -> Result<PhysAddr, PageError> {
+        if self.0 & 1 == 0 {
+            return Err(PageError::InvalidEntry);
+        }
+        match PhysAddr::new(self.0 & ADDRESS_MASK) {
+            Ok(address) => Ok(address),
+            Err(_) => Err(PageError::InvalidEntry),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn virtual_addresses_must_be_canonical_and_page_aligned() {
+        assert!(VirtAddr::new(0x0000_7fff_ffff_f000).is_ok());
+        assert!(VirtAddr::new(0xffff_8000_0000_0000).is_ok());
+        assert_eq!(
+            VirtAddr::new(0x0000_8000_0000_0000),
+            Err(PageError::NonCanonical)
+        );
+        assert_eq!(VirtAddr::new(1), Err(PageError::Unaligned));
+    }
+
+    #[test]
+    fn leaf_entries_are_nx_by_default_and_never_writable_executable() {
+        let frame = PhysAddr::new(0x2000).unwrap();
+        let data = PageTableEntry::leaf(frame, PagePermissions::USER_READ_WRITE).unwrap();
+        assert_ne!(data.bits() & (1 << 63), 0);
+        assert_ne!(data.bits() & (1 << 1), 0);
+        let code = PageTableEntry::leaf(frame, PagePermissions::USER_READ_EXECUTE).unwrap();
+        assert_eq!(code.bits() & (1 << 63), 0);
+        assert_eq!(code.bits() & (1 << 1), 0);
+        let forged = PagePermissions((1 << 0) | (1 << 1));
+        assert_eq!(
+            PageTableEntry::leaf(frame, forged),
+            Err(PageError::WritableExecutable)
+        );
+        assert_eq!(data.frame(), Ok(frame));
+    }
+}
