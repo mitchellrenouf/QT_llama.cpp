@@ -1153,13 +1153,8 @@ impl MrmlModel {
         let mut profile_output = Duration::ZERO;
         let mut profile_ffn = Duration::ZERO;
 
-        let mut hidden = filled_vector(dim, 0.0f32);
-        let _ = self.read_token_embedding(token_id, &mut hidden);
-
         let scale = float_sqrt(dim as f32);
-        for val in hidden.iter_mut() {
-            *val *= scale;
-        }
+        let mut hidden = Vector::new();
 
         #[cfg(feature = "cuda")]
         let mut resident_hidden_guard = self.gpu_d_final_hidden.lock();
@@ -1190,16 +1185,45 @@ impl MrmlModel {
             });
         #[cfg(feature = "cuda")]
         let resident_model = if resident_model {
-            self.cuda_dev
-                .as_ref()
-                .unwrap()
-                .copy_from_host_async(resident_hidden_guard.as_mut().unwrap(), &hidden)
-                .is_ok()
+            if let Some(gpu_table) = self.gpu_token_embd_table.as_ref() {
+                self.cuda_dev.as_ref().unwrap().embedding_q8_0(
+                    gpu_table,
+                    resident_hidden_guard.as_mut().unwrap(),
+                    token_id as usize,
+                    dim,
+                    scale,
+                );
+                true
+            } else {
+                hidden = filled_vector(dim, 0.0f32);
+                let _ = self.read_token_embedding(token_id, &mut hidden);
+                for value in hidden.iter_mut() {
+                    *value *= scale;
+                }
+                self.cuda_dev
+                    .as_ref()
+                    .unwrap()
+                    .copy_from_host_async(resident_hidden_guard.as_mut().unwrap(), &hidden)
+                    .is_ok()
+            }
         } else {
+            hidden = filled_vector(dim, 0.0f32);
+            let _ = self.read_token_embedding(token_id, &mut hidden);
+            for value in hidden.iter_mut() {
+                *value *= scale;
+            }
             false
         };
         #[cfg(not(feature = "cuda"))]
         let resident_model = false;
+        #[cfg(not(feature = "cuda"))]
+        {
+            hidden = filled_vector(dim, 0.0f32);
+            let _ = self.read_token_embedding(token_id, &mut hidden);
+            for value in hidden.iter_mut() {
+                *value *= scale;
+            }
+        }
         #[cfg(feature = "cuda")]
         let resident_fast_path = resident_model
             && self
@@ -2699,13 +2723,12 @@ impl MrmlModel {
                                     candidate_count,
                                     PARTITIONS,
                                 );
-                                let mut scores = vec![0.0f32; PARTITIONS * 40];
-                                let mut ids = vec![0i32; PARTITIONS * 40];
-                                if d_scores.copy_to_host(&mut scores).is_ok()
-                                    && d_ids.copy_to_host(&mut ids).is_ok()
+                                let result_count = PARTITIONS * candidate_count;
+                                let mut scores = vec![0.0f32; result_count];
+                                let mut ids = vec![0i32; result_count];
+                                if d_scores.copy_prefix_to_host(&mut scores).is_ok()
+                                    && d_ids.copy_prefix_to_host(&mut ids).is_ok()
                                 {
-                                    scores.truncate(PARTITIONS * candidate_count);
-                                    ids.truncate(PARTITIONS * candidate_count);
                                     Some(
                                         scores
                                             .into_iter()

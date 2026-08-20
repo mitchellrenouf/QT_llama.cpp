@@ -755,6 +755,27 @@ pub unsafe extern "ptx-kernel" fn rust_cuda_embedding_f32(
         *out.add(i) = *table.add(token as usize * dim as usize + i)
     }
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "ptx-kernel" fn rust_cuda_embedding_q8_0_f32(
+    table: *const u8,
+    out: *mut f32,
+    token: i32,
+    dim: i32,
+    output_scale: f32,
+) {
+    let i = global_index();
+    if i < dim as usize {
+        let row_bytes = (dim as usize / 32) * 34;
+        let block = i / 32;
+        let within = i & 31;
+        let row = table.add(token as usize * row_bytes);
+        let offset = block * 34;
+        let raw = *row.add(offset) as u16 | ((*row.add(offset + 1) as u16) << 8);
+        let value = *row.add(offset + 2 + within) as i8 as f32;
+        *out.add(i) = value * f16_to_f32(raw) * output_scale;
+    }
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "ptx-kernel" fn rust_cuda_swiglu_f32(
     gate: *const f32,

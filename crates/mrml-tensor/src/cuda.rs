@@ -24,7 +24,7 @@ type CuDevicePtr = u64;
 
 static RUST_PTX_MODULE: OnceCell<usize> = OnceCell::new();
 static RUST_FUNCTIONS: OnceCell<SpinMutex<OrderedMap<Text, usize>>> = OnceCell::new();
-static RUST_KERNEL_HANDLES: [AtomicUsize; 27] = [const { AtomicUsize::new(0) }; 27];
+static RUST_KERNEL_HANDLES: [AtomicUsize; 28] = [const { AtomicUsize::new(0) }; 28];
 static CUDA_DRIVER: OnceCell<CudaDriverApi> = OnceCell::new();
 static CUDA_ALLOCATION_POOL: OnceCell<SpinMutex<OrderedMap<(i32, usize), Vector<usize>>>> =
     OnceCell::new();
@@ -59,6 +59,7 @@ fn rust_kernel_index(name: &str) -> Option<usize> {
         "rust_cuda_moe_down_q4" => 24,
         "rust_cuda_moe_down_q4_combined" => 25,
         "rust_cuda_moe_down_q4_gemma4_26b" => 26,
+        "rust_cuda_embedding_q8_0_f32" => 27,
         _ => return None,
     })
 }
@@ -1393,6 +1394,11 @@ impl<T> CudaBuffer<T> {
 
     pub fn copy_to_host(&self, slice: &mut [T]) -> Result<()> {
         assert_eq!(self.len, slice.len());
+        self.copy_prefix_to_host(slice)
+    }
+
+    pub fn copy_prefix_to_host(&self, slice: &mut [T]) -> Result<()> {
+        assert!(slice.len() <= self.len);
         unsafe { cudaSetDevice(self.device_id) };
         let bytes = slice.len() * mem::size_of::<T>();
         let res = unsafe {
@@ -2246,6 +2252,39 @@ impl CudaDevice {
                 &mut args,
             )
             .expect("Rust CUDA embedding kernel failed");
+        }
+    }
+
+    pub fn embedding_q8_0(
+        &self,
+        d_table: &CudaBuffer<u8>,
+        d_out: &mut CudaBuffer<f32>,
+        token: usize,
+        dim: usize,
+        output_scale: f32,
+    ) {
+        unsafe {
+            cudaSetDevice(self.device_id);
+            let mut table = d_table.as_ptr();
+            let mut out = d_out.as_mut_ptr();
+            let mut token_arg = token as i32;
+            let mut dim_arg = dim as i32;
+            let mut scale_arg = output_scale;
+            let mut args = [
+                &mut table as *mut _ as *mut c_void,
+                &mut out as *mut _ as *mut c_void,
+                &mut token_arg as *mut _ as *mut c_void,
+                &mut dim_arg as *mut _ as *mut c_void,
+                &mut scale_arg as *mut _ as *mut c_void,
+            ];
+            launch_rust_kernel(
+                "rust_cuda_embedding_q8_0_f32",
+                ((dim as u32).div_ceil(256), 1, 1),
+                (256, 1, 1),
+                self.stream,
+                &mut args,
+            )
+            .expect("Rust CUDA Q8_0 embedding kernel failed");
         }
     }
 
