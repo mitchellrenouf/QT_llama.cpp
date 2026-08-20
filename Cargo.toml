@@ -18,6 +18,7 @@ members = [
     "crates/mrml-json",
     "crates/mrml-zim",
     "crates/mrml-wikipedia",
+    "crates/mrml-tokenizer",
 ]
 
 [workspace.package]

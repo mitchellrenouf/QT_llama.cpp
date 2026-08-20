@@ -116,6 +116,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-tokenizer"
+version = "0.4.0"
+dependencies = [
+ "mrml-runtime",
+]
+
+[[package]]
 name = "mrml-tools"
 version = "0.4.0"
 dependencies = [
