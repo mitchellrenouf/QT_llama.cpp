@@ -30,6 +30,8 @@ pub enum ProcessError {
     InvalidArgument,
     SpawnFailed,
     OutputFailed,
+    OutputLimit,
+    TimedOut,
 }
 
 impl fmt::Display for ProcessError {
@@ -38,6 +40,8 @@ impl fmt::Display for ProcessError {
             Self::InvalidArgument => "invalid process argument",
             Self::SpawnFailed => "failed to spawn process",
             Self::OutputFailed => "failed to capture process output",
+            Self::OutputLimit => "process output exceeded limit",
+            Self::TimedOut => "process exceeded time limit",
         })
     }
 }
@@ -56,6 +60,7 @@ impl ExitStatus {
     }
 }
 
+#[derive(Debug)]
 pub struct Output {
     pub status: ExitStatus,
     pub stdout: Vector<u8>,
@@ -301,6 +306,17 @@ impl Command {
     }
 
     pub fn output(&mut self) -> Result<Output, ProcessError> {
+        self.output_with_limits(64 * 1024 * 1024, 300_000)
+    }
+
+    pub fn output_with_limits(
+        &mut self,
+        max_output_bytes: usize,
+        timeout_millis: u64,
+    ) -> Result<Output, ProcessError> {
+        if max_output_bytes == 0 || timeout_millis == 0 {
+            return Err(ProcessError::InvalidArgument);
+        }
         #[cfg(windows)]
         let mut child = {
             let mut command_line = Vector::new();
@@ -351,22 +367,57 @@ impl Command {
         let mut stdout = Vector::new();
         let mut stderr = Vector::new();
         let mut buffer = [0u8; 8192];
+        let started = crate::Instant::now();
         loop {
             let stdout_read = child.read_stdout(&mut buffer);
+            if stdout
+                .len()
+                .saturating_add(stderr.len())
+                .saturating_add(stdout_read)
+                > max_output_bytes
+            {
+                let _ = child.kill();
+                return Err(ProcessError::OutputLimit);
+            }
             stdout
                 .try_extend_from_slice(&buffer[..stdout_read])
                 .map_err(|_| ProcessError::OutputFailed)?;
             let stderr_read = child.read_stderr(&mut buffer);
+            if stdout
+                .len()
+                .saturating_add(stderr.len())
+                .saturating_add(stderr_read)
+                > max_output_bytes
+            {
+                let _ = child.kill();
+                return Err(ProcessError::OutputLimit);
+            }
             stderr
                 .try_extend_from_slice(&buffer[..stderr_read])
                 .map_err(|_| ProcessError::OutputFailed)?;
             if let Some(code) = child.try_wait() {
                 loop {
                     let out = child.read_stdout(&mut buffer);
+                    if stdout
+                        .len()
+                        .saturating_add(stderr.len())
+                        .saturating_add(out)
+                        > max_output_bytes
+                    {
+                        return Err(ProcessError::OutputLimit);
+                    }
                     stdout
                         .try_extend_from_slice(&buffer[..out])
                         .map_err(|_| ProcessError::OutputFailed)?;
                     let err = child.read_stderr(&mut buffer);
+                    if stdout
+                        .len()
+                        .saturating_add(stderr.len())
+                        .saturating_add(err)
+                        > max_output_bytes
+                    {
+                        return Err(ProcessError::OutputLimit);
+                    }
                     stderr
                         .try_extend_from_slice(&buffer[..err])
                         .map_err(|_| ProcessError::OutputFailed)?;
@@ -379,6 +430,10 @@ impl Command {
                     stdout,
                     stderr,
                 });
+            }
+            if started.elapsed().as_millis() >= timeout_millis as u128 {
+                let _ = child.kill();
+                return Err(ProcessError::TimedOut);
             }
             if stdout_read == 0 && stderr_read == 0 {
                 #[cfg(windows)]
@@ -433,6 +488,53 @@ fn append_windows_argument(output: &mut Vector<u16>, argument: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_processes_enforce_output_and_time_limits() {
+        #[cfg(windows)]
+        let mut noisy = {
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$x='x'*8192;[Console]::Write($x)",
+            ]);
+            command
+        };
+        #[cfg(unix)]
+        let mut noisy = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "head -c 8192 /dev/zero"]);
+            command
+        };
+        assert_eq!(
+            noisy.output_with_limits(1024, 10_000).unwrap_err(),
+            ProcessError::OutputLimit
+        );
+
+        #[cfg(windows)]
+        let mut slow = {
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 2",
+            ]);
+            command
+        };
+        #[cfg(unix)]
+        let mut slow = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 2"]);
+            command
+        };
+        assert_eq!(
+            slow.output_with_limits(1024, 20).unwrap_err(),
+            ProcessError::TimedOut
+        );
+    }
 
     #[test]
     fn discovers_live_process_and_temporary_directory() {

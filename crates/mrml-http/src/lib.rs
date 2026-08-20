@@ -66,7 +66,16 @@ impl Url {
         }
         if host.is_empty()
             || !host.is_ascii()
-            || host.bytes().any(|b| b.is_ascii_control() || b == b' ')
+            || host.len() > 253
+            || host.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || label.starts_with('-')
+                    || label.ends_with('-')
+                    || !label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
         {
             return Err(HttpError::InvalidUrl);
         }
@@ -83,6 +92,9 @@ impl Url {
         } else {
             path.into()
         };
+        if !valid_target(&target) {
+            return Err(HttpError::InvalidUrl);
+        }
         Ok(Self {
             host: Text::from(host).to_ascii_lowercase(),
             port,
@@ -110,6 +122,9 @@ impl Url {
             let directory = base.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
             mrml_runtime::mrml_format!("{}/{}", directory, location)
         };
+        if !valid_target(&target) {
+            return Err(HttpError::InvalidUrl);
+        }
         Ok(Self {
             host: self.host.clone(),
             port: self.port,
@@ -230,9 +245,22 @@ impl Response {
                         return Err(HttpError::BodyTooLarge);
                     }
                     if size == 0 {
+                        let mut trailer_bytes = 0usize;
                         loop {
-                            if self.line()?.is_empty() {
+                            let trailer = self.line()?;
+                            trailer_bytes = trailer_bytes
+                                .checked_add(trailer.len() + 2)
+                                .ok_or(HttpError::HeaderTooLarge)?;
+                            if trailer_bytes > MAX_HEADER {
+                                return Err(HttpError::HeaderTooLarge);
+                            }
+                            if trailer.is_empty() {
                                 break;
+                            }
+                            let (name, value) =
+                                trailer.split_once(':').ok_or(HttpError::InvalidResponse)?;
+                            if !valid_header(name) || !valid_value(value) {
+                                return Err(HttpError::InvalidResponse);
                             }
                         }
                         *finished = true;
@@ -325,6 +353,9 @@ impl Client {
         headers: &[(&str, &str)],
         allow_sensitive: bool,
     ) -> Result<Response, HttpError> {
+        if !valid_value(&self.user_agent) || self.user_agent.len() > 1024 {
+            return Err(HttpError::InvalidUrl);
+        }
         let mut stream =
             TlsClientStream::connect(&url.host, url.port).map_err(|_| HttpError::Tls)?;
         let mut request = mrml_runtime::mrml_format!(
@@ -403,7 +434,13 @@ impl Client {
                 })
                 .map_err(|_| HttpError::Allocation)?
         }
-        let transfer = header_value(&parsed, "transfer-encoding").map(Text::from);
+        let mut transfer = None;
+        for header in parsed.iter().filter(|h| h.name == "transfer-encoding") {
+            if transfer.is_some() {
+                return Err(HttpError::InvalidResponse);
+            }
+            transfer = Some(header.value.clone());
+        }
         let mut content_length = None;
         for header in parsed.iter().filter(|h| h.name == "content-length") {
             let value: u64 = header
@@ -416,6 +453,9 @@ impl Client {
             content_length = Some(value)
         }
         let framing = if let Some(value) = transfer {
+            if content_length.is_some() {
+                return Err(HttpError::InvalidResponse);
+            }
             if !value.eq_ignore_ascii_case("chunked") {
                 return Err(HttpError::InvalidResponse);
             }
@@ -448,12 +488,6 @@ impl Default for Client {
         Self::new()
     }
 }
-fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {
-    headers
-        .iter()
-        .find(|h| h.name == name)
-        .map(|h| h.value.as_str())
-}
 fn valid_header(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -462,6 +496,12 @@ fn valid_header(value: &str) -> bool {
 }
 fn valid_value(value: &str) -> bool {
     value.bytes().all(|b| b == b'\t' || b >= 0x20 && b != 0x7f) && !value.contains(['\r', '\n'])
+}
+fn valid_target(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 16 * 1024
+        && value.starts_with('/')
+        && value.bytes().all(|b| b >= 0x21 && b <= 0x7e && b != b'\\')
 }
 
 #[cfg(test)]
@@ -477,6 +517,10 @@ mod tests {
             Url::parse("http://example.com"),
             Err(HttpError::UnsupportedScheme)
         );
+        assert!(Url::parse("https://example.com/path%20ok").is_ok());
+        assert!(Url::parse("https://example.com/a\r\nInjected: yes").is_err());
+        assert!(Url::parse("https://bad_host.example/").is_err());
+        assert!(Url::parse("https://-bad.example/").is_err());
     }
     #[test]
     fn live_get_when_configured() {
