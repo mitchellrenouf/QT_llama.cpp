@@ -18,6 +18,11 @@ pub struct Transformer {
     pub output: Vector<f32>,
 }
 
+pub struct TrainingReport {
+    pub steps: usize,
+    pub accuracy: f32,
+}
+
 impl Transformer {
     pub fn from_transitions(transitions: &[f32], vocab: usize) -> Self {
         let mut token_embd = filled(vocab * DIM, 0.0);
@@ -109,7 +114,62 @@ impl Transformer {
         Text::from_utf8_lossy(&tokenizer.decode(&generated))
     }
 
+    pub fn train_output(
+        &mut self,
+        tokens: &[u32],
+        steps: usize,
+        learning_rate: f32,
+    ) -> TrainingReport {
+        if tokens.len() < 2 || steps == 0 {
+            return TrainingReport {
+                steps: 0,
+                accuracy: 0.0,
+            };
+        }
+        let actual_steps = steps.min(tokens.len().saturating_mul(8));
+        let mut correct = 0usize;
+        for step in 0..actual_steps {
+            let position = 1 + step.wrapping_mul(1_000_003) % (tokens.len() - 1);
+            let start = position.saturating_sub(CONTEXT);
+            let hidden = self.hidden(&tokens[start..position]);
+            let logits = matvec(&self.output, &hidden, self.vocab, DIM);
+            let predicted = logits
+                .iter()
+                .enumerate()
+                .max_by(|left, right| left.1.total_cmp(right.1))
+                .map(|(token, _)| token)
+                .unwrap_or(0);
+            let target = tokens[position] as usize % self.vocab;
+            correct += usize::from(predicted == target);
+            let maximum = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut probabilities =
+                Vector::with_capacity(self.vocab).expect("MRML allocation failed");
+            let mut sum = 0.0;
+            for logit in logits {
+                let value = mrml_math::exp(logit - maximum);
+                probabilities.push(value);
+                sum += value;
+            }
+            let rate = learning_rate / (1.0 + step as f32 / actual_steps as f32);
+            for token in 0..self.vocab {
+                let gradient = probabilities[token] / sum - if token == target { 1.0 } else { 0.0 };
+                for dim in 0..DIM {
+                    self.output[token * DIM + dim] -= rate * gradient * hidden[dim];
+                }
+            }
+        }
+        TrainingReport {
+            steps: actual_steps,
+            accuracy: correct as f32 / actual_steps as f32,
+        }
+    }
+
     fn forward(&self, tokens: &[u32]) -> Vector<f32> {
+        let hidden = self.hidden(tokens);
+        matvec(&self.output, &hidden, self.vocab, DIM)
+    }
+
+    fn hidden(&self, tokens: &[u32]) -> Vector<f32> {
         let start = tokens.len().saturating_sub(CONTEXT);
         let active = &tokens[start..];
         let length = active.len().max(1);
@@ -183,28 +243,48 @@ impl Transformer {
             hidden[dim] += reduced[dim];
         }
         rms_norm(&mut hidden);
-        matvec(&self.output, &hidden, self.vocab, DIM)
+        hidden
     }
 }
 
 fn sample_logits(logits: &[f32], seed: u64) -> u32 {
-    let maximum = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut probabilities = Vector::with_capacity(logits.len()).expect("MRML allocation failed");
+    const TOP_K: usize = 8;
+    let mut candidates = Vector::with_capacity(TOP_K).expect("MRML allocation failed");
+    for (token, logit) in logits.iter().copied().enumerate() {
+        let insertion = candidates
+            .iter()
+            .position(|(_, value): &(usize, f32)| logit > *value)
+            .unwrap_or(candidates.len());
+        if insertion < TOP_K {
+            candidates
+                .try_insert(insertion, (token, logit))
+                .expect("MRML allocation failed");
+            if candidates.len() > TOP_K {
+                candidates.pop();
+            }
+        }
+    }
+    let maximum = candidates.first().map(|(_, value)| *value).unwrap_or(0.0);
+    let mut probabilities =
+        Vector::with_capacity(candidates.len()).expect("MRML allocation failed");
     let mut sum = 0.0;
-    for logit in logits {
-        let value = mrml_math::exp((*logit - maximum) / 0.8);
+    for (_, logit) in &candidates {
+        let value = mrml_math::exp((*logit - maximum) / 0.55);
         probabilities.push(value);
         sum += value;
     }
     let target = (seed >> 32) as u32 as f32 / u32::MAX as f32 * sum;
     let mut cumulative = 0.0;
-    for (token, probability) in probabilities.iter().enumerate() {
+    for (index, probability) in probabilities.iter().enumerate() {
         cumulative += *probability;
         if target <= cumulative {
-            return token as u32;
+            return candidates[index].0 as u32;
         }
     }
-    probabilities.len().saturating_sub(1) as u32
+    candidates
+        .last()
+        .map(|(token, _)| *token as u32)
+        .unwrap_or(0)
 }
 
 fn matvec(matrix: &[f32], input: &[f32], rows: usize, columns: usize) -> Vector<f32> {
@@ -268,5 +348,18 @@ mod tests {
             .iter()
             .zip(&contextual)
             .any(|(left, right)| (left - right).abs() > 1e-5));
+    }
+
+    #[test]
+    fn contextual_cross_entropy_training_learns_repetition() {
+        let vocab = 258;
+        let transitions = filled(vocab * vocab, 1.0 / vocab as f32);
+        let mut model = Transformer::from_transitions(&transitions, vocab);
+        let mut tokens = Vector::new();
+        for _ in 0..128 {
+            tokens.extend([2, 3]);
+        }
+        let report = model.train_output(&tokens, 500, 0.03);
+        assert!(report.accuracy > 0.5, "accuracy={}", report.accuracy);
     }
 }

@@ -305,7 +305,8 @@ article and export it as GGUF:
 cargo run --release -p mrml-trainer -- `
   --zim C:\path\to\wikipedia.zim `
   --output target\wikipedia-one-article.gguf `
-  --article 0 --articles 1000 --vocab 384 --prompt hello
+  --article 0 --articles 1000 --vocab 384 `
+  --steps 20000 --learning-rate 0.02 --prompt hello
 ```
 
 The trainer reports extraction, tokenizer training, model construction, GGUF
@@ -315,7 +316,10 @@ position embeddings, four-head causal attention, residual/RMS normalization,
 GELU feed-forward layers, and a vocabulary head. Its first fast training stage
 fits the output projection from corpus transition statistics while attention
 and feed-forward weights use deterministic initialization. It is a research
-bootstrap checkpoint, not yet a fully gradient-trained competitive LLM.
+bootstrap checkpoint. Contextual cross-entropy updates train the vocabulary
+projection (`--steps` and `--learning-rate`); the remaining transformer tensors
+are deterministic initializations pending full backpropagation support. It is
+not yet a fully gradient-trained competitive LLM.
 
 ## Development roadmap
 

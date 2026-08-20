@@ -18,6 +18,8 @@ struct Args {
     articles: usize,
     vocab: usize,
     prompt: Text,
+    steps: usize,
+    learning_rate: f32,
 }
 
 fn application_main() -> Result<(), Text> {
@@ -41,7 +43,8 @@ fn run() -> Result<(), Text> {
 
     let model_start = Instant::now();
     let transitions = train_bigram(&tokens, tokenizer.vocab_size())?;
-    let model = Transformer::from_transitions(&transitions, tokenizer.vocab_size());
+    let mut model = Transformer::from_transitions(&transitions, tokenizer.vocab_size());
+    let training = model.train_output(&tokens, args.steps, args.learning_rate);
     let model_time = model_start.elapsed();
 
     let export_start = Instant::now();
@@ -70,6 +73,11 @@ fn run() -> Result<(), Text> {
     mrml_println!("  vocab   : {}", tokenizer.vocab_size());
     mrml_println!("  model   : 1 layer, {DIM} dim, {HEADS} heads, {FFN} FFN, {CONTEXT} context");
     mrml_println!(
+        "  updates : {} contextual cross-entropy steps",
+        training.steps
+    );
+    mrml_println!("  accuracy: {:.2}%", training.accuracy * 100.0);
+    mrml_println!(
         "  params  : {} F32 values across {} tensors",
         parameters,
         gguf.tensors.len()
@@ -90,7 +98,7 @@ fn run() -> Result<(), Text> {
 fn parse_args() -> Result<Args, Text> {
     let all = mrml_runtime::command_arguments();
     if all.iter().any(|value| value == "--help" || value == "-h") {
-        mrml_println!("Usage: mrml-trainer --zim <archive.zim> --output <model.gguf> [--article N] [--articles N] [--vocab N] [--prompt TEXT]");
+        mrml_println!("Usage: mrml-trainer --zim <archive.zim> --output <model.gguf> [--article N] [--articles N] [--vocab N] [--steps N] [--learning-rate F] [--prompt TEXT]");
         mrml_runtime::exit_process(0);
     }
     let mut zim = None;
@@ -99,6 +107,8 @@ fn parse_args() -> Result<Args, Text> {
     let mut articles = 1usize;
     let mut vocab = 384usize;
     let mut prompt = Text::from("hello");
+    let mut steps = 20_000usize;
+    let mut learning_rate = 0.02f32;
     let mut index = 1;
     while index < all.len() {
         let value = all
@@ -115,6 +125,12 @@ fn parse_args() -> Result<Args, Text> {
             }
             "--vocab" => vocab = value.parse().map_err(|_| Text::from("invalid --vocab"))?,
             "--prompt" => prompt = value.clone(),
+            "--steps" => steps = value.parse().map_err(|_| Text::from("invalid --steps"))?,
+            "--learning-rate" => {
+                learning_rate = value
+                    .parse()
+                    .map_err(|_| Text::from("invalid --learning-rate"))?
+            }
             unknown => return Err(format_text(format_args!("unknown argument: {unknown}"))),
         }
         index += 2;
@@ -126,6 +142,8 @@ fn parse_args() -> Result<Args, Text> {
         articles: articles.max(1),
         vocab,
         prompt,
+        steps,
+        learning_rate,
     })
 }
 
@@ -201,7 +219,7 @@ fn write_gguf(
     write_u32(&mut file, 0x4655_4747)?;
     write_u32(&mut file, 3)?;
     write_u64(&mut file, 9)?;
-    write_u64(&mut file, 12)?;
+    write_u64(&mut file, 13)?;
     metadata_string(&mut file, "general.architecture", "mrml_transformer")?;
     metadata_string(
         &mut file,
@@ -226,6 +244,7 @@ fn write_gguf(
     metadata_u32(&mut file, "tokenizer.ggml.bos_token_id", 0)?;
     metadata_u32(&mut file, "tokenizer.ggml.eos_token_id", EOS_ID)?;
     metadata_tokens(&mut file, tokenizer)?;
+    metadata_merges(&mut file, tokenizer)?;
 
     let tensors: [(&str, &[usize], &[f32]); 9] = [
         ("token_embd.weight", &[DIM, model.vocab], &model.token_embd),
@@ -299,19 +318,42 @@ fn metadata_tokens(file: &mut File, tokenizer: &Tokenizer) -> Result<(), Text> {
     write_u32(file, 8)?;
     write_u64(file, tokenizer.vocab_size() as u64)?;
     for (index, piece) in tokenizer.pieces().iter().enumerate() {
-        if index == 0 {
-            write_string(file, "<bos>")?;
-        } else if index == 1 {
-            write_string(file, "<eos>")?;
-        } else {
-            let mut encoded = Text::from("hex:");
-            for byte in piece {
-                write!(encoded, "{byte:02x}").map_err(|_| Text::from("encode tokenizer piece"))?;
-            }
-            write_string(file, &encoded)?;
-        }
+        write_string(file, &piece_name(index, piece)?)?;
     }
     Ok(())
+}
+
+fn metadata_merges(file: &mut File, tokenizer: &Tokenizer) -> Result<(), Text> {
+    write_string(file, "tokenizer.ggml.merges")?;
+    write_u32(file, 9)?;
+    write_u32(file, 8)?;
+    write_u64(file, tokenizer.merges().len() as u64)?;
+    for merge in tokenizer.merges() {
+        let left = piece_name(
+            merge.left as usize,
+            &tokenizer.pieces()[merge.left as usize],
+        )?;
+        let right = piece_name(
+            merge.right as usize,
+            &tokenizer.pieces()[merge.right as usize],
+        )?;
+        write_string(file, &format_text(format_args!("{left} {right}")))?;
+    }
+    Ok(())
+}
+
+fn piece_name(index: usize, piece: &[u8]) -> Result<Text, Text> {
+    if index == 0 {
+        return Ok("<bos>".into());
+    }
+    if index == 1 {
+        return Ok("<eos>".into());
+    }
+    let mut encoded = Text::from("hex:");
+    for byte in piece {
+        write!(encoded, "{byte:02x}").map_err(|_| Text::from("encode tokenizer piece"))?;
+    }
+    Ok(encoded)
 }
 
 fn write_string(file: &mut File, value: &str) -> Result<(), Text> {
@@ -382,6 +424,7 @@ mod tests {
             gguf.tensors.get("output.weight").unwrap().shape.numel(),
             258 * DIM
         );
+        assert!(gguf.get_meta("tokenizer.ggml.merges").is_some());
         mrml_runtime::remove_file(&path).unwrap();
     }
 }
