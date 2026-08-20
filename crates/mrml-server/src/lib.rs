@@ -93,6 +93,7 @@ pub struct ApiServer {
     client: Shared<MrmlClient>,
     port: u16,
     tls: Option<Shared<TlsServerConfig>>,
+    bearer_token: Option<Shared<Text>>,
 }
 
 impl ApiServer {
@@ -101,7 +102,18 @@ impl ApiServer {
             client,
             port,
             tls: None,
+            bearer_token: None,
         }
+    }
+
+    pub fn with_bearer_token(mut self, token: Text) -> Result<Self> {
+        if token.len() < 32 || !token.is_ascii() || token.bytes().any(|b| b.is_ascii_whitespace()) {
+            return Err(mrml_error::message(
+                "MRML_API_TOKEN must be at least 32 non-whitespace ASCII bytes",
+            ));
+        }
+        self.bearer_token = Some(Shared::new(token));
+        Ok(self)
     }
 
     pub fn with_tls_pem(mut self, certificate_pem: &[u8], private_key_pem: &[u8]) -> Result<Self> {
@@ -113,7 +125,11 @@ impl ApiServer {
     }
 
     pub fn run(&self) -> Result<()> {
-        let listener = TcpListener::bind([0, 0, 0, 0], self.port)?;
+        let token = self
+            .bearer_token
+            .clone()
+            .ok_or_else(|| mrml_error::message("bearer authentication is required"))?;
+        let listener = TcpListener::bind([127, 0, 0, 1], self.port)?;
         println!(
             "{}",
             format!(
@@ -137,6 +153,7 @@ impl ApiServer {
 
             let client = self.client.clone();
             let tls = self.tls.clone();
+            let token = token.clone();
             if mrml_runtime::spawn_detached(move || {
                 let connection = match tls {
                     Some(config) => match TlsServerStream::accept(socket, &config) {
@@ -148,7 +165,7 @@ impl ApiServer {
                     },
                     None => Connection::Plain(socket),
                 };
-                if let Err(e) = handle_connection(connection, client) {
+                if let Err(e) = handle_connection(connection, client, &token) {
                     eprintln!("HTTP Handler Error: {}", e);
                 }
             })
@@ -160,7 +177,37 @@ impl ApiServer {
     }
 }
 
-fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Result<()> {
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        difference |= left.get(index).copied().unwrap_or(0) as usize
+            ^ right.get(index).copied().unwrap_or(0) as usize;
+    }
+    difference == 0
+}
+
+fn authorized(headers: &str, expected: &str) -> bool {
+    let mut authorization = None;
+    for line in headers.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("authorization")
+        {
+            if authorization.is_some() {
+                return false;
+            }
+            authorization = Some(value.trim());
+        }
+    }
+    authorization
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| constant_time_equal(token.as_bytes(), expected.as_bytes()))
+}
+
+fn handle_connection(
+    mut socket: Connection,
+    client: Shared<MrmlClient>,
+    bearer_token: &str,
+) -> Result<()> {
     const MAX_HEADER_BYTES: usize = 64 * 1024;
     const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
     let mut buf = Vector::new();
@@ -186,15 +233,18 @@ fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Resu
     };
 
     let header_str = core::str::from_utf8(&buf[..header_end_pos]).map_err(mrml_error::message)?;
+    if !authorized(header_str, bearer_token) {
+        socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        return Ok(());
+    }
     let mut lines = header_str.lines();
     let req_line = lines.next().unwrap_or("");
     let mut parts = req_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
 
-    // Handle CORS preflight
     if method == "OPTIONS" {
-        let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\n\r\n";
+        let resp = "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, POST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         socket.write_all(resp.as_bytes())?;
         return Ok(());
     }
@@ -214,7 +264,7 @@ fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Resu
             ),
         ]));
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
             body
         );
@@ -273,7 +323,7 @@ fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Resu
                     Value::text(format!("Invalid JSON: {e}")),
                 )]));
                 let resp = format!(
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     err_body.len(),
                     err_body
                 );
@@ -309,7 +359,7 @@ fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Resu
         };
 
         if stream_mode {
-            let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\nX-Content-Type-Options: nosniff\r\n\r\n";
             socket.write_all(header.as_bytes())?;
 
             let now = (mrml_tools::platform::unix_timestamp_millis() / 1000) as u64;
@@ -351,7 +401,7 @@ fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Resu
                 ("choices", Value::Array(choices)),
             ]));
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -479,14 +529,19 @@ mod json_tests {
         assert!(
             mrml_runtime::spawn_detached(move || {
                 let socket = listener.accept().unwrap();
-                handle_connection(Connection::Plain(socket), client).unwrap();
+                handle_connection(
+                    Connection::Plain(socket),
+                    client,
+                    "01234567890123456789012345678901",
+                )
+                .unwrap();
             })
             .is_ok()
         );
 
         let mut socket = TcpStream::connect([127, 0, 0, 1], port).unwrap();
         socket
-            .write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer 01234567890123456789012345678901\r\n\r\n")
             .unwrap();
         let mut response = Vector::new();
         let mut buffer = [0u8; 1024];
@@ -501,5 +556,22 @@ mod json_tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("gemma-4-26B-A4B-it"));
+    }
+
+    #[test]
+    fn bearer_auth_is_exact_and_rejects_duplicates() {
+        let token = "01234567890123456789012345678901";
+        assert!(authorized(
+            "GET / HTTP/1.1\r\nAuthorization: Bearer 01234567890123456789012345678901\r\n",
+            token
+        ));
+        assert!(!authorized(
+            "GET / HTTP/1.1\r\nAuthorization: Bearer wrong\r\n",
+            token
+        ));
+        assert!(!authorized(
+            "GET / HTTP/1.1\r\nAuthorization: Bearer 01234567890123456789012345678901\r\nAuthorization: Bearer 01234567890123456789012345678901\r\n",
+            token
+        ));
     }
 }

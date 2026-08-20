@@ -193,6 +193,7 @@ cargo run --release -p mrml-cli --features cuda -- --model C:\path\to\model.gguf
 # chain and the unencrypted key must be PKCS #8 or PKCS #1 RSA.
 $env:MRML_TLS_CERT = "C:\path\to\fullchain.pem"
 $env:MRML_TLS_KEY = "C:\path\to\private-key.pem"
+$env:MRML_API_TOKEN = "replace-with-at-least-32-random-ascii-bytes"
 cargo run --release -p mrml-server --features cuda -- `
   --model C:\path\to\model.gguf --port 8080
 ```
@@ -204,6 +205,9 @@ interoperability for HTTPS origins that have not deployed it, validate the
 server certificate and hostname against the native trust store, and store a
 SHA3-512 sidecar beside each completed model. A mismatched model or resume
 checkpoint is rejected and downloaded again.
+The server listens only on `127.0.0.1`, requires an exact
+`Authorization: Bearer $MRML_API_TOKEN` header on every request, disables
+cross-origin browser access, and marks responses as non-cacheable.
 
 Run a binary with `--help` for its complete set of options. Backend and GPU
 layer arguments are exposed for interface compatibility, but the limitations
