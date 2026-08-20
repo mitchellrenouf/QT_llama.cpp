@@ -130,8 +130,10 @@ fn modular_power(
     for byte in exponent {
         for bit in (0..8).rev() {
             result = montgomery(&result, &result, &modulus, n, n0);
-            if byte >> bit & 1 != 0 {
-                result = montgomery(&result, &base, &modulus, n, n0);
+            let multiplied = montgomery(&result, &base, &modulus, n, n0);
+            let mask = 0u32.wrapping_sub(((byte >> bit) & 1) as u32);
+            for index in 0..n {
+                result[index] = (result[index] & !mask) | (multiplied[index] & mask);
             }
         }
     }

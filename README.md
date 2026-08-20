@@ -84,7 +84,9 @@ Working today:
 
 - Interactive and one-shot terminal clients.
 - Versioned JSONL interface for automation and regression tests.
-- OpenAI-compatible `/v1/models` and `/v1/chat/completions` HTTP/SSE server.
+- OpenAI-compatible `/v1/models` and `/v1/chat/completions` HTTPS/SSE server.
+- Native authenticated TLS 1.3 with hybrid X25519MLKEM768 key agreement.
+- Native streaming HTTPS model downloads with resumable SHA3-512 integrity sidecars.
 - Memory-mapped GGUF access with native Q4_0/Q8_0 CPU operations.
 - NVIDIA CUDA decode and batched prompt prefill.
 - F16, Q8_0, and Q4_0 KV-cache storage.
@@ -175,7 +177,7 @@ space, network use, and VRAM before accepting a download.
 | --- | --- | --- |
 | `mrml-cli` | `mrml-cli` | Interactive and one-shot terminal frontend |
 | `mrml-machine` | `mrml-machine` | Stable JSONL automation and benchmark frontend |
-| `mrml-server` | `mrml-server` | OpenAI-compatible HTTP/SSE server |
+| `mrml-server` | `mrml-server` | OpenAI-compatible HTTPS/SSE server |
 | `mrml-trainer` | `mrml-trainer` | Wikipedia ZIM training and GGUF export |
 | `mrml-agent` | — | Agent orchestration, configuration, rules, and model resolution |
 | `mrml-model` | — | Application-facing model and streaming adapter |
@@ -187,10 +189,21 @@ Common commands:
 # Interactive terminal
 cargo run --release -p mrml-cli --features cuda -- --model C:\path\to\model.gguf
 
-# OpenAI-compatible server
+# OpenAI-compatible HTTPS server. The PEM certificate must contain the full
+# chain and the unencrypted key must be PKCS #8 or PKCS #1 RSA.
+$env:MRML_TLS_CERT = "C:\path\to\fullchain.pem"
+$env:MRML_TLS_KEY = "C:\path\to\private-key.pem"
 cargo run --release -p mrml-server --features cuda -- `
   --model C:\path\to\model.gguf --port 8080
 ```
+
+The HTTPS server requires X25519MLKEM768 and rejects clients that do not offer
+the standardized hybrid group. Its certificate handshake uses TLS 1.3
+RSA-PSS/SHA-256. Model downloads prefer the same hybrid group, retain X25519
+interoperability for HTTPS origins that have not deployed it, validate the
+server certificate and hostname against the native trust store, and store a
+SHA3-512 sidecar beside each completed model. A mismatched model or resume
+checkpoint is rejected and downloaded again.
 
 Run a binary with `--help` for its complete set of options. Backend and GPU
 layer arguments are exposed for interface compatibility, but the limitations

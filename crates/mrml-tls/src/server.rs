@@ -134,9 +134,17 @@ fn pem_blocks(input: &[u8], label: &[u8]) -> Result<Vector<Vector<u8>>, TlsError
         let mut out = Vector::new();
         let mut bits = 0u32;
         let mut count = 0u8;
+        let mut padded = false;
         for &b in &input[start..stop] {
+            if b.is_ascii_whitespace() {
+                continue;
+            }
             if b == b'=' {
-                break;
+                padded = true;
+                continue;
+            }
+            if padded {
+                return Err(TlsError::Certificate);
             }
             if let Some(v) = base64_value(b) {
                 bits = (bits << 6) | v as u32;
@@ -147,6 +155,8 @@ fn pem_blocks(input: &[u8], label: &[u8]) -> Result<Vector<Vector<u8>>, TlsError
                     bits = 0;
                     count = 0;
                 }
+            } else {
+                return Err(TlsError::Certificate);
             }
         }
         if count == 2 {
@@ -170,6 +180,11 @@ pub struct TlsServerConfig {
     certificates: Vector<Vector<u8>>,
     modulus: Vector<u8>,
     private_exponent: Vector<u8>,
+}
+impl Drop for TlsServerConfig {
+    fn drop(&mut self) {
+        self.private_exponent.fill(0);
+    }
 }
 impl TlsServerConfig {
     pub fn from_pem(certificate_pem: &[u8], private_key_pem: &[u8]) -> Result<Self, TlsError> {
@@ -198,6 +213,9 @@ impl TlsServerConfig {
         let modulus = integer(&mut s)?;
         integer(&mut s)?;
         let private_exponent = integer(&mut s)?;
+        if !(256..=512).contains(&modulus.len()) || private_exponent.is_empty() {
+            return Err(TlsError::Certificate);
+        }
         let mut n = Vector::new();
         n.try_extend_from_slice(modulus)
             .map_err(|_| TlsError::AllocationFailed)?;
@@ -469,6 +487,24 @@ mod tests {
     use super::*;
     use crate::TlsClientStream;
     use mrml_runtime::{TcpListener, environment_variable, read_file};
+
+    #[test]
+    fn pem_decoder_rejects_non_base64_and_trailing_data() {
+        assert!(
+            pem_blocks(
+                b"-----BEGIN CERTIFICATE-----\nYWJj!\n-----END CERTIFICATE-----",
+                b"CERTIFICATE"
+            )
+            .is_err()
+        );
+        assert!(
+            pem_blocks(
+                b"-----BEGIN CERTIFICATE-----\nYQ==Y\n-----END CERTIFICATE-----",
+                b"CERTIFICATE"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn authenticated_hybrid_client_server_interoperate_when_configured() {

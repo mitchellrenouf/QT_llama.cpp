@@ -161,6 +161,8 @@ impl ApiServer {
 }
 
 fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Result<()> {
+    const MAX_HEADER_BYTES: usize = 64 * 1024;
+    const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
     let mut buf = Vector::new();
     buf.resize(8192, 0);
     let mut total_read = 0;
@@ -175,8 +177,11 @@ fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Resu
         if let Some(pos) = find_subsequence(&buf[..total_read], b"\r\n\r\n") {
             break pos;
         }
+        if total_read >= MAX_HEADER_BYTES {
+            return Err(mrml_error::message("HTTP request headers exceed 64 KiB"));
+        }
         if total_read >= buf.len() {
-            buf.resize(buf.len() * 2, 0);
+            buf.resize((buf.len() * 2).min(MAX_HEADER_BYTES), 0);
         }
     };
 
@@ -218,25 +223,48 @@ fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Resu
     }
 
     if method == "POST" && (path == "/v1/chat/completions" || path == "/chat/completions") {
-        let mut content_length = 0;
+        let mut content_length = None;
         for line in lines {
             if let Some((name, val)) = line.split_once(':') {
                 if name.eq_ignore_ascii_case("content-length") {
-                    content_length = val.trim().parse().unwrap_or(0);
+                    let parsed = val
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| mrml_error::message("invalid HTTP Content-Length"))?;
+                    if content_length.is_some_and(|prior| prior != parsed) {
+                        return Err(mrml_error::message(
+                            "conflicting HTTP Content-Length headers",
+                        ));
+                    }
+                    content_length = Some(parsed);
+                } else if name.eq_ignore_ascii_case("transfer-encoding") {
+                    return Err(mrml_error::message(
+                        "HTTP request transfer encoding is unsupported",
+                    ));
                 }
             }
         }
+        let content_length = content_length.unwrap_or(0);
+        if content_length > MAX_BODY_BYTES {
+            return Err(mrml_error::message("HTTP request body exceeds 16 MiB"));
+        }
 
         let body_start = header_end_pos + 4;
-        while total_read < body_start + content_length {
+        let body_end = body_start
+            .checked_add(content_length)
+            .ok_or_else(|| mrml_error::message("HTTP request size overflow"))?;
+        if buf.len() < body_end {
+            buf.resize(body_end, 0);
+        }
+        while total_read < body_end {
             let n = socket.read(&mut buf[total_read..])?;
             if n == 0 {
-                break;
+                return Err(mrml_error::message("truncated HTTP request body"));
             }
             total_read += n;
         }
 
-        let body_bytes = &buf[body_start..body_start + content_length];
+        let body_bytes = &buf[body_start..body_end];
         let chat_req = match OpenAiChatRequest::parse(body_bytes) {
             Ok(r) => r,
             Err(e) => {
