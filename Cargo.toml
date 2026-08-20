@@ -20,6 +20,7 @@ members = [
     "crates/mrml-zstd",
     "crates/mrml-wikipedia",
     "crates/mrml-tokenizer",
+    "crates/mrml-trainer",
 ]
 
 [workspace.package]

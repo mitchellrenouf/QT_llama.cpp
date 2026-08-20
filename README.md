@@ -139,6 +139,7 @@ space, network use, and VRAM before accepting a download.
 | `mrml-cli` | `mrml-cli` | Interactive and one-shot terminal frontend |
 | `mrml-machine` | `mrml-machine` | Stable JSONL automation and benchmark frontend |
 | `mrml-server` | `mrml-server` | OpenAI-compatible HTTP/SSE server |
+| `mrml-trainer` | `mrml-trainer` | Wikipedia ZIM training and GGUF export |
 | `mrml-agent` | — | Agent orchestration, configuration, rules, and model resolution |
 | `mrml-model` | — | Application-facing model and streaming adapter |
 | `mrml-tensor` | — | GGUF execution, tensor math, CPU kernels, and CUDA kernels |
@@ -296,6 +297,21 @@ $env:MRML_TEST_ZIM = "C:\path\to\wikipedia.zim"
 $env:MRML_TEST_ZIM_ALL = "1"
 cargo test --release -p mrml-wikipedia external_ -- --nocapture
 ```
+
+Train a small from-scratch next-token research baseline from one substantive
+article and export it as GGUF:
+
+```powershell
+cargo run --release -p mrml-trainer -- `
+  --zim C:\path\to\wikipedia.zim `
+  --output target\wikipedia-one-article.gguf `
+  --article 0 --vocab 384
+```
+
+The trainer reports extraction, tokenizer training, model training, GGUF export,
+validation, and total wall time separately. The resulting `mrml_bigram` model is
+a compact byte-BPE/bigram baseline for validating the dataset and training
+pipeline; it is not presented as a transformer or a competitive general LLM.
 
 ## Development roadmap
 

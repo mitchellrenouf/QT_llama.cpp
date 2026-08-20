@@ -1,0 +1,18 @@
+[package]
+name = "mrml-trainer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Dependency-free MRML trainer and GGUF exporter"
+autobins = false
+
+[[bin]]
+name = "mrml-trainer"
+path = "src/main.rs"
+
+[dependencies]
+mrml-runtime = { path = "../mrml-runtime" }
+mrml-tokenizer = { path = "../mrml-tokenizer" }
+mrml-wikipedia = { path = "../mrml-wikipedia" }
+mrml-tensor = { path = "../mrml-tensor" }
