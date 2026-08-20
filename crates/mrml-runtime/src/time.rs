@@ -1,8 +1,14 @@
 use core::time::Duration;
 
 pub fn unix_time_seconds() -> Option<u64> {
-    #[cfg(windows)] { mrml_windows::unix_time_seconds() }
-    #[cfg(unix)] { mrml_linux::unix_time_seconds() }
+    #[cfg(windows)]
+    {
+        mrml_windows::unix_time_seconds()
+    }
+    #[cfg(unix)]
+    {
+        mrml_linux::unix_time_seconds()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

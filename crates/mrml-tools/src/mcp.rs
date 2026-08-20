@@ -1,6 +1,6 @@
 use mrml_error::{Result, anyhow};
-use mrml_runtime::{Command, PipedChild, Shared, SpinMutex, Text, Vector};
 use mrml_runtime::Text as String;
+use mrml_runtime::{Command, PipedChild, Shared, SpinMutex, Text, Vector};
 use serde_json::Value;
 
 use crate::{DynTool, Tool};

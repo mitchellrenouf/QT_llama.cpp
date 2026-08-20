@@ -1,10 +1,10 @@
 use crate::Tool;
 use crate::diff::format_colorized_diff;
 use mrml_error::{Result, anyhow};
-use mrml_runtime::{Text, Vector, mrml_print as print};
-use mrml_runtime::{Text as String, Vector as Vec, mrml_format as format};
-use serde_json::json;
 use mrml_runtime::Command;
+use mrml_runtime::{Text as String, Vector as Vec, mrml_format as format};
+use mrml_runtime::{Text, Vector, mrml_print as print};
+use serde_json::json;
 
 pub struct ViewFileTool;
 impl Tool for ViewFileTool {
@@ -238,9 +238,9 @@ impl Tool for ListDirTool {
             let size = if !entry.is_directory && !entry.is_symlink {
                 let entry_path = mrml_runtime::join_path(&full_path, &file_name);
                 mrml_runtime::File::open(&entry_path)
-                .and_then(|file| file.len())
-                .map(|length| format!(" ({} bytes)", length))
-                .unwrap_or_default()
+                    .and_then(|file| file.len())
+                    .map(|length| format!(" ({} bytes)", length))
+                    .unwrap_or_default()
             } else {
                 String::new()
             };
@@ -322,7 +322,9 @@ impl Tool for GrepSearchTool {
         } else {
             let mut output = String::new();
             for (index, item) in matches.iter().enumerate() {
-                if index != 0 { output.push('\n'); }
+                if index != 0 {
+                    output.push('\n');
+                }
                 output.push_str(item);
             }
             Ok(output)
@@ -412,12 +414,15 @@ mod tests {
     static WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn test_workspace() -> Text {
-        let path = mrml_runtime::join_path(&mrml_runtime::temporary_directory(), &mrml_runtime::mrml_format!(
-            "mrml-tools-editor-{}-{}-{}",
-            mrml_runtime::process_id(),
-            crate::platform::unix_timestamp_millis(),
-            WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = mrml_runtime::join_path(
+            &mrml_runtime::temporary_directory(),
+            &mrml_runtime::mrml_format!(
+                "mrml-tools-editor-{}-{}-{}",
+                mrml_runtime::process_id(),
+                crate::platform::unix_timestamp_millis(),
+                WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ),
+        );
         mrml_runtime::create_dir_all(&path).unwrap();
         path
     }

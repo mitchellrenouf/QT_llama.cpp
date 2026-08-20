@@ -1,6 +1,6 @@
 use crate::Tool;
-use mrml_error::{Result, anyhow};
 use core::sync::atomic::{AtomicBool, Ordering};
+use mrml_error::{Result, anyhow};
 use mrml_runtime::{Command, Vector};
 use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::json;
@@ -93,10 +93,8 @@ impl Tool for RecordAudioTool {
 
     async fn execute(&self, workspace_root: &str, args: serde_json::Value) -> Result<String> {
         let duration = args["duration_secs"].as_i64().unwrap_or(5);
-        let audio_dir = mrml_runtime::join_path(
-            &mrml_runtime::join_path(workspace_root, ".mrml"),
-            "audio",
-        );
+        let audio_dir =
+            mrml_runtime::join_path(&mrml_runtime::join_path(workspace_root, ".mrml"), "audio");
         mrml_runtime::create_dir_all(&audio_dir)?;
 
         let timestamp = crate::platform::local_timestamp_string();
@@ -129,7 +127,13 @@ impl Tool for RecordAudioTool {
 
         if !recorded && crate::desktop::is_executable_in_path("arecord").is_some() {
             let out = Command::new("arecord")
-                .args(["-d", &format!("{}", duration), "-f", "cd", path_str.as_str()])
+                .args([
+                    "-d",
+                    &format!("{}", duration),
+                    "-f",
+                    "cd",
+                    path_str.as_str(),
+                ])
                 .output();
             if let Ok(o) = out {
                 if o.status.success() && crate::platform::path_is_file(&path_str) {
@@ -148,9 +152,7 @@ impl Tool for RecordAudioTool {
             return Err(anyhow!("Audio file was not created at {}", path_str));
         }
 
-        let audio_bytes = mrml_runtime::read_file(
-            &path_str,
-        )?;
+        let audio_bytes = mrml_runtime::read_file(&path_str)?;
         let base64_str = crate::encoding::base64_encode(&audio_bytes);
 
         Ok(format!(

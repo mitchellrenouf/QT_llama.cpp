@@ -1,5 +1,8 @@
 use mrml_error::Result;
-use mrml_runtime::{Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_print as print, mrml_println as println};
+use mrml_runtime::{
+    Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_print as print,
+    mrml_println as println,
+};
 use mrml_terminal_style::Colorize;
 
 use crate::client::{ChatMessage, MrmlClient, StreamEvent};
@@ -42,7 +45,11 @@ fn verified_time_answer(tool_output: &str) -> Option<mrml_runtime::Text> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty() && *line != "(empty)")?;
-    Some(format!("The current local time is **{value}**.").as_str().into())
+    Some(
+        format!("The current local time is **{value}**.")
+            .as_str()
+            .into(),
+    )
 }
 
 fn verified_command_answer(tool_output: &str) -> Option<mrml_runtime::Text> {
@@ -388,14 +395,8 @@ impl MrmlAgent {
         let serialized = serde_json::stringify(&serde_json::Value::Array(
             self.history.iter().map(ChatMessage::to_json).collect(),
         ));
-        mrml_runtime::write_file(
-            &file_path,
-            serialized.as_bytes(),
-        )?;
-        println!(
-            "Session saved to: {}",
-            file_path.cyan()
-        );
+        mrml_runtime::write_file(&file_path, serialized.as_bytes())?;
+        println!("Session saved to: {}", file_path.cyan());
         Ok(file_path)
     }
 
@@ -408,14 +409,9 @@ impl MrmlAgent {
             &format!("{}.json", name),
         );
         if !mrml_runtime::path_is_file(&file_path) {
-            return Err(mrml_error::anyhow!(
-                "Session file not found: {}",
-                file_path
-            ));
+            return Err(mrml_error::anyhow!("Session file not found: {}", file_path));
         }
-        let content = mrml_runtime::read_file_text(
-            &file_path,
-        )?;
+        let content = mrml_runtime::read_file_text(&file_path)?;
         let value: serde_json::Value = serde_json::from_str(&content)?;
         let history = value
             .as_array()
@@ -439,9 +435,7 @@ impl MrmlAgent {
         }
 
         let mut list = Vector::new();
-        for entry in mrml_runtime::read_directory(
-            &sessions_dir,
-        )? {
+        for entry in mrml_runtime::read_directory(&sessions_dir)? {
             if !entry.is_directory && entry.name.ends_with(".json") {
                 list.push(entry.name[..entry.name.len() - 5].into());
             }
@@ -506,10 +500,7 @@ impl MrmlAgent {
                 .registry
                 .get("run_command")
                 .unwrap()
-                .execute(
-                    &self.config.workspace_root,
-                    args,
-                )
+                .execute(&self.config.workspace_root, args)
                 .await;
             match result {
                 Ok(output) => {
@@ -624,13 +615,7 @@ impl MrmlAgent {
 
                 let tool_opt = self.registry.get(name);
                 let tool_result = match tool_opt {
-                    Some(tool) => {
-                        tool.execute(
-                            &self.config.workspace_root,
-                            parsed_args,
-                        )
-                        .await
-                    }
+                    Some(tool) => tool.execute(&self.config.workspace_root, parsed_args).await,
                     None => Err(mrml_tools::tool_error(format!(
                         "Unknown tool requested: {}",
                         name
@@ -640,8 +625,8 @@ impl MrmlAgent {
                 match tool_result {
                     Ok(output) => {
                         event_sink(StreamEvent::ToolExecuted {
-                                    name: name.as_str().into(),
-                                    result: output.as_str().into(),
+                            name: name.as_str().into(),
+                            result: output.as_str().into(),
                         });
                         self.history.push(ChatMessage::tool(
                             tool_call.id.clone(),
@@ -652,8 +637,8 @@ impl MrmlAgent {
                     Err(e) => {
                         let err_msg = format!("Tool execution failed: {}", e);
                         event_sink(StreamEvent::ToolExecuted {
-                                    name: name.as_str().into(),
-                                    result: err_msg.as_str().into(),
+                            name: name.as_str().into(),
+                            result: err_msg.as_str().into(),
                         });
                         self.history
                             .push(ChatMessage::tool(tool_call.id.clone(), name, err_msg));
@@ -705,10 +690,7 @@ impl MrmlAgent {
                 .registry
                 .get("run_command")
                 .unwrap()
-                .execute(
-                    &self.config.workspace_root,
-                    args,
-                )
+                .execute(&self.config.workspace_root, args)
                 .await;
             match result {
                 Ok(output) => {
@@ -793,8 +775,7 @@ impl MrmlAgent {
                         }
                         if reasoning_header_printed {
                             print!("{}", text.yellow().dimmed());
-                            if text.ends_with(' ') || text.ends_with('\n') {
-                            }
+                            if text.ends_with(' ') || text.ends_with('\n') {}
                             last_was_reasoning = true;
                         }
                     }
@@ -818,8 +799,7 @@ impl MrmlAgent {
                             || text.ends_with('\n')
                             || text.ends_with('?')
                             || text.ends_with('.')
-                        {
-                        }
+                        {}
                     }
                     StreamEvent::ToolCallAssembled(tc) => {
                         assembled_tool_calls.push(tc);
@@ -933,11 +913,7 @@ impl MrmlAgent {
                 let tool_result = match tool_opt {
                     Some(tool) => {
                         println!("⚡ Executing {}", name.cyan());
-                        tool.execute(
-                            &self.config.workspace_root,
-                            parsed_args,
-                        )
-                        .await
+                        tool.execute(&self.config.workspace_root, parsed_args).await
                     }
                     None => Err(mrml_tools::tool_error(format!(
                         "Unknown tool requested: {}",

@@ -71,10 +71,7 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
             if mrml_runtime::path_is_directory(&repo_dir) {
                 let mut best_match = None;
                 for path in crate::fs_walk::paths(&repo_dir) {
-                    let name = Text::from(path
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .unwrap_or(&path))
+                    let name = Text::from(path.rsplit(['/', '\\']).next().unwrap_or(&path))
                         .to_ascii_lowercase();
                     if name.ends_with(".gguf")
                         && !name.ends_with(".part")
@@ -95,13 +92,11 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
             }
 
             // Legacy folder name check (e.g. user_model)
-            let legacy_dir = mrml_runtime::join_path(root, &format!("{}_{}", spec.user, spec.model));
+            let legacy_dir =
+                mrml_runtime::join_path(root, &format!("{}_{}", spec.user, spec.model));
             if mrml_runtime::path_is_directory(&legacy_dir) {
                 for path in crate::fs_walk::paths(&legacy_dir) {
-                    let name = Text::from(path
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .unwrap_or(&path))
+                    let name = Text::from(path.rsplit(['/', '\\']).next().unwrap_or(&path))
                         .to_ascii_lowercase();
                     if name.ends_with(".gguf")
                         && !name.ends_with(".part")
@@ -120,11 +115,8 @@ pub fn find_model_file(model_arg: &str) -> Option<Text> {
     // 2. Scan whole cache roots for matching model file
     for root in &cache_roots {
         for path in crate::fs_walk::paths(root) {
-            let name = Text::from(path
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(&path))
-                .to_ascii_lowercase();
+            let name =
+                Text::from(path.rsplit(['/', '\\']).next().unwrap_or(&path)).to_ascii_lowercase();
             if name.ends_with(".gguf")
                 && !name.ends_with(".part")
                 && !name.contains("mmproj")

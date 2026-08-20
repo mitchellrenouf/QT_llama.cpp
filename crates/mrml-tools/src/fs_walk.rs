@@ -1,6 +1,6 @@
 //! Dependency-free workspace traversal for search and browser discovery.
-use mrml_runtime::Vector;
 use mrml_runtime::Text;
+use mrml_runtime::Vector;
 
 pub struct Paths {
     pending: Vector<Text>,
@@ -19,16 +19,20 @@ impl Iterator for Paths {
         let path = self.pending.pop()?;
         if mrml_runtime::path_is_directory(&path) {
             if let Ok(entries) = mrml_runtime::read_directory(&path) {
-                self.pending.extend(entries.into_iter().filter(|entry| !entry.is_symlink).map(
-                    |entry| {
-                        let mut child = path.clone();
-                        if !child.ends_with(['/', '\\']) {
-                            child.push(if cfg!(windows) { '\\' } else { '/' });
-                        }
-                        child.push_str(&entry.name);
-                        child
-                    },
-                ));
+                self.pending
+                    .extend(
+                        entries
+                            .into_iter()
+                            .filter(|entry| !entry.is_symlink)
+                            .map(|entry| {
+                                let mut child = path.clone();
+                                if !child.ends_with(['/', '\\']) {
+                                    child.push(if cfg!(windows) { '\\' } else { '/' });
+                                }
+                                child.push_str(&entry.name);
+                                child
+                            }),
+                    );
             }
         }
         Some(path)
@@ -41,7 +45,10 @@ mod tests {
 
     #[test]
     fn includes_root_and_skips_missing_children() {
-        let root = join_path(&temporary_directory(), &format!("mrml-walk-{}", process_id()));
+        let root = join_path(
+            &temporary_directory(),
+            &format!("mrml-walk-{}", process_id()),
+        );
         let nested = join_path(&root, "nested");
         mrml_runtime::create_dir_all(&nested).unwrap();
         let file = join_path(&nested, "file.txt");

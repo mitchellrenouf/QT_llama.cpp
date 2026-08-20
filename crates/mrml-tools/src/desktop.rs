@@ -1,8 +1,8 @@
 use crate::Tool;
 use mrml_error::{Result, anyhow};
+use mrml_runtime::Command;
 use mrml_runtime::{Text, Vector, remove_file, rename_file};
 use mrml_runtime::{Text as String, mrml_format as format};
-use mrml_runtime::Command;
 use serde_json::json;
 
 pub fn is_executable_in_path(cmd: &str) -> Option<Text> {
@@ -51,7 +51,8 @@ impl Tool for TakeScreenshotTool {
         let timestamp = crate::platform::local_timestamp_string();
         let path_str = mrml_runtime::join_path(&shot_dir, &format!("screenshot_{}.jpg", timestamp));
 
-        let temp_png_str = mrml_runtime::join_path(&shot_dir, &format!("temp_screenshot_{}.png", timestamp));
+        let temp_png_str =
+            mrml_runtime::join_path(&shot_dir, &format!("temp_screenshot_{}.png", timestamp));
 
         let mut captured = false;
         if is_executable_in_path("spectacle").is_some() {
@@ -131,9 +132,7 @@ impl Tool for TakeScreenshotTool {
             return Err(anyhow!("Screenshot file was not created at {}", path_str));
         }
 
-        let img_bytes = mrml_runtime::read_file(
-            &path_str,
-        )?;
+        let img_bytes = mrml_runtime::read_file(&path_str)?;
         let base64_str = crate::encoding::base64_encode(&img_bytes);
         let data_uri = format!("data:image/jpeg;base64,{}", base64_str);
 
@@ -183,9 +182,7 @@ impl Tool for OpenAppTool {
             return Ok(format!("Successfully launched Flatpak app '{}'.", app_name));
         }
 
-        if is_executable_in_path(app_name).is_some()
-            || crate::platform::path_is_file(app_name)
-        {
+        if is_executable_in_path(app_name).is_some() || crate::platform::path_is_file(app_name) {
             Command::new(app_name)
                 .spawn_detached()
                 .map_err(|e| anyhow!("Failed to spawn application '{}': {}", app_name, e))?;

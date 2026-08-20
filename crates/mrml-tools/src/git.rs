@@ -110,7 +110,10 @@ impl Tool for GitRollbackTool {
                 .current_dir(workspace_root)
                 .output()?;
             if output.status.success() {
-                Ok("Successfully discarded all uncommitted changes and restored working tree.".into())
+                Ok(
+                    "Successfully discarded all uncommitted changes and restored working tree."
+                        .into(),
+                )
             } else {
                 let stderr = Text::from_utf8_lossy(&output.stderr);
                 Err(anyhow!("Failed to rollback changes: {}", stderr))

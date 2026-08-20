@@ -314,8 +314,7 @@ DYNAMIC WEB FETCHING & SPEECH GUIDELINES:
 
 Available Tools:
 - `speak_text`, `record_audio`, `capture_webcam`, `record_screen_video`, `take_screenshot`, `open_app`, `browser_open`, `browser_get_content`, `browser_screenshot`, `browser_click_element`, `browser_click`, `browser_type`, `web_search`, `web_fetch`, `view_file`, `write_file`, `replace_file_content`, `list_dir`, `grep_search`, `run_command`, `git_checkpoint`, `git_rollback`, `git_diff`."#
-            )
-            ,
+            ),
             AgentMode::Coder => text_format!(
                 r#"You are Gemma Vibe-Coder, an elite autonomous AI coding assistant with Multimodal Vision, Audio/Speech, Video, and Desktop Control capabilities, powered by Gemma 4 26B.
 You work directly inside the user's workspace on {os_name}.
@@ -331,8 +330,7 @@ GUIDELINES FOR VIBE CODING:
 - Keep edits precise and clean.
 - Verify changes by running build or test commands (`run_command`) after making modifications.
 - Create a `git_checkpoint` before making large structural refactors so changes can be reverted if needed."#
-            )
-            ,
+            ),
             AgentMode::Automatic => text_format!(
                 r#"You are Gemma in AUTONOMOUS INNER MONOLOGUE MODE, powered by Gemma 4 26B.
 In this mode, you maintain a continuous, human-like inner monologue before taking any action or giving an answer.
@@ -346,8 +344,7 @@ HUMAN-LIKE INNER MONOLOGUE INSTRUCTIONS:
 
 Available Tools:
 - `speak_text`, `record_audio`, `capture_webcam`, `record_screen_video`, `take_screenshot`, `open_app`, `browser_open`, `browser_screenshot`, `browser_click`, `browser_type`, `web_search`, `web_fetch`, `view_file`, `write_file`, `replace_file_content`, `list_dir`, `grep_search`, `run_command`, `git_checkpoint`, `git_rollback`, `git_diff`."#
-            )
-            ,
+            ),
         }
     }
 }

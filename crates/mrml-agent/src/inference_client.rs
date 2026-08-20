@@ -1,6 +1,9 @@
 use mrml_error::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
-use mrml_runtime::{Instant, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
+use mrml_runtime::{
+    Instant, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_format as format,
+    mrml_println as println,
+};
 
 type String = Text;
 type Vec<T> = Vector<T>;
@@ -684,12 +687,12 @@ mod tests {
 
     #[test]
     fn test_explicit_model_path_wins_over_hf_default() {
-        let path = join_path(&temporary_directory(), &format!("mrml-explicit-{}.gguf", process_id()));
-        mrml_runtime::write_file(&path, b"test").unwrap();
-        assert_eq!(
-            find_model_file(&path).as_deref(),
-            Some(path.as_str())
+        let path = join_path(
+            &temporary_directory(),
+            &format!("mrml-explicit-{}.gguf", process_id()),
         );
+        mrml_runtime::write_file(&path, b"test").unwrap();
+        assert_eq!(find_model_file(&path).as_deref(), Some(path.as_str()));
         mrml_runtime::remove_file(&path).unwrap();
     }
 
@@ -726,4 +729,3 @@ mod tests {
         assert_eq!(args["command_line"], "Get-Date");
     }
 }
-

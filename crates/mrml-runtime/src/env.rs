@@ -54,7 +54,9 @@ mod tests {
     fn reads_environment_into_mrml_text() {
         let path = environment_variable("PATH").expect("PATH should be set");
         assert!(!path.is_empty());
-        assert_eq!(environment_variable("MRML_ENV_TEST_DEFINITELY_MISSING"), None);
+        assert_eq!(
+            environment_variable("MRML_ENV_TEST_DEFINITELY_MISSING"),
+            None
+        );
     }
-
 }

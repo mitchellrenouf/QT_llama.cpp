@@ -48,8 +48,12 @@ impl core::error::Error for ProcessError {}
 pub struct ExitStatus(i32);
 
 impl ExitStatus {
-    pub const fn success(self) -> bool { self.0 == 0 }
-    pub const fn code(self) -> i32 { self.0 }
+    pub const fn success(self) -> bool {
+        self.0 == 0
+    }
+    pub const fn code(self) -> i32 {
+        self.0
+    }
 }
 
 pub struct Output {
@@ -66,14 +70,22 @@ pub struct Child {
 }
 
 impl Child {
-    pub fn try_wait(&mut self) -> Option<ExitStatus> { self.native.try_wait().map(ExitStatus) }
-    pub fn kill(&mut self) -> bool { self.native.kill() }
-    pub fn wait(&mut self) -> Option<ExitStatus> { self.native.wait().map(ExitStatus) }
+    pub fn try_wait(&mut self) -> Option<ExitStatus> {
+        self.native.try_wait().map(ExitStatus)
+    }
+    pub fn kill(&mut self) -> bool {
+        self.native.kill()
+    }
+    pub fn wait(&mut self) -> Option<ExitStatus> {
+        self.native.wait().map(ExitStatus)
+    }
 }
 
 impl Drop for Child {
     fn drop(&mut self) {
-        if self.try_wait().is_none() { let _ = self.kill(); }
+        if self.try_wait().is_none() {
+            let _ = self.kill();
+        }
         let _ = self.wait();
     }
 }
@@ -87,7 +99,10 @@ pub struct PipedChild {
 
 impl PipedChild {
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<(), ProcessError> {
-        self.native.write_stdin(bytes).then_some(()).ok_or(ProcessError::OutputFailed)
+        self.native
+            .write_stdin(bytes)
+            .then_some(())
+            .ok_or(ProcessError::OutputFailed)
     }
 
     pub fn read_line(&mut self) -> Result<Text, ProcessError> {
@@ -97,10 +112,14 @@ impl PipedChild {
             match self.native.read_stdout(&mut byte) {
                 Some(0) | None => return Err(ProcessError::OutputFailed),
                 Some(_) if byte[0] == b'\n' => break,
-                Some(_) => bytes.try_push(byte[0]).map_err(|_| ProcessError::OutputFailed)?,
+                Some(_) => bytes
+                    .try_push(byte[0])
+                    .map_err(|_| ProcessError::OutputFailed)?,
             }
         }
-        if bytes.last() == Some(&b'\r') { bytes.pop(); }
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
         let line = core::str::from_utf8(&bytes).map_err(|_| ProcessError::OutputFailed)?;
         Ok(line.into())
     }
@@ -114,7 +133,11 @@ pub struct Command {
 
 impl Command {
     pub fn new(program: &str) -> Self {
-        Self { program: program.into(), arguments: Vector::new(), current_directory: None }
+        Self {
+            program: program.into(),
+            arguments: Vector::new(),
+            current_directory: None,
+        }
     }
 
     pub fn arg(&mut self, argument: impl AsRef<str>) -> &mut Self {
@@ -123,7 +146,9 @@ impl Command {
     }
 
     pub fn args<'a>(&mut self, arguments: impl IntoIterator<Item = &'a str>) -> &mut Self {
-        for argument in arguments { self.arg(argument); }
+        for argument in arguments {
+            self.arg(argument);
+        }
         self
     }
 
@@ -148,7 +173,8 @@ impl Command {
                 encoded.push(0);
                 encoded
             });
-            if mrml_windows::spawn_detached_process(&mut command_line, current_directory.as_deref()) {
+            if mrml_windows::spawn_detached_process(&mut command_line, current_directory.as_deref())
+            {
                 Ok(())
             } else {
                 Err(ProcessError::SpawnFailed)
@@ -158,12 +184,22 @@ impl Command {
         {
             let mut encoded = Vector::new();
             encoded.push(encode_c_string(&self.program)?);
-            for argument in &self.arguments { encoded.push(encode_c_string(argument)?); }
-            let mut pointers: Vector<*const i8> = encoded.iter().map(|value| value.as_ptr().cast()).collect();
+            for argument in &self.arguments {
+                encoded.push(encode_c_string(argument)?);
+            }
+            let mut pointers: Vector<*const i8> =
+                encoded.iter().map(|value| value.as_ptr().cast()).collect();
             pointers.push(core::ptr::null());
-            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0]).map_err(|_| ProcessError::InvalidArgument)?;
-            let directory = self.current_directory.as_ref().map(|value| encode_c_string(value)).transpose()?;
-            let directory = directory.as_ref().map(|value| core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path"));
+            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0])
+                .map_err(|_| ProcessError::InvalidArgument)?;
+            let directory = self
+                .current_directory
+                .as_ref()
+                .map(|value| encode_c_string(value))
+                .transpose()?;
+            let directory = directory.as_ref().map(|value| {
+                core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path")
+            });
             if mrml_linux::spawn_detached_process(program, &pointers, directory) {
                 Ok(())
             } else {
@@ -196,12 +232,22 @@ impl Command {
         {
             let mut encoded = Vector::new();
             encoded.push(encode_c_string(&self.program)?);
-            for argument in &self.arguments { encoded.push(encode_c_string(argument)?); }
-            let mut pointers: Vector<*const i8> = encoded.iter().map(|value| value.as_ptr().cast()).collect();
+            for argument in &self.arguments {
+                encoded.push(encode_c_string(argument)?);
+            }
+            let mut pointers: Vector<*const i8> =
+                encoded.iter().map(|value| value.as_ptr().cast()).collect();
             pointers.push(core::ptr::null());
-            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0]).map_err(|_| ProcessError::InvalidArgument)?;
-            let directory = self.current_directory.as_ref().map(|value| encode_c_string(value)).transpose()?;
-            let directory = directory.as_ref().map(|value| core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path"));
+            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0])
+                .map_err(|_| ProcessError::InvalidArgument)?;
+            let directory = self
+                .current_directory
+                .as_ref()
+                .map(|value| encode_c_string(value))
+                .transpose()?;
+            let directory = directory.as_ref().map(|value| {
+                core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path")
+            });
             mrml_linux::NativeChild::spawn_silent(program, &pointers, directory)
                 .map(|native| Child { native })
                 .ok_or(ProcessError::SpawnFailed)
@@ -213,9 +259,17 @@ impl Command {
         {
             let mut command_line = Vector::new();
             append_windows_argument(&mut command_line, &self.program);
-            for argument in &self.arguments { command_line.push(' ' as u16); append_windows_argument(&mut command_line, argument); }
+            for argument in &self.arguments {
+                command_line.push(' ' as u16);
+                append_windows_argument(&mut command_line, argument);
+            }
             command_line.push(0);
-            let current_directory = self.current_directory.as_ref().map(|directory| { let mut encoded = Vector::new(); encoded.extend(directory.encode_utf16()); encoded.push(0); encoded });
+            let current_directory = self.current_directory.as_ref().map(|directory| {
+                let mut encoded = Vector::new();
+                encoded.extend(directory.encode_utf16());
+                encoded.push(0);
+                encoded
+            });
             mrml_windows::NativePipedChild::spawn(&mut command_line, current_directory.as_deref())
                 .map(|native| PipedChild { native })
                 .ok_or(ProcessError::SpawnFailed)
@@ -224,11 +278,22 @@ impl Command {
         {
             let mut encoded = Vector::new();
             encoded.push(encode_c_string(&self.program)?);
-            for argument in &self.arguments { encoded.push(encode_c_string(argument)?); }
-            let mut pointers: Vector<*const i8> = encoded.iter().map(|value| value.as_ptr().cast()).collect(); pointers.push(core::ptr::null());
-            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0]).map_err(|_| ProcessError::InvalidArgument)?;
-            let directory = self.current_directory.as_ref().map(|value| encode_c_string(value)).transpose()?;
-            let directory = directory.as_ref().map(|value| core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path"));
+            for argument in &self.arguments {
+                encoded.push(encode_c_string(argument)?);
+            }
+            let mut pointers: Vector<*const i8> =
+                encoded.iter().map(|value| value.as_ptr().cast()).collect();
+            pointers.push(core::ptr::null());
+            let program = core::ffi::CStr::from_bytes_with_nul(&encoded[0])
+                .map_err(|_| ProcessError::InvalidArgument)?;
+            let directory = self
+                .current_directory
+                .as_ref()
+                .map(|value| encode_c_string(value))
+                .transpose()?;
+            let directory = directory.as_ref().map(|value| {
+                core::ffi::CStr::from_bytes_with_nul(value).expect("validated C path")
+            });
             mrml_linux::NativePipedChild::spawn(program, &pointers, directory)
                 .map(|native| PipedChild { native })
                 .ok_or(ProcessError::SpawnFailed)
@@ -261,7 +326,9 @@ impl Command {
         let mut child = {
             let mut encoded = Vector::new();
             encoded.push(encode_c_string(&self.program)?);
-            for argument in &self.arguments { encoded.push(encode_c_string(argument)?); }
+            for argument in &self.arguments {
+                encoded.push(encode_c_string(argument)?);
+            }
             let mut pointers: Vector<*const i8> = encoded
                 .iter()
                 .map(|argument| argument.as_ptr().cast())
@@ -286,18 +353,32 @@ impl Command {
         let mut buffer = [0u8; 8192];
         loop {
             let stdout_read = child.read_stdout(&mut buffer);
-            stdout.try_extend_from_slice(&buffer[..stdout_read]).map_err(|_| ProcessError::OutputFailed)?;
+            stdout
+                .try_extend_from_slice(&buffer[..stdout_read])
+                .map_err(|_| ProcessError::OutputFailed)?;
             let stderr_read = child.read_stderr(&mut buffer);
-            stderr.try_extend_from_slice(&buffer[..stderr_read]).map_err(|_| ProcessError::OutputFailed)?;
+            stderr
+                .try_extend_from_slice(&buffer[..stderr_read])
+                .map_err(|_| ProcessError::OutputFailed)?;
             if let Some(code) = child.try_wait() {
                 loop {
                     let out = child.read_stdout(&mut buffer);
-                    stdout.try_extend_from_slice(&buffer[..out]).map_err(|_| ProcessError::OutputFailed)?;
+                    stdout
+                        .try_extend_from_slice(&buffer[..out])
+                        .map_err(|_| ProcessError::OutputFailed)?;
                     let err = child.read_stderr(&mut buffer);
-                    stderr.try_extend_from_slice(&buffer[..err]).map_err(|_| ProcessError::OutputFailed)?;
-                    if out == 0 && err == 0 { break; }
+                    stderr
+                        .try_extend_from_slice(&buffer[..err])
+                        .map_err(|_| ProcessError::OutputFailed)?;
+                    if out == 0 && err == 0 {
+                        break;
+                    }
                 }
-                return Ok(Output { status: ExitStatus(code), stdout, stderr });
+                return Ok(Output {
+                    status: ExitStatus(code),
+                    stdout,
+                    stderr,
+                });
             }
             if stdout_read == 0 && stderr_read == 0 {
                 #[cfg(windows)]
@@ -311,9 +392,14 @@ impl Command {
 
 #[cfg(unix)]
 fn encode_c_string(value: &str) -> Result<Vector<u8>, ProcessError> {
-    if value.as_bytes().contains(&0) { return Err(ProcessError::InvalidArgument); }
-    let mut encoded = Vector::with_capacity(value.len() + 1).map_err(|_| ProcessError::InvalidArgument)?;
-    encoded.try_extend_from_slice(value.as_bytes()).map_err(|_| ProcessError::InvalidArgument)?;
+    if value.as_bytes().contains(&0) {
+        return Err(ProcessError::InvalidArgument);
+    }
+    let mut encoded =
+        Vector::with_capacity(value.len() + 1).map_err(|_| ProcessError::InvalidArgument)?;
+    encoded
+        .try_extend_from_slice(value.as_bytes())
+        .map_err(|_| ProcessError::InvalidArgument)?;
     encoded.push(0);
     Ok(encoded)
 }
@@ -327,14 +413,20 @@ fn append_windows_argument(output: &mut Vector<u16>, argument: &str) {
             backslashes += 1;
         } else {
             if unit == '"' as u16 {
-                for _ in 0..=backslashes { output.push('\\' as u16); }
+                for _ in 0..=backslashes {
+                    output.push('\\' as u16);
+                }
             }
-            for _ in 0..backslashes { output.push('\\' as u16); }
+            for _ in 0..backslashes {
+                output.push('\\' as u16);
+            }
             backslashes = 0;
             output.push(unit);
         }
     }
-    for _ in 0..backslashes.saturating_mul(2) { output.push('\\' as u16); }
+    for _ in 0..backslashes.saturating_mul(2) {
+        output.push('\\' as u16);
+    }
     output.push('"' as u16);
 }
 
@@ -348,13 +440,16 @@ mod tests {
         assert!(crate::path_is_directory(&temporary_directory()));
     }
 
-
     #[test]
     fn captures_stdout_stderr_exit_status_and_working_directory() {
         #[cfg(windows)]
         let mut command = {
             let mut command = Command::new("powershell.exe");
-            command.args(["-NoProfile", "-Command", "[Console]::Out.Write('out λ'); [Console]::Error.Write('err 星'); exit 7"]);
+            command.args([
+                "-NoProfile",
+                "-Command",
+                "[Console]::Out.Write('out λ'); [Console]::Error.Write('err 星'); exit 7",
+            ]);
             command
         };
         #[cfg(unix)]
@@ -381,9 +476,12 @@ mod tests {
         let mut command = {
             let escaped = marker.replace("'", "''");
             let mut command = Command::new("powershell.exe");
-            command.args(["-NoProfile", "-Command"]).arg(crate::mrml_format!(
-                "[IO.File]::WriteAllText('{}','ok')", escaped
-            ));
+            command
+                .args(["-NoProfile", "-Command"])
+                .arg(crate::mrml_format!(
+                    "[IO.File]::WriteAllText('{}','ok')",
+                    escaped
+                ));
             command
         };
         #[cfg(unix)]

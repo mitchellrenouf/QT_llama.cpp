@@ -1,7 +1,9 @@
 use crate::Tool;
-use mrml_error::{Result, anyhow};
 use core::time::Duration;
-use mrml_runtime::{Child, Command, Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector};
+use mrml_error::{Result, anyhow};
+use mrml_runtime::{
+    Child, Command, Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector,
+};
 use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::{Value, json};
 static BROWSER_INSTANCE: OnceCell<Shared<SpinMutex<EdgeController>>> = OnceCell::new();
@@ -48,8 +50,7 @@ impl CdpSocket {
         self.next_id += 1;
         self.write_frame(
             1,
-            serde_json::stringify(&json!({"id":id,"method":method,"params":params}))
-                .as_bytes(),
+            serde_json::stringify(&json!({"id":id,"method":method,"params":params})).as_bytes(),
         )?;
         loop {
             let (op, payload) = self.read_message()?;
@@ -80,10 +81,12 @@ impl CdpSocket {
             f.push(0x80 | p.len() as u8)
         } else if p.len() <= 65535 {
             f.extend([0x80 | 126]);
-            f.try_extend_from_slice(&(p.len() as u16).to_be_bytes()).expect("MRML allocation failed")
+            f.try_extend_from_slice(&(p.len() as u16).to_be_bytes())
+                .expect("MRML allocation failed")
         } else {
             f.extend([0x80 | 127]);
-            f.try_extend_from_slice(&(p.len() as u64).to_be_bytes()).expect("MRML allocation failed")
+            f.try_extend_from_slice(&(p.len() as u64).to_be_bytes())
+                .expect("MRML allocation failed")
         }
         let k = (self.next_id as u32).wrapping_mul(0x9e3779b9).to_be_bytes();
         f.try_extend_from_slice(&k).expect("MRML allocation failed");
@@ -283,28 +286,43 @@ fn find_browser() -> Option<Text> {
     .into_iter()
     .flatten()
     {
-        c.push(mrml_runtime::join_path(&root, "Microsoft/Edge/Application/msedge.exe"));
-        c.push(mrml_runtime::join_path(&root, "Google/Chrome/Application/chrome.exe"))
+        c.push(mrml_runtime::join_path(
+            &root,
+            "Microsoft/Edge/Application/msedge.exe",
+        ));
+        c.push(mrml_runtime::join_path(
+            &root,
+            "Google/Chrome/Application/chrome.exe",
+        ))
     }
     c.extend([
         "/usr/bin/microsoft-edge".into(),
         "/usr/bin/google-chrome".into(),
         "/usr/bin/chromium".into(),
     ]);
-    c.into_iter()
-        .find(|p| crate::platform::path_is_file(p))
+    c.into_iter().find(|p| crate::platform::path_is_file(p))
 }
 fn parse_ipv4_authority(authority: &str) -> Result<([u8; 4], u16)> {
-    let (host, port) = authority.rsplit_once(':').ok_or_else(|| anyhow!("Invalid TCP authority: {}", authority))?;
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("Invalid TCP authority: {}", authority))?;
     let mut ip = [0u8; 4];
     let mut count = 0usize;
     for part in host.split('.') {
-        if count == 4 { return Err(anyhow!("Invalid IPv4 host: {}", host)); }
-        ip[count] = part.parse().map_err(|_| anyhow!("Invalid IPv4 host: {}", host))?;
+        if count == 4 {
+            return Err(anyhow!("Invalid IPv4 host: {}", host));
+        }
+        ip[count] = part
+            .parse()
+            .map_err(|_| anyhow!("Invalid IPv4 host: {}", host))?;
         count += 1;
     }
-    if count != 4 { return Err(anyhow!("Invalid IPv4 host: {}", host)); }
-    let port = port.parse().map_err(|_| anyhow!("Invalid TCP port: {}", port))?;
+    if count != 4 {
+        return Err(anyhow!("Invalid IPv4 host: {}", host));
+    }
+    let port = port
+        .parse()
+        .map_err(|_| anyhow!("Invalid TCP port: {}", port))?;
     Ok((ip, port))
 }
 fn read_http_header(s: &mut TcpStream) -> Result<String> {
@@ -432,20 +450,25 @@ impl Tool for BrowserScreenshotTool {
         let x = get_browser_controller().await?;
         let mut c = x.lock();
         c.get_or_create_page(None)?;
-        let data: String = owned_string(c.cdp(
-            "Page.captureScreenshot",
-            json!({"format":"jpeg","quality":75}),
-        )?["data"]
-            .as_str()
-            .unwrap_or_default());
+        let data: String = owned_string(
+            c.cdp(
+                "Page.captureScreenshot",
+                json!({"format":"jpeg","quality":75}),
+            )?["data"]
+                .as_str()
+                .unwrap_or_default(),
+        );
         let bytes = crate::encoding::base64_decode(&data)
             .map_err(|e| anyhow!("Invalid screenshot: {}", e))?;
         let dir = mrml_runtime::join_path(r, ".mrml/screenshots");
         mrml_runtime::create_dir_all(&dir)?;
-        let p = mrml_runtime::join_path(&dir, &format!(
-            "browser_screenshot_{}.jpg",
-            crate::platform::local_timestamp_string()
-        ));
+        let p = mrml_runtime::join_path(
+            &dir,
+            &format!(
+                "browser_screenshot_{}.jpg",
+                crate::platform::local_timestamp_string()
+            ),
+        );
         mrml_runtime::write_file(&p, &bytes)?;
         Ok(format!(
             "Screenshot captured at '{}' ({} bytes).\nDATA_URI:data:image/jpeg;base64,{}",
@@ -557,7 +580,10 @@ mod tests {
 
     #[test]
     fn native_http_reads_cdp_json_and_parses_authorities() {
-        assert_eq!(parse_ipv4_authority("127.0.0.1:9222").unwrap(), ([127, 0, 0, 1], 9222));
+        assert_eq!(
+            parse_ipv4_authority("127.0.0.1:9222").unwrap(),
+            ([127, 0, 0, 1], 9222)
+        );
         assert!(parse_ipv4_authority("localhost:9222").is_err());
         let listener = TcpListener::bind([127, 0, 0, 1], 0).unwrap();
         let port = listener.local_port().unwrap();

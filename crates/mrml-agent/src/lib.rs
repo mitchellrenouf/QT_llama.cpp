@@ -10,11 +10,11 @@ pub mod agent;
 #[cfg(feature = "runtime")]
 pub mod client;
 #[cfg(feature = "runtime")]
-pub mod inference_client;
-#[cfg(feature = "runtime")]
 pub mod config;
 #[cfg(feature = "runtime")]
 pub mod hf;
+#[cfg(feature = "runtime")]
+pub mod inference_client;
 #[cfg(feature = "runtime")]
 pub mod rules;
 #[cfg(feature = "runtime")]

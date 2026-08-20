@@ -1,6 +1,6 @@
-use crate::{Text, Vector};
 #[cfg(unix)]
 use crate::File;
+use crate::{Text, Vector};
 
 pub fn command_arguments() -> Vector<Text> {
     #[cfg(windows)]
@@ -13,7 +13,9 @@ pub fn command_arguments() -> Vector<Text> {
         let mut bytes = Vector::new();
         let mut chunk = [0u8; 4096];
         loop {
-            let read = file.read(&mut chunk).expect("failed to read /proc/self/cmdline");
+            let read = file
+                .read(&mut chunk)
+                .expect("failed to read /proc/self/cmdline");
             if read == 0 {
                 break;
             }
@@ -22,7 +24,10 @@ pub fn command_arguments() -> Vector<Text> {
                 .expect("MRML allocation failed");
         }
         let mut output = Vector::new();
-        for argument in bytes.split(|byte| *byte == 0).filter(|argument| !argument.is_empty()) {
+        for argument in bytes
+            .split(|byte| *byte == 0)
+            .filter(|argument| !argument.is_empty())
+        {
             output.push(
                 Text::try_from_str(
                     core::str::from_utf8(argument).expect("command line contains invalid UTF-8"),

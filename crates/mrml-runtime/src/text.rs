@@ -196,7 +196,9 @@ impl Text {
         let mut remainder = self.as_str();
         let mut replaced = 0usize;
         while replaced < count {
-            let Some(index) = remainder.find(needle) else { break };
+            let Some(index) = remainder.find(needle) else {
+                break;
+            };
             output.push_str(&remainder[..index]);
             output.push_str(replacement);
             remainder = &remainder[index + needle.len()..];
@@ -345,6 +347,9 @@ mod tests {
 
     #[test]
     fn replaces_invalid_utf8_without_global_allocation() {
-        assert_eq!(Text::from_utf8_lossy(b"a\xffb\xe2\x82"), "a\u{fffd}b\u{fffd}");
+        assert_eq!(
+            Text::from_utf8_lossy(b"a\xffb\xe2\x82"),
+            "a\u{fffd}b\u{fffd}"
+        );
     }
 }
