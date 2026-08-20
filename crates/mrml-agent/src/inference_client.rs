@@ -11,7 +11,6 @@ pub use mrml_tools::{FunctionDefinition, ToolDefinition};
 pub(crate) fn thinking_enabled_for_mode(mode: crate::config::AgentMode) -> bool {
     matches!(mode, crate::config::AgentMode::Automatic)
 }
-
 #[allow(dead_code)]
 pub type ToolFunction = FunctionDefinition;
 
@@ -727,5 +726,4 @@ mod tests {
         assert_eq!(args["command_line"], "Get-Date");
     }
 }
-
 
