@@ -6,6 +6,7 @@
 //! narrow types so their unsafe boundaries can be reviewed independently.
 
 pub mod arch;
+mod boot;
 mod capability;
 mod grant;
 mod ipc;
@@ -14,6 +15,7 @@ mod platform;
 mod policy;
 mod scheduler;
 
+pub use boot::{BootEvidence, BootPolicy, BootValidationError};
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
 pub use ipc::{

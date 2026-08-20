@@ -36,6 +36,13 @@ services. Architecture modules contain page-table, interrupt, timer, context
 switch, and virtualization primitives. AArch64 and RISC-V64 are represented in
 public platform types now so x86 assumptions cannot leak into policy APIs.
 
+Production boot policy requires firmware secure-boot evidence, a measured image
+digest, and a monotonically enforced minimum image version. The UEFI loader must
+source its 256-bit boot seed from the firmware RNG protocol or a documented
+architecture entropy source; the portable kernel rejects absent evidence but
+cannot independently prove firmware entropy quality. Development policy may
+relax firmware requirements but must not be accepted by production launchers.
+
 Hyper-V and KVM are host backends, not code in the guest kernel. Both implement
 the same VMM contract for vCPU lifecycle, guest memory, interrupts, virtio-like
 queues, directory-handle grants, measured images, and optional IOMMU device
