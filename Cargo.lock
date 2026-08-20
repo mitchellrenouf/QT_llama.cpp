@@ -141,6 +141,7 @@ version = "0.4.0"
 dependencies = [
  "mrml-runtime",
  "mrml-zim",
+ "mrml-zstd",
 ]
 
 [[package]]
@@ -149,6 +150,13 @@ version = "0.4.0"
 
 [[package]]
 name = "mrml-zim"
+version = "0.4.0"
+dependencies = [
+ "mrml-runtime",
+]
+
+[[package]]
+name = "mrml-zstd"
 version = "0.4.0"
 dependencies = [
  "mrml-runtime",

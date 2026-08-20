@@ -17,6 +17,7 @@ members = [
     "crates/mrml-linux",
     "crates/mrml-json",
     "crates/mrml-zim",
+    "crates/mrml-zstd",
     "crates/mrml-wikipedia",
     "crates/mrml-tokenizer",
 ]

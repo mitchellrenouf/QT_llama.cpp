@@ -1,5 +1,5 @@
 [package]
-name = "mrml-wikipedia"
+name = "mrml-zstd"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,5 +7,3 @@ license.workspace = true
 
 [dependencies]
 mrml-runtime = { path = "../mrml-runtime" }
-mrml-zim = { path = "../mrml-zim" }
-mrml-zstd = { path = "../mrml-zstd" }
