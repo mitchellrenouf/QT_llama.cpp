@@ -1,6 +1,52 @@
+use mrml_crypto::Sha3_512;
 use mrml_error::{Result, anyhow};
 use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println, rename_file};
-use mrml_runtime::Command;
+
+fn digest_hex(digest: &[u8; 64]) -> Text {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut text = Text::new();
+    for byte in digest {
+        text.push(HEX[(byte >> 4) as usize] as char);
+        text.push(HEX[(byte & 15) as usize] as char);
+    }
+    text
+}
+
+fn hash_file_state(path: &str) -> Result<(Sha3_512, u64)> {
+    let mut file = mrml_runtime::File::open(path)?;
+    let mut hash = Sha3_512::new();
+    let mut length = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+        length = length.saturating_add(read as u64);
+    }
+    Ok((hash, length))
+}
+fn hash_file(path: &str) -> Result<([u8; 64], u64)> {
+    let (hash, length) = hash_file_state(path)?;
+    Ok((hash.finalize(), length))
+}
+
+fn digest_matches(path: &str, sidecar: &str) -> bool {
+    let Ok(expected) = mrml_runtime::read_file_text(sidecar) else {
+        return false;
+    };
+    let expected = expected.trim();
+    if expected.len() != 128 {
+        return false;
+    }
+    hash_file(path).is_ok_and(|(digest, _)| digest_hex(&digest).eq_ignore_ascii_case(expected))
+}
+
+fn write_digest(path: &str, digest: &[u8; 64]) -> Result<()> {
+    mrml_runtime::write_file(path, digest_hex(digest).as_bytes())?;
+    Ok(())
+}
 
 fn native_file_len(path: &str) -> Option<u64> {
     mrml_runtime::File::open(path).ok()?.len().ok()
@@ -98,10 +144,7 @@ impl HfModelSpec {
 
         if let Some(home) = crate::platform::home_dir() {
             return mrml_runtime::join_path(
-                &mrml_runtime::join_path(
-                    &mrml_runtime::join_path(&home, ".cache"),
-                    "huggingface",
-                ),
+                &mrml_runtime::join_path(&mrml_runtime::join_path(&home, ".cache"), "huggingface"),
                 "hub",
             );
         }
@@ -163,19 +206,22 @@ pub async fn query_hf_api_siblings(spec: &HfModelSpec) -> Result<Vector<Text>> {
         spec.user, spec.model
     );
 
-    let mut cmd = Command::new("curl");
-    cmd.arg("-s").arg("-L").arg(&api_url);
-    if let Some(token) = mrml_runtime::environment_variable("HF_TOKEN") {
-        cmd.arg("-H")
-            .arg(format!("Authorization: Bearer {}", token));
+    let client = mrml_http::Client::new();
+    let token =
+        mrml_runtime::environment_variable("HF_TOKEN").map(|value| format!("Bearer {}", value));
+    let mut response = if let Some(ref authorization) = token {
+        client.get_follow(&api_url, &[("Authorization", authorization)], 8)
+    } else {
+        client.get_follow(&api_url, &[], 8)
     }
-
-    let output = cmd.output()?;
-    if !output.status.success() {
+    .map_err(|error| anyhow!("Hugging Face HTTPS query failed: {}", error))?;
+    if !(200..300).contains(&response.status) {
         return Err(anyhow!("Failed to query Hugging Face API at {}", api_url));
     }
-
-    let body = Text::from_utf8_lossy(&output.stdout);
+    let bytes = response
+        .read_to_end(32 * 1024 * 1024)
+        .map_err(|error| anyhow!("Hugging Face API response failed: {}", error))?;
+    let body = Text::from_utf8_lossy(&bytes);
     let val: serde_json::Value = serde_json::from_str(&body)?;
 
     let mut filenames = Vector::new();
@@ -307,28 +353,61 @@ where
         let file_num = idx + 1;
         let dest_path = mrml_runtime::join_path(&model_dir, filename);
         let part_path = mrml_runtime::join_path(&model_dir, &format!("{}.part", filename));
+        let digest_path = format!("{}.sha3-512", dest_path);
+        let part_digest_path = format!("{}.sha3-512", part_path);
 
         if native_file_len(&dest_path).is_some_and(|length| length > 10 * 1024 * 1024) {
-            let msg = format!(
-                "✓ [File {}/{}] {} (Cached)",
-                file_num, total_files, filename
-            );
-            println!("{}", msg);
-            progress_cb(
-                &msg,
-                file_num as f32 / total_files as f32,
-                file_num,
-                total_files,
-            );
-
-            if filename.contains("mmproj") {
-                resolved_mmproj_path = Some(dest_path);
-            } else if filename.contains("mtp") || filename.contains("dflash") {
-                resolved_speedup_path = Some(dest_path);
+            if mrml_runtime::path_is_file(&digest_path) {
+                if !digest_matches(&dest_path, &digest_path) {
+                    mrml_runtime::remove_file(&dest_path)?;
+                    mrml_runtime::remove_file(&digest_path)?;
+                } else {
+                    let msg = format!(
+                        "✓ [File {}/{}] {} (Cached, SHA3-512 verified)",
+                        file_num, total_files, filename
+                    );
+                    println!("{}", msg);
+                    progress_cb(
+                        &msg,
+                        file_num as f32 / total_files as f32,
+                        file_num,
+                        total_files,
+                    );
+                    if filename.contains("mmproj") {
+                        resolved_mmproj_path = Some(dest_path);
+                    } else if filename.contains("mtp") || filename.contains("dflash") {
+                        resolved_speedup_path = Some(dest_path);
+                    } else {
+                        downloaded_shard_paths.push(dest_path);
+                    }
+                    continue;
+                }
             } else {
-                downloaded_shard_paths.push(dest_path);
+                let (digest, _) = hash_file(&dest_path)?;
+                write_digest(&digest_path, &digest)?;
             }
-            continue;
+            if mrml_runtime::path_is_file(&dest_path) {
+                let msg = format!(
+                    "✓ [File {}/{}] {} (Cached, SHA3-512 recorded)",
+                    file_num, total_files, filename
+                );
+                println!("{}", msg);
+                progress_cb(
+                    &msg,
+                    file_num as f32 / total_files as f32,
+                    file_num,
+                    total_files,
+                );
+
+                if filename.contains("mmproj") {
+                    resolved_mmproj_path = Some(dest_path);
+                } else if filename.contains("mtp") || filename.contains("dflash") {
+                    resolved_speedup_path = Some(dest_path);
+                } else {
+                    downloaded_shard_paths.push(dest_path);
+                }
+                continue;
+            }
         }
 
         let download_url = format!(
@@ -336,7 +415,14 @@ where
             spec.user, spec.model, filename
         );
 
-        let initial_resume_bytes = native_file_len(&part_path).unwrap_or(0);
+        let mut initial_resume_bytes = native_file_len(&part_path).unwrap_or(0);
+        if initial_resume_bytes > 0 && !digest_matches(&part_path, &part_digest_path) {
+            mrml_runtime::remove_file(&part_path)?;
+            if mrml_runtime::path_is_file(&part_digest_path) {
+                mrml_runtime::remove_file(&part_digest_path)?;
+            }
+            initial_resume_bytes = 0;
+        }
 
         if initial_resume_bytes > 0 {
             let mb = initial_resume_bytes as f64 / (1024.0 * 1024.0);
@@ -351,56 +437,99 @@ where
             );
         }
 
-        // Run real streaming curl download with resume support
-        let mut curl_cmd = Command::new("curl");
-        curl_cmd
-            .arg("-f")
-            .arg("-sS")
-            .arg("-L")
-            .arg("-C")
-            .arg("-") // Auto-resume from partial byte offset
-            .arg("-o")
-            .arg(part_path.as_str())
-            .arg(&download_url);
-
-        if let Some(token) = mrml_runtime::environment_variable("HF_TOKEN") {
-            curl_cmd
-                .arg("-H")
-                .arg(format!("Authorization: Bearer {}", token));
+        let client = mrml_http::Client::new();
+        let authorization =
+            mrml_runtime::environment_variable("HF_TOKEN").map(|value| format!("Bearer {}", value));
+        let range = format!("bytes={}-", initial_resume_bytes);
+        let mut response = match (authorization.as_ref(), initial_resume_bytes > 0) {
+            (Some(auth), true) => client.get_follow(
+                &download_url,
+                &[("Authorization", auth), ("Range", &range)],
+                8,
+            ),
+            (Some(auth), false) => client.get_follow(&download_url, &[("Authorization", auth)], 8),
+            (None, true) => client.get_follow(&download_url, &[("Range", &range)], 8),
+            (None, false) => client.get_follow(&download_url, &[], 8),
         }
-
-        let mut child = curl_cmd.spawn_silent()?;
-
-        loop {
-            if let Some(status) = child.try_wait() {
-                if !status.success() {
-                    return Err(anyhow!(
-                        "Failed to download {}. Check network or HF_TOKEN.",
-                        filename
-                    ));
+        .map_err(|error| anyhow!("HTTPS download failed for {}: {}", filename, error))?;
+        if initial_resume_bytes > 0 {
+            let prefix = format!("bytes {}-", initial_resume_bytes);
+            if response.status != 206
+                || !response
+                    .header("content-range")
+                    .is_some_and(|value| value.starts_with(prefix.as_str()))
+            {
+                initial_resume_bytes = 0;
+                response = if let Some(ref auth) = authorization {
+                    client.get_follow(&download_url, &[("Authorization", auth)], 8)
+                } else {
+                    client.get_follow(&download_url, &[], 8)
                 }
+                .map_err(|error| anyhow!("HTTPS restart failed for {}: {}", filename, error))?;
+            }
+        }
+        if response.status != if initial_resume_bytes > 0 { 206 } else { 200 } {
+            return Err(anyhow!(
+                "Download of {} returned HTTP {}",
+                filename,
+                response.status
+            ));
+        }
+        let (mut hash, mut downloaded) = if initial_resume_bytes > 0 {
+            hash_file_state(&part_path)?
+        } else {
+            (Sha3_512::new(), 0)
+        };
+        let mut output = if initial_resume_bytes > 0 {
+            let mut file = mrml_runtime::File::open_write(&part_path)?;
+            file.seek(initial_resume_bytes)?;
+            file
+        } else {
+            mrml_runtime::File::create(&part_path)?
+        };
+        let mut buffer = [0u8; 64 * 1024];
+        let mut next_checkpoint = downloaded.saturating_add(64 * 1024 * 1024);
+        loop {
+            let read = response
+                .read(&mut buffer)
+                .map_err(|error| anyhow!("HTTPS body failed for {}: {}", filename, error))?;
+            if read == 0 {
                 break;
             }
-            crate::platform::sleep_millis(500);
-            if let Some(cur_len) = native_file_len(&part_path) {
-                let mb = cur_len as f64 / (1024.0 * 1024.0);
+            output.write_all(&buffer[..read])?;
+            hash.update(&buffer[..read]);
+            downloaded = downloaded.saturating_add(read as u64);
+            if downloaded >= next_checkpoint {
+                write_digest(&part_digest_path, &hash.clone().finalize())?;
+                next_checkpoint = downloaded.saturating_add(64 * 1024 * 1024);
+                let mb = downloaded as f64 / (1024.0 * 1024.0);
                 let msg = format!(
-                    "⬇️ [File {}/{}] {} ({:.1} MB downloaded)...",
+                    "⬇️ [File {}/{}] {} ({:.1} MB downloaded, SHA3-512 checkpointed)...",
                     file_num, total_files, filename, mb
                 );
                 let file_pct = (mb / 4000.0).clamp(0.05, 0.95) as f32;
-                let overall = ((file_num as f32 - 1.0) + file_pct) / total_files as f32;
-                progress_cb(&msg, overall, file_num, total_files);
+                progress_cb(
+                    &msg,
+                    ((file_num as f32 - 1.0) + file_pct) / total_files as f32,
+                    file_num,
+                    total_files,
+                );
             }
         }
+        let digest = hash.finalize();
+        write_digest(&part_digest_path, &digest)?;
 
         // Successfully downloaded: promote .part to final .gguf
         if mrml_runtime::path_is_file(&part_path) {
             rename_file(&part_path, &dest_path)?;
+            write_digest(&digest_path, &digest)?;
+            if mrml_runtime::path_is_file(&part_digest_path) {
+                mrml_runtime::remove_file(&part_digest_path)?;
+            }
         }
 
         let done_msg = format!(
-            "✓ [File {}/{}] {} (Downloaded)",
+            "✓ [File {}/{}] {} (Downloaded securely, SHA3-512 recorded)",
             file_num, total_files, filename
         );
         println!("{}", done_msg);
@@ -421,17 +550,19 @@ where
     }
 
     let primary_entry_file = downloaded_shard_paths.first().cloned().unwrap_or_else(|| {
-        mrml_runtime::join_path(&model_dir, &format!(
-            "{}-{}.gguf",
-            spec.model.to_ascii_lowercase(),
-            spec.quant.to_ascii_lowercase()
-        ))
+        mrml_runtime::join_path(
+            &model_dir,
+            &format!(
+                "{}-{}.gguf",
+                spec.model.to_ascii_lowercase(),
+                spec.quant.to_ascii_lowercase()
+            ),
+        )
     });
 
     let complete_msg = format!(
         "✨ All {} model weights ready in {}",
-        total_files,
-        model_dir
+        total_files, model_dir
     );
     println!("{}", complete_msg);
     progress_cb(&complete_msg, 1.0, total_files, total_files);
@@ -470,5 +601,30 @@ mod tests {
         assert_eq!(bar_half, "[█████░░░░░]");
         let bar_full = render_progress_bar(1.0, 10);
         assert_eq!(bar_full, "[██████████]");
+    }
+
+    #[test]
+    fn sha3_sidecar_detects_model_tampering() {
+        let directory = mrml_runtime::temporary_directory();
+        let path = mrml_runtime::join_path(&directory, "mrml-hash-test.bin");
+        let sidecar = format!("{}.sha3-512", path);
+        mrml_runtime::write_file(&path, b"authenticated model bytes").unwrap();
+        let (digest, _) = hash_file(&path).unwrap();
+        write_digest(&sidecar, &digest).unwrap();
+        assert!(digest_matches(&path, &sidecar));
+        mrml_runtime::write_file(&path, b"tampered model bytes").unwrap();
+        assert!(!digest_matches(&path, &sidecar));
+        let _ = mrml_runtime::remove_file(&path);
+        let _ = mrml_runtime::remove_file(&sidecar);
+    }
+
+    #[test]
+    fn live_hf_query_when_configured() {
+        if mrml_runtime::environment_variable("MRML_HF_LIVE_TEST").is_none() {
+            return;
+        }
+        let spec = HfModelSpec::parse("ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0").unwrap();
+        let files = mrml_tools::block_on(query_hf_api_siblings(&spec)).unwrap();
+        assert!(!files.is_empty());
     }
 }

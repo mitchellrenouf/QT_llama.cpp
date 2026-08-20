@@ -564,6 +564,12 @@ impl NativeFile {
         (file >= 0).then_some(Self(file))
     }
 
+    pub fn open_write(path: &CStr) -> Option<Self> {
+        const O_WRONLY: c_int = 1;
+        let file = unsafe { open(path.as_ptr(), O_WRONLY) };
+        (file >= 0).then_some(Self(file))
+    }
+
     pub fn read(&self, buffer: &mut [u8]) -> Option<usize> {
         let read = unsafe { read(self.0, buffer.as_mut_ptr().cast(), buffer.len()) };
         (read >= 0).then_some(read as usize)

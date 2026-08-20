@@ -1,6 +1,6 @@
 use crate::Tool;
 use mrml_error::{Result, anyhow};
-use mrml_runtime::{Command, Text, Vector};
+use mrml_runtime::{Text, Vector};
 use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::json;
 
@@ -35,43 +35,23 @@ pub async fn fetch_http_text(url: &str) -> Result<String> {
         }
     }
 
-    // 2. Direct HTTP fallback using curl
-    if let Ok(output) = Command::new("curl")
-        .arg("-sL")
-        .arg("--max-time")
-        .arg("10")
-        .arg("-A")
-        .arg("Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
-        .arg(url)
-        .output()
+    // 2. Original, authenticated HTTPS fallback.
+    if let Ok(mut response) = mrml_http::Client::new()
+        .user_agent("Mozilla/5.0 (compatible; MRML/0.4)")
+        .get_follow(url, &[], 8)
     {
-        if output.status.success() {
-            let body = text_string(Text::from_utf8_lossy(&output.stdout));
+        if (200..300).contains(&response.status) {
+            let body = response
+                .read_to_end(16 * 1024 * 1024)
+                .map_err(|error| anyhow!("HTTPS body read failed: {}", error))?;
             if !body.is_empty() {
-                return Ok(body);
-            }
-        }
-    }
-
-    // 3. Fallback to wget
-    if let Ok(output) = Command::new("wget")
-        .arg("-qO-")
-        .arg("--timeout=10")
-        .arg("-U")
-        .arg("Mozilla/5.0 (X11; Linux x86_64)")
-        .arg(url)
-        .output()
-    {
-        if output.status.success() {
-            let body = text_string(Text::from_utf8_lossy(&output.stdout));
-            if !body.is_empty() {
-                return Ok(body);
+                return Ok(text_string(Text::from_utf8_lossy(&body)));
             }
         }
     }
 
     Err(anyhow!(
-        "Failed to fetch web content from '{}' via headless browser, curl, or wget.",
+        "Failed to fetch web content from '{}' via the browser or authenticated HTTPS client.",
         url
     ))
 }
@@ -167,7 +147,9 @@ impl Tool for WebSearchTool {
             let mut p_text = String::new();
             for element in crate::html::elements(&html, "p", None).iter().take(4) {
                 if !element.text.is_empty() && element.text.len() > 20 {
-                    if !p_text.is_empty() { p_text.push_str("\n\n"); }
+                    if !p_text.is_empty() {
+                        p_text.push_str("\n\n");
+                    }
                     p_text.push_str(&element.text);
                 }
             }
@@ -246,7 +228,9 @@ impl Tool for WebSearchTool {
         } else {
             let mut output = String::new();
             for (index, result) in results.iter().enumerate() {
-                if index != 0 { output.push_str("\n\n"); }
+                if index != 0 {
+                    output.push_str("\n\n");
+                }
                 output.push_str(result);
             }
             Ok(output)

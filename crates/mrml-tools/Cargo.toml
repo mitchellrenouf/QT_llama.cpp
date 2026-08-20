@@ -15,6 +15,7 @@ runtime = [
     "dep:mrml-percent-encoding",
     "dep:mrml-linux",
     "dep:mrml-windows",
+    "dep:mrml-http",
 ]
 
 [dependencies]
@@ -23,6 +24,7 @@ mrml-error = { path = "../mrml-error", optional = true }
 serde_json = { package = "mrml-json", path = "../mrml-json", optional = true }
 mrml-percent-encoding = { path = "../mrml-percent-encoding", optional = true }
 mrml-runtime = { path = "../mrml-runtime", optional = true }
+mrml-http = { path = "../mrml-http", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 mrml-windows = { path = "../mrml-windows", optional = true }

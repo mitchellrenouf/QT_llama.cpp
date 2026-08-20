@@ -1001,6 +1001,15 @@ impl NativeFile {
         (handle as isize != -1).then_some(Self(handle))
     }
 
+    pub fn open_write(path: &[u16]) -> Option<Self> {
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_SHARE_READ: u32 = 1;
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+        let handle = unsafe { CreateFileW(path.as_ptr(), GENERIC_WRITE, FILE_SHARE_READ, core::ptr::null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, core::ptr::null_mut()) };
+        (handle as isize != -1).then_some(Self(handle))
+    }
+
     pub fn read(&self, buffer: &mut [u8]) -> Option<usize> {
         let amount = buffer.len().min(u32::MAX as usize) as u32;
         let mut read = 0;

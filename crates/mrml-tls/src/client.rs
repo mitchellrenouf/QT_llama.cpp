@@ -2,6 +2,7 @@ use crate::{
     HybridClientSecret, KeySchedule, RecordKeys, TLS_AES_128_GCM_SHA256, TlsError, Transcript,
     X25519_MLKEM768, finished_verify_data, hybrid_client_share, verify_server_chain,
 };
+use mrml_crypto::{x25519_public, x25519_shared};
 use mrml_runtime::{TcpStream, Vector};
 
 fn push_u16(out: &mut Vector<u8>, value: usize) -> Result<(), TlsError> {
@@ -25,11 +26,14 @@ fn extension(out: &mut Vector<u8>, kind: u16, value: &[u8]) -> Result<(), TlsErr
         .map_err(|_| TlsError::AllocationFailed)
 }
 
-fn client_hello(host: &str) -> Result<(Vector<u8>, HybridClientSecret), TlsError> {
+fn client_hello(host: &str) -> Result<(Vector<u8>, HybridClientSecret, [u8; 32]), TlsError> {
     if host.is_empty() || host.len() > 253 || !host.is_ascii() {
         return Err(TlsError::Handshake);
     }
     let (share, secret) = hybrid_client_share()?;
+    let mut fallback = [0u8; 32];
+    mrml_runtime::fill_random(&mut fallback).map_err(|_| TlsError::AuthenticationFailed)?;
+    let fallback_public = x25519_public(fallback);
     let mut random = [0u8; 32];
     let mut session = [0u8; 32];
     mrml_runtime::fill_random(&mut random).map_err(|_| TlsError::AuthenticationFailed)?;
@@ -44,13 +48,18 @@ fn client_hello(host: &str) -> Result<(Vector<u8>, HybridClientSecret), TlsError
     extension(&mut extensions, 0, &sni)?;
     extension(&mut extensions, 43, &[2, 3, 4])?;
     extension(&mut extensions, 13, &[0, 4, 8, 4, 4, 1])?;
-    extension(&mut extensions, 10, &[0, 2, 0x11, 0xec])?;
+    extension(&mut extensions, 10, &[0, 4, 0x11, 0xec, 0, 0x1d])?;
     let mut key_share = Vector::new();
-    push_u16(&mut key_share, 4 + share.len())?;
+    push_u16(&mut key_share, 4 + share.len() + 4 + fallback_public.len())?;
     push_u16(&mut key_share, X25519_MLKEM768 as usize)?;
     push_u16(&mut key_share, share.len())?;
     key_share
         .try_extend_from_slice(&share)
+        .map_err(|_| TlsError::AllocationFailed)?;
+    push_u16(&mut key_share, 0x1d)?;
+    push_u16(&mut key_share, 32)?;
+    key_share
+        .try_extend_from_slice(&fallback_public)
         .map_err(|_| TlsError::AllocationFailed)?;
     extension(&mut extensions, 51, &key_share)?;
     let mut body = Vector::new();
@@ -76,7 +85,7 @@ fn client_hello(host: &str) -> Result<(Vector<u8>, HybridClientSecret), TlsError
     handshake
         .try_extend_from_slice(&body)
         .map_err(|_| TlsError::AllocationFailed)?;
-    Ok((handshake, secret))
+    Ok((handshake, secret, fallback))
 }
 
 fn record(stream: &mut TcpStream) -> Result<(u8, Vector<u8>), TlsError> {
@@ -137,7 +146,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn server_share(message: &[u8]) -> Result<&[u8], TlsError> {
+fn server_share(message: &[u8]) -> Result<(u16, &[u8]), TlsError> {
     let mut c = Cursor::new(message);
     if c.u8()? != 2 {
         return Err(TlsError::Handshake);
@@ -170,15 +179,13 @@ fn server_share(message: &[u8]) -> Result<&[u8], TlsError> {
             43 if value == [3, 4] => version = true,
             51 => {
                 let mut k = Cursor::new(value);
-                if k.u16()? != X25519_MLKEM768 {
-                    return Err(TlsError::Handshake);
-                }
+                let group = k.u16()?;
                 let length = k.u16()? as usize;
                 let bytes = k.take(length)?;
-                if !k.done() || length != 1120 {
+                if !k.done() || !matches!((group, length), (X25519_MLKEM768, 1120) | (0x1d, 32)) {
                     return Err(TlsError::Handshake);
                 }
-                share = Some(bytes)
+                share = Some((group, bytes))
             }
             _ => {}
         }
@@ -288,6 +295,7 @@ pub struct TlsClientStream {
     write_keys: RecordKeys,
     pending: Vector<u8>,
     pending_position: usize,
+    negotiated_group: u16,
 }
 impl TlsClientStream {
     pub fn connect(host: &str, port: u16) -> Result<Self, TlsError> {
@@ -298,7 +306,7 @@ impl TlsClientStream {
         stream
             .set_write_timeout_millis(30_000)
             .map_err(|_| TlsError::Io)?;
-        let (client_hello, hybrid) = client_hello(host)?;
+        let (client_hello, hybrid, mut fallback) = client_hello(host)?;
         send_plain_handshake(&mut stream, &client_hello)?;
         let (mut kind, mut server_hello) = record(&mut stream)?;
         while kind == 20 {
@@ -307,7 +315,20 @@ impl TlsClientStream {
         if kind != 22 {
             return Err(TlsError::Handshake);
         }
-        let mut shared = hybrid.complete(server_share(&server_hello)?)?;
+        let (group, server_key) = server_share(&server_hello)?;
+        let mut shared = Vector::new();
+        if group == X25519_MLKEM768 {
+            shared
+                .try_extend_from_slice(&hybrid.complete(server_key)?)
+                .map_err(|_| TlsError::AllocationFailed)?;
+        } else {
+            let peer: [u8; 32] = server_key.try_into().map_err(|_| TlsError::Handshake)?;
+            let secret = x25519_shared(fallback, peer).ok_or(TlsError::AuthenticationFailed)?;
+            shared
+                .try_extend_from_slice(&secret)
+                .map_err(|_| TlsError::AllocationFailed)?;
+        }
+        fallback.fill(0);
         let mut transcript = Transcript::new();
         transcript.update(&client_hello);
         transcript.update(&server_hello);
@@ -429,6 +450,7 @@ impl TlsClientStream {
                             write_keys,
                             pending: Vector::new(),
                             pending_position: 0,
+                            negotiated_group: group,
                         });
                     }
                     _ => return Err(TlsError::Handshake),
@@ -443,6 +465,9 @@ impl TlsClientStream {
             self.stream.write_all(&record).map_err(|_| TlsError::Io)?;
         }
         Ok(())
+    }
+    pub const fn negotiated_group(&self) -> u16 {
+        self.negotiated_group
     }
     pub fn read(&mut self, output: &mut [u8]) -> Result<usize, TlsError> {
         if self.pending_position < self.pending.len() {
@@ -497,6 +522,9 @@ mod tests {
             .and_then(|p| p.parse().ok())
             .unwrap_or(443);
         let mut tls = TlsClientStream::connect(&host, port).unwrap();
+        if mrml_runtime::environment_variable("MRML_TLS_REQUIRE_HYBRID").is_some() {
+            assert_eq!(tls.negotiated_group(), X25519_MLKEM768);
+        }
         tls.write_all(b"HEAD / HTTP/1.1\r\nHost: huggingface.co\r\nConnection: close\r\n\r\n")
             .unwrap();
         let mut response = [0u8; 64];

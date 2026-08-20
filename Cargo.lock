@@ -6,7 +6,9 @@ version = 4
 name = "mrml-agent"
 version = "0.4.0"
 dependencies = [
+ "mrml-crypto",
  "mrml-error",
+ "mrml-http",
  "mrml-json",
  "mrml-model",
  "mrml-runtime",
@@ -150,6 +152,7 @@ name = "mrml-tools"
 version = "0.4.0"
 dependencies = [
  "mrml-error",
+ "mrml-http",
  "mrml-json",
  "mrml-linux",
  "mrml-percent-encoding",

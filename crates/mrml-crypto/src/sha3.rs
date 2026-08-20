@@ -63,6 +63,7 @@ fn permute(state: &mut [u64; 25]) {
     }
 }
 
+#[derive(Clone)]
 struct Sponge<const RATE: usize> {
     state: [u64; 25],
     position: usize,
@@ -111,6 +112,7 @@ impl<const RATE: usize> Sponge<RATE> {
 
 macro_rules! fixed_hash {
     ($name:ident, $rate:expr, $size:expr) => {
+        #[derive(Clone)]
         pub struct $name(Sponge<$rate>);
 
         impl $name {

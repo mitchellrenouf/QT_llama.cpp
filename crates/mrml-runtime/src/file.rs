@@ -87,14 +87,12 @@ fn encode_unix_path(path: &str) -> Option<Vector<u8>> {
 pub fn path_is_directory(path: &str) -> bool {
     #[cfg(windows)]
     {
-        encode_windows_path(path)
-            .is_some_and(|path| mrml_windows::wide_path_is_directory(&path))
+        encode_windows_path(path).is_some_and(|path| mrml_windows::wide_path_is_directory(&path))
     }
     #[cfg(unix)]
     {
         encode_unix_path(path).is_some_and(|path| {
-            core::ffi::CStr::from_bytes_with_nul(&path)
-                .is_ok_and(mrml_linux::path_is_directory)
+            core::ffi::CStr::from_bytes_with_nul(&path).is_ok_and(mrml_linux::path_is_directory)
         })
     }
 }
@@ -118,7 +116,10 @@ pub fn path_is_absolute(path: &str) -> bool {
     if cfg!(windows) {
         path.starts_with(['/', '\\'])
             || (path.as_bytes().get(1) == Some(&b':')
-                && path.as_bytes().get(2).is_some_and(|byte| matches!(byte, b'/' | b'\\')))
+                && path
+                    .as_bytes()
+                    .get(2)
+                    .is_some_and(|byte| matches!(byte, b'/' | b'\\')))
     } else {
         path.starts_with('/')
     }
@@ -151,11 +152,11 @@ pub fn canonical_path(path: &str) -> Result<Text, FileError> {
     {
         let encoded = encode_windows_path(path).ok_or(FileError::InvalidPath)?;
         const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
-        let mut output = Vector::with_capacity(MAX_WINDOWS_PATH_UNITS)
-            .map_err(|_| FileError::MetadataFailed)?;
+        let mut output =
+            Vector::with_capacity(MAX_WINDOWS_PATH_UNITS).map_err(|_| FileError::MetadataFailed)?;
         output.resize(MAX_WINDOWS_PATH_UNITS, 0);
-        let length = mrml_windows::full_path_wide(&encoded, &mut output)
-            .ok_or(FileError::MetadataFailed)?;
+        let length =
+            mrml_windows::full_path_wide(&encoded, &mut output).ok_or(FileError::MetadataFailed)?;
         let mut result = Text::new();
         for character in core::char::decode_utf16(output[..length].iter().copied()) {
             result.push(character.map_err(|_| FileError::InvalidUtf8)?);
@@ -165,11 +166,11 @@ pub fn canonical_path(path: &str) -> Result<Text, FileError> {
     #[cfg(unix)]
     {
         let encoded = encode_unix_path(path).ok_or(FileError::InvalidPath)?;
-        let encoded = core::ffi::CStr::from_bytes_with_nul(&encoded)
-            .map_err(|_| FileError::InvalidPath)?;
+        let encoded =
+            core::ffi::CStr::from_bytes_with_nul(&encoded).map_err(|_| FileError::InvalidPath)?;
         let mut output = [0u8; 4096];
-        let path = mrml_linux::canonical_path(encoded, &mut output)
-            .ok_or(FileError::MetadataFailed)?;
+        let path =
+            mrml_linux::canonical_path(encoded, &mut output).ok_or(FileError::MetadataFailed)?;
         Text::try_from_str(core::str::from_utf8(path).map_err(|_| FileError::InvalidUtf8)?)
             .map_err(|_| FileError::MetadataFailed)
     }
@@ -187,19 +188,19 @@ pub fn create_dir_all(path: &str) -> Result<(), FileError> {
         }
     }
     #[cfg(windows)]
-    let created = encode_windows_path(path)
-        .is_some_and(|path| mrml_windows::create_directory_wide(&path));
+    let created =
+        encode_windows_path(path).is_some_and(|path| mrml_windows::create_directory_wide(&path));
     #[cfg(unix)]
     let created = encode_unix_path(path).is_some_and(|path| {
-        core::ffi::CStr::from_bytes_with_nul(&path)
-            .is_ok_and(mrml_linux::create_directory)
+        core::ffi::CStr::from_bytes_with_nul(&path).is_ok_and(mrml_linux::create_directory)
     });
     created.then_some(()).ok_or(FileError::DirectoryFailed)
 }
 
 pub fn remove_file(path: &str) -> Result<(), FileError> {
     #[cfg(windows)]
-    let removed = encode_windows_path(path).is_some_and(|path| mrml_windows::delete_file_wide(&path));
+    let removed =
+        encode_windows_path(path).is_some_and(|path| mrml_windows::delete_file_wide(&path));
     #[cfg(unix)]
     let removed = encode_unix_path(path).is_some_and(|path| {
         core::ffi::CStr::from_bytes_with_nul(&path).is_ok_and(mrml_linux::delete_file)
@@ -209,8 +210,8 @@ pub fn remove_file(path: &str) -> Result<(), FileError> {
 
 fn remove_directory(path: &str) -> Result<(), FileError> {
     #[cfg(windows)]
-    let removed = encode_windows_path(path)
-        .is_some_and(|path| mrml_windows::remove_directory_wide(&path));
+    let removed =
+        encode_windows_path(path).is_some_and(|path| mrml_windows::remove_directory_wide(&path));
     #[cfg(unix)]
     let removed = encode_unix_path(path).is_some_and(|path| {
         core::ffi::CStr::from_bytes_with_nul(&path).is_ok_and(mrml_linux::remove_directory)
@@ -238,18 +239,20 @@ pub fn remove_dir_all(path: &str) -> Result<(), FileError> {
 
 pub fn rename_file(existing: &str, replacement: &str) -> Result<(), FileError> {
     #[cfg(windows)]
-    let renamed = encode_windows_path(existing).zip(encode_windows_path(replacement)).is_some_and(
-        |(existing, replacement)| mrml_windows::rename_file_wide(&existing, &replacement),
-    );
+    let renamed = encode_windows_path(existing)
+        .zip(encode_windows_path(replacement))
+        .is_some_and(|(existing, replacement)| {
+            mrml_windows::rename_file_wide(&existing, &replacement)
+        });
     #[cfg(unix)]
-    let renamed = encode_unix_path(existing).zip(encode_unix_path(replacement)).is_some_and(
-        |(existing, replacement)| {
+    let renamed = encode_unix_path(existing)
+        .zip(encode_unix_path(replacement))
+        .is_some_and(|(existing, replacement)| {
             core::ffi::CStr::from_bytes_with_nul(&existing).is_ok_and(|existing| {
                 core::ffi::CStr::from_bytes_with_nul(&replacement)
                     .is_ok_and(|replacement| mrml_linux::rename_file(existing, replacement))
             })
-        },
-    );
+        });
     renamed.then_some(()).ok_or(FileError::RenameFailed)
 }
 
@@ -264,8 +267,8 @@ pub fn read_directory(path: &str) -> Result<Vector<DirectoryEntry>, FileError> {
         }
         pattern.push('*' as u16);
         pattern.push(0);
-        let mut directory = mrml_windows::NativeDirectory::open(&pattern)
-            .ok_or(FileError::DirectoryFailed)?;
+        let mut directory =
+            mrml_windows::NativeDirectory::open(&pattern).ok_or(FileError::DirectoryFailed)?;
         let mut wide_name = [0u16; 260];
         while let Some((length, is_directory, is_symlink)) = directory.next(&mut wide_name) {
             let mut name = Text::new();
@@ -273,22 +276,30 @@ pub fn read_directory(path: &str) -> Result<Vector<DirectoryEntry>, FileError> {
                 name.push(character.map_err(|_| FileError::InvalidUtf8)?);
             }
             if name != "." && name != ".." {
-                entries.push(DirectoryEntry { name, is_directory, is_symlink });
+                entries.push(DirectoryEntry {
+                    name,
+                    is_directory,
+                    is_symlink,
+                });
             }
         }
     }
     #[cfg(unix)]
     {
         let encoded = encode_unix_path(path).ok_or(FileError::InvalidPath)?;
-        let path = core::ffi::CStr::from_bytes_with_nul(&encoded)
-            .map_err(|_| FileError::InvalidPath)?;
-        let mut directory = mrml_linux::NativeDirectory::open(path)
-            .ok_or(FileError::DirectoryFailed)?;
+        let path =
+            core::ffi::CStr::from_bytes_with_nul(&encoded).map_err(|_| FileError::InvalidPath)?;
+        let mut directory =
+            mrml_linux::NativeDirectory::open(path).ok_or(FileError::DirectoryFailed)?;
         let mut name_buffer = [0u8; 256];
         while let Some((name, is_directory, is_symlink)) = directory.next(&mut name_buffer) {
             let name = core::str::from_utf8(name).map_err(|_| FileError::InvalidUtf8)?;
             if name != "." && name != ".." {
-                entries.push(DirectoryEntry { name: name.into(), is_directory, is_symlink });
+                entries.push(DirectoryEntry {
+                    name: name.into(),
+                    is_directory,
+                    is_symlink,
+                });
             }
         }
     }
@@ -339,12 +350,12 @@ impl File {
     pub fn create(path: &str) -> Result<Self, FileError> {
         #[cfg(windows)]
         {
-            let mut encoded = Vector::with_capacity(path.len() + 1)
-                .map_err(|_| FileError::OpenFailed)?;
+            let mut encoded =
+                Vector::with_capacity(path.len() + 1).map_err(|_| FileError::OpenFailed)?;
             encoded.extend(path.encode_utf16());
             encoded.push(0);
-            let inner = mrml_windows::NativeFile::create_write(&encoded)
-                .ok_or(FileError::OpenFailed)?;
+            let inner =
+                mrml_windows::NativeFile::create_write(&encoded).ok_or(FileError::OpenFailed)?;
             Ok(Self { inner, position: 0 })
         }
         #[cfg(unix)]
@@ -352,16 +363,44 @@ impl File {
             if path.as_bytes().contains(&0) {
                 return Err(FileError::InvalidPath);
             }
-            let mut encoded = Vector::with_capacity(path.len() + 1)
-                .map_err(|_| FileError::OpenFailed)?;
+            let mut encoded =
+                Vector::with_capacity(path.len() + 1).map_err(|_| FileError::OpenFailed)?;
             encoded
                 .try_extend_from_slice(path.as_bytes())
                 .map_err(|_| FileError::OpenFailed)?;
             encoded.push(0);
             let path = core::ffi::CStr::from_bytes_with_nul(&encoded)
                 .map_err(|_| FileError::InvalidPath)?;
-            let inner = mrml_linux::NativeFile::create_write(path)
-                .ok_or(FileError::OpenFailed)?;
+            let inner = mrml_linux::NativeFile::create_write(path).ok_or(FileError::OpenFailed)?;
+            Ok(Self { inner, position: 0 })
+        }
+    }
+
+    pub fn open_write(path: &str) -> Result<Self, FileError> {
+        #[cfg(windows)]
+        {
+            let mut encoded =
+                Vector::with_capacity(path.len() + 1).map_err(|_| FileError::OpenFailed)?;
+            encoded.extend(path.encode_utf16());
+            encoded.push(0);
+            let inner =
+                mrml_windows::NativeFile::open_write(&encoded).ok_or(FileError::OpenFailed)?;
+            Ok(Self { inner, position: 0 })
+        }
+        #[cfg(unix)]
+        {
+            if path.as_bytes().contains(&0) {
+                return Err(FileError::InvalidPath);
+            }
+            let mut encoded =
+                Vector::with_capacity(path.len() + 1).map_err(|_| FileError::OpenFailed)?;
+            encoded
+                .try_extend_from_slice(path.as_bytes())
+                .map_err(|_| FileError::OpenFailed)?;
+            encoded.push(0);
+            let path = core::ffi::CStr::from_bytes_with_nul(&encoded)
+                .map_err(|_| FileError::InvalidPath)?;
+            let inner = mrml_linux::NativeFile::open_write(path).ok_or(FileError::OpenFailed)?;
             Ok(Self { inner, position: 0 })
         }
     }
@@ -481,8 +520,16 @@ mod tests {
         let file = join_path(&root, "file-λ.txt");
         write_file(&file, b"entry").unwrap();
         let entries = read_directory(&root).unwrap();
-        assert!(entries.iter().any(|entry| entry.name == "folder-星" && entry.is_directory));
-        assert!(entries.iter().any(|entry| entry.name == "file-λ.txt" && !entry.is_directory));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.name == "folder-星" && entry.is_directory)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.name == "file-λ.txt" && !entry.is_directory)
+        );
         remove_dir_all(&root).unwrap();
         assert!(!path_exists(&root));
     }

@@ -291,7 +291,7 @@ impl Client {
     }
     pub fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<Response, HttpError> {
         let url = Url::parse(url)?;
-        self.request(&url, "GET", headers)
+        self.request(&url, "GET", headers, true)
     }
     pub fn get_follow(
         &self,
@@ -300,8 +300,11 @@ impl Client {
         redirects: usize,
     ) -> Result<Response, HttpError> {
         let mut current = Url::parse(url)?;
+        let original_host = current.host.clone();
+        let original_port = current.port;
         for _ in 0..=redirects {
-            let response = self.request(&current, "GET", headers)?;
+            let same_origin = current.host == original_host && current.port == original_port;
+            let response = self.request(&current, "GET", headers, same_origin)?;
             if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
                 let location = Text::from(
                     response
@@ -320,6 +323,7 @@ impl Client {
         url: &Url,
         method: &str,
         headers: &[(&str, &str)],
+        allow_sensitive: bool,
     ) -> Result<Response, HttpError> {
         let mut stream =
             TlsClientStream::connect(&url.host, url.port).map_err(|_| HttpError::Tls)?;
@@ -331,6 +335,13 @@ impl Client {
             self.user_agent
         );
         for (name, value) in headers {
+            if !allow_sensitive
+                && (name.eq_ignore_ascii_case("authorization")
+                    || name.eq_ignore_ascii_case("cookie")
+                    || name.eq_ignore_ascii_case("proxy-authorization"))
+            {
+                continue;
+            }
             if !valid_header(name) || !valid_value(value) {
                 return Err(HttpError::InvalidUrl);
             }
@@ -475,5 +486,21 @@ mod tests {
         let mut response = Client::new().get_follow(&url, &[], 5).unwrap();
         assert_eq!(response.status, 200);
         assert!(!response.read_to_end(2 * 1024 * 1024).unwrap().is_empty());
+    }
+    #[test]
+    fn live_bounded_range_when_configured() {
+        let Some(url) = mrml_runtime::environment_variable("MRML_HTTP_RANGE_URL") else {
+            return;
+        };
+        let mut response = Client::new()
+            .get_follow(&url, &[("Range", "bytes=0-1023")], 8)
+            .unwrap();
+        assert_eq!(response.status, 206);
+        assert!(
+            response
+                .header("content-range")
+                .is_some_and(|value| value.starts_with("bytes 0-1023/"))
+        );
+        assert_eq!(response.read_to_end(2048).unwrap().len(), 1024);
     }
 }

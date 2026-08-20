@@ -13,6 +13,8 @@ runtime = [
     "dep:mrml-terminal-style",
     "dep:mrml-tools",
     "dep:serde_json",
+    "dep:mrml-http",
+    "dep:mrml-crypto",
     "mrml-model/runtime",
     "mrml-tools/runtime",
 ]
@@ -29,3 +31,5 @@ mrml-tools = { path = "../mrml-tools", default-features = false, optional = true
 mrml-error = { path = "../mrml-error", optional = true }
 serde_json = { package = "mrml-json", path = "../mrml-json", optional = true }
 mrml-runtime = { path = "../mrml-runtime" }
+mrml-http = { path = "../mrml-http", optional = true }
+mrml-crypto = { path = "../mrml-crypto", optional = true }
