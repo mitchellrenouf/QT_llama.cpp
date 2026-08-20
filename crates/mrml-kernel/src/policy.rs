@@ -11,8 +11,14 @@ pub enum PolicyError {
     DeviceTableFull,
     DuplicateDirectory,
     DuplicateDevice,
-    UnsafeDeviceIsolation,
     InvalidDeviceAddress,
+    EmptyTopology,
+    MissingDevice,
+    DuplicateTopologyDevice,
+    IncompleteIommuGroup,
+    VmTableFull,
+    DuplicateVmName,
+    DeviceAlreadyAssigned,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -47,10 +53,10 @@ impl VmName {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceAddress {
-    pub segment: u16,
-    pub bus: u8,
-    pub device: u8,
-    pub function: u8,
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
 }
 
 impl DeviceAddress {
@@ -65,29 +71,94 @@ impl DeviceAddress {
             function,
         })
     }
+
+    pub const fn segment(self) -> u16 {
+        self.segment
+    }
+    pub const fn bus(self) -> u8 {
+        self.bus
+    }
+    pub const fn device(self) -> u8 {
+        self.device
+    }
+    pub const fn function(self) -> u8 {
+        self.function
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceGrant {
-    pub address: DeviceAddress,
-    pub iommu_group: u32,
+    address: DeviceAddress,
+    iommu_group: u32,
 }
 
 impl DeviceGrant {
-    /// Device passthrough is rejected unless the host established an isolated
-    /// IOMMU group and a reliable function-level or bus reset path.
-    pub const fn new(
-        address: DeviceAddress,
-        iommu_group: u32,
-        isolated_group: bool,
-        reset_supported: bool,
-    ) -> Result<Self, PolicyError> {
-        if !isolated_group || !reset_supported {
-            return Err(PolicyError::UnsafeDeviceIsolation);
-        }
-        Ok(Self {
+    pub const fn address(self) -> DeviceAddress {
+        self.address
+    }
+    pub const fn iommu_group(self) -> u32 {
+        self.iommu_group
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostDevice {
+    address: DeviceAddress,
+    iommu_group: u32,
+    reset_supported: bool,
+}
+
+impl HostDevice {
+    pub const fn new(address: DeviceAddress, iommu_group: u32, reset_supported: bool) -> Self {
+        Self {
             address,
             iommu_group,
+            reset_supported,
+        }
+    }
+}
+
+pub struct IommuTopology<'a> {
+    devices: &'a [HostDevice],
+}
+
+impl<'a> IommuTopology<'a> {
+    pub fn new(devices: &'a [HostDevice]) -> Result<Self, PolicyError> {
+        if devices.is_empty() {
+            return Err(PolicyError::EmptyTopology);
+        }
+        for (index, device) in devices.iter().enumerate() {
+            if devices[index + 1..]
+                .iter()
+                .any(|other| other.address == device.address)
+            {
+                return Err(PolicyError::DuplicateTopologyDevice);
+            }
+        }
+        Ok(Self { devices })
+    }
+
+    pub fn grant(
+        &self,
+        address: DeviceAddress,
+        assigned: &[DeviceAddress],
+    ) -> Result<DeviceGrant, PolicyError> {
+        let target = self
+            .devices
+            .iter()
+            .find(|device| device.address == address)
+            .ok_or(PolicyError::MissingDevice)?;
+        let complete = self
+            .devices
+            .iter()
+            .filter(|device| device.iommu_group == target.iommu_group)
+            .all(|device| device.reset_supported && assigned.contains(&device.address));
+        if !complete {
+            return Err(PolicyError::IncompleteIommuGroup);
+        }
+        Ok(DeviceGrant {
+            address,
+            iommu_group: target.iommu_group,
         })
     }
 }
@@ -169,6 +240,57 @@ impl<const DIRECTORIES: usize, const DEVICES: usize> VmPolicy<DIRECTORIES, DEVIC
     }
 }
 
+/// Complete launch policy. Device ownership is globally exclusive, including
+/// at IOMMU-group granularity, across every VM in a launch.
+pub struct SystemPolicy<const VMS: usize, const DIRECTORIES: usize, const DEVICES: usize> {
+    vms: [Option<VmPolicy<DIRECTORIES, DEVICES>>; VMS],
+}
+
+impl<const VMS: usize, const DIRECTORIES: usize, const DEVICES: usize>
+    SystemPolicy<VMS, DIRECTORIES, DEVICES>
+{
+    pub fn new() -> Self {
+        Self {
+            vms: array::from_fn(|_| None),
+        }
+    }
+
+    pub fn add_vm(&mut self, policy: VmPolicy<DIRECTORIES, DEVICES>) -> Result<(), PolicyError> {
+        for existing in self.vms.iter().flatten() {
+            if existing.name() == policy.name() {
+                return Err(PolicyError::DuplicateVmName);
+            }
+            for requested in policy.devices() {
+                if existing.devices().any(|assigned| {
+                    assigned.address == requested.address
+                        || assigned.iommu_group == requested.iommu_group
+                }) {
+                    return Err(PolicyError::DeviceAlreadyAssigned);
+                }
+            }
+        }
+        let slot = self
+            .vms
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(PolicyError::VmTableFull)?;
+        *slot = Some(policy);
+        Ok(())
+    }
+
+    pub fn vms(&self) -> impl Iterator<Item = &VmPolicy<DIRECTORIES, DEVICES>> {
+        self.vms.iter().flatten()
+    }
+}
+
+impl<const VMS: usize, const DIRECTORIES: usize, const DEVICES: usize> Default
+    for SystemPolicy<VMS, DIRECTORIES, DEVICES>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,15 +316,23 @@ mod tests {
     #[test]
     fn device_passthrough_requires_isolation_and_reset() {
         let address = DeviceAddress::new(0, 1, 0, 0).unwrap();
+        let companion = DeviceAddress::new(0, 1, 0, 1).unwrap();
+        let devices = [
+            HostDevice::new(address, 7, true),
+            HostDevice::new(companion, 7, true),
+        ];
+        let topology = IommuTopology::new(&devices).unwrap();
         assert_eq!(
-            DeviceGrant::new(address, 7, false, true),
-            Err(PolicyError::UnsafeDeviceIsolation)
+            topology.grant(address, &[address]),
+            Err(PolicyError::IncompleteIommuGroup)
         );
+        assert!(topology.grant(address, &[address, companion]).is_ok());
+        let unsafe_devices = [HostDevice::new(address, 7, false)];
+        let unsafe_topology = IommuTopology::new(&unsafe_devices).unwrap();
         assert_eq!(
-            DeviceGrant::new(address, 7, true, false),
-            Err(PolicyError::UnsafeDeviceIsolation)
+            unsafe_topology.grant(address, &[address]),
+            Err(PolicyError::IncompleteIommuGroup)
         );
-        assert!(DeviceGrant::new(address, 7, true, true).is_ok());
         assert!(DeviceAddress::new(0, 0, 32, 0).is_err());
     }
 
@@ -211,5 +341,29 @@ mod tests {
         assert!(VmName::new("inference_0").is_ok());
         assert!(VmName::new("../tool").is_err());
         assert!(VmName::new("tool\nadmin").is_err());
+    }
+
+    #[test]
+    fn system_policy_prevents_duplicate_vm_names_and_device_ownership() {
+        let address = DeviceAddress::new(0, 1, 0, 0).unwrap();
+        let devices = [HostDevice::new(address, 7, true)];
+        let grant = IommuTopology::new(&devices)
+            .unwrap()
+            .grant(address, &[address])
+            .unwrap();
+        let mut first = VmPolicy::<0, 1>::new(VmName::new("gpu").unwrap(), VmRole::Device);
+        first.add_device(grant).unwrap();
+        let mut system = SystemPolicy::<2, 0, 1>::new();
+        system.add_vm(first).unwrap();
+        assert_eq!(
+            system.add_vm(VmPolicy::new(VmName::new("gpu").unwrap(), VmRole::Tool)),
+            Err(PolicyError::DuplicateVmName)
+        );
+        let mut second = VmPolicy::<0, 1>::new(VmName::new("gpu-2").unwrap(), VmRole::Device);
+        second.add_device(grant).unwrap();
+        assert_eq!(
+            system.add_vm(second),
+            Err(PolicyError::DeviceAlreadyAssigned)
+        );
     }
 }

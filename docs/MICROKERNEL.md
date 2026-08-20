@@ -27,6 +27,13 @@ the kernel. Reset, DMA isolation, firmware trust, and peer-to-peer DMA must be
 validated for each GPU/platform combination. Systems lacking trustworthy IOMMU
 isolation use the CPU backend.
 
+Passthrough grants are minted from a host-enumerated IOMMU topology rather than
+from caller assertions. Every function in the target group must be assigned to
+the same VM and have a verified reset path. System launch policy rejects reuse
+of either a device or its IOMMU group across VMs. Hyper-V and KVM backends must
+populate this topology from their native isolation APIs and fail closed when
+the topology is incomplete.
+
 ## Portability and boot
 
 The first target is x86_64 UEFI. Firmware-specific boot code hands a normalized
