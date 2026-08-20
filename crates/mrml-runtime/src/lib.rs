@@ -23,7 +23,8 @@ pub use env::environment_variable;
 pub use file::{
     DirectoryEntry, File, FileError, canonical_path, create_dir_all, join_path, parent_path,
     path_exists, path_is_absolute, path_is_directory, path_is_file, read_directory, read_file,
-    read_file_text, remove_dir_all, remove_file, rename_file, write_file,
+    read_file_bounded, read_file_text, read_file_text_bounded, remove_dir_all, remove_file,
+    rename_file, write_file,
 };
 pub use map::OrderedMap;
 pub use net::{NetError, TcpListener, TcpStream};

@@ -4,12 +4,13 @@ use mrml_runtime::Vector;
 pub fn verify_server_chain(hostname: &str, chain: &[&[u8]]) -> Result<(), CertificateError> {
     let leaf_der = *chain.first().ok_or(CertificateError::Malformed)?;
     let leaf = Certificate::parse(leaf_der)?;
+    leaf.require_server_auth()?;
     leaf.verify_hostname(hostname)?;
     leaf.verify_time_now()?;
     for pair in chain.windows(2) {
         let child = Certificate::parse(pair[0])?;
         let issuer = Certificate::parse(pair[1])?;
-        issuer.require_ca()?;
+        issuer.require_certificate_signing()?;
         issuer.verify_time_now()?;
         child.verify_signed_by(&issuer)?;
     }
@@ -17,12 +18,15 @@ pub fn verify_server_chain(hostname: &str, chain: &[&[u8]]) -> Result<(), Certif
     let mut trusted = false;
     let mut store_available = false;
     if let Some(path) = mrml_runtime::environment_variable("MRML_CA_BUNDLE") {
-        let bundle =
-            mrml_runtime::read_file(&path).map_err(|_| CertificateError::TrustStoreUnavailable)?;
+        let bundle = mrml_runtime::read_file_bounded(&path, 8 * 1024 * 1024)
+            .map_err(|_| CertificateError::TrustStoreUnavailable)?;
         store_available = true;
         for_each_pem_certificate(&bundle, |der| {
             if let Ok(root) = Certificate::parse(der) {
-                if last.verify_signed_by(&root).is_ok() {
+                if root.require_certificate_signing().is_ok()
+                    && root.verify_time_now().is_ok()
+                    && last.verify_signed_by(&root).is_ok()
+                {
                     trusted = true;
                     return false;
                 }
@@ -34,7 +38,10 @@ pub fn verify_server_chain(hostname: &str, chain: &[&[u8]]) -> Result<(), Certif
     {
         if mrml_runtime::visit_root_certificates(|der| {
             if let Ok(root) = Certificate::parse(der) {
-                if last.verify_signed_by(&root).is_ok() {
+                if root.require_certificate_signing().is_ok()
+                    && root.verify_time_now().is_ok()
+                    && last.verify_signed_by(&root).is_ok()
+                {
                     trusted = true;
                     return false;
                 }
@@ -53,7 +60,7 @@ pub fn verify_server_chain(hostname: &str, chain: &[&[u8]]) -> Result<(), Certif
         ];
         let mut bundle = None;
         for path in paths {
-            if let Ok(bytes) = mrml_runtime::read_file(path) {
+            if let Ok(bytes) = mrml_runtime::read_file_bounded(path, 8 * 1024 * 1024) {
                 bundle = Some(bytes);
                 break;
             }
@@ -62,7 +69,10 @@ pub fn verify_server_chain(hostname: &str, chain: &[&[u8]]) -> Result<(), Certif
             store_available = true;
             for_each_pem_certificate(&bundle, |der| {
                 if let Ok(root) = Certificate::parse(der) {
-                    if last.verify_signed_by(&root).is_ok() {
+                    if root.require_certificate_signing().is_ok()
+                        && root.verify_time_now().is_ok()
+                        && last.verify_signed_by(&root).is_ok()
+                    {
                         trusted = true;
                         return false;
                     }

@@ -211,9 +211,10 @@ fn handshake_message(buffer: &mut Vector<u8>) -> Result<Option<Vector<u8>>, TlsE
     result
         .try_extend_from_slice(&buffer[..4 + len])
         .map_err(|_| TlsError::AllocationFailed)?;
-    for _ in 0..4 + len {
-        buffer.remove(0);
-    }
+    let consumed = 4 + len;
+    let remaining = buffer.len() - consumed;
+    buffer.copy_within(consumed.., 0);
+    buffer.truncate(remaining);
     Ok(Some(result))
 }
 
@@ -239,6 +240,9 @@ fn certificate_chain(message: &[u8], storage: &mut Vector<Vector<u8>>) -> Result
     let mut entries = Cursor::new(list);
     while !entries.done() {
         let der_len = entries.u24()?;
+        if storage.len() >= 8 || der_len > 64 * 1024 {
+            return Err(TlsError::Certificate);
+        }
         let der = entries.take(der_len)?;
         let mut owned = Vector::new();
         owned
@@ -376,6 +380,9 @@ impl TlsClientStream {
             handshakes
                 .try_extend_from_slice(&plain)
                 .map_err(|_| TlsError::AllocationFailed)?;
+            if handshakes.len() > 1024 * 1024 {
+                return Err(TlsError::Handshake);
+            }
             while let Some(message) = handshake_message(&mut handshakes)? {
                 match message[0] {
                     8 => {

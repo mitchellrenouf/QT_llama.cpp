@@ -23,6 +23,10 @@ pub struct DirectoryEntry {
 }
 
 pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
+    read_file_bounded(path, usize::MAX)
+}
+
+pub fn read_file_bounded(path: &str, limit: usize) -> Result<Vector<u8>, FileError> {
     let mut file = File::open(path)?;
     let mut bytes = Vector::new();
     let mut chunk = [0u8; 8192];
@@ -30,6 +34,13 @@ pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
         let read = file.read(&mut chunk)?;
         if read == 0 {
             break;
+        }
+        if bytes
+            .len()
+            .checked_add(read)
+            .is_none_or(|length| length > limit)
+        {
+            return Err(FileError::ReadFailed);
         }
         bytes
             .try_extend_from_slice(&chunk[..read])
@@ -40,6 +51,10 @@ pub fn read_file(path: &str) -> Result<Vector<u8>, FileError> {
 
 pub fn read_file_text(path: &str) -> Result<Text, FileError> {
     Text::try_from_utf8(read_file(path)?).map_err(|_| FileError::InvalidUtf8)
+}
+
+pub fn read_file_text_bounded(path: &str, limit: usize) -> Result<Text, FileError> {
+    Text::try_from_utf8(read_file_bounded(path, limit)?).map_err(|_| FileError::InvalidUtf8)
 }
 
 pub fn write_file(path: &str, contents: &[u8]) -> Result<(), FileError> {
@@ -493,6 +508,15 @@ mod tests {
         write_file(&path, b"a longer discarded value").unwrap();
         write_file(&path, "observatory λ".as_bytes()).unwrap();
         assert_eq!(read_file_text(&path).unwrap(), "observatory λ");
+        remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn bounded_reads_reject_oversized_files() {
+        let path = test_path("mrml-bounded.bin");
+        write_file(&path, b"12345").unwrap();
+        assert_eq!(&read_file_bounded(&path, 5).unwrap()[..], b"12345");
+        assert_eq!(read_file_bounded(&path, 4), Err(FileError::ReadFailed));
         remove_file(&path).unwrap();
     }
 

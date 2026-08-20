@@ -188,8 +188,16 @@ impl Drop for TlsServerConfig {
 }
 impl TlsServerConfig {
     pub fn from_pem(certificate_pem: &[u8], private_key_pem: &[u8]) -> Result<Self, TlsError> {
+        if certificate_pem.len() > 1024 * 1024 || private_key_pem.len() > 64 * 1024 {
+            return Err(TlsError::Certificate);
+        }
         let certificates = pem_blocks(certificate_pem, b"CERTIFICATE")?;
-        if certificates.is_empty() {
+        if certificates.is_empty()
+            || certificates.len() > 8
+            || certificates
+                .iter()
+                .any(|certificate| certificate.len() > 64 * 1024)
+        {
             return Err(TlsError::Certificate);
         }
         let pkcs8 = pem_blocks(private_key_pem, b"PRIVATE KEY")?;
@@ -418,9 +426,11 @@ impl TlsServerStream {
             &certificate_verify[..],
             &finished[..],
         ] {
-            let mut protected = Vector::new();
-            write_hs.seal(22, msg, &mut protected)?;
-            stream.write_all(&protected).map_err(|_| TlsError::Io)?;
+            for chunk in msg.chunks(1 << 14) {
+                let mut protected = Vector::new();
+                write_hs.seal(22, chunk, &mut protected)?;
+                stream.write_all(&protected).map_err(|_| TlsError::Io)?;
+            }
         }
         let hash = transcript.hash();
         schedule.finish_handshake();

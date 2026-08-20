@@ -60,11 +60,10 @@ fn workspace_path(workspace_root: &str, relative: &str, allow_missing: bool) -> 
 }
 
 fn bounded_text_file(path: &str) -> Result<Text> {
-    let file = mrml_runtime::File::open(path)?;
-    if file.len()? > MAX_TOOL_FILE_BYTES {
-        return Err(anyhow!("File exceeds the 16 MiB tool limit"));
-    }
-    Ok(mrml_runtime::read_file_text(path)?)
+    Ok(mrml_runtime::read_file_text_bounded(
+        path,
+        MAX_TOOL_FILE_BYTES as usize,
+    )?)
 }
 
 pub struct ViewFileTool;

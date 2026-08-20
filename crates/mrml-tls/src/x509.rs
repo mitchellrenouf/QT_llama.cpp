@@ -7,6 +7,7 @@ pub enum CertificateError {
     InvalidSignature,
     HostnameMismatch,
     NotCertificateAuthority,
+    InvalidPurpose,
     NotYetValid,
     Expired,
     ClockUnavailable,
@@ -95,6 +96,10 @@ const SHA256_WITH_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
 const RSA_ENCRYPTION: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
 const SUBJECT_ALT_NAME: &[u8] = &[0x55, 0x1d, 0x11];
 const BASIC_CONSTRAINTS: &[u8] = &[0x55, 0x1d, 0x13];
+const KEY_USAGE: &[u8] = &[0x55, 0x1d, 0x0f];
+const EXTENDED_KEY_USAGE: &[u8] = &[0x55, 0x1d, 0x25];
+const SERVER_AUTH: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
+const ANY_EXTENDED_KEY_USAGE: &[u8] = &[0x55, 0x1d, 0x25, 0x00];
 
 fn algorithm(element: Element<'_>, expected: &[u8]) -> Result<(), CertificateError> {
     if element.tag != 0x30 {
@@ -216,6 +221,13 @@ impl<'a> Certificate<'a> {
         } else {
             exponent.value
         };
+        if !(256..=512).contains(&modulus.len())
+            || exponent.is_empty()
+            || exponent.len() > 8
+            || exponent.last().is_none_or(|value| value & 1 == 0)
+        {
+            return Err(CertificateError::UnsupportedAlgorithm);
+        }
         let mut extensions = &[][..];
         while body.position < body.bytes.len() {
             let element = body.next()?;
@@ -288,12 +300,68 @@ impl<'a> Certificate<'a> {
             return Err(CertificateError::Malformed);
         }
         let mut fields = Reader::new(sequence.value);
+        if fields.position == fields.bytes.len() {
+            return Err(CertificateError::NotCertificateAuthority);
+        }
         let ca = fields.next()?;
         if ca.tag == 0x01 && ca.value == [0xff] {
             Ok(())
         } else {
             Err(CertificateError::NotCertificateAuthority)
         }
+    }
+
+    fn require_usage_bit(&self, bit: usize) -> Result<(), CertificateError> {
+        let Some(value) = self.extension(KEY_USAGE)? else {
+            return Ok(());
+        };
+        let mut outer = Reader::new(value);
+        let usage = outer.next()?;
+        outer.finish()?;
+        if usage.tag != 0x03 || usage.value.len() < 2 || usage.value[0] > 7 {
+            return Err(CertificateError::Malformed);
+        }
+        let byte = bit / 8 + 1;
+        let mask = 0x80 >> (bit & 7);
+        if usage.value.get(byte).is_some_and(|value| value & mask != 0) {
+            Ok(())
+        } else {
+            Err(CertificateError::InvalidPurpose)
+        }
+    }
+
+    pub fn require_certificate_signing(&self) -> Result<(), CertificateError> {
+        self.require_ca()?;
+        self.require_usage_bit(5)
+    }
+
+    pub fn require_server_auth(&self) -> Result<(), CertificateError> {
+        self.require_usage_bit(0)?;
+        match self.require_ca() {
+            Ok(()) => return Err(CertificateError::InvalidPurpose),
+            Err(CertificateError::NotCertificateAuthority) => {}
+            Err(error) => return Err(error),
+        }
+        let Some(value) = self.extension(EXTENDED_KEY_USAGE)? else {
+            return Ok(());
+        };
+        let mut outer = Reader::new(value);
+        let sequence = outer.next()?;
+        outer.finish()?;
+        if sequence.tag != 0x30 {
+            return Err(CertificateError::Malformed);
+        }
+        let mut usages = Reader::new(sequence.value);
+        while usages.position < usages.bytes.len() {
+            let usage = usages.next()?;
+            if usage.tag != 0x06 {
+                return Err(CertificateError::Malformed);
+            }
+            if usage.value == SERVER_AUTH || usage.value == ANY_EXTENDED_KEY_USAGE {
+                return Ok(());
+            }
+        }
+        Err(CertificateError::InvalidPurpose)
     }
 
     pub fn verify_hostname(&self, hostname: &str) -> Result<(), CertificateError> {

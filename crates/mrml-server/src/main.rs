@@ -14,8 +14,8 @@ fn application_main() -> mrml_error::Result<()> {
     let api_token = mrml_runtime::environment_variable("MRML_API_TOKEN").ok_or_else(|| {
         mrml_error::message("MRML_API_TOKEN must contain a high-entropy bearer token")
     })?;
-    let certificate = mrml_runtime::read_file(&certificate)?;
-    let private_key = mrml_runtime::read_file(&private_key)?;
+    let certificate = mrml_runtime::read_file_bounded(&certificate, 1024 * 1024)?;
+    let private_key = mrml_runtime::read_file_bounded(&private_key, 64 * 1024)?;
     ApiServer::new(agent.get_client_arc(), config.port)
         .with_bearer_token(api_token)?
         .with_tls_pem(&certificate, &private_key)?
