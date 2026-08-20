@@ -1,5 +1,8 @@
 #![no_std]
 
+mod x509;
+pub use x509::{Certificate, CertificateError};
+
 use core::fmt;
 use mrml_crypto::{Sha256, aes128_gcm_open, aes128_gcm_seal, hkdf_expand_label, hkdf_extract};
 use mrml_runtime::Vector;
