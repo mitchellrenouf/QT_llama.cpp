@@ -1,0 +1,11 @@
+[package]
+name = "mrml-tls"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Original no_std TLS 1.3 implementation for MRML"
+
+[dependencies]
+mrml-crypto = { path = "../mrml-crypto" }
+mrml-runtime = { path = "../mrml-runtime" }
