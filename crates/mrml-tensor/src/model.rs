@@ -219,6 +219,7 @@ pub struct MrmlModel {
     pub layer_devices: Vector<DeviceType>,
     pub vocab: Vector<Text>,
     pub vocab_to_id: OrderedMap<Text, i32>,
+    pub bpe_ranks: OrderedMap<Text, usize>,
     pub valid_vocab_token: Vector<bool>,
     pub chat_template: Option<Text>,
     pub gguf_path: Text,
@@ -436,6 +437,23 @@ impl MrmlModel {
         for (token, id) in vocab_entries {
             vocab_to_id.insert(token, id);
         }
+        let mut bpe_entries = Vector::new();
+        if let Some(merges) = gguf
+            .get_meta("tokenizer.ggml.merges")
+            .and_then(|value| value.as_array())
+        {
+            for (rank, merge) in merges.iter().enumerate() {
+                let Some(merge) = merge.as_str() else { continue };
+                let Some((left, right)) = merge.split_once(' ') else { continue };
+                let mut combined = Text::with_capacity(left.len() + right.len())
+                    .expect("MRML allocation failed");
+                combined.push_str(left);
+                combined.push_str(right);
+                bpe_entries.push((combined, rank));
+            }
+        }
+        bpe_entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let bpe_ranks = OrderedMap::from_sorted_entries(bpe_entries);
 
         let vocab_size = if !vocab.is_empty() {
             vocab.len()
@@ -1077,6 +1095,7 @@ impl MrmlModel {
             layer_devices,
             vocab,
             vocab_to_id,
+            bpe_ranks,
             valid_vocab_token,
             chat_template,
             gguf_path,
@@ -2212,7 +2231,50 @@ impl MrmlModel {
         final_hidden
     }
 
-    /// Tokenize text using longest-matching BPE over the loaded GGUF vocabulary
+    fn tokenize_bpe_segment(&self, text: &str, output: &mut Vector<i32>) {
+        if text.is_empty() {
+            return;
+        }
+        let normalized = Text::from(text).replace(" ", "\u{2581}");
+        let mut byte_positions: Vector<usize> = normalized.char_indices().map(|(i, _)| i).collect();
+        byte_positions.push(normalized.len());
+        let mut symbols: Vector<(usize, usize)> = byte_positions
+            .windows(2)
+            .map(|positions| (positions[0], positions[1]))
+            .collect();
+
+        loop {
+            let mut best = None;
+            for i in 0..symbols.len().saturating_sub(1) {
+                let piece = &normalized[symbols[i].0..symbols[i + 1].1];
+                if let Some(&rank) = self.bpe_ranks.get(piece)
+                    && best.is_none_or(|(_, best_rank)| rank < best_rank)
+                {
+                    best = Some((i, rank));
+                }
+            }
+            let Some((index, _)) = best else { break };
+            symbols[index].1 = symbols[index + 1].1;
+            symbols.remove(index + 1);
+        }
+
+        for (start, end) in symbols {
+            let piece = &normalized[start..end];
+            if let Some(&token) = self.vocab_to_id.get(piece) {
+                output.push(token);
+            } else {
+                for &byte in piece.as_bytes() {
+                    let mut encoded = Text::with_capacity(6).expect("MRML allocation failed");
+                    write!(encoded, "<0x{byte:02X}>").expect("MRML allocation failed");
+                    if let Some(&token) = self.vocab_to_id.get(encoded.as_str()) {
+                        output.push(token);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tokenize text using Gemma 4's merge-ranked, SPM-normalized BPE.
     pub fn tokenize(&self, text: &str) -> Vector<i32> {
         if self.vocab.is_empty() {
             return text.as_bytes().iter().map(|&b| b as i32 + 100).collect();
@@ -2229,41 +2291,25 @@ impl MrmlModel {
             }
         }
 
-        let formatted = Text::from(text).replace(" ", "\u{2581}");
-        let mut char_indices: Vector<usize> = formatted.char_indices().map(|(i, _)| i).collect();
-        char_indices.push(formatted.len());
-
-        let mut i = 0;
-        while i < char_indices.len() - 1 {
-            let mut matched = false;
-            let max_lookahead = (i + 32).min(char_indices.len() - 1);
-
-            for j in (i + 1..=max_lookahead).rev() {
-                let sub = &formatted[char_indices[i]..char_indices[j]];
-                if let Some(&tid) = self.vocab_to_id.get(sub) {
-                    tokens.push(tid);
-                    i = j;
-                    matched = true;
-                    break;
+        let mut segment_start = 0;
+        let mut cursor = 0;
+        while cursor < text.len() {
+            let rest = &text[cursor..];
+            if rest.starts_with('<')
+                && let Some(close) = rest.find('>')
+            {
+                let end = cursor + close + 1;
+                if let Some(&token) = self.vocab_to_id.get(&text[cursor..end]) {
+                    self.tokenize_bpe_segment(&text[segment_start..cursor], &mut tokens);
+                    tokens.push(token);
+                    cursor = end;
+                    segment_start = end;
+                    continue;
                 }
             }
-
-            if !matched {
-                let single_char = &formatted[char_indices[i]..char_indices[i + 1]];
-                if let Some(&tid) = self.vocab_to_id.get(single_char) {
-                    tokens.push(tid);
-                } else {
-                    for &b in single_char.as_bytes() {
-                        let mut hex_repr = Text::with_capacity(6).expect("MRML allocation failed");
-                        write!(hex_repr, "<0x{b:02X}>").expect("MRML allocation failed");
-                        if let Some(&tid) = self.vocab_to_id.get(hex_repr.as_str()) {
-                            tokens.push(tid);
-                        }
-                    }
-                }
-                i += 1;
-            }
+            cursor += rest.chars().next().map_or(1, char::len_utf8);
         }
+        self.tokenize_bpe_segment(&text[segment_start..], &mut tokens);
 
         tokens
     }

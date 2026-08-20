@@ -28,6 +28,13 @@ impl<K: Ord, V> OrderedMap<K, V> {
         })
     }
 
+    /// Build a map from entries that are already sorted by key and unique.
+    /// This avoids quadratic insertion shifts when loading large static maps.
+    pub fn from_sorted_entries(entries: Vector<(K, V)>) -> Self {
+        debug_assert!(entries.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        Self { entries }
+    }
+
     pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryReserveError> {
         match self
             .entries
