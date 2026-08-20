@@ -34,6 +34,23 @@ of either a device or its IOMMU group across VMs. Hyper-V and KVM backends must
 populate this topology from their native isolation APIs and fail closed when
 the topology is incomplete.
 
+### MRML virtual GPU
+
+For Hyper-V systems where the host must retain the GPU, MRML uses an original
+paravirtual interface rather than forwarding CUDA or NVIDIA driver APIs. An
+isolated host GPU service owns the CUDA context. A guest receives opaque,
+generational buffer IDs under a fixed byte quota and may dispatch only the 28
+MRML kernels embedded in the same measured build. Requests contain checked
+buffer ranges and bounded grid, block, and shared-memory values. They contain no
+host pointers, arbitrary PTX, CUDA ioctls, firmware operations, or device MMIO.
+
+The resource/session validator is implemented. The authenticated queue wire
+format, Hyper-V transport, host CUDA executor, kernel-specific argument schemas,
+copy staging, cancellation, watchdog reset, and end-to-end inference benchmarks
+remain pending. Until those pieces exist and are audited, this is not a working
+shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a
+general `virtio-cuda` compatibility layer.
+
 ## Portability and boot
 
 The first target is x86_64 UEFI. Firmware-specific boot code hands a normalized

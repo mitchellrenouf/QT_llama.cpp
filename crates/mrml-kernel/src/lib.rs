@@ -14,6 +14,7 @@ mod memory;
 mod platform;
 mod policy;
 mod scheduler;
+mod virtual_gpu;
 
 pub use boot::{BootEvidence, BootPolicy, BootValidationError};
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
@@ -31,3 +32,7 @@ pub use policy::{
     VmName, VmPolicy,
 };
 pub use scheduler::{Priority, Scheduler, SchedulerError, TaskId, TaskState};
+pub use virtual_gpu::{
+    BufferAccess, BufferId, BufferMode, Dispatch, GpuError, KernelId, MAX_DISPATCH_BUFFERS,
+    VirtualGpuSession,
+};
