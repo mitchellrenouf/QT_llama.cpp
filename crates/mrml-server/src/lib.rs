@@ -3,8 +3,36 @@
 use mrml_agent::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
 use mrml_error::Result;
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, TcpListener, TcpStream, Text, Text as String, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
+use mrml_runtime::{
+    Shared, TcpListener, TcpStream, Text, Text as String, Vector, mrml_eprintln as eprintln,
+    mrml_format as format, mrml_println as println,
+};
 use mrml_terminal_style::Colorize;
+use mrml_tls::{TlsServerConfig, TlsServerStream};
+
+enum Connection {
+    Plain(TcpStream),
+    Tls(TlsServerStream),
+}
+impl Connection {
+    fn read(&mut self, output: &mut [u8]) -> Result<usize> {
+        Ok(match self {
+            Self::Plain(s) => s.read(output)?,
+            Self::Tls(s) => s
+                .read(output)
+                .map_err(|e| mrml_error::message(format!("{e}")))?,
+        })
+    }
+    fn write_all(&mut self, input: &[u8]) -> Result<()> {
+        match self {
+            Self::Plain(s) => s.write_all(input)?,
+            Self::Tls(s) => s
+                .write_all(input)
+                .map_err(|e| mrml_error::message(format!("{e}")))?,
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 pub struct OpenAiChatRequest {
@@ -64,11 +92,24 @@ impl OpenAiChatRequest {
 pub struct ApiServer {
     client: Shared<MrmlClient>,
     port: u16,
+    tls: Option<Shared<TlsServerConfig>>,
 }
 
 impl ApiServer {
     pub fn new(client: Shared<MrmlClient>, port: u16) -> Self {
-        Self { client, port }
+        Self {
+            client,
+            port,
+            tls: None,
+        }
+    }
+
+    pub fn with_tls_pem(mut self, certificate_pem: &[u8], private_key_pem: &[u8]) -> Result<Self> {
+        self.tls = Some(Shared::new(
+            TlsServerConfig::from_pem(certificate_pem, private_key_pem)
+                .map_err(|e| mrml_error::message(format!("{e}")))?,
+        ));
+        Ok(self)
     }
 
     pub fn run(&self) -> Result<()> {
@@ -76,7 +117,8 @@ impl ApiServer {
         println!(
             "{}",
             format!(
-                "🌐 OpenAI-Compatible API Server listening on http://127.0.0.1:{}",
+                "🌐 OpenAI-Compatible API Server listening on {}://127.0.0.1:{}",
+                if self.tls.is_some() { "https" } else { "http" },
                 self.port
             )
             .bright_green()
@@ -94,8 +136,19 @@ impl ApiServer {
             };
 
             let client = self.client.clone();
+            let tls = self.tls.clone();
             if mrml_runtime::spawn_detached(move || {
-                if let Err(e) = handle_connection(socket, client) {
+                let connection = match tls {
+                    Some(config) => match TlsServerStream::accept(socket, &config) {
+                        Ok(stream) => Connection::Tls(stream),
+                        Err(error) => {
+                            eprintln!("TLS handshake error: {}", error);
+                            return;
+                        }
+                    },
+                    None => Connection::Plain(socket),
+                };
+                if let Err(e) = handle_connection(connection, client) {
                     eprintln!("HTTP Handler Error: {}", e);
                 }
             })
@@ -107,7 +160,7 @@ impl ApiServer {
     }
 }
 
-fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Result<()> {
+fn handle_connection(mut socket: Connection, client: Shared<MrmlClient>) -> Result<()> {
     let mut buf = Vector::new();
     buf.resize(8192, 0);
     let mut total_read = 0;
@@ -127,8 +180,7 @@ fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Resul
         }
     };
 
-    let header_str = core::str::from_utf8(&buf[..header_end_pos])
-        .map_err(mrml_error::message)?;
+    let header_str = core::str::from_utf8(&buf[..header_end_pos]).map_err(mrml_error::message)?;
     let mut lines = header_str.lines();
     let req_line = lines.next().unwrap_or("");
     let mut parts = req_line.split_whitespace();
@@ -396,18 +448,25 @@ mod json_tests {
         let listener = TcpListener::bind([127, 0, 0, 1], 0).unwrap();
         let port = listener.local_port().unwrap();
         let client = Shared::new(MrmlClient::new("", ""));
-        assert!(mrml_runtime::spawn_detached(move || {
-            let socket = listener.accept().unwrap();
-            handle_connection(socket, client).unwrap();
-        }).is_ok());
+        assert!(
+            mrml_runtime::spawn_detached(move || {
+                let socket = listener.accept().unwrap();
+                handle_connection(Connection::Plain(socket), client).unwrap();
+            })
+            .is_ok()
+        );
 
         let mut socket = TcpStream::connect([127, 0, 0, 1], port).unwrap();
-        socket.write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        socket
+            .write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
         let mut response = Vector::new();
         let mut buffer = [0u8; 1024];
         loop {
             let read = socket.read(&mut buffer).unwrap();
-            if read == 0 { break; }
+            if read == 0 {
+                break;
+            }
             response.try_extend_from_slice(&buffer[..read]).unwrap();
         }
         let response = core::str::from_utf8(&response).unwrap();

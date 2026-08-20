@@ -196,6 +196,53 @@ fn mgf1_sha256(seed: &[u8], output: &mut [u8]) {
     }
 }
 
+pub fn rsa_pss_sha256_sign(
+    modulus: &[u8],
+    private_exponent: &[u8],
+    message: &[u8],
+    salt: &[u8; 32],
+    signature: &mut [u8],
+) -> Result<(), RsaError> {
+    if modulus.is_empty() || signature.len() != modulus.len() {
+        return Err(RsaError::InvalidKey);
+    }
+    let modulus_bits = modulus.len() * 8 - modulus[0].leading_zeros() as usize;
+    let encoded_bits = modulus_bits.checked_sub(1).ok_or(RsaError::InvalidKey)?;
+    let encoded_len = encoded_bits.div_ceil(8);
+    if encoded_len < 66 || encoded_len > modulus.len() {
+        return Err(RsaError::UnsupportedSize);
+    }
+    let mut encoded = mrml_runtime::Vector::new();
+    encoded
+        .try_resize(modulus.len(), 0)
+        .map_err(|_| RsaError::UnsupportedSize)?;
+    let start = modulus.len() - encoded_len;
+    let database_len = encoded_len - 33;
+    let padding_len = encoded_len - 66;
+    encoded[start + padding_len] = 1;
+    encoded[start + padding_len + 1..start + database_len].copy_from_slice(salt);
+    let message_hash = Sha256::digest(message);
+    let mut hash = Sha256::new();
+    hash.update(&[0; 8]);
+    hash.update(&message_hash);
+    hash.update(salt);
+    let h = hash.finalize();
+    encoded[start + database_len..start + database_len + 32].copy_from_slice(&h);
+    let mut mask = mrml_runtime::Vector::new();
+    mask.try_resize(database_len, 0)
+        .map_err(|_| RsaError::UnsupportedSize)?;
+    mgf1_sha256(&h, &mut mask);
+    for (byte, masking) in encoded[start..start + database_len].iter_mut().zip(mask) {
+        *byte ^= masking;
+    }
+    let unused = encoded_len * 8 - encoded_bits;
+    if unused != 0 {
+        encoded[start] &= 0xff >> unused;
+    }
+    encoded[modulus.len() - 1] = 0xbc;
+    modular_power(modulus, private_exponent, &encoded, signature)
+}
+
 pub fn rsa_pss_sha256_verify(
     modulus: &[u8],
     exponent: &[u8],

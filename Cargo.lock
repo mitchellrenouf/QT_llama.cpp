@@ -110,6 +110,7 @@ dependencies = [
  "mrml-model",
  "mrml-runtime",
  "mrml-terminal-style",
+ "mrml-tls",
  "mrml-tools",
 ]
 

@@ -24,3 +24,4 @@ mrml-model = { path = "../mrml-model" }
 mrml-json = { path = "../mrml-json" }
 mrml-tools = { path = "../mrml-tools" }
 mrml-runtime = { path = "../mrml-runtime" }
+mrml-tls = { path = "../mrml-tls" }

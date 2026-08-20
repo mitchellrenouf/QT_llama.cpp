@@ -20,7 +20,7 @@ pub use ml_kem::{
     ml_kem_768_decapsulate, ml_kem_768_encapsulate, ml_kem_768_keygen,
 };
 pub use poly1305::poly1305;
-pub use rsa::{RsaError, rsa_pkcs1_sha256_verify, rsa_pss_sha256_verify};
+pub use rsa::{RsaError, rsa_pkcs1_sha256_verify, rsa_pss_sha256_sign, rsa_pss_sha256_verify};
 pub use sha3::{Sha3_256, Sha3_512, Shake128, Shake256};
 pub use sha256::Sha256;
 pub use x25519::{x25519, x25519_public, x25519_shared};
