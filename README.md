@@ -38,6 +38,43 @@ inference code, platform services, accelerator code, and application policy.
 Do not interpret `no_std` or the removal of `alloc` as an embedded-only
 limitation or as a claim that model execution never allocates memory.
 
+## Mandatory contribution rules
+
+These rules apply equally to human contributors and LLM/agent contributors.
+Changes that do not satisfy every rule must not be merged:
+
+- Submit only original work that the contributor has the right to dedicate
+  under CC0. Do not copy, translate, transcribe, or adapt code from third-party
+  projects, generated output with incompatible terms, or other sources whose
+  provenance prevents legal release under CC0.
+- All repository code must be Rust. Configuration files, Cargo manifests,
+  lockfiles, licenses, and documentation may use their necessary data or prose
+  formats, but implementations, build logic, tests, examples, benchmarks,
+  utilities, and generated source must be Rust.
+- Code may depend only on `core` and original crates contained in this
+  workspace. Do not use `std`, `alloc`, third-party crates, or other crates
+  shipped with Rust. Adding a dependency from crates.io, Git, the sysroot, or
+  any external source is prohibited.
+- Every change must be built and tested on both Windows and Linux before it is
+  accepted. Windows support is limited to Rust's MinGW-based native GNU/LLVM
+  toolchain (`x86_64-pc-windows-gnullvm`) and facilities available through
+  that toolchain; do not require MSVC, Visual Studio, the Windows SDK, or a
+  separately installed LLVM. Linux code must likewise keep its native system
+  interface and toolchain requirements minimal.
+- Treat security as a release requirement. Review unsafe code, FFI boundaries,
+  integer and buffer arithmetic, parsers, file and process operations, network
+  input, and error paths; add adversarial and regression tests appropriate to
+  the change. A change with an unresolved security weakness is rejected.
+- Measure performance-sensitive changes against an appropriate existing
+  baseline. Any security or performance regression is rejected and must be
+  corrected and retested before the change is reconsidered; do not waive a
+  regression merely to make a proposed implementation pass.
+- Record the Windows and Linux commands, security checks, and relevant
+  benchmark results used for verification in the contribution or commit
+  evidence. LLM/agent contributors must report limitations honestly and must
+  not claim that a platform, security property, or performance result was
+  verified when it was not actually tested.
+
 ## Status
 
 MRML is under active development and currently specializes in
