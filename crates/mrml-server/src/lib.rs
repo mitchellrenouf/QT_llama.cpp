@@ -1,7 +1,7 @@
 #![no_std]
 
-use anyhow::Result;
-use mrml_core::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
+use mrml_agent::client::{ChatCompletionRequest, ChatMessage, MrmlClient, StreamEvent};
+use mrml_error::Result;
 use mrml_json::{Value, object};
 use mrml_runtime::{Shared, TcpListener, TcpStream, Text, Text as String, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
 use mrml_terminal_style::Colorize;
@@ -128,7 +128,7 @@ fn handle_connection(mut socket: TcpStream, client: Shared<MrmlClient>) -> Resul
     };
 
     let header_str = core::str::from_utf8(&buf[..header_end_pos])
-        .map_err(anyhow::message)?;
+        .map_err(mrml_error::message)?;
     let mut lines = header_str.lines();
     let req_line = lines.next().unwrap_or("");
     let mut parts = req_line.split_whitespace();

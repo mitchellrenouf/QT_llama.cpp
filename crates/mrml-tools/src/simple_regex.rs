@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use mrml_error::{Result, anyhow};
 use mrml_runtime::Vector;
 
 #[derive(Clone)]

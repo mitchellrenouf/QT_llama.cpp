@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use mrml_error::{Result, anyhow};
 use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println, rename_file};
 use mrml_runtime::Command;
 

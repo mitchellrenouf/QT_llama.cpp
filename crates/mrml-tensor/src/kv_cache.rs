@@ -1,4 +1,4 @@
-use crate::anyhow::{self, Result};
+use crate::error::{self, Result};
 use crate::quant::{
     f16_to_f32, quantize_f32_to_q4_0, quantize_f32_to_q8_0, vec_dot_q4_0_q8_0, vec_dot_q8_0_q8_0,
 };
@@ -36,7 +36,7 @@ impl KvCacheFormat {
         } else if value.eq_ignore_ascii_case("f32") || value.eq_ignore_ascii_case("f16") {
             Ok(Self::F32)
         } else {
-            anyhow::bail!("unsupported CPU KV cache type '{value}' (use q4_0, q8_0, or f32)")
+            error::bail!("unsupported CPU KV cache type '{value}' (use q4_0, q8_0, or f32)")
         }
     }
 }

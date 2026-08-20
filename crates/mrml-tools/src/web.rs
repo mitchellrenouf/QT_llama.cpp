@@ -1,5 +1,5 @@
 use crate::Tool;
-use anyhow::{Result, anyhow};
+use mrml_error::{Result, anyhow};
 use mrml_runtime::{Command, Text, Vector};
 use mrml_runtime::{Text as String, mrml_format as format};
 use serde_json::json;
@@ -123,7 +123,7 @@ impl Tool for WebSearchTool {
 
         let wiki_url = format!(
             "https://en.wikipedia.org/wiki/Special:Search?search={}&go=Go",
-            urlencoding::encode(&clean_query)
+            mrml_percent_encoding::encode(&clean_query)
         );
 
         if let Ok(html) = fetch_http_text(&wiki_url).await {
@@ -193,7 +193,7 @@ impl Tool for WebSearchTool {
         // 2. Search DuckDuckGo HTML
         let ddg_url = format!(
             "https://html.duckduckgo.com/html/?q={}",
-            urlencoding::encode(query)
+            mrml_percent_encoding::encode(query)
         );
         if let Ok(html) = fetch_http_text(&ddg_url).await {
             let links = crate::html::elements(&html, "a", Some("result__a"));
@@ -213,8 +213,8 @@ impl Tool for WebSearchTool {
                 let clean_url = if let Some(pos) = raw_href.find("uddg=") {
                     let after = &raw_href[pos + 5..];
                     let raw_encoded = after.split('&').next().unwrap_or(after);
-                    let decoded = urlencoding::decode(raw_encoded)
-                        .unwrap_or(urlencoding::TextResult::Borrowed(raw_encoded));
+                    let decoded = mrml_percent_encoding::decode(raw_encoded)
+                        .unwrap_or(mrml_percent_encoding::TextResult::Borrowed(raw_encoded));
                     owned_string(&decoded)
                 } else if raw_href.starts_with("http") {
                     owned_string(raw_href)

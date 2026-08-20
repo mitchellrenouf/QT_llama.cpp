@@ -1,4 +1,4 @@
-use anyhow::Result;
+use mrml_error::Result;
 use mrml_runtime::{Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
 
@@ -212,7 +212,7 @@ impl MrmlAgent {
             &self.config.cache_type_v,
             Some(&backend_str),
         )
-        .map_err(anyhow::Error::with_source)?;
+        .map_err(mrml_error::Error::with_source)?;
         self.client = crate::client::MrmlClient::with_engine(
             mrml_runtime::Shared::new(engine),
             self.config.system_prompt.as_deref().map(Into::into),
@@ -408,7 +408,7 @@ impl MrmlAgent {
             &format!("{}.json", name),
         );
         if !mrml_runtime::path_is_file(&file_path) {
-            return Err(anyhow::anyhow!(
+            return Err(mrml_error::anyhow!(
                 "Session file not found: {}",
                 file_path
             ));
@@ -419,11 +419,11 @@ impl MrmlAgent {
         let value: serde_json::Value = serde_json::from_str(&content)?;
         let history = value
             .as_array()
-            .ok_or_else(|| anyhow::anyhow!("session history must be a JSON array"))?
+            .ok_or_else(|| mrml_error::anyhow!("session history must be a JSON array"))?
             .iter()
             .map(ChatMessage::from_json)
             .collect::<mrml_model::error::Result<Vector<_>>>()
-            .map_err(anyhow::Error::with_source)?;
+            .map_err(mrml_error::Error::with_source)?;
         self.history = history.into_iter().collect();
         println!("Loaded session: {}", name.cyan());
         Ok(file_path)

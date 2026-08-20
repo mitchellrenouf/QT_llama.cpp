@@ -3,34 +3,34 @@
 version = 4
 
 [[package]]
-name = "mrml-anyhow"
+name = "mrml-agent"
 version = "0.4.0"
 dependencies = [
+ "mrml-error",
  "mrml-json",
+ "mrml-model",
  "mrml-runtime",
+ "mrml-terminal-style",
+ "mrml-tools",
 ]
 
 [[package]]
 name = "mrml-cli"
 version = "0.4.0"
 dependencies = [
- "mrml-anyhow",
- "mrml-core",
+ "mrml-agent",
+ "mrml-error",
  "mrml-runtime",
  "mrml-terminal-style",
  "mrml-tools",
 ]
 
 [[package]]
-name = "mrml-core"
+name = "mrml-error"
 version = "0.4.0"
 dependencies = [
- "mrml-anyhow",
  "mrml-json",
- "mrml-model",
  "mrml-runtime",
- "mrml-terminal-style",
- "mrml-tools",
 ]
 
 [[package]]
@@ -48,8 +48,8 @@ version = "0.4.0"
 name = "mrml-machine"
 version = "0.4.0"
 dependencies = [
- "mrml-anyhow",
- "mrml-core",
+ "mrml-agent",
+ "mrml-error",
  "mrml-json",
  "mrml-runtime",
  "mrml-tools",
@@ -69,6 +69,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-percent-encoding"
+version = "0.4.0"
+dependencies = [
+ "mrml-runtime",
+]
+
+[[package]]
 name = "mrml-runtime"
 version = "0.4.0"
 dependencies = [
@@ -80,8 +87,8 @@ dependencies = [
 name = "mrml-server"
 version = "0.4.0"
 dependencies = [
- "mrml-anyhow",
- "mrml-core",
+ "mrml-agent",
+ "mrml-error",
  "mrml-json",
  "mrml-model",
  "mrml-runtime",
@@ -112,20 +119,13 @@ dependencies = [
 name = "mrml-tools"
 version = "0.4.0"
 dependencies = [
- "mrml-anyhow",
+ "mrml-error",
  "mrml-json",
  "mrml-linux",
+ "mrml-percent-encoding",
  "mrml-runtime",
  "mrml-terminal-style",
- "mrml-urlencoding",
  "mrml-windows",
-]
-
-[[package]]
-name = "mrml-urlencoding"
-version = "0.4.0"
-dependencies = [
- "mrml-runtime",
 ]
 
 [[package]]

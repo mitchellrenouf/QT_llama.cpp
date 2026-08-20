@@ -1,7 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_snake_case)]
 
-use crate::anyhow::{Result, anyhow};
+use crate::error::{Result, anyhow};
 use core::ffi::{CStr, c_void};
 use core::marker::PhantomData;
 use core::mem;

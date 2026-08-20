@@ -1,5 +1,5 @@
 use crate::Tool;
-use anyhow::{Result, anyhow};
+use mrml_error::{Result, anyhow};
 use core::time::Duration;
 use mrml_runtime::{Child, Command, Instant, OnceCell, Shared, SpinMutex, TcpListener, TcpStream, Text, Vector};
 use mrml_runtime::{Text as String, mrml_format as format};
@@ -603,7 +603,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires launching an installed browser with an available DevTools port"]
     fn installed_browser_navigates_types_clicks_and_screenshots() {
         if find_browser().is_none() {
             return;

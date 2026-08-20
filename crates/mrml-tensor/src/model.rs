@@ -1,4 +1,4 @@
-use crate::anyhow::{self, Result};
+use crate::error::{self, Result};
 use crate::device::{DeviceManager, DeviceType};
 use crate::gguf::{GgufFile, GgufTensorInfo};
 use crate::kv_cache::KvCacheManager;
@@ -303,57 +303,57 @@ fn capture_layer_ffn_graph(
             layer
                 .gpu_ffn_gate
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("missing gate"))?,
+                .ok_or_else(|| error::anyhow!("missing gate"))?,
             layer
                 .gpu_ffn_up
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("missing up"))?,
+                .ok_or_else(|| error::anyhow!("missing up"))?,
             layer
                 .gpu_ffn_down
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("missing down"))?,
+                .ok_or_else(|| error::anyhow!("missing down"))?,
             shared
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing shared input"))?,
+                .ok_or_else(|| error::anyhow!("missing shared input"))?,
             dense_act
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing dense activation"))?,
+                .ok_or_else(|| error::anyhow!("missing dense activation"))?,
             dense_out
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing dense output"))?,
+                .ok_or_else(|| error::anyhow!("missing dense output"))?,
             layer
                 .gpu_ffn_gate_inp
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("missing router"))?,
+                .ok_or_else(|| error::anyhow!("missing router"))?,
             router_in
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing router input"))?,
+                .ok_or_else(|| error::anyhow!("missing router input"))?,
             router_logits
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing router logits"))?,
+                .ok_or_else(|| error::anyhow!("missing router logits"))?,
             ids.as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing expert ids"))?,
+                .ok_or_else(|| error::anyhow!("missing expert ids"))?,
             weights
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing expert weights"))?,
+                .ok_or_else(|| error::anyhow!("missing expert weights"))?,
             layer
                 .gpu_ffn_gate_up_exps
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("missing experts"))?,
+                .ok_or_else(|| error::anyhow!("missing experts"))?,
             layer
                 .gpu_ffn_down_exps
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("missing expert down"))?,
+                .ok_or_else(|| error::anyhow!("missing expert down"))?,
             layer.gpu_ffn_down_exps_scale.as_ref(),
             moe_in
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing MoE input"))?,
+                .ok_or_else(|| error::anyhow!("missing MoE input"))?,
             moe_act
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing MoE activation"))?,
+                .ok_or_else(|| error::anyhow!("missing MoE activation"))?,
             moe_out
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("missing MoE output"))?,
+                .ok_or_else(|| error::anyhow!("missing MoE output"))?,
             dim,
             2112,
             704,
@@ -395,7 +395,7 @@ impl MrmlModel {
             .and_then(|v| v.as_str())
             == Some("gemma4-assistant")
         {
-            anyhow::bail!(
+            error::bail!(
                 "Gemma 4 assistant GGUFs are MTP draft heads and require a target model; \
                  they cannot be loaded as a standalone generation model"
             );
@@ -452,8 +452,23 @@ impl MrmlModel {
                 bpe_entries.push((combined, rank));
             }
         }
-        bpe_entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        let bpe_ranks = OrderedMap::from_sorted_entries(bpe_entries);
+        // Some GGUF tokenizers contain multiple merge rules that produce the
+        // same combined token. Keep the earliest rank while preserving the
+        // linear-time construction contract of OrderedMap.
+        bpe_entries.sort_unstable_by(|left, right| {
+            left.0.cmp(&right.0).then(left.1.cmp(&right.1))
+        });
+        let mut unique_bpe_entries = Vector::with_capacity(bpe_entries.len())
+            .expect("MRML allocation failed");
+        for entry in bpe_entries {
+            if unique_bpe_entries
+                .last()
+                .is_none_or(|previous: &(Text, usize)| previous.0 != entry.0)
+            {
+                unique_bpe_entries.push(entry);
+            }
+        }
+        let bpe_ranks = OrderedMap::from_sorted_entries(unique_bpe_entries);
 
         let vocab_size = if !vocab.is_empty() {
             vocab.len()

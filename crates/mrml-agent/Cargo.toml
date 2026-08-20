@@ -1,5 +1,5 @@
 [package]
-name = "mrml-core"
+name = "mrml-agent"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["runtime"]
 runtime = [
-    "dep:anyhow",
+    "dep:mrml-error",
     "dep:mrml-model",
     "dep:mrml-terminal-style",
     "dep:mrml-tools",
@@ -26,6 +26,6 @@ sycl = ["runtime", "mrml-model/sycl"]
 mrml-model = { path = "../mrml-model", default-features = false, optional = true }
 mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false, optional = true }
 mrml-tools = { path = "../mrml-tools", default-features = false, optional = true }
-anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow", optional = true }
+mrml-error = { path = "../mrml-error", optional = true }
 serde_json = { package = "mrml-json", path = "../mrml-json", optional = true }
 mrml-runtime = { path = "../mrml-runtime" }

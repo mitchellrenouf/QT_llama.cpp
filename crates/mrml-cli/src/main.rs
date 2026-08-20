@@ -1,18 +1,18 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 
-pub use mrml_core::config;
-use mrml_core::{AgentMode, Config, MrmlAgent};
+pub use mrml_agent::config;
+use mrml_agent::{AgentMode, Config, MrmlAgent};
 use mrml_runtime::{Text, Vector, mrml_format as format, mrml_print as print, mrml_println as println};
 use mrml_terminal_style::Colorize;
 
-fn application_main() -> anyhow::Result<()> {
+fn application_main() -> mrml_error::Result<()> {
     mrml_tools::block_on(async_main())
 }
 
 mrml_runtime::mrml_entrypoint!(application_main);
 
-async fn async_main() -> anyhow::Result<()> {
+async fn async_main() -> mrml_error::Result<()> {
     let config = Config::parse();
 
     println!(
@@ -156,7 +156,7 @@ async fn async_main() -> anyhow::Result<()> {
         );
 
         let Some(line) = mrml_runtime::read_stdin_line()
-            .map_err(|_| anyhow::anyhow!("failed reading standard input"))?
+            .map_err(|_| mrml_error::anyhow!("failed reading standard input"))?
         else {
             break;
         };

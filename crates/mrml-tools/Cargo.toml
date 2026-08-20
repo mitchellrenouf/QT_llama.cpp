@@ -8,20 +8,20 @@ license.workspace = true
 [features]
 default = ["runtime"]
 runtime = [
-    "dep:anyhow",
+    "dep:mrml-error",
     "dep:mrml-terminal-style",
     "dep:mrml-runtime",
     "dep:serde_json",
-    "dep:urlencoding",
+    "dep:mrml-percent-encoding",
     "dep:mrml-linux",
     "dep:mrml-windows",
 ]
 
 [dependencies]
 mrml-terminal-style = { path = "../mrml-terminal-style", default-features = false, optional = true }
-anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow", optional = true }
+mrml-error = { path = "../mrml-error", optional = true }
 serde_json = { package = "mrml-json", path = "../mrml-json", optional = true }
-urlencoding = { package = "mrml-urlencoding", path = "../mrml-urlencoding", optional = true }
+mrml-percent-encoding = { path = "../mrml-percent-encoding", optional = true }
 mrml-runtime = { path = "../mrml-runtime", optional = true }
 
 [target.'cfg(windows)'.dependencies]

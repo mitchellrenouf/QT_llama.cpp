@@ -72,7 +72,7 @@ pub fn formatted(arguments: fmt::Arguments<'_>) -> Error {
 }
 
 #[macro_export]
-macro_rules! tensor_anyhow { ($($argument:tt)*) => { $crate::anyhow::formatted(format_args!($($argument)*)) }; }
+macro_rules! tensor_anyhow { ($($argument:tt)*) => { $crate::error::formatted(format_args!($($argument)*)) }; }
 #[macro_export]
 macro_rules! tensor_bail { ($($argument:tt)*) => { return Err($crate::tensor_anyhow!($($argument)*)) }; }
 pub use crate::tensor_anyhow as anyhow;

@@ -1,4 +1,4 @@
-use crate::anyhow::{Result, anyhow};
+use crate::error::{Result, anyhow};
 use crate::types::{DType, Shape};
 use mrml_runtime::{File, OrderedMap, Text, Vector};
 
@@ -196,7 +196,7 @@ fn read_gguf_string(reader: &mut File) -> Result<Text> {
     buf.resize(len, 0);
     reader.read_exact(&mut buf)?;
     let value = core::str::from_utf8(&buf)
-        .map_err(|_| crate::anyhow::Error::msg("GGUF string is not valid UTF-8"))?;
+        .map_err(|_| crate::error::Error::msg("GGUF string is not valid UTF-8"))?;
     Ok(Text::from(value))
 }
 

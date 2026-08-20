@@ -12,14 +12,14 @@ path = "src/main.rs"
 
 [features]
 default = ["auto"]
-auto = ["mrml-core/auto"]
-cuda = ["mrml-core/cuda"]
-vulkan = ["mrml-core/vulkan"]
+auto = ["mrml-agent/auto"]
+cuda = ["mrml-agent/cuda"]
+vulkan = ["mrml-agent/vulkan"]
 
 [dependencies]
-mrml-core = { path = "../mrml-core", default-features = false, features = ["runtime"] }
+mrml-agent = { path = "../mrml-agent", default-features = false, features = ["runtime"] }
 mrml-terminal-style = { path = "../mrml-terminal-style" }
-anyhow = { package = "mrml-anyhow", path = "../mrml-anyhow" }
+mrml-error = { path = "../mrml-error" }
 mrml-model = { path = "../mrml-model" }
 mrml-json = { path = "../mrml-json" }
 mrml-tools = { path = "../mrml-tools" }

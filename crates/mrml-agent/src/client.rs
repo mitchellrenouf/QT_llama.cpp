@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use mrml_error::{Result, anyhow};
 pub use mrml_model::{ChatMessage, FunctionCall, ModelEngine, ToolCall, format_gemma_chat};
 use mrml_runtime::{Instant, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
 
@@ -501,7 +501,7 @@ impl MrmlClient {
         let engine = self
             .engine
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("MRML engine not loaded"))?;
+            .ok_or_else(|| mrml_error::anyhow!("MRML engine not loaded"))?;
 
         let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
         let chat_template = engine.chat_template();
@@ -538,7 +538,7 @@ impl MrmlClient {
                 Some(&sys_prompt),
                 self.enable_thinking,
             )
-            .map_err(anyhow::Error::with_source)?
+            .map_err(mrml_error::Error::with_source)?
         } else {
             format_gemma_chat(&request.messages, Some(&sys_prompt))
         };
@@ -560,7 +560,7 @@ impl MrmlClient {
         while let Ok(piece_res) = rx.recv() {
             let chunk = match piece_res {
                 Ok(p) => p,
-                Err(e) => return Err(anyhow::Error::with_source(e)),
+                Err(e) => return Err(mrml_error::Error::with_source(e)),
             };
             let piece = chunk.text;
 

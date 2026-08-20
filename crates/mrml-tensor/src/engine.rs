@@ -1,4 +1,4 @@
-use crate::anyhow::Result;
+use crate::error::Result;
 use crate::model::MrmlModel;
 use core::sync::atomic::{AtomicBool, Ordering};
 use mrml_runtime::{Instant, Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln};

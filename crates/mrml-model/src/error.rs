@@ -55,8 +55,8 @@ impl fmt::Display for SourceError {
 impl StdError for SourceError {}
 
 #[cfg(feature = "runtime")]
-impl From<mrml_tensor::anyhow::Error> for Error {
-    fn from(error: mrml_tensor::anyhow::Error) -> Self {
+impl From<mrml_tensor::error::Error> for Error {
+    fn from(error: mrml_tensor::error::Error) -> Self {
         Self::with_source(error)
     }
 }

@@ -1,10 +1,10 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 
-use anyhow::{Context, Result};
+use mrml_error::{Context, Result};
 use core::fmt::Write as _;
-use mrml_core::client::StreamEvent;
-use mrml_core::{Config, MrmlAgent};
+use mrml_agent::client::StreamEvent;
+use mrml_agent::{Config, MrmlAgent};
 use mrml_json::{Value, object};
 use mrml_runtime::{Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
 
@@ -38,20 +38,20 @@ impl Args {
                 "Usage: mrml-machine [OPTIONS] <chat|health|session>\n\n{}",
                 Config::help()
             );
-            mrml_core::tools::platform::exit_process(0);
+            mrml_agent::tools::platform::exit_process(0);
         }
         if arguments
             .iter()
             .any(|argument| argument == "--version" || argument == "-V")
         {
             println!("{}", env!("CARGO_PKG_VERSION"));
-            mrml_core::tools::platform::exit_process(0);
+            mrml_agent::tools::platform::exit_process(0);
         }
         match Self::try_parse_from(arguments) {
             Ok(args) => args,
             Err(error) => {
                 eprintln!("error: {error}\n\nUsage: mrml-machine [OPTIONS] <chat|health|session>");
-                mrml_core::tools::platform::exit_process(2);
+                mrml_agent::tools::platform::exit_process(2);
             }
         }
     }
@@ -159,7 +159,7 @@ fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
                 let reason =
                     format!("only {resident}/{total} transformer layers are fully GPU-resident");
                 if attempt == args.gpu_load_retries {
-                    anyhow::bail!(
+                    mrml_error::bail!(
                         "GPU residency requirement failed after {} load attempt(s): {reason}. Close other GPU applications or reduce context/cache memory, then retry",
                         attempt + 1
                     );
@@ -172,7 +172,7 @@ fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
             None if !strict => return Ok(agent),
             None => {
                 if attempt == args.gpu_load_retries {
-                    anyhow::bail!(
+                    mrml_error::bail!(
                         "GPU residency requirement failed after {} load attempt(s): no CUDA model engine was loaded. Verify --features cuda, --backend cuda, and the model path",
                         attempt + 1
                     );
@@ -185,8 +185,8 @@ fn load_agent_with_residency_policy(args: &Args) -> Result<MrmlAgent> {
         }
         drop(agent);
         #[cfg(feature = "cuda")]
-        mrml_core::clear_cuda_allocation_pool();
-        mrml_core::tools::platform::sleep_millis(500);
+        mrml_agent::clear_cuda_allocation_pool();
+        mrml_agent::tools::platform::sleep_millis(500);
     }
     unreachable!()
 }
@@ -276,7 +276,7 @@ fn emit(value: Value) -> Result<()> {
 async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Result<Value> {
     let capture = Shared::new(SpinMutex::new(TurnCapture::default()));
     let event_capture = capture.clone();
-    let started = mrml_core::tools::platform::monotonic_timestamp_nanos();
+    let started = mrml_agent::tools::platform::monotonic_timestamp_nanos();
     let (content, reasoning) = agent
         .process_user_request_stream(prompt, move |event| {
             let mut state = event_capture.lock();
@@ -308,7 +308,7 @@ async fn run_chat(agent: &mut MrmlAgent, prompt: &str, id: Option<Value>) -> Res
         token_count: state.token_count,
         generation_seconds: state.generation_seconds,
         tokens_per_second: state.tokens_per_second,
-        wall_seconds: mrml_core::tools::platform::monotonic_timestamp_nanos()
+        wall_seconds: mrml_agent::tools::platform::monotonic_timestamp_nanos()
             .saturating_sub(started) as f64
             / 1_000_000_000.0,
     };
@@ -374,7 +374,7 @@ async fn run_session(mut agent: MrmlAgent) -> Result<()> {
     ]))?;
 
     while let Some(line) = mrml_runtime::read_stdin_line()
-        .map_err(|_| anyhow::anyhow!("failed reading session input"))?
+        .map_err(|_| mrml_error::anyhow!("failed reading session input"))?
     {
         if line.trim().is_empty() {
             continue;
@@ -446,7 +446,7 @@ async fn async_main() -> Result<()> {
         Command::Chat { prompt, stdin } => {
             let prompt = if stdin {
                 mrml_runtime::read_stdin_to_end()
-                    .map_err(|_| anyhow::anyhow!("failed reading prompt from stdin"))?
+                    .map_err(|_| mrml_error::anyhow!("failed reading prompt from stdin"))?
             } else {
                 prompt.context("chat requires --prompt or --stdin")?
             };

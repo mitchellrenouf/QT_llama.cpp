@@ -11,7 +11,7 @@ macro_rules! vec {
     }};
 }
 
-fn application_main() -> mrml_tensor::anyhow::Result<()> {
+fn application_main() -> mrml_tensor::error::Result<()> {
     use mrml_tensor::cuda::{CudaBuffer, CudaDevice};
 
     const ELEMENTS: usize = 1 << 22;

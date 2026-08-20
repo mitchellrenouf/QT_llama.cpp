@@ -1,4 +1,4 @@
-use crate::anyhow::{Result, anyhow};
+use crate::error::{Result, anyhow};
 use crate::types::{DType, Shape, Strides};
 use mrml_runtime::Vector;
 

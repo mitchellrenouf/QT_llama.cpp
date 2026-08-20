@@ -7,7 +7,7 @@ use mrml_runtime::{
 };
 use mrml_tensor::MrmlModel;
 
-fn application_main() -> mrml_tensor::anyhow::Result<()> {
+fn application_main() -> mrml_tensor::error::Result<()> {
     let arguments = command_arguments();
     let path = arguments
         .get(1)

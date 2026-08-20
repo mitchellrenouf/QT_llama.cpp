@@ -139,7 +139,7 @@ space, network use, and VRAM before accepting a download.
 | `mrml-cli` | `mrml-cli` | Interactive and one-shot terminal frontend |
 | `mrml-machine` | `mrml-machine` | Stable JSONL automation and benchmark frontend |
 | `mrml-server` | `mrml-server` | OpenAI-compatible HTTP/SSE server |
-| `mrml-core` | — | Agent, configuration, tools, rules, and model resolution |
+| `mrml-agent` | — | Agent orchestration, configuration, rules, and model resolution |
 | `mrml-model` | — | Application-facing model and streaming adapter |
 | `mrml-tensor` | — | GGUF execution, tensor math, CPU kernels, and CUDA kernels |
 

@@ -1,10 +1,10 @@
 [package]
-name = "mrml-anyhow"
+name = "mrml-percent-encoding"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "Dependency-free percent encoding for MRML"
 
 [dependencies]
 mrml-runtime = { path = "../mrml-runtime" }
-mrml-json = { path = "../mrml-json" }

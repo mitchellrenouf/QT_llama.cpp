@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use mrml_error::{Result, anyhow};
 use mrml_runtime::{Command, PipedChild, Shared, SpinMutex, Text, Vector};
 use mrml_runtime::Text as String;
 use serde_json::Value;
