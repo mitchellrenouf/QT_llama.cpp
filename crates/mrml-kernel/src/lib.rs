@@ -34,5 +34,5 @@ pub use policy::{
 pub use scheduler::{Priority, Scheduler, SchedulerError, TaskId, TaskState};
 pub use virtual_gpu::{
     BufferAccess, BufferId, BufferMode, Dispatch, GpuError, KernelId, MAX_DISPATCH_BUFFERS,
-    VirtualGpuSession,
+    ResourceCommand, VirtualGpuSession,
 };

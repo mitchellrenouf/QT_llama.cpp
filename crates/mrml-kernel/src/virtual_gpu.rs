@@ -16,12 +16,91 @@ pub enum GpuError {
     InvalidGrid,
     TooManyBuffers,
     ExcessiveSharedMemory,
+    MalformedCommand,
+    CommandBufferTooSmall,
+    UnsupportedCommand,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferId {
     slot: u32,
     generation: u32,
+}
+
+impl BufferId {
+    const fn token(self) -> u64 {
+        ((self.generation as u64) << 32) | self.slot as u64
+    }
+
+    const fn from_token(token: u64) -> Result<Self, GpuError> {
+        if token >> 32 == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        Ok(Self {
+            slot: token as u32,
+            generation: (token >> 32) as u32,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceCommand {
+    Allocate { bytes: u64 },
+    Free { buffer: BufferId },
+}
+
+impl ResourceCommand {
+    pub const WIRE_LENGTH: usize = 24;
+
+    /// Fixed-size MRVG resource command. Capability IPC supplies transport
+    /// authentication and replay protection; this layer rejects alternate
+    /// encodings so signed/audited requests have a single representation.
+    pub fn encode(self, request_id: u64, output: &mut [u8]) -> Result<(), GpuError> {
+        if request_id == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        let output = output
+            .get_mut(..Self::WIRE_LENGTH)
+            .ok_or(GpuError::CommandBufferTooSmall)?;
+        output.fill(0);
+        output[..4].copy_from_slice(b"MRVG");
+        output[4] = 1;
+        output[5] = match self {
+            Self::Allocate { .. } => 1,
+            Self::Free { .. } => 2,
+        };
+        output[8..16].copy_from_slice(&request_id.to_le_bytes());
+        let value = match self {
+            Self::Allocate { bytes } => bytes,
+            Self::Free { buffer } => buffer.token(),
+        };
+        output[16..24].copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    pub fn decode(input: &[u8]) -> Result<(u64, Self), GpuError> {
+        if input.len() != Self::WIRE_LENGTH
+            || &input[..4] != b"MRVG"
+            || input[4] != 1
+            || input[6..8].iter().any(|byte| *byte != 0)
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let request_id = u64::from_le_bytes(input[8..16].try_into().unwrap());
+        if request_id == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        let value = u64::from_le_bytes(input[16..24].try_into().unwrap());
+        let command = match input[5] {
+            1 if value != 0 => Self::Allocate { bytes: value },
+            2 => Self::Free {
+                buffer: BufferId::from_token(value)?,
+            },
+            1 => return Err(GpuError::MalformedCommand),
+            _ => return Err(GpuError::UnsupportedCommand),
+        };
+        Ok((request_id, command))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -294,5 +373,27 @@ mod tests {
             Dispatch::new(kernel, [1, 1, 1], [32, 1, 1], MAX_SHARED_MEMORY + 1, &[]),
             Err(GpuError::ExcessiveSharedMemory)
         ));
+    }
+
+    #[test]
+    fn resource_commands_have_one_exact_bounded_encoding() {
+        let command = ResourceCommand::Free {
+            buffer: BufferId {
+                slot: 4,
+                generation: 2,
+            },
+        };
+        let mut wire = [0u8; ResourceCommand::WIRE_LENGTH];
+        command.encode(7, &mut wire).unwrap();
+        assert_eq!(ResourceCommand::decode(&wire), Ok((7, command)));
+        assert_eq!(
+            ResourceCommand::decode(&wire[..wire.len() - 1]),
+            Err(GpuError::MalformedCommand)
+        );
+        wire[6] = 1;
+        assert_eq!(
+            ResourceCommand::decode(&wire),
+            Err(GpuError::MalformedCommand)
+        );
     }
 }
