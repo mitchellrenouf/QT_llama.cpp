@@ -79,7 +79,8 @@ properties. Until those exist, the kernel remains experimental.
 ## Milestones
 
 1. Capability model, explicit directory grants, IPC wire format, and property
-   tests.
+   tests. The in-memory bounded control-message foundation is implemented; a
+   stable cross-VM byte encoding and shared-memory transport remain pending.
 2. Original x86_64 UEFI loader, physical allocator, page tables, exceptions,
    timer, scheduler, and serial diagnostics under emulation.
 3. User address spaces and synchronous IPC; isolated storage, network, tool,

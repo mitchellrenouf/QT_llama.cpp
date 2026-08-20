@@ -7,8 +7,10 @@
 
 mod capability;
 mod grant;
+mod ipc;
 mod platform;
 
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
+pub use ipc::{Endpoint, IpcError, MAX_CAPABILITIES, MAX_INLINE_PAYLOAD, Message};
 pub use platform::{Architecture, Hypervisor, IsolationClass, VmRole};
