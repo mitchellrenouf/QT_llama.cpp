@@ -52,6 +52,39 @@ impl Message {
         Ok(message)
     }
 
+    /// Atomically derives attenuated capabilities into the receiver's space.
+    /// If any requested transfer fails, all capabilities created by this call
+    /// are revoked before the error is returned.
+    pub fn transfer<const S: usize, const D: usize>(
+        payload: &[u8],
+        requested: &[(Capability, Rights)],
+        source: &CapabilitySpace<S>,
+        destination: &mut CapabilitySpace<D>,
+    ) -> Result<Self, IpcError> {
+        if payload.len() > MAX_INLINE_PAYLOAD {
+            return Err(IpcError::PayloadTooLarge);
+        }
+        if requested.len() > MAX_CAPABILITIES {
+            return Err(IpcError::TooManyCapabilities);
+        }
+        let mut derived = [None; MAX_CAPABILITIES];
+        for (index, (capability, rights)) in requested.iter().copied().enumerate() {
+            match source.derive(capability, rights, destination) {
+                Ok(capability) => derived[index] = Some(capability),
+                Err(error) => {
+                    for created in derived.into_iter().flatten() {
+                        let _ = destination.revoke(created);
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        let mut message = Self::new(payload, &[])?;
+        message.capabilities = derived;
+        message.capability_count = requested.len() as u8;
+        Ok(message)
+    }
+
     pub fn payload(&self) -> &[u8] {
         &self.payload[..self.payload_length as usize]
     }
@@ -265,6 +298,54 @@ mod tests {
         assert_eq!(
             Message::decode(&wire[..length]).err(),
             Some(IpcError::Malformed)
+        );
+    }
+
+    #[test]
+    fn transfer_attenuates_rights_and_rolls_back_partial_failure() {
+        let mut source = CapabilitySpace::<2>::new();
+        let delegated = source
+            .insert(ObjectId(7), Rights::READ.union(Rights::DELEGATE))
+            .unwrap();
+        let plain = source.insert(ObjectId(8), Rights::READ).unwrap();
+        let mut destination = CapabilitySpace::<2>::new();
+        let message = Message::transfer(
+            b"read",
+            &[(delegated, Rights::READ)],
+            &source,
+            &mut destination,
+        )
+        .unwrap();
+        let received = message.capabilities().next().unwrap();
+        assert_eq!(
+            destination.authorize(received, Rights::READ),
+            Ok(ObjectId(7))
+        );
+        assert_eq!(
+            destination.authorize(received, Rights::WRITE),
+            Err(CapabilityError::PermissionDenied)
+        );
+
+        let mut rollback_destination = CapabilitySpace::<2>::new();
+        assert_eq!(
+            Message::transfer(
+                b"fail",
+                &[(delegated, Rights::READ), (plain, Rights::READ)],
+                &source,
+                &mut rollback_destination,
+            )
+            .err(),
+            Some(IpcError::Unauthorized)
+        );
+        assert!(
+            rollback_destination
+                .insert(ObjectId(1), Rights::READ)
+                .is_ok()
+        );
+        assert!(
+            rollback_destination
+                .insert(ObjectId(2), Rights::READ)
+                .is_ok()
         );
     }
 }

@@ -118,11 +118,11 @@ impl<const N: usize> CapabilitySpace<N> {
             .ok_or(CapabilityError::PermissionDenied)
     }
 
-    pub fn derive(
+    pub fn derive<const M: usize>(
         &self,
         capability: Capability,
         requested: Rights,
-        destination: &mut Self,
+        destination: &mut CapabilitySpace<M>,
     ) -> Result<Capability, CapabilityError> {
         let source = self.entry(capability)?;
         if !source.rights.contains(Rights::DELEGATE) {
