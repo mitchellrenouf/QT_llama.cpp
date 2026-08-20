@@ -82,6 +82,10 @@ Changes that do not satisfy every rule must not be merged:
 
 ## Status
 
+The experimental microkernel foundation and its security model are documented
+in [`docs/MICROKERNEL.md`](docs/MICROKERNEL.md). It is an early design and
+capability-policy crate, not yet a bootable or production-secure kernel.
+
 MRML is under active development and currently specializes in
 `ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0`.
 
