@@ -12,6 +12,7 @@ mod ipc;
 mod memory;
 mod platform;
 mod policy;
+mod scheduler;
 
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
@@ -24,3 +25,4 @@ pub use memory::{
 };
 pub use platform::{Architecture, Hypervisor, IsolationClass, VmRole};
 pub use policy::{DeviceAddress, DeviceGrant, MAX_VM_NAME, PolicyError, VmName, VmPolicy};
+pub use scheduler::{Priority, Scheduler, SchedulerError, TaskId, TaskState};
