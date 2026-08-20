@@ -9,3 +9,6 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+
+[dev-dependencies]
+mrml-runtime = { path = "../mrml-runtime" }

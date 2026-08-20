@@ -83,6 +83,30 @@ audit, reproducible signed builds, verified boot, rollback protection, IOMMU
 tests, side-channel analysis, and machine-checked capability/noninterference
 properties. Until those exist, the kernel remains experimental.
 
+Run the current release microbenchmarks with:
+
+```text
+cargo test --release -p mrml-kernel --test performance -- --ignored --nocapture
+```
+
+They report nanoseconds per capability authorization and scheduler selection.
+The generous automated ceiling detects catastrophic regressions; comparative
+optimization decisions require repeated samples on pinned hardware and a
+recorded baseline.
+
+Baseline recorded 2026-08-20 on the current development host, one million
+iterations per sample:
+
+| Environment | Capability authorization | Scheduler selection |
+| --- | ---: | ---: |
+| Windows `x86_64-pc-windows-gnullvm` | 559,400 ns total (559 ps/op) | 1,843,600 ns total (1,843 ps/op) |
+| Arch Linux under WSL2 | 547,204 ns total (547 ps/op) | 1,841,754 ns total (1,841 ps/op) |
+
+These measure optimized in-process policy operations, not VM exits, page-table
+changes, context switches, or end-to-end IPC. Sub-nanosecond averages can result
+from pipelining across independent iterations and must not be presented as
+single-operation latency.
+
 ## Milestones
 
 1. Capability model, explicit directory grants, IPC wire format, and property
