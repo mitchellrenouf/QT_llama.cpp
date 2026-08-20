@@ -499,4 +499,20 @@ mod tests {
         assert_eq!(&key, &expected_key[..]);
         assert_eq!(&ciphertext.0, &expected_ciphertext[..]);
     }
+    #[test]
+    fn external_nist_acvp_decapsulation_case() {
+        let Some(directory) = mrml_runtime::environment_variable("MRML_ACVP_MLKEM768_DECAP") else {
+            return;
+        };
+        let read = |name: &str| {
+            mrml_runtime::read_file(&mrml_runtime::join_path(&directory, name)).unwrap()
+        };
+        let dk = MlKem768DecapsulationKey(read("dk.bin")[..].try_into().unwrap());
+        let ciphertext = MlKem768Ciphertext(read("c.bin")[..].try_into().unwrap());
+        let expected = read("k.bin");
+        assert_eq!(
+            &ml_kem_768_decapsulate(&dk, &ciphertext).unwrap(),
+            &expected[..]
+        );
+    }
 }

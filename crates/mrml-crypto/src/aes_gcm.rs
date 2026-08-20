@@ -188,6 +188,13 @@ pub fn aes128_gcm_open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn hex<const N: usize>(s: &str) -> [u8; N] {
+        let mut out = [0; N];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
+    }
     #[test]
     fn nist_empty_and_single_block_vectors() {
         let key = [0u8; 16];
@@ -237,5 +244,29 @@ mod tests {
             &tag,
             &mut opened
         ));
+    }
+    #[test]
+    fn nist_aad_and_partial_block_vector() {
+        let key = hex("feffe9928665731c6d6a8f9467308308");
+        let nonce = hex("cafebabefacedbaddecaf888");
+        let aad = hex::<20>("feedfacedeadbeeffeedfacedeadbeefabaddad2");
+        let plain = hex::<60>(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
+        );
+        let expected = hex::<60>(
+            "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091",
+        );
+        let mut encrypted = [0; 60];
+        let mut tag = [0; 16];
+        assert!(aes128_gcm_seal(
+            &key,
+            &nonce,
+            &aad,
+            &plain,
+            &mut encrypted,
+            &mut tag
+        ));
+        assert_eq!(encrypted, expected);
+        assert_eq!(tag, hex("5bc94fbc3221a5db94fae95ae7121a47"));
     }
 }
