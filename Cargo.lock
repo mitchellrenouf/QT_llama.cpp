@@ -26,6 +26,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-crypto"
+version = "0.4.0"
+dependencies = [
+ "mrml-runtime",
+]
+
+[[package]]
 name = "mrml-error"
 version = "0.4.0"
 dependencies = [

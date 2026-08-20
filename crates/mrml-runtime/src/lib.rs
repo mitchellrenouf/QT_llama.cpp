@@ -33,6 +33,38 @@ pub use thread::{available_parallelism, spawn_detached, yield_now};
 pub use time::Instant;
 pub use vector::{TryReserveError, Vector};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RandomError;
+
+impl core::fmt::Display for RandomError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("operating-system cryptographic random generator failed")
+    }
+}
+
+impl core::error::Error for RandomError {}
+
+pub fn fill_random(output: &mut [u8]) -> Result<(), RandomError> {
+    #[cfg(windows)]
+    let success = mrml_windows::fill_random(output);
+    #[cfg(unix)]
+    let success = mrml_linux::fill_random(output);
+    success.then_some(()).ok_or(RandomError)
+}
+
+#[cfg(test)]
+mod random_tests {
+    #[test]
+    fn os_random_fills_independent_buffers() {
+        let mut first = [0u8; 64];
+        let mut second = [0u8; 64];
+        super::fill_random(&mut first).unwrap();
+        super::fill_random(&mut second).unwrap();
+        assert_ne!(first, [0u8; 64]);
+        assert_ne!(first, second);
+    }
+}
+
 pub fn exit_process(status: i32) -> ! {
     #[cfg(windows)]
     {

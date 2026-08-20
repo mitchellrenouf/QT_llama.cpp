@@ -222,6 +222,43 @@ unsafe extern "system" {
 }
 
 #[cfg(windows)]
+pub fn fill_random(mut output: &mut [u8]) -> bool {
+    type BCryptGenRandom = unsafe extern "system" fn(*mut c_void, *mut u8, u32, u32) -> i32;
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+    let library = unsafe { LoadLibraryA(c"bcrypt.dll".as_ptr()) };
+    if library.is_null() {
+        output.fill(0);
+        return false;
+    }
+    let symbol = unsafe { GetProcAddress(library, c"BCryptGenRandom".as_ptr()) };
+    let Some(symbol) = NonNull::new(symbol) else {
+        let _ = unsafe { FreeLibrary(library) };
+        output.fill(0);
+        return false;
+    };
+    let generate: BCryptGenRandom = unsafe { core::mem::transmute(symbol.as_ptr()) };
+    while !output.is_empty() {
+        let length = output.len().min(u32::MAX as usize);
+        let status = unsafe {
+            generate(
+                core::ptr::null_mut(),
+                output.as_mut_ptr(),
+                length as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if status < 0 {
+            let _ = unsafe { FreeLibrary(library) };
+            output.fill(0);
+            return false;
+        }
+        output = &mut output[length..];
+    }
+    let _ = unsafe { FreeLibrary(library) };
+    true
+}
+
+#[cfg(windows)]
 #[link(name = "ws2_32")]
 unsafe extern "system" {
     fn WSAStartup(version: u16, data: *mut WsaData) -> i32;

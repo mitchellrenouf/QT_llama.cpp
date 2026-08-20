@@ -1,0 +1,10 @@
+[package]
+name = "mrml-crypto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Original no_std cryptographic primitives for MRML TLS and model integrity"
+
+[dependencies]
+mrml-runtime = { path = "../mrml-runtime" }

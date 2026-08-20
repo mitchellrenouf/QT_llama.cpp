@@ -106,6 +106,20 @@ unsafe extern "C" {
     fn sysconf(name: c_int) -> c_long;
     fn sched_yield() -> c_int;
     fn syscall(number: c_long, ...) -> c_long;
+    fn getrandom(buffer: *mut c_void, length: usize, flags: u32) -> isize;
+}
+
+#[cfg(unix)]
+pub fn fill_random(mut output: &mut [u8]) -> bool {
+    while !output.is_empty() {
+        let read = unsafe { getrandom(output.as_mut_ptr().cast(), output.len(), 0) };
+        if read <= 0 {
+            output.fill(0);
+            return false;
+        }
+        output = &mut output[read as usize..];
+    }
+    true
 }
 
 #[repr(C)]
