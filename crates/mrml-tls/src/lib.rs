@@ -3,10 +3,50 @@
 use core::fmt;
 use mrml_crypto::{Sha256, aes128_gcm_open, aes128_gcm_seal, hkdf_expand_label, hkdf_extract};
 use mrml_runtime::Vector;
+use mrml_crypto::{MlKem768Ciphertext, MlKem768DecapsulationKey, MlKem768EncapsulationKey, ml_kem_768_decapsulate, ml_kem_768_encapsulate, ml_kem_768_keygen, x25519_public, x25519_shared};
 
 pub const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
 pub const X25519_MLKEM768: u16 = 0x11ec;
 const MAX_PLAINTEXT: usize = 1 << 14;
+
+pub struct HybridClientSecret { ml_kem: MlKem768DecapsulationKey, x25519: [u8; 32] }
+
+pub fn hybrid_client_share() -> Result<(Vector<u8>, HybridClientSecret), TlsError> {
+    let (encapsulation, decapsulation) = ml_kem_768_keygen().map_err(|_| TlsError::AuthenticationFailed)?;
+    let mut scalar = [0u8; 32]; mrml_runtime::fill_random(&mut scalar).map_err(|_| TlsError::AuthenticationFailed)?;
+    let public = x25519_public(scalar);
+    let mut share = Vector::new();
+    share.try_extend_from_slice(&encapsulation.0).map_err(|_| TlsError::AllocationFailed)?;
+    share.try_extend_from_slice(&public).map_err(|_| TlsError::AllocationFailed)?;
+    Ok((share, HybridClientSecret { ml_kem: decapsulation, x25519: scalar }))
+}
+
+pub fn hybrid_server_share(client: &[u8]) -> Result<(Vector<u8>, [u8; 64]), TlsError> {
+    if client.len() != 1216 { return Err(TlsError::InvalidRecord); }
+    let encapsulation = MlKem768EncapsulationKey(client[..1184].try_into().map_err(|_| TlsError::InvalidRecord)?);
+    let client_x25519: &[u8; 32] = client[1184..].try_into().map_err(|_| TlsError::InvalidRecord)?;
+    let (ml_secret, ciphertext) = ml_kem_768_encapsulate(&encapsulation).map_err(|_| TlsError::AuthenticationFailed)?;
+    let mut scalar = [0u8; 32]; mrml_runtime::fill_random(&mut scalar).map_err(|_| TlsError::AuthenticationFailed)?;
+    let public = x25519_public(scalar);
+    let x_secret = x25519_shared(scalar, *client_x25519).ok_or(TlsError::AuthenticationFailed)?;
+    scalar.fill(0);
+    let mut shared = [0u8; 64]; shared[..32].copy_from_slice(&ml_secret); shared[32..].copy_from_slice(&x_secret);
+    let mut share = Vector::new(); share.try_extend_from_slice(&ciphertext.0).map_err(|_| TlsError::AllocationFailed)?; share.try_extend_from_slice(&public).map_err(|_| TlsError::AllocationFailed)?;
+    Ok((share, shared))
+}
+
+impl HybridClientSecret {
+    pub fn complete(mut self, server: &[u8]) -> Result<[u8; 64], TlsError> {
+        if server.len() != 1120 { return Err(TlsError::InvalidRecord); }
+        let ciphertext = MlKem768Ciphertext(server[..1088].try_into().map_err(|_| TlsError::InvalidRecord)?);
+        let public: &[u8; 32] = server[1088..].try_into().map_err(|_| TlsError::InvalidRecord)?;
+        let ml_secret = ml_kem_768_decapsulate(&self.ml_kem, &ciphertext).map_err(|_| TlsError::AuthenticationFailed)?;
+        let x_secret = x25519_shared(self.x25519, *public).ok_or(TlsError::AuthenticationFailed)?;
+        self.x25519.fill(0);
+        let mut shared = [0u8; 64]; shared[..32].copy_from_slice(&ml_secret); shared[32..].copy_from_slice(&x_secret); Ok(shared)
+    }
+}
+impl Drop for HybridClientSecret { fn drop(&mut self) { self.x25519.fill(0); } }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TlsError { InvalidRecord, AuthenticationFailed, SequenceExhausted, AllocationFailed }
@@ -108,5 +148,10 @@ mod tests {
     #[test] fn key_schedule_separates_client_and_server() {
         let mut schedule = KeySchedule::new(); schedule.mix_shared_secret(&[9u8; 64]); let hash = Sha256::digest(b"transcript");
         assert_ne!(schedule.traffic_secret(false, &hash), schedule.traffic_secret(true, &hash));
+    }
+    #[test] fn standardized_hybrid_shares_agree() {
+        let (client, secret) = hybrid_client_share().unwrap(); assert_eq!(client.len(), 1216);
+        let (server, server_secret) = hybrid_server_share(&client).unwrap(); assert_eq!(server.len(), 1120);
+        assert_eq!(secret.complete(&server).unwrap(), server_secret);
     }
 }
