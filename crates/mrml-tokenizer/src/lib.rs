@@ -1,6 +1,6 @@
 #![no_std]
 
-use mrml_runtime::{OrderedMap, Vector};
+use mrml_runtime::Vector;
 
 pub const BOS_ID: u32 = 0;
 pub const EOS_ID: u32 = 1;
@@ -48,22 +48,30 @@ impl Trainer {
     pub fn new() -> Self { Self { documents: Vector::new(), tokenizer: Tokenizer::byte_level() } }
     pub fn add_document(&mut self, text: &str) { self.documents.push(self.tokenizer.encode(text, false)); }
     pub fn train(mut self, target_vocab_size: usize, minimum_frequency: u64) -> Tokenizer {
+        let matrix_size = target_vocab_size.checked_mul(target_vocab_size).unwrap_or(0);
+        let mut counts = Vector::with_capacity(matrix_size).expect("MRML allocation failed");
+        counts.resize(matrix_size, 0u64);
         while self.tokenizer.vocab_size() < target_vocab_size {
-            let mut counts = OrderedMap::<u64, u64>::new();
+            counts.fill(0);
             for document in &self.documents {
                 for pair in document.windows(2) {
-                    let key = ((pair[0] as u64) << 32) | pair[1] as u64;
-                    if let Some(count) = counts.get_mut(&key) {
-                        *count += 1;
-                    } else {
-                        counts.insert(key, 1);
+                    let index = pair[0] as usize * target_vocab_size + pair[1] as usize;
+                    if let Some(count) = counts.get_mut(index) {
+                        *count = count.saturating_add(1);
                     }
                 }
             }
-            let Some((key, frequency)) = counts.iter().max_by_key(|(_, count)| **count).map(|(key, count)| (*key, *count)) else { break };
+            let Some((index, frequency)) = counts
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, count)| **count)
+                .map(|(index, count)| (index, *count))
+            else {
+                break;
+            };
             if frequency < minimum_frequency { break; }
-            let left = (key >> 32) as u32;
-            let right = key as u32;
+            let left = (index / target_vocab_size) as u32;
+            let right = (index % target_vocab_size) as u32;
             let token = self.tokenizer.pieces.len() as u32;
             let mut piece = self.tokenizer.pieces[left as usize].clone();
             piece.try_extend_from_slice(&self.tokenizer.pieces[right as usize]).unwrap();

@@ -12,7 +12,9 @@ struct Args {
     zim: Text,
     output: Text,
     article: usize,
+    articles: usize,
     vocab: usize,
+    prompt: Text,
 }
 
 fn application_main() -> Result<(), Text> {
@@ -24,7 +26,7 @@ fn run() -> Result<(), Text> {
     let total_start = Instant::now();
 
     let extract_start = Instant::now();
-    let article = select_article(&args.zim, args.article)?;
+    let article = select_articles(&args.zim, args.article, args.articles)?;
     let extract_time = extract_start.elapsed();
 
     let tokenizer_start = Instant::now();
@@ -51,8 +53,10 @@ fn run() -> Result<(), Text> {
         .ok_or_else(|| Text::from("exported GGUF is missing bigram.weight"))?;
     let verify_time = verify_start.elapsed();
 
-    mrml_println!("Trained one-article MRML language model");
-    mrml_println!("  article : {}", article.title);
+    let response = generate(&tokenizer, &weights, &args.prompt, 80);
+    mrml_println!("Trained MRML language model");
+    mrml_println!("  source  : {}", article.title);
+    mrml_println!("  articles: {}", args.articles);
     mrml_println!("  chars   : {}", article.text.chars().count());
     mrml_println!("  tokens  : {}", tokens.len());
     mrml_println!("  vocab   : {}", tokenizer.vocab_size());
@@ -65,19 +69,23 @@ fn run() -> Result<(), Text> {
     mrml_println!("  export  : {:.6}s", export_time.as_secs_f64());
     mrml_println!("  verify  : {:.6}s", verify_time.as_secs_f64());
     mrml_println!("  total   : {:.6}s", total_start.elapsed().as_secs_f64());
+    mrml_println!("Prompt: {}", args.prompt);
+    mrml_println!("Model: {response}");
     Ok(())
 }
 
 fn parse_args() -> Result<Args, Text> {
     let all = mrml_runtime::command_arguments();
     if all.iter().any(|value| value == "--help" || value == "-h") {
-        mrml_println!("Usage: mrml-trainer --zim <archive.zim> --output <model.gguf> [--article N] [--vocab N]");
+        mrml_println!("Usage: mrml-trainer --zim <archive.zim> --output <model.gguf> [--article N] [--articles N] [--vocab N] [--prompt TEXT]");
         mrml_runtime::exit_process(0);
     }
     let mut zim = None;
     let mut output = None;
     let mut article = 0usize;
+    let mut articles = 1usize;
     let mut vocab = 384usize;
+    let mut prompt = Text::from("hello");
     let mut index = 1;
     while index < all.len() {
         let value = all
@@ -87,7 +95,13 @@ fn parse_args() -> Result<Args, Text> {
             "--zim" => zim = Some(value.clone()),
             "--output" => output = Some(value.clone()),
             "--article" => article = value.parse().map_err(|_| Text::from("invalid --article"))?,
+            "--articles" => {
+                articles = value
+                    .parse()
+                    .map_err(|_| Text::from("invalid --articles"))?
+            }
             "--vocab" => vocab = value.parse().map_err(|_| Text::from("invalid --vocab"))?,
+            "--prompt" => prompt = value.clone(),
             unknown => return Err(format_text(format_args!("unknown argument: {unknown}"))),
         }
         index += 2;
@@ -96,14 +110,20 @@ fn parse_args() -> Result<Args, Text> {
         zim: zim.ok_or_else(|| Text::from("--zim is required"))?,
         output: output.ok_or_else(|| Text::from("--output is required"))?,
         article,
+        articles: articles.max(1),
         vocab,
+        prompt,
     })
 }
 
-fn select_article(path: &str, wanted: usize) -> Result<Article, Text> {
+fn select_articles(path: &str, wanted: usize, count: usize) -> Result<Article, Text> {
     let mut reader = ArticleReader::open(path)
         .map_err(|error| format_text(format_args!("open ZIM: {error}")))?;
+    reader.set_cluster_cache_capacity(256);
     let mut seen = 0usize;
+    let mut selected = 0usize;
+    let mut text = Text::new();
+    let mut first_title = Text::new();
     while let Some(article) = reader
         .next_article()
         .map_err(|error| format_text(format_args!("read article: {error}")))?
@@ -111,14 +131,29 @@ fn select_article(path: &str, wanted: usize) -> Result<Article, Text> {
         if article.title.trim().is_empty() || article.text.split_whitespace().count() < 100 {
             continue;
         }
-        if seen == wanted {
-            return Ok(article);
+        if seen >= wanted {
+            if selected == 0 {
+                first_title = article.title.clone();
+            }
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(&article.text);
+            selected += 1;
+            if selected == count {
+                return Ok(Article {
+                    index: article.index,
+                    path: Text::new(),
+                    title: format_text(format_args!("{first_title} + {} more", selected - 1)),
+                    text,
+                });
+            }
         }
         seen += 1;
     }
     Err(format_text(format_args!(
-        "archive contains fewer than {} articles",
-        wanted + 1
+        "archive contains fewer than {} requested substantive articles",
+        wanted + count
     )))
 }
 
@@ -142,6 +177,39 @@ fn train_bigram(tokens: &[u32], vocab: usize) -> Result<Vector<f32>, Text> {
     Ok(weights)
 }
 
+fn generate(tokenizer: &Tokenizer, weights: &[f32], prompt: &str, maximum: usize) -> Text {
+    let prompt_tokens = tokenizer.encode(prompt, false);
+    let mut current = prompt_tokens.last().copied().unwrap_or(0) as usize;
+    let vocab = tokenizer.vocab_size();
+    let mut seed = prompt
+        .as_bytes()
+        .iter()
+        .fold(0x9e37_79b9u64, |state, byte| {
+            state.rotate_left(5) ^ *byte as u64
+        });
+    let mut generated = Vector::new();
+    for _ in 0..maximum {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let sample = (seed >> 32) as u32 as f32 / u32::MAX as f32;
+        let row = &weights[current * vocab..(current + 1) * vocab];
+        let mut cumulative = 0.0f32;
+        let mut next = row.len().saturating_sub(1);
+        for (token, probability) in row.iter().enumerate() {
+            cumulative += *probability;
+            if sample <= cumulative {
+                next = token;
+                break;
+            }
+        }
+        if next as u32 == EOS_ID {
+            break;
+        }
+        generated.push(next as u32);
+        current = next;
+    }
+    Text::from_utf8_lossy(&tokenizer.decode(&generated))
+}
+
 fn write_gguf(
     path: &str,
     article: &Article,
@@ -155,11 +223,7 @@ fn write_gguf(
     write_u64(&mut file, 1)?;
     write_u64(&mut file, 8)?;
     metadata_string(&mut file, "general.architecture", "mrml_bigram")?;
-    metadata_string(
-        &mut file,
-        "general.name",
-        "MRML Wikipedia one-article model",
-    )?;
+    metadata_string(&mut file, "general.name", "MRML Wikipedia research model")?;
     metadata_u32(&mut file, "general.alignment", ALIGNMENT as u32)?;
     metadata_string(&mut file, "mrml.training.article_title", &article.title)?;
     metadata_u32(

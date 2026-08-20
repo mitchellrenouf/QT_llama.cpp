@@ -305,7 +305,7 @@ article and export it as GGUF:
 cargo run --release -p mrml-trainer -- `
   --zim C:\path\to\wikipedia.zim `
   --output target\wikipedia-one-article.gguf `
-  --article 0 --vocab 384
+  --article 0 --articles 1000 --vocab 384 --prompt hello
 ```
 
 The trainer reports extraction, tokenizer training, model training, GGUF export,

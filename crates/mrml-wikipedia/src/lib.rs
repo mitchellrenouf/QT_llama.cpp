@@ -52,6 +52,10 @@ impl ArticleReader {
         })
     }
 
+    pub fn set_cluster_cache_capacity(&mut self, capacity: usize) {
+        self.archive.set_cluster_cache_capacity(capacity);
+    }
+
     pub fn next_article(&mut self) -> Result<Option<Article>> {
         let count = self.archive.header().entry_count;
         while self.next_index < count {
