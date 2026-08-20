@@ -221,6 +221,19 @@ unsafe extern "system" {
     fn ExitProcess(exit_code: u32) -> !;
 }
 
+#[repr(C)]
+#[cfg(windows)]
+struct AddrInfo {
+    flags: i32,
+    family: i32,
+    socket_type: i32,
+    protocol: i32,
+    address_length: usize,
+    canonical_name: *mut i8,
+    address: *mut SockAddr,
+    next: *mut AddrInfo,
+}
+
 #[cfg(windows)]
 pub fn fill_random(mut output: &mut [u8]) -> bool {
     type BCryptGenRandom = unsafe extern "system" fn(*mut c_void, *mut u8, u32, u32) -> i32;
@@ -272,6 +285,19 @@ unsafe extern "system" {
     fn recv(socket: usize, buffer: *mut i8, length: i32, flags: i32) -> i32;
     fn send(socket: usize, buffer: *const i8, length: i32, flags: i32) -> i32;
     fn closesocket(socket: usize) -> i32;
+    fn getaddrinfo(node: *const i8, service: *const i8, hints: *const AddrInfo, result: *mut *mut AddrInfo) -> i32;
+    fn freeaddrinfo(result: *mut AddrInfo);
+}
+
+#[cfg(windows)]
+pub fn resolve_ipv4(host: &[u8]) -> Option<[u8; 4]> {
+    if host.last().copied() != Some(0) || !initialize_winsock() { return None; }
+    let hints = AddrInfo { flags: 0, family: 2, socket_type: 1, protocol: 6, address_length: 0, canonical_name: core::ptr::null_mut(), address: core::ptr::null_mut(), next: core::ptr::null_mut() };
+    let mut result = core::ptr::null_mut();
+    if unsafe { getaddrinfo(host.as_ptr().cast(), core::ptr::null(), &hints, &mut result) } != 0 || result.is_null() { return None; }
+    let address = unsafe { (*result).address.as_ref() }.map(|value| value.address);
+    unsafe { freeaddrinfo(result) };
+    address
 }
 
 #[cfg(windows)]

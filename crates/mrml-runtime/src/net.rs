@@ -9,6 +9,7 @@ pub enum NetError {
     ReadFailed,
     WriteFailed,
     TimeoutFailed,
+    ResolveFailed,
 }
 
 impl fmt::Display for NetError {
@@ -21,6 +22,7 @@ impl fmt::Display for NetError {
             Self::ReadFailed => "failed to read TCP stream",
             Self::WriteFailed => "failed to write TCP stream",
             Self::TimeoutFailed => "failed to configure TCP timeout",
+            Self::ResolveFailed => "failed to resolve IPv4 host name",
         })
     }
 }
@@ -60,6 +62,16 @@ pub struct TcpStream {
 }
 
 impl TcpStream {
+    pub fn connect_host(host: &str, port: u16) -> Result<Self, NetError> {
+        let mut name = crate::Vector::new();
+        name.try_extend_from_slice(host.as_bytes()).map_err(|_| NetError::ResolveFailed)?;
+        name.push(0);
+        #[cfg(windows)]
+        let ip = mrml_windows::resolve_ipv4(&name);
+        #[cfg(unix)]
+        let ip = mrml_linux::resolve_ipv4(&name);
+        Self::connect(ip.ok_or(NetError::ResolveFailed)?, port)
+    }
     pub fn connect(ip: [u8; 4], port: u16) -> Result<Self, NetError> {
         #[cfg(windows)]
         let native = mrml_windows::NativeTcpStream::connect(ip, port);
@@ -121,5 +133,18 @@ mod tests {
         let mut response = [0u8; 5];
         stream.read_exact(&mut response).unwrap();
         assert_eq!(&response, b"world");
+    }
+
+
+    #[test]
+    fn resolves_localhost() {
+        let ip = {
+            let mut name = crate::Vector::new();
+            name.try_extend_from_slice(b"localhost").unwrap();
+            name.push(0);
+            #[cfg(windows)] { mrml_windows::resolve_ipv4(&name) }
+            #[cfg(unix)] { mrml_linux::resolve_ipv4(&name) }
+        };
+        assert!(ip.is_some());
     }
 }

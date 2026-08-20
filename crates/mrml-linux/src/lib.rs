@@ -107,6 +107,8 @@ unsafe extern "C" {
     fn sched_yield() -> c_int;
     fn syscall(number: c_long, ...) -> c_long;
     fn getrandom(buffer: *mut c_void, length: usize, flags: u32) -> isize;
+    fn getaddrinfo(node: *const i8, service: *const i8, hints: *const AddrInfo, result: *mut *mut AddrInfo) -> c_int;
+    fn freeaddrinfo(result: *mut AddrInfo);
 }
 
 #[cfg(unix)]
@@ -129,6 +131,30 @@ struct SockAddr {
     port: [u8; 2],
     address: [u8; 4],
     zero: [u8; 8],
+}
+
+#[repr(C)]
+#[cfg(unix)]
+struct AddrInfo {
+    flags: c_int,
+    family: c_int,
+    socket_type: c_int,
+    protocol: c_int,
+    address_length: u32,
+    address: *mut SockAddr,
+    canonical_name: *mut i8,
+    next: *mut AddrInfo,
+}
+
+#[cfg(unix)]
+pub fn resolve_ipv4(host: &[u8]) -> Option<[u8; 4]> {
+    if host.last().copied() != Some(0) { return None; }
+    let hints = AddrInfo { flags: 0, family: 2, socket_type: 1, protocol: 6, address_length: 0, address: core::ptr::null_mut(), canonical_name: core::ptr::null_mut(), next: core::ptr::null_mut() };
+    let mut result = core::ptr::null_mut();
+    if unsafe { getaddrinfo(host.as_ptr().cast(), core::ptr::null(), &hints, &mut result) } != 0 || result.is_null() { return None; }
+    let address = unsafe { (*result).address.as_ref() }.map(|value| value.address);
+    unsafe { freeaddrinfo(result) };
+    address
 }
 
 #[repr(C)]
