@@ -63,6 +63,17 @@ impl Text {
         character
     }
 
+    pub fn pop(&mut self) -> Option<char> {
+        let (index, character) = self.as_str().char_indices().next_back()?;
+        let width = character.len_utf8();
+        if self.heap_backed {
+            self.bytes.truncate(index);
+        } else {
+            self.inline_len -= width as u8;
+        }
+        Some(character)
+    }
+
     const INLINE_CAPACITY: usize = 23;
 
     pub const fn new() -> Self {

@@ -129,6 +129,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-wikipedia"
+version = "0.4.0"
+dependencies = [
+ "mrml-runtime",
+ "mrml-zim",
+]
+
+[[package]]
 name = "mrml-windows"
 version = "0.4.0"
 
