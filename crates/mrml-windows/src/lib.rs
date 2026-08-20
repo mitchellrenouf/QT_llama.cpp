@@ -437,6 +437,13 @@ pub fn process_id() -> u32 {
 }
 
 #[cfg(windows)]
+pub fn unix_time_seconds() -> Option<u64> {
+    let mut time = FileTime { low: 0, high: 0 }; unsafe { GetSystemTimeAsFileTime(&mut time) };
+    let ticks = ((time.high as u64) << 32) | time.low as u64;
+    ticks.checked_div(10_000_000)?.checked_sub(11_644_473_600)
+}
+
+#[cfg(windows)]
 fn initialize_winsock() -> bool {
     static STATE: AtomicU8 = AtomicU8::new(0);
     loop {

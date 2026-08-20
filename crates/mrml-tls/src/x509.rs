@@ -1,7 +1,7 @@
 use mrml_crypto::rsa_pkcs1_sha256_verify;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CertificateError { Malformed, UnsupportedAlgorithm, InvalidSignature, HostnameMismatch, NotCertificateAuthority }
+pub enum CertificateError { Malformed, UnsupportedAlgorithm, InvalidSignature, HostnameMismatch, NotCertificateAuthority, NotYetValid, Expired, ClockUnavailable }
 
 #[derive(Clone, Copy)]
 struct Element<'a> { tag: u8, value: &'a [u8], encoded: &'a [u8] }
@@ -41,7 +41,7 @@ fn algorithm(element: Element<'_>, expected: &[u8]) -> Result<(), CertificateErr
 }
 
 pub struct Certificate<'a> {
-    tbs: &'a [u8], issuer: &'a [u8], subject: &'a [u8], modulus: &'a [u8], exponent: &'a [u8], signature: &'a [u8], extensions: &'a [u8],
+    tbs: &'a [u8], issuer: &'a [u8], subject: &'a [u8], modulus: &'a [u8], exponent: &'a [u8], signature: &'a [u8], extensions: &'a [u8], not_before: u64, not_after: u64,
 }
 
 impl<'a> Certificate<'a> {
@@ -57,6 +57,8 @@ impl<'a> Certificate<'a> {
         algorithm(body.next()?, SHA256_WITH_RSA)?;
         let issuer = body.next()?; if issuer.tag != 0x30 { return Err(CertificateError::Malformed); }
         let validity = body.next()?; if validity.tag != 0x30 { return Err(CertificateError::Malformed); }
+        let mut times = Reader::new(validity.value); let not_before = certificate_time(times.next()?)?; let not_after = certificate_time(times.next()?)?; times.finish()?;
+        if not_after < not_before { return Err(CertificateError::Malformed); }
         let subject = body.next()?; if subject.tag != 0x30 { return Err(CertificateError::Malformed); }
         let spki = body.next()?; if spki.tag != 0x30 { return Err(CertificateError::Malformed); }
         let mut public = Reader::new(spki.value); algorithm(public.next()?, RSA_ENCRYPTION)?; let bits = public.next()?; public.finish()?;
@@ -68,7 +70,7 @@ impl<'a> Certificate<'a> {
         let exponent = if exponent.value[0] == 0 { &exponent.value[1..] } else { exponent.value };
         let mut extensions = &[][..];
         while body.position < body.bytes.len() { let element = body.next()?; if element.tag == 0xa3 { extensions = element.value; } else if element.tag != 0x81 && element.tag != 0x82 { return Err(CertificateError::Malformed); } }
-        Ok(Self { tbs: tbs.encoded, issuer: issuer.encoded, subject: subject.encoded, modulus, exponent, signature: &signature.value[1..], extensions })
+        Ok(Self { tbs: tbs.encoded, issuer: issuer.encoded, subject: subject.encoded, modulus, exponent, signature: &signature.value[1..], extensions, not_before, not_after })
     }
 
     pub fn verify_signed_by(&self, issuer: &Certificate<'_>) -> Result<(), CertificateError> {
@@ -103,7 +105,33 @@ impl<'a> Certificate<'a> {
         while entries.position < entries.bytes.len() { let name = entries.next()?; if name.tag == 0x82 && dns_matches(name.value, hostname.as_bytes()) { return Ok(()); } }
         Err(CertificateError::HostnameMismatch)
     }
+
+    pub fn verify_time(&self, now: u64) -> Result<(), CertificateError> {
+        if now < self.not_before { Err(CertificateError::NotYetValid) } else if now > self.not_after { Err(CertificateError::Expired) } else { Ok(()) }
+    }
+
+    pub fn verify_time_now(&self) -> Result<(), CertificateError> { self.verify_time(mrml_runtime::unix_time_seconds().ok_or(CertificateError::ClockUnavailable)?) }
 }
+
+fn decimal(bytes: &[u8]) -> Result<u32, CertificateError> {
+    let mut value = 0u32; for byte in bytes { if !byte.is_ascii_digit() { return Err(CertificateError::Malformed); } value = value * 10 + (byte - b'0') as u32; } Ok(value)
+}
+
+fn certificate_time(element: Element<'_>) -> Result<u64, CertificateError> {
+    let (year, rest) = match (element.tag, element.value.len()) {
+        (0x17, 13) => { let short = decimal(&element.value[..2])?; (if short >= 50 { 1900 + short } else { 2000 + short }, &element.value[2..]) },
+        (0x18, 15) => (decimal(&element.value[..4])?, &element.value[4..]),
+        _ => return Err(CertificateError::Malformed),
+    };
+    if rest[10] != b'Z' { return Err(CertificateError::Malformed); }
+    let month=decimal(&rest[..2])?; let day=decimal(&rest[2..4])?; let hour=decimal(&rest[4..6])?; let minute=decimal(&rest[6..8])?; let second=decimal(&rest[8..10])?;
+    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year,month) || hour > 23 || minute > 59 || second > 59 { return Err(CertificateError::Malformed); }
+    let mut y=year as i64; let m=month as i64; y -= (m <= 2) as i64; let era=if y>=0 { y } else { y-399 }/400; let yoe=y-era*400; let shifted=m+if m>2 {-3} else {9}; let doy=(153*shifted+2)/5+day as i64-1; let days=era*146097+yoe*365+yoe/4-yoe/100+doy-719468;
+    if days < 0 { return Err(CertificateError::Malformed); }
+    Ok(days as u64*86400+hour as u64*3600+minute as u64*60+second as u64)
+}
+
+fn days_in_month(year:u32,month:u32)->u32 { match month { 1|3|5|7|8|10|12=>31,4|6|9|11=>30,2=>if year%4==0&&(year%100!=0||year%400==0){29}else{28},_=>0 } }
 
 fn dns_matches(pattern: &[u8], hostname: &[u8]) -> bool {
     if pattern.iter().any(|b| !b.is_ascii()) || hostname.iter().any(|b| !b.is_ascii()) { return false; }
@@ -128,6 +156,12 @@ mod tests {
         let issuer_bytes = mrml_runtime::read_file(&mrml_runtime::join_path(&directory, "intermediate.der")).unwrap();
         let leaf = Certificate::parse(&leaf_bytes).unwrap(); let issuer = Certificate::parse(&issuer_bytes).unwrap();
         leaf.verify_hostname("huggingface.co").unwrap(); leaf.verify_signed_by(&issuer).unwrap(); issuer.require_ca().unwrap();
+        leaf.verify_time_now().unwrap(); issuer.verify_time_now().unwrap();
         assert_eq!(leaf.verify_hostname("attacker.example"), Err(CertificateError::HostnameMismatch));
+    }
+    #[test] fn parses_utc_and_generalized_certificate_times() {
+        assert_eq!(certificate_time(Element{tag:0x17,value:b"700101000000Z",encoded:&[]}).unwrap(),0);
+        assert_eq!(certificate_time(Element{tag:0x18,value:b"20000229000000Z",encoded:&[]}).unwrap(),951782400);
+        assert!(certificate_time(Element{tag:0x18,value:b"21000229000000Z",encoded:&[]}).is_err());
     }
 }

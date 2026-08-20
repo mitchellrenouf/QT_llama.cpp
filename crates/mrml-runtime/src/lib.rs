@@ -30,7 +30,7 @@ pub use stdin::{StdinError, read_stdin_line, read_stdin_to_end};
 pub use sync::{OnceCell, Shared, SpinMutex, SpinMutexGuard};
 pub use text::Text;
 pub use thread::{available_parallelism, spawn_detached, yield_now};
-pub use time::Instant;
+pub use time::{Instant, unix_time_seconds};
 pub use vector::{TryReserveError, Vector};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

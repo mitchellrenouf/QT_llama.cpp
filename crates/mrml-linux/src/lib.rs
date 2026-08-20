@@ -183,6 +183,12 @@ pub fn process_id() -> u32 {
 }
 
 #[cfg(unix)]
+pub fn unix_time_seconds() -> Option<u64> {
+    let mut value = Timespec { seconds: 0, nanoseconds: 0 };
+    (unsafe { clock_gettime(0, &mut value) } == 0 && value.seconds >= 0).then_some(value.seconds as u64)
+}
+
+#[cfg(unix)]
 fn socket_address(ip: [u8; 4], port: u16) -> SockAddr {
     SockAddr { family: 2, port: port.to_be_bytes(), address: ip, zero: [0; 8] }
 }
