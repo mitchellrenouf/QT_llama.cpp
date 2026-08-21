@@ -1,0 +1,19 @@
+[package]
+name = "mrml-kernel-image"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+kernel-image = []
+
+[[bin]]
+name = "mrml-kernel-pe"
+path = "src/main.rs"
+test = false
+bench = false
+required-features = ["kernel-image"]
+
+[dependencies]
+mrml-kernel = { path = "../mrml-kernel" }

@@ -1,6 +1,6 @@
 use crate::{
     BootEvidence, BootValidationError, FramebufferError, FramebufferInfo, MemoryError, MemoryKind,
-    MemoryRegion, PhysAddr, PixelFormat,
+    MemoryMap, MemoryRegion, PhysAddr, PixelFormat,
 };
 
 pub const HANDOFF_HEADER_BYTES: usize = 168;
@@ -29,7 +29,7 @@ pub enum HandoffError {
 /// Firmware-owned structures must be normalized into this format first.
 pub struct BootHandoff {
     evidence: BootEvidence,
-    acpi_root: PhysAddr,
+    acpi_root: u64,
     framebuffer: FramebufferInfo,
     region_count: usize,
 }
@@ -39,7 +39,7 @@ impl BootHandoff {
         &self.evidence
     }
 
-    pub const fn acpi_root(&self) -> PhysAddr {
+    pub const fn acpi_root(&self) -> u64 {
         self.acpi_root
     }
 
@@ -92,7 +92,7 @@ impl BootHandoff {
         if acpi_address == 0 {
             return Err(HandoffError::MissingAcpiRoot);
         }
-        let acpi_root = PhysAddr::new(acpi_address).map_err(HandoffError::InvalidMemoryMap)?;
+        let acpi_root = acpi_address;
         if input[165..168].iter().any(|byte| *byte != 0) {
             return Err(HandoffError::NonCanonical);
         }
@@ -158,6 +158,76 @@ impl BootHandoff {
             region_count,
         })
     }
+}
+
+pub fn encode_handoff(
+    image_version: u64,
+    entropy: [u8; 32],
+    image_measurement: [u8; 64],
+    secure_boot: bool,
+    measured_boot: bool,
+    acpi_root: u64,
+    framebuffer: FramebufferInfo,
+    regions: &[MemoryRegion],
+    output: &mut [u8],
+) -> Result<usize, HandoffError> {
+    if regions.is_empty() || regions.len() > MAX_HANDOFF_REGIONS {
+        return Err(HandoffError::TooManyRegions);
+    }
+    let length = HANDOFF_HEADER_BYTES
+        .checked_add(
+            regions
+                .len()
+                .checked_mul(HANDOFF_REGION_BYTES)
+                .ok_or(HandoffError::NonCanonical)?,
+        )
+        .ok_or(HandoffError::NonCanonical)?;
+    if output.len() < length || image_version == 0 || acpi_root == 0 {
+        return Err(HandoffError::NonCanonical);
+    }
+    MemoryMap::new(regions).map_err(HandoffError::InvalidMemoryMap)?;
+    if !regions.iter().any(|region| {
+        region.kind() == MemoryKind::Mmio
+            && region.start().get() <= framebuffer.base().get()
+            && region.end() >= framebuffer.end()
+    }) {
+        return Err(HandoffError::FramebufferOutsideMmio);
+    }
+    BootEvidence::new(
+        entropy,
+        image_measurement,
+        image_version,
+        secure_boot,
+        measured_boot,
+    )
+    .map_err(HandoffError::InvalidBootEvidence)?;
+    output[..length].fill(0);
+    output[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
+    output[16..20].copy_from_slice(&(length as u32).to_le_bytes());
+    output[20..22].copy_from_slice(&(regions.len() as u16).to_le_bytes());
+    let flags =
+        (secure_boot as u16) * FLAG_SECURE_BOOT | (measured_boot as u16) * FLAG_MEASURED_BOOT;
+    output[22..24].copy_from_slice(&flags.to_le_bytes());
+    output[24..32].copy_from_slice(&image_version.to_le_bytes());
+    output[32..64].copy_from_slice(&entropy);
+    output[64..128].copy_from_slice(&image_measurement);
+    output[128..136].copy_from_slice(&acpi_root.to_le_bytes());
+    output[136..144].copy_from_slice(&framebuffer.base().get().to_le_bytes());
+    output[144..152].copy_from_slice(&framebuffer.byte_length().to_le_bytes());
+    output[152..156].copy_from_slice(&framebuffer.width().to_le_bytes());
+    output[156..160].copy_from_slice(&framebuffer.height().to_le_bytes());
+    output[160..164].copy_from_slice(&framebuffer.stride().to_le_bytes());
+    output[164] = match framebuffer.pixel_format() {
+        PixelFormat::RedGreenBlueReserved => 0,
+        PixelFormat::BlueGreenRedReserved => 1,
+    };
+    for (index, region) in regions.iter().copied().enumerate() {
+        let offset = HANDOFF_HEADER_BYTES + index * HANDOFF_REGION_BYTES;
+        output[offset..offset + 8].copy_from_slice(&region.start().get().to_le_bytes());
+        output[offset + 8..offset + 16].copy_from_slice(&region.pages().to_le_bytes());
+        output[offset + 16] = region.kind() as u8;
+    }
+    Ok(length)
 }
 
 fn decode_region(input: &[u8], index: usize) -> Result<MemoryRegion, HandoffError> {
@@ -248,10 +318,35 @@ mod tests {
         })
         .unwrap();
         assert_eq!(handoff.region_count(), 3);
-        assert_eq!(handoff.acpi_root().get(), 0x9000);
+        assert_eq!(handoff.acpi_root(), 0x9000);
         assert_eq!(starts, [0x1000, 0x3000, 0xa0000]);
         assert_eq!(handoff.framebuffer().width(), 16);
         assert_eq!(handoff.evidence().image_measurement(), &[2; 64]);
+        let mut round_trip = [0u8; THREE_REGION_BYTES];
+        let mut regions = [decode_region(&encoded, 0).unwrap(); 3];
+        for index in 0..3 {
+            regions[index] = decode_region(&encoded, index).unwrap();
+        }
+        assert_eq!(
+            encode_handoff(
+                7,
+                [1; 32],
+                [2; 64],
+                true,
+                true,
+                0x9008,
+                handoff.framebuffer(),
+                &regions,
+                &mut round_trip
+            ),
+            Ok(THREE_REGION_BYTES)
+        );
+        assert_eq!(
+            BootHandoff::decode(&round_trip, |_| {})
+                .unwrap()
+                .acpi_root(),
+            0x9008
+        );
     }
 
     #[test]

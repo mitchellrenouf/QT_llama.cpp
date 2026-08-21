@@ -84,6 +84,9 @@ impl FramebufferInfo {
     pub const fn stride(self) -> u32 {
         self.stride
     }
+    pub const fn pixel_format(self) -> PixelFormat {
+        self.format
+    }
     pub const fn format(self) -> PixelFormat {
         self.format
     }

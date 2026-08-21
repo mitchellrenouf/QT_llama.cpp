@@ -16,6 +16,7 @@ impl PhysAddr {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum MemoryKind {
     Free,
     Kernel,

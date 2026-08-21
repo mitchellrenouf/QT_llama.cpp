@@ -364,7 +364,11 @@ impl<'a> PeImage<'a> {
         if destination.len() != self.image_size as usize {
             return Err(PeError::InvalidDestination);
         }
-        if load_base % 65_536 != 0 || load_base.checked_add(self.image_size as u64).is_none() {
+        // UEFI AllocatePages guarantees page alignment, not the PE section
+        // alignment chosen by the linker. Relocation makes any 4 KiB-aligned
+        // physical load address valid; requiring 64 KiB rejected legitimate
+        // firmware allocations without adding a security property.
+        if load_base % 4_096 != 0 || load_base.checked_add(self.image_size as u64).is_none() {
             return Err(PeError::InvalidDestination);
         }
         if load_base != self.image_base && self.relocation_size == 0 {
@@ -416,12 +420,16 @@ impl<'a> PeImage<'a> {
                     .try_into()
                     .map_err(|_| PeError::InvalidRelocations)?,
             );
-            let relocated = if load_base >= preferred {
-                value.checked_add(load_base - preferred)
-            } else {
-                value.checked_sub(preferred - load_base)
+            if value == 0 {
+                return Ok(());
             }
-            .ok_or(PeError::RelocationOverflow)?;
+            let relative = value
+                .checked_sub(preferred)
+                .filter(|offset| *offset < self.image_size as u64)
+                .ok_or(PeError::RelocationOverflow)?;
+            let relocated = load_base
+                .checked_add(relative)
+                .ok_or(PeError::RelocationOverflow)?;
             destination[at..at + 8].copy_from_slice(&relocated.to_le_bytes());
             Ok(())
         })
@@ -758,12 +766,12 @@ mod tests {
         let image = PeImage::parse(&encoded).unwrap();
         let mut loaded = [0u8; 0x3000];
         assert_eq!(
-            image.materialize_at(&mut loaded, 0x0000_0001_4001_0000),
-            Ok(0x0000_0001_4001_1000)
+            image.materialize_at(&mut loaded, 0x0000_0001_4001_1000),
+            Ok(0x0000_0001_4001_2000)
         );
         assert_eq!(
             u64::from_le_bytes(loaded[0x1000..0x1008].try_into().unwrap()),
-            0x0000_0001_4001_1234
+            0x0000_0001_4001_2234
         );
         let fixed_encoded = valid_pe();
         let fixed = PeImage::parse(&fixed_encoded).unwrap();

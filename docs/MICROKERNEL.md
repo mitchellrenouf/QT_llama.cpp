@@ -92,8 +92,9 @@ entropy, kernel measurement, ACPI root, a required GOP framebuffer, and at most 
 regions. The parser does not allocate or dereference firmware pointers and
 rejects unknown flags or region kinds, nonzero reserved bytes, noncanonical
 lengths, unaligned or overflowing regions, and overlap before emitting data to
-caller-owned early-boot storage. Completing and transferring this handoff to a
-separate verified kernel image remains pending.
+caller-owned early-boot storage. The loader now emits that same canonical form
+into bounded static storage and passes its address and exact length to a
+separately built kernel PE entry point.
 
 `mrml-loader.efi` is now a repository-owned PE/COFF UEFI application with raw
 ABI definitions rather than a firmware crate dependency. It locates required
@@ -107,11 +108,11 @@ visible bring-up signal without serial hardware. Build it with:
 cargo build --release -p mrml-uefi --bin mrml-loader --features uefi-image --target x86_64-unknown-uefi
 ```
 
-This is the first executable boot stage, not yet a complete kernel loader: it
-does not load and verify a separate kernel image, normalize the firmware map
-into the kernel handoff, measure the loaded image, or transfer to a
-kernel entry point. Those security-critical steps remain required before MRML
-can be described as booting its microkernel.
+This remains a bring-up loader rather than a production boot chain. It loads,
+authenticates, relocates, and transfers to a separate kernel image, but still
+executes under inherited firmware page tables. Installing loader-owned page
+tables with final W^X permissions, persistent rollback state, measurement into
+a hardware trust anchor, and recovery policy remain required.
 
 ACPI RSDP discovery is now implemented before firmware exit. The loader prefers
 the ACPI 2.0 configuration-table GUID, accepts ACPI 1.0 only as a fallback,
@@ -137,14 +138,14 @@ as MMIO: it is inserted into an address gap or splits one containing region,
 while cross-region conflicts fail closed. QEMU still reached the green marker
 after this normalization was enabled.
 
-The post-firmware path now enters code linked from `mrml-kernel`. A typed early
-context revalidates nonzero entropy, the ACPI pointer, the sorted memory map,
-and complete framebuffer MMIO containment before drawing. QEMU captured the
-kernel marker as a white 64x8 rectangle at pixel `(0,0)` over the green
-background; pixel `(0,8)` and the final framebuffer pixel remained
-`RGB(22,97,58)`. Thus the marker cannot be confused with the loader's earlier
-solid-color stages. This is a statically linked early kernel entry, not yet a
-separately loaded and signed kernel image.
+The post-firmware path now enters the independent `mrml-kernel-pe.efi` image.
+Its entry parses the canonical handoff again and revalidates nonzero entropy,
+the ACPI pointer, the sorted memory map, and complete framebuffer MMIO
+containment before drawing. On Windows QEMU 11.1, a freshly generated one-use
+key signed the exact standalone image, the loader pinned that key digest, and a
+GOP capture showed its gold `RGB(255,200,87)` 96x12 marker over
+`RGB(11,59,90)`. The preceding loader stage was `RGB(32,64,128)`, so successful
+PE materialization and entry transfer are independently observable.
 
 The loader now resolves its own boot device through the raw UEFI Loaded Image
 and Simple File System protocols and requires
@@ -167,6 +168,13 @@ offset. A disposable QEMU key accepted its matching version-1 fixture and
 reached the kernel marker. A second independently valid version-1 fixture from
 an unpinned key stopped at the blue verification-failure stage
 `RGB(0,0,128)`. The one-time private files were consumed by the signer.
+
+The admitted PE is copied into zeroed UEFI LoaderCode pages and only bounded
+DIR64 relocations are applied. Each nonzero relocation must originally point
+inside the preferred image and is converted to the corresponding checked RVA
+at the actual 4 KiB-aligned load address. The entry must be inside a validated
+executable, non-writable section. Section-level W^X is validated now; enforcing
+it in hardware awaits the loader-owned CR3 transition described above.
 
 ### OS executable format
 

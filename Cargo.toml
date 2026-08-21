@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mrml-kernel-image",
     "crates/mrml-uefi",
     "crates/mrml-kernel",
     "crates/mrml-kernel-bench",

@@ -3,8 +3,9 @@
 
 use core::cell::UnsafeCell;
 use mrml_kernel::{
-    ArtifactKind, EarlyKernelContext, FramebufferInfo, MAX_KERNEL_IMAGE_BYTES, MemoryKind,
-    MemoryRegion, PhysAddr, PixelFormat, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
+    ArtifactKind, FramebufferInfo, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS,
+    MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PhysAddr, PixelFormat,
+    SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot, encode_handoff,
 };
 use mrml_uefi::*;
 
@@ -22,6 +23,10 @@ const FILE_INFO_BYTES: usize = 1024;
 struct FileInfoBuffer(UnsafeCell<[u8; FILE_INFO_BYTES]>);
 unsafe impl Sync for FileInfoBuffer {}
 static FILE_INFO: FileInfoBuffer = FileInfoBuffer(UnsafeCell::new([0; FILE_INFO_BYTES]));
+const HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
+struct HandoffBuffer(UnsafeCell<[u8; HANDOFF_BYTES]>);
+unsafe impl Sync for HandoffBuffer {}
+static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; HANDOFF_BYTES]));
 const KERNEL_PATH: &[u16] = &[
     92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 75, 69, 82, 78, 69, 76, 46, 83, 73, 71, 78, 69, 68, 0,
 ];
@@ -117,6 +122,25 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     if verified.image().image_size() == 0 {
         return Err(LOAD_ERROR);
     }
+    paint(framebuffer, [0x20, 0x40, 0x80]);
+    let image_size = verified.image().image_size() as usize;
+    let image_pages = image_size
+        .checked_add(4095)
+        .map(|value| value / 4096)
+        .ok_or(LOAD_ERROR)?;
+    let mut image_address = 0u64;
+    check(unsafe { (services.allocate_pages)(0, 1, image_pages, &mut image_address) })?;
+    if image_address == 0 || image_address % 4096 != 0 {
+        return Err(LOAD_ERROR);
+    }
+    let image_destination =
+        unsafe { core::slice::from_raw_parts_mut(image_address as *mut u8, image_size) };
+    let kernel_entry = verified
+        .image()
+        .materialize_at(image_destination, image_address)
+        .map_err(|_| LOAD_ERROR)?;
+    let kernel_version = verified.artifact().version();
+    let kernel_measurement = *verified.artifact().digest();
     paint(framebuffer, [0x00, 0x60, 0x20]);
 
     paint(framebuffer, [0x14, 0x21, 0x35]);
@@ -140,7 +164,15 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     if region_count == 0 {
         return Err(LOAD_ERROR);
     }
-    enter_kernel(entropy, acpi_root, framebuffer, &regions[..region_count])?;
+    enter_kernel(
+        kernel_entry,
+        kernel_version,
+        kernel_measurement,
+        entropy,
+        acpi_root,
+        framebuffer,
+        &regions[..region_count],
+    )?;
     halt()
 }
 
@@ -258,6 +290,9 @@ unsafe fn read_file_pages(
 }
 
 fn enter_kernel(
+    kernel_entry: u64,
+    kernel_version: u64,
+    kernel_measurement: [u8; 64],
     entropy: [u8; 32],
     acpi_root: u64,
     framebuffer: Framebuffer,
@@ -300,20 +335,29 @@ fn enter_kernel(
         pixel_format,
     )
     .map_err(|_| LOAD_ERROR)?;
-    let context = EarlyKernelContext::new(
+    let handoff = unsafe { &mut *HANDOFF.0.get() };
+    let handoff_length = encode_handoff(
+        kernel_version,
         entropy,
+        kernel_measurement,
+        false,
+        false,
         acpi_root,
         framebuffer_info,
         &kernel_regions[..regions.len()],
+        handoff,
     )
     .map_err(|_| LOAD_ERROR)?;
-    // SAFETY: GOP supplied this allocation and boot services have exited. The
-    // kernel surface checks the declared size and every rendered rectangle.
-    let framebuffer_bytes =
-        unsafe { core::slice::from_raw_parts_mut(framebuffer.base as *mut u8, framebuffer.size) };
-    context
-        .render_booted(framebuffer_bytes)
-        .map_err(|_| LOAD_ERROR)
+    if kernel_entry == 0 {
+        return Err(LOAD_ERROR);
+    }
+    // SAFETY: the authenticated PE parser proved the entry lies in an
+    // executable section, materialization completed before boot-services exit,
+    // and the canonical handoff remains in static loader memory.
+    let entry: unsafe extern "efiapi" fn(*const u8, usize) -> usize =
+        unsafe { core::mem::transmute(kernel_entry as usize) };
+    let _ = unsafe { entry(handoff.as_ptr(), handoff_length) };
+    Err(LOAD_ERROR)
 }
 
 unsafe fn exit_boot_services(
