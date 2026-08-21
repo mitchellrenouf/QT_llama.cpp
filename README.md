@@ -160,12 +160,32 @@ under WSL2, the 2026-08-21 release run processed 4,194,304 f32 elements for
 effective traffic. This is a functional/performance result under a compromised
 host, not evidence that the host cannot forge the result.
 
+The Windows WHP path now completes the same signed, booted-guest round trip.
+`mrml-whp-run` maps the framebuffer and distinct command/completion pages before
+vCPU entry, accepts only the fixed authenticated request doorbell, runs the
+Rust-PTX kernel through the Windows CUDA driver, and resumes the guest. The
+guest authenticates the completion, paints the green marker, and emits a second
+fixed success doorbell so the VMM never depends on host-specific `HLT` wakeup
+semantics. A 2026-08-21 release run on the same RTX 5070 Ti processed 4,194,304
+f32 elements for 1,000 iterations in 28,429,300 ns: 28.429 us per launch and
+1,770.41 GB/s effective traffic. CUDA execution is mediated by the host service;
+the guest does not own or directly pass through the GPU. The compromised host
+can still forge memory, timings, or responses, so this is a functional and
+performance benchmark, not a hostile-host security proof.
+
 Reproduce the KVM benchmark after generating a one-use release key and signing
 the benchmark PE as described in `docs/MICROKERNEL.md`:
 
 ```bash
 cargo run --release -p mrml-kvm-run -- \
   target/gpu-bench.signed target/gpu-bench.public 1 gpu-benchmark
+```
+
+On Windows, build the PE with `whp-gpu-benchmark`, sign it with a fresh one-use
+release key, build `mrml-whp-run` with the GNU/LLVM Rust toolchain, then run:
+
+```text
+target\release\mrml-whp-run.exe KERNEL.signed RELEASE.public 1
 ```
 
 ### Secure mediated CUDA design

@@ -242,6 +242,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-whp-run"
+version = "0.4.0"
+dependencies = [
+ "mrml-crypto",
+ "mrml-error",
+ "mrml-kernel",
+ "mrml-runtime",
+ "mrml-tensor",
+ "mrml-whp",
+]
+
+[[package]]
 name = "mrml-wikipedia"
 version = "0.4.0"
 dependencies = [

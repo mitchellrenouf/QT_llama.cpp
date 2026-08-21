@@ -10,6 +10,7 @@ kernel-image = []
 fault-probe = []
 production-policy = []
 gpu-benchmark = []
+whp-gpu-benchmark = ["gpu-benchmark"]
 
 [[bin]]
 name = "mrml-kernel-pe"

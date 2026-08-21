@@ -206,8 +206,21 @@ service-only mapping, resumes the same vCPU, and verifies the kernel's green
 framebuffer marker. The 2026-08-21 live nested-KVM run on an RTX 5070 Ti measured
 26.500 us per 4,194,304-element launch over 1,000 iterations (1,899.34 GB/s
 effective traffic). This establishes an actual booted-guest/VMM/GPU round trip,
-but hosted-mode integrity remains outside the threat model and WHP live service
-execution is still pending.
+but hosted-mode integrity remains outside the threat model.
+
+The Windows WHP launcher now completes the corresponding signed-kernel path.
+It installs the normal high-half PE mappings, authenticated handoff, framebuffer,
+and split GPU rings before vCPU entry. Scalar `OUT` exits are decoded strictly
+and advanced using WHP's reported instruction length, avoiding repeated
+doorbells. The service accepts only request doorbell value 1, executes and
+checks the Rust-PTX add, and publishes through service-writable backing that is
+still read-only under the guest-memory contract and guest page tables. After
+authenticating the response and painting its marker, the WHP-specific benchmark
+image emits fixed success value 2 rather than relying on implementation-specific
+`HLT` wakeup behavior. A 2026-08-21 Windows release run on the RTX 5070 Ti
+measured 28.429 us per 4,194,304-element launch over 1,000 iterations (1,770.41
+GB/s effective traffic). This is mediated CUDA from a genuinely running guest,
+not GPU assignment: the compromised host remains able to forge the measurement.
 
 The CUDA service must verify the exact embedded PTX bundle as a
 `CudaKernelBundle` artifact before module loading. Kernel IDs are enabled only

@@ -140,7 +140,7 @@ impl PreparedWhpGuest<'_> {
             bytes,
             MapPermissions::read_write(),
         )?)?;
-        self.partition.map_zeroed(range(
+        self.partition.map_zeroed_service_readonly(range(
             layout.completion_base(),
             bytes,
             MapPermissions::read_only(),
@@ -209,7 +209,7 @@ impl WhpSystem {
         handoff: &[u8],
         layout: WhpLaunchLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, None)
+        self.prepare_guest_inner(executable, handoff, layout, false, None)
     }
 
     /// Prepares a signed guest with mediated GPU rings in its initial address
@@ -222,7 +222,19 @@ impl WhpSystem {
         layout: WhpLaunchLayout,
         queue: GpuSharedQueueLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, Some(queue))
+        self.prepare_guest_inner(executable, handoff, layout, false, Some(queue))
+    }
+
+    /// Prepares the standalone kernel with its authenticated framebuffer and
+    /// mediated GPU queues present before the vCPU can execute.
+    pub fn prepare_kernel_gpu_guest<'system>(
+        &'system self,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: WhpLaunchLayout,
+        queue: GpuSharedQueueLayout,
+    ) -> Result<PreparedWhpGuest<'system>, WhpError> {
+        self.prepare_guest_inner(executable, handoff, layout, true, Some(queue))
     }
 
     fn prepare_guest_inner<'system>(
@@ -230,9 +242,10 @@ impl WhpSystem {
         executable: &VerifiedExecutable<'_>,
         handoff: &[u8],
         layout: WhpLaunchLayout,
+        map_framebuffer: bool,
         queue: Option<GpuSharedQueueLayout>,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        BootHandoff::decode(handoff, |_| {}).map_err(WhpError::Handoff)?;
+        let decoded = BootHandoff::decode(handoff, |_| {}).map_err(WhpError::Handoff)?;
         let image_bytes = page_bytes(executable.image().image_size() as u64)?;
         let handoff_bytes = page_bytes(handoff.len() as u64)?;
         let table_bytes = layout
@@ -243,6 +256,8 @@ impl WhpSystem {
             .stack_pages
             .checked_mul(PAGE_SIZE)
             .ok_or(WhpError::MemoryOverflow)?;
+        let framebuffer = decoded.framebuffer();
+        let framebuffer_bytes = page_bytes(framebuffer.byte_length())?;
         let queue_bytes = match queue {
             Some(value) => value
                 .pages_per_ring()
@@ -253,24 +268,42 @@ impl WhpSystem {
         let (command_base, completion_base) = queue
             .map(|value| (value.command_base(), value.completion_base()))
             .unwrap_or((0, 0));
-        let physical_ranges = [
+        let mut physical_ranges = [(0, 0); 7];
+        physical_ranges[..4].copy_from_slice(&[
             (layout.table_physical, table_bytes),
             (layout.image_physical, image_bytes),
             (layout.handoff_physical, handoff_bytes),
             (layout.stack_physical, stack_bytes),
-            (command_base, queue_bytes),
-            (completion_base, queue_bytes),
-        ];
-        validate_ranges(&physical_ranges[..4 + usize::from(queue.is_some()) * 2])?;
-        let virtual_ranges = [
+        ]);
+        let mut physical_count = 4;
+        if map_framebuffer {
+            physical_ranges[physical_count] = (framebuffer.base().get(), framebuffer_bytes);
+            physical_count += 1;
+        }
+        if queue.is_some() {
+            physical_ranges[physical_count] = (command_base, queue_bytes);
+            physical_ranges[physical_count + 1] = (completion_base, queue_bytes);
+            physical_count += 2;
+        }
+        validate_ranges(&physical_ranges[..physical_count])?;
+        let mut virtual_ranges = [(0, 0); 7];
+        virtual_ranges[..4].copy_from_slice(&[
             (layout.table_physical, PAGE_SIZE),
             (layout.image_virtual, image_bytes),
             (layout.handoff_virtual, handoff_bytes),
             (layout.stack_virtual, stack_bytes),
-            (command_base, queue_bytes),
-            (completion_base, queue_bytes),
-        ];
-        validate_ranges(&virtual_ranges[..4 + usize::from(queue.is_some()) * 2])?;
+        ]);
+        let mut virtual_count = 4;
+        if map_framebuffer {
+            virtual_ranges[virtual_count] = (framebuffer.base().get(), framebuffer_bytes);
+            virtual_count += 1;
+        }
+        if queue.is_some() {
+            virtual_ranges[virtual_count] = (command_base, queue_bytes);
+            virtual_ranges[virtual_count + 1] = (completion_base, queue_bytes);
+            virtual_count += 2;
+        }
+        validate_ranges(&virtual_ranges[..virtual_count])?;
 
         let mut partition = self.prepare_partition()?;
         partition.map_zeroed(range(
@@ -278,13 +311,20 @@ impl WhpSystem {
             table_bytes,
             MapPermissions::read_write(),
         )?)?;
+        if map_framebuffer {
+            partition.map_zeroed(range(
+                framebuffer.base().get(),
+                framebuffer_bytes,
+                MapPermissions::read_write(),
+            )?)?;
+        }
         if let Some(queue) = queue {
             partition.map_zeroed(range(
                 queue.command_base(),
                 queue_bytes,
                 MapPermissions::read_write(),
             )?)?;
-            partition.map_zeroed(range(
+            partition.map_zeroed_service_readonly(range(
                 queue.completion_base(),
                 queue_bytes,
                 MapPermissions::read_only(),
@@ -324,7 +364,14 @@ impl WhpSystem {
             .ok_or(WhpError::MemoryOverflow)?;
         partition.write_guest(layout.stack_physical + stack_bytes - 8, &0u64.to_le_bytes())?;
 
-        let root = build_page_tables(&mut partition, image, layout, handoff_bytes, queue)?;
+        let root = build_page_tables(
+            &mut partition,
+            image,
+            layout,
+            handoff_bytes,
+            map_framebuffer.then_some((framebuffer.base().get(), framebuffer_bytes)),
+            queue,
+        )?;
         partition.configure_long_mode(
             entry,
             stack,
@@ -346,6 +393,7 @@ fn build_page_tables(
     image: &PeImage<'_>,
     layout: WhpLaunchLayout,
     handoff_bytes: u64,
+    framebuffer: Option<(u64, u64)>,
     queue: Option<GpuSharedQueueLayout>,
 ) -> Result<PhysAddr, WhpError> {
     partition.write_guest(layout.table_physical, &0u64.to_le_bytes())?;
@@ -382,6 +430,19 @@ fn build_page_tables(
             .map_err(|_| WhpError::InvalidMapping)?,
         )
         .map_err(|_| WhpError::PageTable)?;
+    if let Some((base, bytes)) = framebuffer {
+        tables
+            .map(
+                Mapping::new(
+                    VirtAddr::new(base).map_err(|_| WhpError::InvalidMapping)?,
+                    PhysAddr::new(base).map_err(|_| WhpError::InvalidMapping)?,
+                    bytes / PAGE_SIZE,
+                    PagePermissions::KERNEL_MMIO_READ_WRITE,
+                )
+                .map_err(|_| WhpError::InvalidMapping)?,
+            )
+            .map_err(|_| WhpError::PageTable)?;
+    }
     tables
         .map_page(
             VirtAddr::new(layout.table_physical).map_err(|_| WhpError::InvalidMapping)?,

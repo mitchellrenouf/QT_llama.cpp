@@ -50,13 +50,13 @@ const REG_CS: u32 = 0x13;
 const REG_SS: u32 = 0x14;
 const REG_DS: u32 = 0x15;
 const REG_GDTR: u32 = 0x1b;
-const REG_CR0: u32 = 0x1000;
-const REG_CR3: u32 = 0x1002;
-const REG_CR4: u32 = 0x1003;
+const REG_CR0: u32 = 0x1c;
+const REG_CR3: u32 = 0x1e;
+const REG_CR4: u32 = 0x1f;
 const REG_EFER: u32 = 0x2001;
 const REG_PAT: u32 = 0x2004;
 const CR0_LONG_MODE: u64 = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 16) | (1 << 31);
-const CR4_PAE: u64 = 1 << 5;
+const CR4_LONG_MODE_RUST: u64 = (1 << 5) | (1 << 9) | (1 << 10);
 const EFER_ENABLE_LONG_MODE_NX: u64 = (1 << 8) | (1 << 11);
 const EFER_ACTIVE_LONG_MODE_NX: u64 = EFER_ENABLE_LONG_MODE_NX | (1 << 10);
 const RESET_PAT: u64 = 0x0007_0406_0007_0406;
@@ -225,10 +225,29 @@ impl PreparedWhpPartition<'_> {
         self.map_initialized(range, &[])
     }
 
+    pub(crate) fn map_zeroed_service_readonly(
+        &mut self,
+        range: GuestRange,
+    ) -> Result<usize, WhpError> {
+        if range.permissions() != MapPermissions::read_only() {
+            return Err(WhpError::InvalidPermissions);
+        }
+        self.map_initialized_with_host_permissions(range, &[], MapPermissions::read_write())
+    }
+
     pub fn map_initialized(
         &mut self,
         range: GuestRange,
         contents: &[u8],
+    ) -> Result<usize, WhpError> {
+        self.map_initialized_with_host_permissions(range, contents, range.permissions())
+    }
+
+    fn map_initialized_with_host_permissions(
+        &mut self,
+        range: GuestRange,
+        contents: &[u8],
+        host_permissions: MapPermissions,
     ) -> Result<usize, WhpError> {
         let size = usize::try_from(range.size()).map_err(|_| WhpError::MemoryOverflow)?;
         if contents.len() > size {
@@ -276,7 +295,7 @@ impl PreparedWhpPartition<'_> {
                 address.as_ptr(),
                 range.guest_address(),
                 range.size(),
-                range.permissions().bits(),
+                host_permissions.bits(),
             )
         })?;
         self.mappings[slot] = Some(mapping);
@@ -492,7 +511,36 @@ impl PreparedWhpPartition<'_> {
                 context.len() as u32,
             )
         })?;
-        decode_exit_context(&context)
+        let exit = decode_exit_context(&context)?;
+        if matches!(exit, VmExit::Io { write: true, .. }) {
+            self.advance_output_instruction(context[10] & 0x0f)?;
+        }
+        Ok(exit)
+    }
+
+    /// WHP leaves RIP at an intercepted OUT instruction. Advance it only after
+    /// the strict exit decoder has accepted a scalar output operation; input
+    /// emulation requires separately installing a result in RAX.
+    fn advance_output_instruction(&mut self, bytes: u8) -> Result<(), WhpError> {
+        if bytes == 0 || bytes > 15 {
+            return Err(WhpError::MalformedExit);
+        }
+        let [current] = self.read_registers([REG_RIP])?;
+        let next = current
+            .low
+            .checked_add(u64::from(bytes))
+            .filter(|address| canonical(*address))
+            .ok_or(WhpError::InvalidRegisterState)?;
+        let value = RegisterValue::scalar(next);
+        check(unsafe {
+            (self.api.set_registers)(
+                self.partition.as_ptr(),
+                0,
+                (&REG_RIP as *const u32).cast(),
+                1,
+                &value,
+            )
+        })
     }
 
     pub(crate) fn inject_interrupt(&mut self, vector: u8) -> Result<(), WhpError> {
@@ -551,7 +599,7 @@ impl PreparedWhpPartition<'_> {
         values[9] = RegisterValue::table(descriptor_table, 15);
         values[10] = RegisterValue::scalar(CR0_LONG_MODE);
         values[11] = RegisterValue::scalar(page_table);
-        values[12] = RegisterValue::scalar(CR4_PAE);
+        values[12] = RegisterValue::scalar(CR4_LONG_MODE_RUST);
         values[13] = RegisterValue::scalar(EFER_ACTIVE_LONG_MODE_NX);
         values[14] = RegisterValue::scalar(RESET_PAT);
         check(unsafe {
@@ -740,6 +788,8 @@ mod tests {
 
     #[test]
     fn register_values_match_whp_union_layout() {
+        assert_eq!((REG_CR0, REG_CR3, REG_CR4), (0x1c, 0x1e, 0x1f));
+        assert_eq!(CR4_LONG_MODE_RUST, (1 << 5) | (1 << 9) | (1 << 10));
         assert_eq!(core::mem::size_of::<RegisterValue>(), 16);
         assert_eq!(core::mem::align_of::<RegisterValue>(), 16);
         let code = RegisterValue::segment(8, 0xa09b);

@@ -197,6 +197,10 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             blue: 0x78,
         },
     );
+    #[cfg(feature = "whp-gpu-benchmark")]
+    unsafe {
+        asm!("out dx, eax", in("dx") GPU_DOORBELL_PORT, in("eax") 2u32, options(nomem, nostack))
+    };
     halt()
 }
 

@@ -1,0 +1,21 @@
+[package]
+name = "mrml-whp-run"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Verified standalone MRML GPU benchmark launcher for WHP"
+
+[[bin]]
+name = "mrml-whp-run"
+path = "src/main.rs"
+
+[dependencies]
+mrml-crypto = { path = "../mrml-crypto", default-features = false }
+mrml-error = { path = "../mrml-error" }
+mrml-kernel = { path = "../mrml-kernel" }
+mrml-runtime = { path = "../mrml-runtime" }
+mrml-whp = { path = "../mrml-whp" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+mrml-tensor = { path = "../mrml-tensor", features = ["cuda"] }
