@@ -161,6 +161,8 @@ The Q8_0 embedding variant additionally requires dimensions divisible by 32,
 MoE router logits bind expert, model, and batch dimensions to exact dense
 weight/input/output ranges. Top-8 selection requires at least eight experts and
 exactly sized writable i32 ID and f32 probability outputs.
+Fused QKV GEMM and GEMV bind three separately sized Q4_0 matrices to one shared
+column width and one packed Q/K/V output, with distinct batch and launch tiling.
 RMS normalization represents an absent optional weight structurally rather
 than with a guest pointer, binds dimensions to exact tensor lengths, and
 requires epsilon to be a finite positive f32.
@@ -177,7 +179,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 16
+guest execution. Platform cache-coherence validation, the remaining 14
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML

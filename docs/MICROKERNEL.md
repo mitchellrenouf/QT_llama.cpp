@@ -181,8 +181,12 @@ f32 router-weight, input, and logits matrices and to its two-dimensional grid.
 Kernel ID 14 requires at least eight experts, exact input logits, writable i32
 top-8 IDs, writable f32 probabilities, and one single-thread block per token.
 Checked dimension products and alignment checks precede every length test.
+Kernel IDs 1 and 2 validate fused Q4_0 QKV GEMM and GEMV. Q, K, and V weight
+ranges are independently sized from Q rows, KV rows, and the shared 32-value
+column blocks. Input and packed output lengths are derived with checked batch
+products. GEMM and GEMV retain their distinct block widths and row/token tiles.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 16 schemas and the
+registry alone cannot make it executable. The remaining 14 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
