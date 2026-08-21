@@ -176,8 +176,13 @@ storage per 32 values. Dimension must be divisible by 32, token must be inside
 the row count derived from the table range, output must be one exact f32 row,
 and output scale must be finite and positive. Alignment, permissions, grid,
 block size, and shared-memory policy are fixed.
+Kernel ID 13 binds positive model dimension, expert count, and batch to exact
+f32 router-weight, input, and logits matrices and to its two-dimensional grid.
+Kernel ID 14 requires at least eight experts, exact input logits, writable i32
+top-8 IDs, writable f32 probabilities, and one single-thread block per token.
+Checked dimension products and alignment checks precede every length test.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 18 schemas and the
+registry alone cannot make it executable. The remaining 16 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot

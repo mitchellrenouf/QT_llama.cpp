@@ -1702,6 +1702,8 @@ impl Dispatch {
             8 => self.validate_embedding_f32_schema(),
             11 => self.validate_rope_f32_schema(),
             12 => self.validate_rms_norm_f32_schema(),
+            13 => self.validate_router_logits_schema(),
+            14 => self.validate_router_top8_schema(),
             27 => self.validate_embedding_q8_0_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
@@ -2032,6 +2034,78 @@ impl Dispatch {
         Ok(value)
     }
 
+    fn validate_router_logits_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 3
+            || self.scalar_count != 3
+            || self.shared_memory != 0
+            || self.block != [256, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let weights = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let input = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let logits = self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?;
+        let dimension = self.positive_i32_scalar(0)?;
+        let experts = self.positive_i32_scalar(1)?;
+        let batch = self.positive_i32_scalar(2)?;
+        let weight_elements = experts
+            .checked_mul(dimension)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let input_elements = batch
+            .checked_mul(dimension)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let output_elements = batch
+            .checked_mul(experts)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        if !valid_f32_access(weights, u64::from(weight_elements) * 4, BufferMode::Read)
+            || !valid_f32_access(input, u64::from(input_elements) * 4, BufferMode::Read)
+            || !valid_f32_access(logits, u64::from(output_elements) * 4, BufferMode::Write)
+            || self.grid != [experts, batch, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: output_elements,
+        })
+    }
+
+    fn validate_router_top8_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 3
+            || self.scalar_count != 2
+            || self.shared_memory != 0
+            || self.block != [1, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let logits = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let ids = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let probabilities = self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?;
+        let experts = self.positive_i32_scalar(0)?;
+        let batch = self.positive_i32_scalar(1)?;
+        if experts < 8 {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let logit_elements = batch
+            .checked_mul(experts)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let top_elements = batch.checked_mul(8).ok_or(GpuError::InvalidKernelSchema)?;
+        let top_bytes = u64::from(top_elements) * 4;
+        if !valid_f32_access(logits, u64::from(logit_elements) * 4, BufferMode::Read)
+            || ids.mode != BufferMode::Write
+            || ids.offset % 4 != 0
+            || ids.length != top_bytes
+            || !valid_f32_access(probabilities, top_bytes, BufferMode::Write)
+            || self.grid != [batch, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: top_elements,
+        })
+    }
+
     /// Canonical fixed-size dispatch representation. Unused access slots and
     /// all reserved bytes are zero, preventing alternate encodings from
     /// reaching the host CUDA executor.
@@ -2179,6 +2253,10 @@ impl Dispatch {
 
 fn read_u32(input: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(input[offset..offset + 4].try_into().unwrap())
+}
+
+fn valid_f32_access(access: BufferAccess, length: u64, mode: BufferMode) -> bool {
+    access.mode == mode && access.offset.is_multiple_of(4) && access.length == length
 }
 
 fn read_u64(input: &[u8], offset: usize) -> u64 {
@@ -2772,6 +2850,84 @@ mod tests {
                 Err(GpuError::InvalidKernelSchema)
             );
         }
+    }
+
+    #[test]
+    fn executor_binds_router_logits_and_top8_buffers() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let logits_accesses = [
+            BufferAccess::new(id(0), 0, 4096, BufferMode::Read),
+            BufferAccess::new(id(1), 0, 512, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 128, BufferMode::Write),
+        ];
+        let logits_scalars = [ScalarArg::i32(64), ScalarArg::i32(16), ScalarArg::i32(2)];
+        let logits = Dispatch::new_with_scalars(
+            KernelId::new(13).unwrap(),
+            [16, 2, 1],
+            [256, 1, 1],
+            0,
+            &logits_accesses,
+            &logits_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            logits.validate_executor_schema().unwrap().element_count(),
+            32
+        );
+
+        let top_accesses = [
+            BufferAccess::new(id(2), 0, 128, BufferMode::Read),
+            BufferAccess::new(id(3), 0, 64, BufferMode::Write),
+            BufferAccess::new(id(4), 0, 64, BufferMode::Write),
+        ];
+        let top_scalars = [ScalarArg::i32(16), ScalarArg::i32(2)];
+        let top = Dispatch::new_with_scalars(
+            KernelId::new(14).unwrap(),
+            [2, 1, 1],
+            [1, 1, 1],
+            0,
+            &top_accesses,
+            &top_scalars,
+        )
+        .unwrap();
+        assert_eq!(top.validate_executor_schema().unwrap().element_count(), 16);
+
+        let too_few_experts = [ScalarArg::i32(7), ScalarArg::i32(2)];
+        let too_few_experts = Dispatch::new_with_scalars(
+            KernelId::new(14).unwrap(),
+            [2, 1, 1],
+            [1, 1, 1],
+            0,
+            &top_accesses,
+            &too_few_experts,
+        )
+        .unwrap();
+        assert_eq!(
+            too_few_experts.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let bad_ids = [
+            top_accesses[0],
+            BufferAccess::new(id(3), 0, 64, BufferMode::Read),
+            top_accesses[2],
+        ];
+        let bad_ids = Dispatch::new_with_scalars(
+            KernelId::new(14).unwrap(),
+            [2, 1, 1],
+            [1, 1, 1],
+            0,
+            &bad_ids,
+            &top_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            bad_ids.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
     }
 
     #[test]
