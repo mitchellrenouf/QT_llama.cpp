@@ -116,7 +116,12 @@ unsafe extern "system" {
     fn GetSystemTimeAsFileTime(time: *mut FileTime);
     fn GetProcessHeap() -> *mut c_void;
     fn GetCurrentProcessId() -> u32;
-    fn CreatePipe(read: *mut *mut c_void, write: *mut *mut c_void, attributes: *const SecurityAttributes, size: u32) -> i32;
+    fn CreatePipe(
+        read: *mut *mut c_void,
+        write: *mut *mut c_void,
+        attributes: *const SecurityAttributes,
+        size: u32,
+    ) -> i32;
     fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
     fn CreateProcessW(
         application: *const u16,
@@ -130,7 +135,14 @@ unsafe extern "system" {
         startup: *mut StartupInfoW,
         process: *mut ProcessInformation,
     ) -> i32;
-    fn PeekNamedPipe(handle: *mut c_void, buffer: *mut c_void, size: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+    fn PeekNamedPipe(
+        handle: *mut c_void,
+        buffer: *mut c_void,
+        size: u32,
+        read: *mut u32,
+        available: *mut u32,
+        left: *mut u32,
+    ) -> i32;
     fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
     fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
     fn TerminateProcess(process: *mut c_void, exit_code: u32) -> i32;
@@ -149,7 +161,12 @@ unsafe extern "system" {
     fn GetEnvironmentVariableA(name: *const i8, value: *mut i8, capacity: u32) -> u32;
     fn GetEnvironmentVariableW(name: *const u16, value: *mut u16, capacity: u32) -> u32;
     fn GetFileAttributesW(name: *const u16) -> u32;
-    fn GetFullPathNameW(name: *const u16, capacity: u32, output: *mut u16, file_part: *mut *mut u16) -> u32;
+    fn GetFullPathNameW(
+        name: *const u16,
+        capacity: u32,
+        output: *mut u16,
+        file_part: *mut *mut u16,
+    ) -> u32;
     fn CreateDirectoryW(name: *const u16, security: *const c_void) -> i32;
     fn DeleteFileW(name: *const u16) -> i32;
     fn RemoveDirectoryW(name: *const u16) -> i32;
@@ -285,16 +302,36 @@ unsafe extern "system" {
     fn recv(socket: usize, buffer: *mut i8, length: i32, flags: i32) -> i32;
     fn send(socket: usize, buffer: *const i8, length: i32, flags: i32) -> i32;
     fn closesocket(socket: usize) -> i32;
-    fn getaddrinfo(node: *const i8, service: *const i8, hints: *const AddrInfo, result: *mut *mut AddrInfo) -> i32;
+    fn getaddrinfo(
+        node: *const i8,
+        service: *const i8,
+        hints: *const AddrInfo,
+        result: *mut *mut AddrInfo,
+    ) -> i32;
     fn freeaddrinfo(result: *mut AddrInfo);
 }
 
 #[cfg(windows)]
 pub fn resolve_ipv4(host: &[u8]) -> Option<[u8; 4]> {
-    if host.last().copied() != Some(0) || !initialize_winsock() { return None; }
-    let hints = AddrInfo { flags: 0, family: 2, socket_type: 1, protocol: 6, address_length: 0, canonical_name: core::ptr::null_mut(), address: core::ptr::null_mut(), next: core::ptr::null_mut() };
+    if host.last().copied() != Some(0) || !initialize_winsock() {
+        return None;
+    }
+    let hints = AddrInfo {
+        flags: 0,
+        family: 2,
+        socket_type: 1,
+        protocol: 6,
+        address_length: 0,
+        canonical_name: core::ptr::null_mut(),
+        address: core::ptr::null_mut(),
+        next: core::ptr::null_mut(),
+    };
     let mut result = core::ptr::null_mut();
-    if unsafe { getaddrinfo(host.as_ptr().cast(), core::ptr::null(), &hints, &mut result) } != 0 || result.is_null() { return None; }
+    if unsafe { getaddrinfo(host.as_ptr().cast(), core::ptr::null(), &hints, &mut result) } != 0
+        || result.is_null()
+    {
+        return None;
+    }
     let address = unsafe { (*result).address.as_ref() }.map(|value| value.address);
     unsafe { freeaddrinfo(result) };
     address
@@ -398,7 +435,11 @@ impl NativeDirectory {
         }
         let mut data = unsafe { core::mem::zeroed::<FindDataW>() };
         let find = unsafe { FindFirstFileW(pattern.as_ptr(), &mut data) };
-        (find != INVALID_HANDLE_VALUE).then_some(Self { find, data, first: true })
+        (find != INVALID_HANDLE_VALUE).then_some(Self {
+            find,
+            data,
+            first: true,
+        })
     }
 
     pub fn next(&mut self, name: &mut [u16; 260]) -> Option<(usize, bool, bool)> {
@@ -438,44 +479,88 @@ pub fn process_id() -> u32 {
 
 #[cfg(windows)]
 pub fn unix_time_seconds() -> Option<u64> {
-    let mut time = FileTime { low: 0, high: 0 }; unsafe { GetSystemTimeAsFileTime(&mut time) };
+    let mut time = FileTime { low: 0, high: 0 };
+    unsafe { GetSystemTimeAsFileTime(&mut time) };
     let ticks = ((time.high as u64) << 32) | time.low as u64;
     ticks.checked_div(10_000_000)?.checked_sub(11_644_473_600)
 }
 
 #[repr(C)]
 #[cfg(windows)]
-struct CertificateContext { encoding: u32, encoded: *const u8, encoded_len: u32, info: *const c_void, store: *mut c_void }
+struct CertificateContext {
+    encoding: u32,
+    encoded: *const u8,
+    encoded_len: u32,
+    info: *const c_void,
+    store: *mut c_void,
+}
 
 #[cfg(windows)]
 pub fn visit_root_certificates(mut visitor: impl FnMut(&[u8]) -> bool) -> bool {
-    type Open = unsafe extern "system" fn(*const i8, u32, *mut c_void, u32, *const c_void) -> *mut c_void;
-    type Next = unsafe extern "system" fn(*mut c_void, *const CertificateContext) -> *const CertificateContext;
+    type Open =
+        unsafe extern "system" fn(*const i8, u32, *mut c_void, u32, *const c_void) -> *mut c_void;
+    type Next = unsafe extern "system" fn(
+        *mut c_void,
+        *const CertificateContext,
+    ) -> *const CertificateContext;
     type Close = unsafe extern "system" fn(*mut c_void, u32) -> i32;
-    let library = unsafe { LoadLibraryA(c"crypt32.dll".as_ptr()) }; if library.is_null() { return false; }
+    let library = unsafe { LoadLibraryA(c"crypt32.dll".as_ptr()) };
+    if library.is_null() {
+        return false;
+    }
     let open: *mut c_void = unsafe { GetProcAddress(library, c"CertOpenStore".as_ptr()) };
-    let next: *mut c_void = unsafe { GetProcAddress(library, c"CertEnumCertificatesInStore".as_ptr()) };
+    let next: *mut c_void =
+        unsafe { GetProcAddress(library, c"CertEnumCertificatesInStore".as_ptr()) };
     let close: *mut c_void = unsafe { GetProcAddress(library, c"CertCloseStore".as_ptr()) };
-    if open.is_null() || next.is_null() || close.is_null() { unsafe { FreeLibrary(library) }; return false; }
-    let open: Open = unsafe { core::mem::transmute(open) }; let next: Next = unsafe { core::mem::transmute(next) }; let close: Close = unsafe { core::mem::transmute(close) };
+    if open.is_null() || next.is_null() || close.is_null() {
+        unsafe { FreeLibrary(library) };
+        return false;
+    }
+    let open: Open = unsafe { core::mem::transmute(open) };
+    let next: Next = unsafe { core::mem::transmute(next) };
+    let close: Close = unsafe { core::mem::transmute(close) };
     const CERT_STORE_PROV_SYSTEM_A: *const i8 = 9usize as *const i8;
     const CERT_SYSTEM_STORE_CURRENT_USER: u32 = 0x0001_0000;
     const CERT_SYSTEM_STORE_LOCAL_MACHINE: u32 = 0x0002_0000;
     const CERT_STORE_READONLY_FLAG: u32 = 0x0000_8000;
-    let mut opened = false; let mut continuing = true;
-    for location in [CERT_SYSTEM_STORE_CURRENT_USER, CERT_SYSTEM_STORE_LOCAL_MACHINE] {
-        let store = unsafe { open(CERT_STORE_PROV_SYSTEM_A, 0, core::ptr::null_mut(), location | CERT_STORE_READONLY_FLAG, c"ROOT".as_ptr().cast()) }; if store.is_null() { continue; } opened = true;
+    let mut opened = false;
+    let mut continuing = true;
+    for location in [
+        CERT_SYSTEM_STORE_CURRENT_USER,
+        CERT_SYSTEM_STORE_LOCAL_MACHINE,
+    ] {
+        let store = unsafe {
+            open(
+                CERT_STORE_PROV_SYSTEM_A,
+                0,
+                core::ptr::null_mut(),
+                location | CERT_STORE_READONLY_FLAG,
+                c"ROOT".as_ptr().cast(),
+            )
+        };
+        if store.is_null() {
+            continue;
+        }
+        opened = true;
         let mut context = core::ptr::null();
         while continuing {
-            context = unsafe { next(store, context) }; if context.is_null() { break; }
-            let certificate = unsafe { core::slice::from_raw_parts((*context).encoded, (*context).encoded_len as usize) };
+            context = unsafe { next(store, context) };
+            if context.is_null() {
+                break;
+            }
+            let certificate = unsafe {
+                core::slice::from_raw_parts((*context).encoded, (*context).encoded_len as usize)
+            };
             continuing = visitor(certificate);
         }
         // FORCE releases the current enumeration context when the visitor stops early.
         let _ = unsafe { close(store, 1) };
-        if !continuing { break; }
+        if !continuing {
+            break;
+        }
     }
-    unsafe { FreeLibrary(library) }; opened
+    unsafe { FreeLibrary(library) };
+    opened
 }
 
 #[cfg(windows)]
@@ -485,7 +570,10 @@ fn initialize_winsock() -> bool {
         match STATE.load(Ordering::Acquire) {
             2 => return true,
             3 => return false,
-            0 if STATE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() => {
+            0 if STATE
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok() =>
+            {
                 let mut data = unsafe { core::mem::zeroed::<WsaData>() };
                 let okay = unsafe { WSAStartup(0x0202, &mut data) } == 0;
                 STATE.store(if okay { 2 } else { 3 }, Ordering::Release);
@@ -498,7 +586,12 @@ fn initialize_winsock() -> bool {
 
 #[cfg(windows)]
 fn socket_address(ip: [u8; 4], port: u16) -> SockAddr {
-    SockAddr { family: 2, port: port.to_be_bytes(), address: ip, zero: [0; 8] }
+    SockAddr {
+        family: 2,
+        port: port.to_be_bytes(),
+        address: ip,
+        zero: [0; 8],
+    }
 }
 
 #[cfg(windows)]
@@ -510,20 +603,28 @@ unsafe impl Send for NativeTcpListener {}
 #[cfg(windows)]
 impl NativeTcpListener {
     pub fn bind(ip: [u8; 4], port: u16) -> Option<Self> {
-        if !initialize_winsock() { return None; }
+        if !initialize_winsock() {
+            return None;
+        }
         let handle = unsafe { socket(2, 1, 6) };
-        if handle == usize::MAX { return None; }
+        if handle == usize::MAX {
+            return None;
+        }
         let address = socket_address(ip, port);
         if unsafe { bind(handle, &address, core::mem::size_of::<SockAddr>() as i32) } != 0
             || unsafe { listen(handle, 128) } != 0
-        { let _ = unsafe { closesocket(handle) }; return None; }
+        {
+            let _ = unsafe { closesocket(handle) };
+            return None;
+        }
         Some(Self(handle))
     }
 
     pub fn local_port(&self) -> Option<u16> {
         let mut address = socket_address([0; 4], 0);
         let mut length = core::mem::size_of::<SockAddr>() as i32;
-        (unsafe { getsockname(self.0, &mut address, &mut length) } == 0).then(|| u16::from_be_bytes(address.port))
+        (unsafe { getsockname(self.0, &mut address, &mut length) } == 0)
+            .then(|| u16::from_be_bytes(address.port))
     }
 
     pub fn accept(&self) -> Option<NativeTcpStream> {
@@ -533,7 +634,11 @@ impl NativeTcpListener {
 }
 
 #[cfg(windows)]
-impl Drop for NativeTcpListener { fn drop(&mut self) { let _ = unsafe { closesocket(self.0) }; } }
+impl Drop for NativeTcpListener {
+    fn drop(&mut self) {
+        let _ = unsafe { closesocket(self.0) };
+    }
+}
 
 #[cfg(windows)]
 pub struct NativeTcpStream(usize);
@@ -544,41 +649,70 @@ unsafe impl Send for NativeTcpStream {}
 #[cfg(windows)]
 impl NativeTcpStream {
     pub fn connect(ip: [u8; 4], port: u16) -> Option<Self> {
-        if !initialize_winsock() { return None; }
+        if !initialize_winsock() {
+            return None;
+        }
         let handle = unsafe { socket(2, 1, 6) };
-        if handle == usize::MAX { return None; }
+        if handle == usize::MAX {
+            return None;
+        }
         let address = socket_address(ip, port);
         if unsafe { connect(handle, &address, core::mem::size_of::<SockAddr>() as i32) } != 0 {
             let _ = unsafe { closesocket(handle) };
             None
-        } else { Some(Self(handle)) }
+        } else {
+            Some(Self(handle))
+        }
     }
 
     pub fn read(&mut self, buffer: &mut [u8]) -> Option<usize> {
-        let amount = unsafe { recv(self.0, buffer.as_mut_ptr().cast(), buffer.len().min(i32::MAX as usize) as i32, 0) };
+        let amount = unsafe {
+            recv(
+                self.0,
+                buffer.as_mut_ptr().cast(),
+                buffer.len().min(i32::MAX as usize) as i32,
+                0,
+            )
+        };
         (amount >= 0).then_some(amount as usize)
     }
 
     pub fn write(&mut self, buffer: &[u8]) -> Option<usize> {
-        let amount = unsafe { send(self.0, buffer.as_ptr().cast(), buffer.len().min(i32::MAX as usize) as i32, 0) };
+        let amount = unsafe {
+            send(
+                self.0,
+                buffer.as_ptr().cast(),
+                buffer.len().min(i32::MAX as usize) as i32,
+                0,
+            )
+        };
         (amount >= 0).then_some(amount as usize)
     }
 
     pub fn set_timeout_millis(&self, read_timeout: bool, milliseconds: u64) -> bool {
         let value = milliseconds.min(u32::MAX as u64) as u32;
         let option = if read_timeout { 0x1006 } else { 0x1005 };
-        (unsafe { setsockopt(self.0, 0xffff, option, (&value as *const u32).cast(), core::mem::size_of::<u32>() as i32) }) == 0
+        (unsafe {
+            setsockopt(
+                self.0,
+                0xffff,
+                option,
+                (&value as *const u32).cast(),
+                core::mem::size_of::<u32>() as i32,
+            )
+        }) == 0
     }
 }
 
 #[cfg(windows)]
-impl Drop for NativeTcpStream { fn drop(&mut self) { let _ = unsafe { closesocket(self.0) }; } }
+impl Drop for NativeTcpStream {
+    fn drop(&mut self) {
+        let _ = unsafe { closesocket(self.0) };
+    }
+}
 
 #[cfg(windows)]
-pub fn spawn_detached_process(
-    command_line: &mut [u16],
-    current_directory: Option<&[u16]>,
-) -> bool {
+pub fn spawn_detached_process(command_line: &mut [u16], current_directory: Option<&[u16]>) -> bool {
     if command_line.last().copied() != Some(0)
         || current_directory.is_some_and(|path| path.last().copied() != Some(0))
     {
@@ -622,10 +756,15 @@ unsafe impl Send for NativeChild {}
 
 #[cfg(windows)]
 impl NativeChild {
-    pub fn spawn_silent(command_line: &mut [u16], current_directory: Option<&[u16]>) -> Option<Self> {
+    pub fn spawn_silent(
+        command_line: &mut [u16],
+        current_directory: Option<&[u16]>,
+    ) -> Option<Self> {
         if command_line.last().copied() != Some(0)
             || current_directory.is_some_and(|path| path.last().copied() != Some(0))
-        { return None; }
+        {
+            return None;
+        }
         const GENERIC_READ: u32 = 0x8000_0000;
         const GENERIC_WRITE: u32 = 0x4000_0000;
         const OPEN_EXISTING: u32 = 3;
@@ -635,12 +774,29 @@ impl NativeChild {
             security_descriptor: core::ptr::null_mut(),
             inherit_handle: 1,
         };
-        let open_null = || unsafe { CreateFileW(null_name.as_ptr(), GENERIC_READ | GENERIC_WRITE, 3, (&attributes as *const SecurityAttributes).cast(), OPEN_EXISTING, 0x80, core::ptr::null_mut()) };
+        let open_null = || unsafe {
+            CreateFileW(
+                null_name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                3,
+                (&attributes as *const SecurityAttributes).cast(),
+                OPEN_EXISTING,
+                0x80,
+                core::ptr::null_mut(),
+            )
+        };
         let stdin = open_null();
         let stdout = open_null();
         let stderr = open_null();
-        if [stdin, stdout, stderr].iter().any(|handle| *handle as isize == -1) {
-            for handle in [stdin, stdout, stderr] { if handle as isize != -1 { let _ = unsafe { CloseHandle(handle) }; } }
+        if [stdin, stdout, stderr]
+            .iter()
+            .any(|handle| *handle as isize == -1)
+        {
+            for handle in [stdin, stdout, stderr] {
+                if handle as isize != -1 {
+                    let _ = unsafe { CloseHandle(handle) };
+                }
+            }
             return None;
         }
         let mut startup = unsafe { core::mem::zeroed::<StartupInfoW>() };
@@ -650,14 +806,39 @@ impl NativeChild {
         startup.stdout = stdout;
         startup.stderr = stderr;
         let mut information = unsafe { core::mem::zeroed::<ProcessInformation>() };
-        let created = unsafe { CreateProcessW(core::ptr::null(), command_line.as_mut_ptr(), core::ptr::null(), core::ptr::null(), 1, 0, core::ptr::null(), current_directory.map_or(core::ptr::null(), |path| path.as_ptr()), &mut startup, &mut information) };
-        for handle in [stdin, stdout, stderr] { let _ = unsafe { CloseHandle(handle) }; }
-        if created == 0 { return None; }
+        let created = unsafe {
+            CreateProcessW(
+                core::ptr::null(),
+                command_line.as_mut_ptr(),
+                core::ptr::null(),
+                core::ptr::null(),
+                1,
+                0,
+                core::ptr::null(),
+                current_directory.map_or(core::ptr::null(), |path| path.as_ptr()),
+                &mut startup,
+                &mut information,
+            )
+        };
+        for handle in [stdin, stdout, stderr] {
+            let _ = unsafe { CloseHandle(handle) };
+        }
+        if created == 0 {
+            return None;
+        }
         let _ = unsafe { CloseHandle(information.thread) };
-        Some(Self { process: information.process, stdout: core::ptr::null_mut(), stderr: core::ptr::null_mut(), status: None })
+        Some(Self {
+            process: information.process,
+            stdout: core::ptr::null_mut(),
+            stderr: core::ptr::null_mut(),
+            status: None,
+        })
     }
 
-    pub fn spawn_captured(command_line: &mut [u16], current_directory: Option<&[u16]>) -> Option<Self> {
+    pub fn spawn_captured(
+        command_line: &mut [u16],
+        current_directory: Option<&[u16]>,
+    ) -> Option<Self> {
         if command_line.last().copied() != Some(0)
             || current_directory.is_some_and(|path| path.last().copied() != Some(0))
         {
@@ -714,7 +895,12 @@ impl NativeChild {
             return None;
         }
         let _ = unsafe { CloseHandle(information.thread) };
-        Some(Self { process: information.process, stdout: stdout_read, stderr: stderr_read, status: None })
+        Some(Self {
+            process: information.process,
+            stdout: stdout_read,
+            stderr: stderr_read,
+            status: None,
+        })
     }
 
     fn read_pipe(handle: *mut c_void, buffer: &mut [u8]) -> usize {
@@ -728,21 +914,35 @@ impl NativeChild {
                 &mut available,
                 core::ptr::null_mut(),
             )
-        } == 0 || available == 0
+        } == 0
+            || available == 0
         {
             return 0;
         }
         let mut read = 0u32;
         let count = buffer.len().min(available as usize).min(u32::MAX as usize) as u32;
-        if unsafe { ReadFile(handle, buffer.as_mut_ptr().cast(), count, &mut read, core::ptr::null_mut()) } == 0 {
+        if unsafe {
+            ReadFile(
+                handle,
+                buffer.as_mut_ptr().cast(),
+                count,
+                &mut read,
+                core::ptr::null_mut(),
+            )
+        } == 0
+        {
             0
         } else {
             read as usize
         }
     }
 
-    pub fn read_stdout(&mut self, buffer: &mut [u8]) -> usize { Self::read_pipe(self.stdout, buffer) }
-    pub fn read_stderr(&mut self, buffer: &mut [u8]) -> usize { Self::read_pipe(self.stderr, buffer) }
+    pub fn read_stdout(&mut self, buffer: &mut [u8]) -> usize {
+        Self::read_pipe(self.stdout, buffer)
+    }
+    pub fn read_stderr(&mut self, buffer: &mut [u8]) -> usize {
+        Self::read_pipe(self.stderr, buffer)
+    }
 
     pub fn try_wait(&mut self) -> Option<i32> {
         if self.status.is_none() && unsafe { WaitForSingleObject(self.process, 0) } == 0 {
@@ -760,9 +960,13 @@ impl NativeChild {
 
     pub fn wait(&mut self) -> Option<i32> {
         if self.status.is_none() {
-            if unsafe { WaitForSingleObject(self.process, u32::MAX) } != 0 { return None; }
+            if unsafe { WaitForSingleObject(self.process, u32::MAX) } != 0 {
+                return None;
+            }
             let mut code = 0;
-            if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 { return None; }
+            if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 {
+                return None;
+            }
             self.status = Some(code as i32);
         }
         self.status
@@ -776,7 +980,9 @@ impl Drop for NativeChild {
             let _ = unsafe { WaitForSingleObject(self.process, u32::MAX) };
         }
         for handle in [self.process, self.stdout, self.stderr] {
-            if !handle.is_null() { let _ = unsafe { CloseHandle(handle) }; }
+            if !handle.is_null() {
+                let _ = unsafe { CloseHandle(handle) };
+            }
         }
     }
 }
@@ -797,7 +1003,9 @@ impl NativePipedChild {
     pub fn spawn(command_line: &mut [u16], current_directory: Option<&[u16]>) -> Option<Self> {
         if command_line.last().copied() != Some(0)
             || current_directory.is_some_and(|path| path.last().copied() != Some(0))
-        { return None; }
+        {
+            return None;
+        }
         let attributes = SecurityAttributes {
             length: core::mem::size_of::<SecurityAttributes>() as u32,
             security_descriptor: core::ptr::null_mut(),
@@ -811,7 +1019,9 @@ impl NativePipedChild {
             || unsafe { CreatePipe(&mut stdout_read, &mut stdout_write, &attributes, 0) } == 0
         {
             for handle in [stdin_read, stdin_write, stdout_read, stdout_write] {
-                if !handle.is_null() { let _ = unsafe { CloseHandle(handle) }; }
+                if !handle.is_null() {
+                    let _ = unsafe { CloseHandle(handle) };
+                }
             }
             return None;
         }
@@ -825,7 +1035,20 @@ impl NativePipedChild {
         startup.stdout = stdout_write;
         startup.stderr = unsafe { GetStdHandle(u32::MAX - 11) };
         let mut information = unsafe { core::mem::zeroed::<ProcessInformation>() };
-        let created = unsafe { CreateProcessW(core::ptr::null(), command_line.as_mut_ptr(), core::ptr::null(), core::ptr::null(), 1, 0, core::ptr::null(), current_directory.map_or(core::ptr::null(), |path| path.as_ptr()), &mut startup, &mut information) };
+        let created = unsafe {
+            CreateProcessW(
+                core::ptr::null(),
+                command_line.as_mut_ptr(),
+                core::ptr::null(),
+                core::ptr::null(),
+                1,
+                0,
+                core::ptr::null(),
+                current_directory.map_or(core::ptr::null(), |path| path.as_ptr()),
+                &mut startup,
+                &mut information,
+            )
+        };
         let _ = unsafe { CloseHandle(stdin_read) };
         let _ = unsafe { CloseHandle(stdout_write) };
         if created == 0 {
@@ -834,14 +1057,31 @@ impl NativePipedChild {
             return None;
         }
         let _ = unsafe { CloseHandle(information.thread) };
-        Some(Self { process: information.process, stdin: stdin_write, stdout: stdout_read, status: None })
+        Some(Self {
+            process: information.process,
+            stdin: stdin_write,
+            stdout: stdout_read,
+            status: None,
+        })
     }
 
     pub fn write_stdin(&mut self, mut bytes: &[u8]) -> bool {
         while !bytes.is_empty() {
             let mut written = 0;
             let amount = bytes.len().min(u32::MAX as usize) as u32;
-            if unsafe { WriteFile(self.stdin, bytes.as_ptr().cast(), amount, &mut written, core::ptr::null_mut()) } == 0 || written == 0 { return false; }
+            if unsafe {
+                WriteFile(
+                    self.stdin,
+                    bytes.as_ptr().cast(),
+                    amount,
+                    &mut written,
+                    core::ptr::null_mut(),
+                )
+            } == 0
+                || written == 0
+            {
+                return false;
+            }
             bytes = &bytes[written as usize..];
         }
         true
@@ -850,16 +1090,31 @@ impl NativePipedChild {
     pub fn read_stdout(&mut self, buffer: &mut [u8]) -> Option<usize> {
         let mut read = 0;
         let amount = buffer.len().min(u32::MAX as usize) as u32;
-        (unsafe { ReadFile(self.stdout, buffer.as_mut_ptr().cast(), amount, &mut read, core::ptr::null_mut()) } != 0).then_some(read as usize)
+        (unsafe {
+            ReadFile(
+                self.stdout,
+                buffer.as_mut_ptr().cast(),
+                amount,
+                &mut read,
+                core::ptr::null_mut(),
+            )
+        } != 0)
+            .then_some(read as usize)
     }
 
-    pub fn kill(&mut self) -> bool { self.status.is_some() || unsafe { TerminateProcess(self.process, 1) } != 0 }
+    pub fn kill(&mut self) -> bool {
+        self.status.is_some() || unsafe { TerminateProcess(self.process, 1) } != 0
+    }
 
     pub fn wait(&mut self) -> Option<i32> {
         if self.status.is_none() {
-            if unsafe { WaitForSingleObject(self.process, u32::MAX) } != 0 { return None; }
+            if unsafe { WaitForSingleObject(self.process, u32::MAX) } != 0 {
+                return None;
+            }
             let mut code = 0;
-            if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 { return None; }
+            if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 {
+                return None;
+            }
             self.status = Some(code as i32);
         }
         self.status
@@ -869,8 +1124,15 @@ impl NativePipedChild {
 #[cfg(windows)]
 impl Drop for NativePipedChild {
     fn drop(&mut self) {
-        if self.status.is_none() { let _ = self.kill(); let _ = self.wait(); }
-        for handle in [self.process, self.stdin, self.stdout] { if !handle.is_null() { let _ = unsafe { CloseHandle(handle) }; } }
+        if self.status.is_none() {
+            let _ = self.kill();
+            let _ = self.wait();
+        }
+        for handle in [self.process, self.stdin, self.stdout] {
+            if !handle.is_null() {
+                let _ = unsafe { CloseHandle(handle) };
+            }
+        }
     }
 }
 
@@ -884,12 +1146,14 @@ pub fn wait_on_u32(address: *const u32, expected: u32) {
     type Wait = unsafe extern "system" fn(*const c_void, *const c_void, usize, u32) -> i32;
     static FUNCTION: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
     if let Some(wait) = resolve_kernelbase::<Wait>(&FUNCTION, b"WaitOnAddress\0") {
-        let _ = unsafe { wait(
-            address.cast(),
-            (&expected as *const u32).cast(),
-            core::mem::size_of::<u32>(),
-            u32::MAX,
-        ) };
+        let _ = unsafe {
+            wait(
+                address.cast(),
+                (&expected as *const u32).cast(),
+                core::mem::size_of::<u32>(),
+                u32::MAX,
+            )
+        };
     } else {
         unsafe { Sleep(1) };
     }
@@ -920,9 +1184,13 @@ fn resolve_kernelbase<T: Copy>(cache: &AtomicPtr<c_void>, symbol: &'static [u8])
         return Some(unsafe { core::mem::transmute_copy(&cached) });
     }
     let module = unsafe { LoadLibraryA(c"kernelbase.dll".as_ptr()) };
-    if module.is_null() { return None; }
+    if module.is_null() {
+        return None;
+    }
     let pointer = unsafe { GetProcAddress(module, symbol.as_ptr().cast()) };
-    if pointer.is_null() { return None; }
+    if pointer.is_null() {
+        return None;
+    }
     cache.store(pointer, Ordering::Release);
     Some(unsafe { core::mem::transmute_copy(&pointer) })
 }
@@ -1006,7 +1274,17 @@ impl NativeFile {
         const FILE_SHARE_READ: u32 = 1;
         const OPEN_EXISTING: u32 = 3;
         const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
-        let handle = unsafe { CreateFileW(path.as_ptr(), GENERIC_WRITE, FILE_SHARE_READ, core::ptr::null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, core::ptr::null_mut()) };
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ,
+                core::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                core::ptr::null_mut(),
+            )
+        };
         (handle as isize != -1).then_some(Self(handle))
     }
 
@@ -1087,7 +1365,8 @@ fn write_standard_handle(kind: u32, mut bytes: &[u8]) -> bool {
                 &mut written,
                 core::ptr::null_mut(),
             )
-        } == 0 || written == 0
+        } == 0
+            || written == 0
         {
             return false;
         }

@@ -38,7 +38,9 @@ fn application_main() -> Result<(), &'static str> {
             *q = (b.wrapping_mul(17).wrapping_add(i * 13)) as u8;
         }
     }
-    let input: Vec<f32> = (0..cols).map(|i| mrml_math::sin(i as f32 * 0.017)).collect();
+    let input: Vec<f32> = (0..cols)
+        .map(|i| mrml_math::sin(i as f32 * 0.017))
+        .collect();
     let mut outputs = [vec![0.0f32; rows], vec![0.0; rows], vec![0.0; rows]];
 
     let repeated = elapsed_best(
@@ -178,8 +180,12 @@ fn application_main() -> Result<(), &'static str> {
     let kv_dim = 1024;
     let context = 8192;
     let head_dim = 256;
-    let kv_values: Vec<f32> = (0..kv_dim).map(|i| mrml_math::sin(i as f32 * 0.031)).collect();
-    let query: Vec<f32> = (0..head_dim).map(|i| mrml_math::cos(i as f32 * 0.021)).collect();
+    let kv_values: Vec<f32> = (0..kv_dim)
+        .map(|i| mrml_math::sin(i as f32 * 0.031))
+        .collect();
+    let query: Vec<f32> = (0..head_dim)
+        .map(|i| mrml_math::cos(i as f32 * 0.021))
+        .collect();
     let mut query_q8 = vec![0; head_dim / 32 * 34];
     quantize_f32_to_q8_0(&query, &mut query_q8);
     for format in [KvCacheFormat::F32, KvCacheFormat::Q8, KvCacheFormat::Q4] {

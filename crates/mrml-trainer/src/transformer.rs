@@ -344,10 +344,12 @@ mod tests {
         let model = Transformer::from_transitions(&transitions, vocab);
         let short = model.forward(&[2]);
         let contextual = model.forward(&[7, 2]);
-        assert!(short
-            .iter()
-            .zip(&contextual)
-            .any(|(left, right)| (left - right).abs() > 1e-5));
+        assert!(
+            short
+                .iter()
+                .zip(&contextual)
+                .any(|(left, right)| (left - right).abs() > 1e-5)
+        );
     }
 
     #[test]

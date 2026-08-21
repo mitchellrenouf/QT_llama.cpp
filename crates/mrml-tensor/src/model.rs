@@ -1,5 +1,5 @@
-use crate::error::{self, Result};
 use crate::device::{DeviceManager, DeviceType};
+use crate::error::{self, Result};
 use crate::gguf::{GgufFile, GgufTensorInfo};
 use crate::kv_cache::KvCacheManager;
 use crate::kv_cache::{KvCacheFormat, KvCacheRow};
@@ -12,14 +12,23 @@ use core::fmt::Write as _;
 #[cfg(feature = "cuda")]
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use mrml_runtime::{File, Instant, OrderedMap, Shared, Text, Vector, mrml_eprintln as eprintln, mrml_format as format};
+use mrml_runtime::{
+    File, Instant, OrderedMap, Shared, Text, Vector, mrml_eprintln as eprintln,
+    mrml_format as format,
+};
 
 #[inline(always)]
-fn float_sqrt(value: f32) -> f32 { mrml_math::sqrt(value) }
+fn float_sqrt(value: f32) -> f32 {
+    mrml_math::sqrt(value)
+}
 #[inline(always)]
-fn float_exp(value: f32) -> f32 { mrml_math::exp(value) }
+fn float_exp(value: f32) -> f32 {
+    mrml_math::exp(value)
+}
 #[inline(always)]
-fn float_tanh(value: f32) -> f32 { mrml_math::tanh(value) }
+fn float_tanh(value: f32) -> f32 {
+    mrml_math::tanh(value)
+}
 
 type Vec<T> = Vector<T>;
 
@@ -443,10 +452,14 @@ impl MrmlModel {
             .and_then(|value| value.as_array())
         {
             for (rank, merge) in merges.iter().enumerate() {
-                let Some(merge) = merge.as_str() else { continue };
-                let Some((left, right)) = merge.split_once(' ') else { continue };
-                let mut combined = Text::with_capacity(left.len() + right.len())
-                    .expect("MRML allocation failed");
+                let Some(merge) = merge.as_str() else {
+                    continue;
+                };
+                let Some((left, right)) = merge.split_once(' ') else {
+                    continue;
+                };
+                let mut combined =
+                    Text::with_capacity(left.len() + right.len()).expect("MRML allocation failed");
                 combined.push_str(left);
                 combined.push_str(right);
                 bpe_entries.push((combined, rank));
@@ -455,11 +468,9 @@ impl MrmlModel {
         // Some GGUF tokenizers contain multiple merge rules that produce the
         // same combined token. Keep the earliest rank while preserving the
         // linear-time construction contract of OrderedMap.
-        bpe_entries.sort_unstable_by(|left, right| {
-            left.0.cmp(&right.0).then(left.1.cmp(&right.1))
-        });
-        let mut unique_bpe_entries = Vector::with_capacity(bpe_entries.len())
-            .expect("MRML allocation failed");
+        bpe_entries.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        let mut unique_bpe_entries =
+            Vector::with_capacity(bpe_entries.len()).expect("MRML allocation failed");
         for entry in bpe_entries {
             if unique_bpe_entries
                 .last()
@@ -1802,7 +1813,9 @@ impl MrmlModel {
                         expert_logits[e] = (dot, e);
                     }
 
-                    expert_logits[..].sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal));
+                    expert_logits[..].sort_unstable_by(|a, b| {
+                        b.0.partial_cmp(&a.0).unwrap_or(CompareOrdering::Equal)
+                    });
                     let max_l = expert_logits[0].0;
                     let mut sum_exp = 0.0f32;
                     for i in 0..8 {

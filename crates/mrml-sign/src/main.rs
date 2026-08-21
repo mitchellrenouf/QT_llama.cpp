@@ -2,15 +2,15 @@
 #![cfg_attr(not(test), no_main)]
 
 use mrml_crypto::{
-    lamport_public_key, lamport_sign, lamport_verify, Sha3_512, LAMPORT_PRIVATE_KEY_BYTES,
-    LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES,
+    LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES, Sha3_512,
+    lamport_public_key, lamport_sign, lamport_verify,
 };
-use mrml_error::{anyhow, Result};
+use mrml_error::{Result, anyhow};
 use mrml_kernel::{
-    artifact_statement, executable_image_limit, ArtifactKind, PeImage, ReleaseManifest,
-    SIGNED_ARTIFACT_HEADER_BYTES,
+    ArtifactKind, PeImage, ReleaseManifest, SIGNED_ARTIFACT_HEADER_BYTES, artifact_statement,
+    executable_image_limit,
 };
-use mrml_runtime::{mrml_println as println, Text, Vector};
+use mrml_runtime::{Text, Vector, mrml_println as println};
 
 mod authenticode;
 

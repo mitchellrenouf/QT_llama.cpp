@@ -6,9 +6,7 @@ use mrml_tensor::gguf::GgufFile;
 
 fn application_main() -> mrml_tensor::error::Result<()> {
     let arguments = command_arguments();
-    let path = arguments
-        .get(1)
-        .expect("usage: gguf_inspect <model.gguf>");
+    let path = arguments.get(1).expect("usage: gguf_inspect <model.gguf>");
     let gguf = GgufFile::open(&path)?;
     let mut metadata: Vec<_> = gguf.metadata.iter().collect();
     metadata.sort_unstable_by_key(|(key, _)| *key);

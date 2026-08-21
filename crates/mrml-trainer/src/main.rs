@@ -2,12 +2,12 @@
 #![cfg_attr(not(test), no_main)]
 
 use core::fmt::Write as _;
-use mrml_runtime::{mrml_println, File, Instant, Text, Vector};
-use mrml_tokenizer::{Tokenizer, Trainer, EOS_ID};
+use mrml_runtime::{File, Instant, Text, Vector, mrml_println};
+use mrml_tokenizer::{EOS_ID, Tokenizer, Trainer};
 use mrml_wikipedia::{Article, ArticleReader};
 
 mod transformer;
-use transformer::{Transformer, CONTEXT, DIM, FFN, HEADS};
+use transformer::{CONTEXT, DIM, FFN, HEADS, Transformer};
 
 const ALIGNMENT: usize = 32;
 
@@ -98,7 +98,9 @@ fn run() -> Result<(), Text> {
 fn parse_args() -> Result<Args, Text> {
     let all = mrml_runtime::command_arguments();
     if all.iter().any(|value| value == "--help" || value == "-h") {
-        mrml_println!("Usage: mrml-trainer --zim <archive.zim> --output <model.gguf> [--article N] [--articles N] [--vocab N] [--steps N] [--learning-rate F] [--prompt TEXT]");
+        mrml_println!(
+            "Usage: mrml-trainer --zim <archive.zim> --output <model.gguf> [--article N] [--articles N] [--vocab N] [--steps N] [--learning-rate F] [--prompt TEXT]"
+        );
         mrml_runtime::exit_process(0);
     }
     let mut zim = None;

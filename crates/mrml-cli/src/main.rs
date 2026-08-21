@@ -3,7 +3,9 @@
 
 pub use mrml_agent::config;
 use mrml_agent::{AgentMode, Config, MrmlAgent};
-use mrml_runtime::{Text, Vector, mrml_format as format, mrml_print as print, mrml_println as println};
+use mrml_runtime::{
+    Text, Vector, mrml_format as format, mrml_print as print, mrml_println as println,
+};
 use mrml_terminal_style::Colorize;
 
 fn application_main() -> mrml_error::Result<()> {
@@ -80,7 +82,9 @@ async fn async_main() -> mrml_error::Result<()> {
     if agent.get_rules().has_rules() {
         println!(
             " Loaded Rules: {}",
-            format!("{}", agent.loaded_rules_count()).bright_green().bold()
+            format!("{}", agent.loaded_rules_count())
+                .bright_green()
+                .bold()
         );
         for src in &agent.get_rules().rule_sources {
             println!("   - {}", src.dimmed());
@@ -217,9 +221,12 @@ async fn async_main() -> mrml_error::Result<()> {
                 if let Some(name) = parts.get(1) {
                     let choice = if name.eq_ignore_ascii_case("cuda") {
                         crate::config::BackendChoice::Cuda
-                    } else if name.eq_ignore_ascii_case("rocm") || name.eq_ignore_ascii_case("hip") {
+                    } else if name.eq_ignore_ascii_case("rocm") || name.eq_ignore_ascii_case("hip")
+                    {
                         crate::config::BackendChoice::Rocm
-                    } else if name.eq_ignore_ascii_case("sycl") || name.eq_ignore_ascii_case("oneapi") {
+                    } else if name.eq_ignore_ascii_case("sycl")
+                        || name.eq_ignore_ascii_case("oneapi")
+                    {
                         crate::config::BackendChoice::Sycl
                     } else if name.eq_ignore_ascii_case("vulkan") {
                         crate::config::BackendChoice::Vulkan
@@ -228,11 +235,11 @@ async fn async_main() -> mrml_error::Result<()> {
                     } else if name.eq_ignore_ascii_case("auto") {
                         crate::config::BackendChoice::Auto
                     } else {
-                            println!(
-                                "{} Invalid backend. Use: cuda, rocm, sycl, vulkan, cpu, auto",
-                                "✖".red()
-                            );
-                            continue;
+                        println!(
+                            "{} Invalid backend. Use: cuda, rocm, sycl, vulkan, cpu, auto",
+                            "✖".red()
+                        );
+                        continue;
                     };
                     match agent.switch_backend(choice) {
                         Ok(_) => println!(
@@ -256,9 +263,13 @@ async fn async_main() -> mrml_error::Result<()> {
                 if let Some(target_mode) = parts.get(1) {
                     if target_mode.eq_ignore_ascii_case("general") {
                         agent.set_mode(AgentMode::General)
-                    } else if target_mode.eq_ignore_ascii_case("coder") || target_mode.eq_ignore_ascii_case("coding") {
+                    } else if target_mode.eq_ignore_ascii_case("coder")
+                        || target_mode.eq_ignore_ascii_case("coding")
+                    {
                         agent.set_mode(AgentMode::Coder)
-                    } else if target_mode.eq_ignore_ascii_case("automatic") || target_mode.eq_ignore_ascii_case("auto") {
+                    } else if target_mode.eq_ignore_ascii_case("automatic")
+                        || target_mode.eq_ignore_ascii_case("auto")
+                    {
                         agent.set_mode(AgentMode::Automatic)
                     } else {
                         println!(
@@ -299,11 +310,7 @@ async fn async_main() -> mrml_error::Result<()> {
             "/save" => {
                 let name = parts.get(1).copied().unwrap_or("default_session");
                 match agent.save_session(name) {
-                    Ok(path) => println!(
-                        "{} Session saved to: {}",
-                        "✔".green(),
-                        path.cyan()
-                    ),
+                    Ok(path) => println!("{} Session saved to: {}", "✔".green(), path.cyan()),
                     Err(e) => println!("{} Failed to save session: {}", "✖".red(), e),
                 }
                 continue;
@@ -311,11 +318,7 @@ async fn async_main() -> mrml_error::Result<()> {
             "/load" => {
                 let name = parts.get(1).copied().unwrap_or("default_session");
                 match agent.load_session(name) {
-                    Ok(path) => println!(
-                        "{} Session loaded from: {}",
-                        "✔".green(),
-                        path.cyan()
-                    ),
+                    Ok(path) => println!("{} Session loaded from: {}", "✔".green(), path.cyan()),
                     Err(e) => println!("{} Failed to load session: {}", "✖".red(), e),
                 }
                 continue;

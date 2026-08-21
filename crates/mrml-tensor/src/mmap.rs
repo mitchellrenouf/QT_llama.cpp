@@ -85,7 +85,10 @@ mod tests {
 
     #[test]
     fn maps_complete_file_read_only() {
-        let path = join_path(&temporary_directory(), &format!("mrml-mmap-{}.bin", process_id()));
+        let path = join_path(
+            &temporary_directory(),
+            &format!("mrml-mmap-{}.bin", process_id()),
+        );
         mrml_runtime::write_file(&path, b"MRML native mapping").unwrap();
         let file = File::open(&path).unwrap();
         #[cfg(windows)]

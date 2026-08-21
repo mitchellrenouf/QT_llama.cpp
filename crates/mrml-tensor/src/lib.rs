@@ -2,11 +2,11 @@
 #![cfg_attr(feature = "cuda", feature(thread_local))]
 
 #[cfg(feature = "runtime")]
-pub mod error;
-#[cfg(feature = "runtime")]
 pub mod device;
 #[cfg(feature = "runtime")]
 pub mod engine;
+#[cfg(feature = "runtime")]
+pub mod error;
 pub mod execution_plan;
 #[cfg(feature = "runtime")]
 pub mod gguf;

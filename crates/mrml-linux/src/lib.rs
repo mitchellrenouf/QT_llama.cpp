@@ -95,7 +95,13 @@ unsafe extern "C" {
     fn accept(socket: c_int, address: *mut SockAddr, length: *mut u32) -> c_int;
     fn connect(socket: c_int, address: *const SockAddr, length: u32) -> c_int;
     fn getsockname(socket: c_int, address: *mut SockAddr, length: *mut u32) -> c_int;
-    fn setsockopt(socket: c_int, level: c_int, name: c_int, value: *const c_void, length: u32) -> c_int;
+    fn setsockopt(
+        socket: c_int,
+        level: c_int,
+        name: c_int,
+        value: *const c_void,
+        length: u32,
+    ) -> c_int;
     fn pthread_create(
         thread: *mut usize,
         attributes: *const c_void,
@@ -107,7 +113,12 @@ unsafe extern "C" {
     fn sched_yield() -> c_int;
     fn syscall(number: c_long, ...) -> c_long;
     fn getrandom(buffer: *mut c_void, length: usize, flags: u32) -> isize;
-    fn getaddrinfo(node: *const i8, service: *const i8, hints: *const AddrInfo, result: *mut *mut AddrInfo) -> c_int;
+    fn getaddrinfo(
+        node: *const i8,
+        service: *const i8,
+        hints: *const AddrInfo,
+        result: *mut *mut AddrInfo,
+    ) -> c_int;
     fn freeaddrinfo(result: *mut AddrInfo);
 }
 
@@ -148,10 +159,25 @@ struct AddrInfo {
 
 #[cfg(unix)]
 pub fn resolve_ipv4(host: &[u8]) -> Option<[u8; 4]> {
-    if host.last().copied() != Some(0) { return None; }
-    let hints = AddrInfo { flags: 0, family: 2, socket_type: 1, protocol: 6, address_length: 0, address: core::ptr::null_mut(), canonical_name: core::ptr::null_mut(), next: core::ptr::null_mut() };
+    if host.last().copied() != Some(0) {
+        return None;
+    }
+    let hints = AddrInfo {
+        flags: 0,
+        family: 2,
+        socket_type: 1,
+        protocol: 6,
+        address_length: 0,
+        address: core::ptr::null_mut(),
+        canonical_name: core::ptr::null_mut(),
+        next: core::ptr::null_mut(),
+    };
     let mut result = core::ptr::null_mut();
-    if unsafe { getaddrinfo(host.as_ptr().cast(), core::ptr::null(), &hints, &mut result) } != 0 || result.is_null() { return None; }
+    if unsafe { getaddrinfo(host.as_ptr().cast(), core::ptr::null(), &hints, &mut result) } != 0
+        || result.is_null()
+    {
+        return None;
+    }
     let address = unsafe { (*result).address.as_ref() }.map(|value| value.address);
     unsafe { freeaddrinfo(result) };
     address
@@ -159,7 +185,10 @@ pub fn resolve_ipv4(host: &[u8]) -> Option<[u8; 4]> {
 
 #[repr(C)]
 #[cfg(unix)]
-struct TimeVal { seconds: isize, microseconds: isize }
+struct TimeVal {
+    seconds: isize,
+    microseconds: isize,
+}
 
 #[repr(C)]
 #[cfg(unix)]
@@ -184,13 +213,22 @@ pub fn process_id() -> u32 {
 
 #[cfg(unix)]
 pub fn unix_time_seconds() -> Option<u64> {
-    let mut value = Timespec { seconds: 0, nanoseconds: 0 };
-    (unsafe { clock_gettime(0, &mut value) } == 0 && value.seconds >= 0).then_some(value.seconds as u64)
+    let mut value = Timespec {
+        seconds: 0,
+        nanoseconds: 0,
+    };
+    (unsafe { clock_gettime(0, &mut value) } == 0 && value.seconds >= 0)
+        .then_some(value.seconds as u64)
 }
 
 #[cfg(unix)]
 fn socket_address(ip: [u8; 4], port: u16) -> SockAddr {
-    SockAddr { family: 2, port: port.to_be_bytes(), address: ip, zero: [0; 8] }
+    SockAddr {
+        family: 2,
+        port: port.to_be_bytes(),
+        address: ip,
+        zero: [0; 8],
+    }
 }
 
 #[cfg(unix)]
@@ -200,18 +238,24 @@ pub struct NativeTcpListener(c_int);
 impl NativeTcpListener {
     pub fn bind(ip: [u8; 4], port: u16) -> Option<Self> {
         let handle = unsafe { socket(2, 1, 0) };
-        if handle < 0 { return None; }
+        if handle < 0 {
+            return None;
+        }
         let address = socket_address(ip, port);
         if unsafe { bind(handle, &address, core::mem::size_of::<SockAddr>() as u32) } != 0
             || unsafe { listen(handle, 128) } != 0
-        { let _ = unsafe { close(handle) }; return None; }
+        {
+            let _ = unsafe { close(handle) };
+            return None;
+        }
         Some(Self(handle))
     }
 
     pub fn local_port(&self) -> Option<u16> {
         let mut address = socket_address([0; 4], 0);
         let mut length = core::mem::size_of::<SockAddr>() as u32;
-        (unsafe { getsockname(self.0, &mut address, &mut length) } == 0).then(|| u16::from_be_bytes(address.port))
+        (unsafe { getsockname(self.0, &mut address, &mut length) } == 0)
+            .then(|| u16::from_be_bytes(address.port))
     }
 
     pub fn accept(&self) -> Option<NativeTcpStream> {
@@ -221,7 +265,11 @@ impl NativeTcpListener {
 }
 
 #[cfg(unix)]
-impl Drop for NativeTcpListener { fn drop(&mut self) { let _ = unsafe { close(self.0) }; } }
+impl Drop for NativeTcpListener {
+    fn drop(&mut self) {
+        let _ = unsafe { close(self.0) };
+    }
+}
 
 #[cfg(unix)]
 pub struct NativeTcpStream(c_int);
@@ -233,12 +281,16 @@ unsafe impl Send for NativeTcpStream {}
 impl NativeTcpStream {
     pub fn connect(ip: [u8; 4], port: u16) -> Option<Self> {
         let handle = unsafe { socket(2, 1, 0) };
-        if handle < 0 { return None; }
+        if handle < 0 {
+            return None;
+        }
         let address = socket_address(ip, port);
         if unsafe { connect(handle, &address, core::mem::size_of::<SockAddr>() as u32) } != 0 {
             let _ = unsafe { close(handle) };
             None
-        } else { Some(Self(handle)) }
+        } else {
+            Some(Self(handle))
+        }
     }
 
     pub fn read(&mut self, buffer: &mut [u8]) -> Option<usize> {
@@ -252,14 +304,29 @@ impl NativeTcpStream {
     }
 
     pub fn set_timeout_millis(&self, read_timeout: bool, milliseconds: u64) -> bool {
-        let value = TimeVal { seconds: (milliseconds / 1000) as isize, microseconds: ((milliseconds % 1000) * 1000) as isize };
+        let value = TimeVal {
+            seconds: (milliseconds / 1000) as isize,
+            microseconds: ((milliseconds % 1000) * 1000) as isize,
+        };
         let option = if read_timeout { 20 } else { 21 };
-        (unsafe { setsockopt(self.0, 1, option, (&value as *const TimeVal).cast(), core::mem::size_of::<TimeVal>() as u32) }) == 0
+        (unsafe {
+            setsockopt(
+                self.0,
+                1,
+                option,
+                (&value as *const TimeVal).cast(),
+                core::mem::size_of::<TimeVal>() as u32,
+            )
+        }) == 0
     }
 }
 
 #[cfg(unix)]
-impl Drop for NativeTcpStream { fn drop(&mut self) { let _ = unsafe { close(self.0) }; } }
+impl Drop for NativeTcpStream {
+    fn drop(&mut self) {
+        let _ = unsafe { close(self.0) };
+    }
+}
 
 #[cfg(unix)]
 pub fn spawn_detached_process(
@@ -308,7 +375,9 @@ impl NativeChild {
     ) -> Option<Self> {
         const O_RDWR: c_int = 2;
         let null_file = unsafe { open(c"/dev/null".as_ptr(), O_RDWR) };
-        if null_file < 0 { return None; }
+        if null_file < 0 {
+            return None;
+        }
         let process = unsafe { fork() };
         if process == 0 {
             let _ = unsafe { dup2(null_file, 0) };
@@ -316,13 +385,20 @@ impl NativeChild {
             let _ = unsafe { dup2(null_file, 2) };
             let _ = unsafe { close(null_file) };
             if let Some(directory) = current_directory {
-                if unsafe { chdir(directory.as_ptr()) } != 0 { unsafe { _exit(126) }; }
+                if unsafe { chdir(directory.as_ptr()) } != 0 {
+                    unsafe { _exit(126) };
+                }
             }
             let _ = unsafe { execvp(program.as_ptr(), arguments.as_ptr()) };
             unsafe { _exit(127) };
         }
         let _ = unsafe { close(null_file) };
-        (process > 0).then_some(Self { process, stdout: -1, stderr: -1, status: None })
+        (process > 0).then_some(Self {
+            process,
+            stdout: -1,
+            stderr: -1,
+            status: None,
+        })
     }
 
     pub fn spawn_captured(
@@ -369,7 +445,12 @@ impl NativeChild {
         const O_NONBLOCK: c_int = 0o4000;
         let _ = unsafe { fcntl(stdout_pipe[0], F_SETFL, O_NONBLOCK) };
         let _ = unsafe { fcntl(stderr_pipe[0], F_SETFL, O_NONBLOCK) };
-        Some(Self { process, stdout: stdout_pipe[0], stderr: stderr_pipe[0], status: None })
+        Some(Self {
+            process,
+            stdout: stdout_pipe[0],
+            stderr: stderr_pipe[0],
+            status: None,
+        })
     }
 
     fn read_pipe(file: c_int, buffer: &mut [u8]) -> usize {
@@ -407,10 +488,18 @@ impl NativeChild {
     }
 
     pub fn wait(&mut self) -> Option<i32> {
-        if let Some(status) = self.status { return Some(status); }
+        if let Some(status) = self.status {
+            return Some(status);
+        }
         let mut status = 0;
-        if unsafe { waitpid(self.process, &mut status, 0) } != self.process { return None; }
-        let code = if status & 0x7f == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
+        if unsafe { waitpid(self.process, &mut status, 0) } != self.process {
+            return None;
+        }
+        let code = if status & 0x7f == 0 {
+            (status >> 8) & 0xff
+        } else {
+            128 + (status & 0x7f)
+        };
         self.status = Some(code);
         Some(code)
     }
@@ -419,8 +508,12 @@ impl NativeChild {
 #[cfg(unix)]
 impl Drop for NativeChild {
     fn drop(&mut self) {
-        if self.stdout >= 0 { let _ = unsafe { close(self.stdout) }; }
-        if self.stderr >= 0 { let _ = unsafe { close(self.stderr) }; }
+        if self.stdout >= 0 {
+            let _ = unsafe { close(self.stdout) };
+        }
+        if self.stderr >= 0 {
+            let _ = unsafe { close(self.stderr) };
+        }
         if self.status.is_none() {
             let mut status = 0;
             let _ = unsafe { waitpid(self.process, &mut status, 0) };
@@ -438,11 +531,21 @@ pub struct NativePipedChild {
 
 #[cfg(unix)]
 impl NativePipedChild {
-    pub fn spawn(program: &CStr, arguments: &[*const i8], current_directory: Option<&CStr>) -> Option<Self> {
+    pub fn spawn(
+        program: &CStr,
+        arguments: &[*const i8],
+        current_directory: Option<&CStr>,
+    ) -> Option<Self> {
         let mut stdin_pipe = [-1; 2];
         let mut stdout_pipe = [-1; 2];
-        if unsafe { pipe(stdin_pipe.as_mut_ptr()) } != 0 || unsafe { pipe(stdout_pipe.as_mut_ptr()) } != 0 {
-            for file in stdin_pipe.into_iter().chain(stdout_pipe) { if file >= 0 { let _ = unsafe { close(file) }; } }
+        if unsafe { pipe(stdin_pipe.as_mut_ptr()) } != 0
+            || unsafe { pipe(stdout_pipe.as_mut_ptr()) } != 0
+        {
+            for file in stdin_pipe.into_iter().chain(stdout_pipe) {
+                if file >= 0 {
+                    let _ = unsafe { close(file) };
+                }
+            }
             return None;
         }
         let process = unsafe { fork() };
@@ -454,7 +557,9 @@ impl NativePipedChild {
             let _ = unsafe { close(stdin_pipe[0]) };
             let _ = unsafe { close(stdout_pipe[1]) };
             if let Some(directory) = current_directory {
-                if unsafe { chdir(directory.as_ptr()) } != 0 { unsafe { _exit(126) }; }
+                if unsafe { chdir(directory.as_ptr()) } != 0 {
+                    unsafe { _exit(126) };
+                }
             }
             let _ = unsafe { execvp(program.as_ptr(), arguments.as_ptr()) };
             unsafe { _exit(127) };
@@ -466,23 +571,40 @@ impl NativePipedChild {
             let _ = unsafe { close(stdout_pipe[0]) };
             return None;
         }
-        Some(Self { process, stdin: stdin_pipe[1], stdout: stdout_pipe[0], status: None })
+        Some(Self {
+            process,
+            stdin: stdin_pipe[1],
+            stdout: stdout_pipe[0],
+            status: None,
+        })
     }
 
-    pub fn write_stdin(&mut self, bytes: &[u8]) -> bool { write_descriptor(self.stdin, bytes) }
+    pub fn write_stdin(&mut self, bytes: &[u8]) -> bool {
+        write_descriptor(self.stdin, bytes)
+    }
 
     pub fn read_stdout(&mut self, buffer: &mut [u8]) -> Option<usize> {
         let amount = unsafe { read(self.stdout, buffer.as_mut_ptr().cast(), buffer.len()) };
         (amount >= 0).then_some(amount as usize)
     }
 
-    pub fn kill(&mut self) -> bool { self.status.is_some() || unsafe { kill(self.process, 9) } == 0 }
+    pub fn kill(&mut self) -> bool {
+        self.status.is_some() || unsafe { kill(self.process, 9) } == 0
+    }
 
     pub fn wait(&mut self) -> Option<i32> {
-        if let Some(status) = self.status { return Some(status); }
+        if let Some(status) = self.status {
+            return Some(status);
+        }
         let mut status = 0;
-        if unsafe { waitpid(self.process, &mut status, 0) } != self.process { return None; }
-        let code = if status & 0x7f == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
+        if unsafe { waitpid(self.process, &mut status, 0) } != self.process {
+            return None;
+        }
+        let code = if status & 0x7f == 0 {
+            (status >> 8) & 0xff
+        } else {
+            128 + (status & 0x7f)
+        };
         self.status = Some(code);
         Some(code)
     }
@@ -493,7 +615,10 @@ impl Drop for NativePipedChild {
     fn drop(&mut self) {
         let _ = unsafe { close(self.stdin) };
         let _ = unsafe { close(self.stdout) };
-        if self.status.is_none() { let _ = self.kill(); let _ = self.wait(); }
+        if self.status.is_none() {
+            let _ = self.kill();
+            let _ = self.wait();
+        }
     }
 }
 

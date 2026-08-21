@@ -1,6 +1,8 @@
 #![no_std]
 
-use mrml_runtime::{Text, environment_variable, join_path, mrml_print as print, mrml_println as println};
+use mrml_runtime::{
+    Text, environment_variable, join_path, mrml_print as print, mrml_println as println,
+};
 
 fn local_data_dir() -> Text {
     if cfg!(windows) {
@@ -17,10 +19,7 @@ fn local_data_dir() -> Text {
 fn test_generation_outputs() {
     let path = join_path(
         &join_path(
-            &join_path(
-                &join_path(&local_data_dir(), "huggingface"),
-                "hub",
-            ),
+            &join_path(&join_path(&local_data_dir(), "huggingface"), "hub"),
             "models--ggml-org--gemma-4-26B-A4B-it-GGUF",
         ),
         "gemma-4-26B-A4B-it-Q4_0.gguf",
@@ -31,8 +30,7 @@ fn test_generation_outputs() {
         return;
     }
 
-    let model = mrml_tensor::model::MrmlModel::load_from_gguf(&path, 8192)
-        .expect("Load model");
+    let model = mrml_tensor::model::MrmlModel::load_from_gguf(&path, 8192).expect("Load model");
 
     let prompts = [
         "<|turn>user\nHi\n<turn|>\n<|turn>model\n",

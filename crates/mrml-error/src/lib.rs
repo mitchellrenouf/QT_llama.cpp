@@ -75,7 +75,6 @@ impl From<mrml_runtime::NetError> for Error {
     }
 }
 
-
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 fn format_text(arguments: fmt::Arguments<'_>) -> Text {

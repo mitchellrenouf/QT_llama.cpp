@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
+use mrml_runtime::mrml_println as println;
 #[cfg(feature = "cuda")]
 use mrml_runtime::{Command, Text, environment_variable, join_path};
-use mrml_runtime::mrml_println as println;
 
 fn application_main() -> Result<(), &'static str> {
     println!("cargo:rerun-if-changed=cuda_ptx/kernels.rs");

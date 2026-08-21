@@ -8,7 +8,7 @@
 mod tests {
     use core::hint::black_box;
     use mrml_kernel::{CapabilitySpace, ObjectId, Priority, Rights, Scheduler, VmTable};
-    use mrml_runtime::{mrml_println, Instant};
+    use mrml_runtime::{Instant, mrml_println};
 
     const ITERATIONS: u64 = 1_000_000;
     const MAX_NANOSECONDS_PER_OPERATION: u128 = 10_000;

@@ -51,7 +51,9 @@ fn application_main() -> mrml_tensor::error::Result<()> {
 
     const DIM: usize = 5_376;
     const BATCH: usize = 32;
-    let values: Vec<f32> = (0..DIM * BATCH).map(|i| mrml_math::sin(i as f32 * 0.001)).collect();
+    let values: Vec<f32> = (0..DIM * BATCH)
+        .map(|i| mrml_math::sin(i as f32 * 0.001))
+        .collect();
     let weights = vec![1.0f32; DIM];
     let d_values = CudaBuffer::from_host(&values)?;
     let d_weights = CudaBuffer::from_host(&weights)?;
