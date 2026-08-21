@@ -7,12 +7,12 @@ license.workspace = true
 
 [features]
 kernel-image = []
-fault-probe = []
-timer-probe = []
-user-probe = []
-service-probe = []
-production-policy = []
-gpu-benchmark = []
+fault-probe = ["kernel-image"]
+timer-probe = ["kernel-image"]
+user-probe = ["kernel-image"]
+service-probe = ["kernel-image"]
+production-policy = ["kernel-image"]
+gpu-benchmark = ["kernel-image"]
 whp-gpu-benchmark = ["gpu-benchmark"]
 
 [[bin]]
