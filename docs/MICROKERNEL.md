@@ -435,8 +435,10 @@ page-aligned, non-overlapping in both guest and host address spaces, and never
 writable and executable. A request buffer must fit wholly within one readable
 mapping. Backend-owned pointers never enter the policy core. The common
 `VmBackend` contract currently covers vCPU exits, bounded guest copies, and
-interrupt injection; concrete KVM and Hyper-V adapters and shared-memory data
-queues remain pending, so this is not yet a runnable hosted VM.
+interrupt injection. KVM has a prepared launch path and Hyper-V has an initial
+native lifecycle/memory path; register initialization, device models, and
+shared-memory data queues are still incomplete, so this is not yet a runnable
+hosted VM.
 
 Guest mappings receive opaque monotonic identifiers and can be revoked or have
 their permissions changed without exposing array slots. Revocation compacts the
@@ -508,6 +510,24 @@ not demonstrated a bootable KVM guest. The
 current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
 the live capability probe records that as unavailable and no launch claim is
 made for this environment.
+
+The separate core-only `mrml-whp` crate now provides the first Windows
+Hypervisor Platform boundary without SDK bindings, import libraries, `std`, or
+third-party crates. It dynamically resolves the documented C entry points from
+`WinHvPlatform.dll`, creates a one-vCPU partition in the required property,
+setup, and vCPU order, and unwinds partial construction with owned guards.
+Guest ranges must be page-aligned, nonempty, overflow-free, nonoverlapping, and
+W^X. Fixed-capacity, zero-initialized host allocations are filled before being
+mapped, are never exposed as mutable pointers, and are unmapped before the vCPU
+and partition are deleted. Exit decoding reads the documented byte layout
+instead of borrowing the C union: halt and cancellation translate directly,
+I/O widths and reserved bits are checked, and memory exits preserve the exact
+read/write/execute fault type rather than inventing an MMIO width. Unknown or
+unfaithfully representable exits fail closed. The public native object is
+`PreparedWhpPartition`; raw partitions and partially initialized vCPUs cannot
+escape construction. Register/page-table setup, signed PE launch composition,
+interrupt injection, and a successful live WHP guest execution remain pending,
+so this milestone does not claim Hyper-V bootability.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector

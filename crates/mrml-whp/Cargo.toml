@@ -1,0 +1,10 @@
+[package]
+name = "mrml-whp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Strict allocation-free Windows Hypervisor Platform adapter for MRML"
+
+[dependencies]
+mrml-kernel = { path = "../mrml-kernel" }
