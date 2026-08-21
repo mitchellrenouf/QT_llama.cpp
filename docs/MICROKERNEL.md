@@ -538,6 +538,17 @@ but deliberately leaves measured-boot and rollback-protected evidence clear:
 software hashing is not a hardware trust-anchor measurement, and a command-line
 version floor is not persistent monotonic rollback state.
 
+Successful launches report monotonic microsecond timings separately for
+signature and PE verification, VM preparation, first kernel execution, and
+total runner latency. These measurements are observational and never affect an
+admission decision; they provide stable phase boundaries for performance
+regression tracking without weakening fail-closed behavior.
+On the current Arch WSL2 nested-KVM host, five consecutive release launches
+measured 725--2,095 microseconds for verification, 1,065--1,986 microseconds for
+VM preparation, 130--228 microseconds from `KVM_RUN` through the kernel marker
+and halt, and 2,025--4,522 microseconds total. These are a recorded development
+baseline, not a portable performance guarantee.
+
 The reproducible integration sequence is:
 
 ```text

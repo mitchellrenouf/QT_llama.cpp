@@ -15,6 +15,8 @@ use mrml_kernel::{
 #[cfg(target_os = "linux")]
 use mrml_kvm::{KvmLaunchLayout, KvmSystem};
 #[cfg(target_os = "linux")]
+use mrml_runtime::Instant;
+#[cfg(target_os = "linux")]
 use mrml_runtime::mrml_println as println;
 
 #[cfg(target_os = "linux")]
@@ -26,6 +28,7 @@ const FRAMEBUFFER: u64 = 0x00a0_0000;
 #[cfg(target_os = "linux")]
 #[cfg_attr(test, allow(dead_code))]
 fn application_main() -> Result<()> {
+    let total_started = Instant::now();
     let arguments = mrml_runtime::command_arguments();
     if arguments.len() != 4 {
         return Err(anyhow!(
@@ -42,6 +45,7 @@ fn application_main() -> Result<()> {
     if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
         return Err(anyhow!("invalid release public-key length"));
     }
+    let verification_started = Instant::now();
     let root = TrustRoot::new(
         ArtifactKind::Kernel,
         Sha3_512::digest(&public),
@@ -51,6 +55,7 @@ fn application_main() -> Result<()> {
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
+    let verification_micros = verification_started.elapsed().as_micros();
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
@@ -74,11 +79,15 @@ fn application_main() -> Result<()> {
     .map_err(|_| anyhow!("invalid fixed kernel launch layout"))?;
     let system = KvmSystem::open()
         .map_err(|error| anyhow!("KVM is unavailable or incompatible: {:?}", error))?;
+    let preparation_started = Instant::now();
     let mut guest = system
         .prepare_kernel_guest::<5>(0, &executable, &handoff, layout)
         .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
+    let preparation_micros = preparation_started.elapsed().as_micros();
+    let execution_started = Instant::now();
     let exit = VmBackend::run(&mut guest, 0)
         .map_err(|error| anyhow!("KVM execution failed: {:?}", error))?;
+    let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
         return Err(anyhow!("kernel returned an unexpected VM exit"));
     }
@@ -90,7 +99,13 @@ fn application_main() -> Result<()> {
             "kernel did not paint its authenticated boot marker"
         ));
     }
-    println!("verified kernel reached its framebuffer marker under KVM");
+    println!(
+        "verified kernel reached its framebuffer marker under KVM: verify={}us prepare={}us execute={}us total={}us",
+        verification_micros,
+        preparation_micros,
+        execution_micros,
+        total_started.elapsed().as_micros()
+    );
     Ok(())
 }
 
