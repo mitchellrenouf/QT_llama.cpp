@@ -216,7 +216,7 @@ impl<'a> PeImage<'a> {
             || !(512..=65_536).contains(&file_alignment)
             || !file_alignment.is_power_of_two()
             || headers_size == 0
-            || headers_size % file_alignment != 0
+            || !headers_size.is_multiple_of(file_alignment)
             || headers_size as usize > encoded.len()
             || table_end > headers_size as usize
         {
@@ -226,9 +226,9 @@ impl<'a> PeImage<'a> {
             || image_size == 0
             || image_size > maximum_image_bytes
             || encoded.len() > maximum_image_bytes as usize
-            || image_size % section_alignment != 0
+            || !image_size.is_multiple_of(section_alignment)
             || headers_size > image_size
-            || image_base % 65_536 != 0
+            || !image_base.is_multiple_of(65_536)
             || image_base.checked_add(image_size as u64).is_none()
         {
             return Err(PeError::InvalidImageSize);
@@ -368,7 +368,9 @@ impl<'a> PeImage<'a> {
         // alignment chosen by the linker. Relocation makes any 4 KiB-aligned
         // physical load address valid; requiring 64 KiB rejected legitimate
         // firmware allocations without adding a security property.
-        if load_base % 4_096 != 0 || load_base.checked_add(self.image_size as u64).is_none() {
+        if !load_base.is_multiple_of(4_096)
+            || load_base.checked_add(self.image_size as u64).is_none()
+        {
             return Err(PeError::InvalidDestination);
         }
         if load_base != self.image_base && self.relocation_size == 0 {
@@ -491,7 +493,7 @@ fn validate_section(
 ) -> Result<(), PeError> {
     if section.virtual_size == 0
         || section.virtual_address < headers_size
-        || section.virtual_address % section_alignment != 0
+        || !section.virtual_address.is_multiple_of(section_alignment)
         || section_end(section)? > image_size
         || section.writable() && section.executable()
         || section.executable() && !section.readable()
@@ -506,8 +508,8 @@ fn validate_section(
     }
     if section.file_size != 0 {
         if section.file_offset < headers_size
-            || section.file_offset % file_alignment != 0
-            || section.file_size % file_alignment != 0
+            || !section.file_offset.is_multiple_of(file_alignment)
+            || !section.file_size.is_multiple_of(file_alignment)
             || file_end(section)? as usize > file_length
         {
             return Err(PeError::InvalidSection);
@@ -570,10 +572,14 @@ fn walk_relocations(
         }
         let page = read_u32(bytes, 0)?;
         let block_size = read_u32(bytes, 4)? as usize;
-        if block_size < 8 || block_size > bytes.len() || block_size % 2 != 0 || page % 4096 != 0 {
+        if block_size < 8
+            || block_size > bytes.len()
+            || !block_size.is_multiple_of(2)
+            || !page.is_multiple_of(4096)
+        {
             return Err(PeError::InvalidRelocations);
         }
-        for entry in bytes[8..block_size].chunks_exact(2) {
+        for entry in bytes[8..block_size].as_chunks::<2>().0 {
             count = count.checked_add(1).ok_or(PeError::InvalidRelocations)?;
             if count > MAX_PE_RELOCATIONS {
                 return Err(PeError::InvalidRelocations);

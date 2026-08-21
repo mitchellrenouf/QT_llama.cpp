@@ -1,4 +1,4 @@
-use crate::{Capability, CapabilityError, CapabilitySpace, ObjectId, PhysAddr, Rights, PAGE_SIZE};
+use crate::{Capability, CapabilityError, CapabilitySpace, ObjectId, PAGE_SIZE, PhysAddr, Rights};
 
 pub const HYPERCALL_BYTES: usize = 64;
 pub const MAX_GUEST_REGIONS: usize = 64;
@@ -234,7 +234,7 @@ impl GuestRegion {
         if pages == 0 {
             return Err(VmError::EmptyRegion);
         }
-        if guest_start % PAGE_SIZE != 0 {
+        if !guest_start.is_multiple_of(PAGE_SIZE) {
             return Err(VmError::Unaligned);
         }
         if writable && executable {

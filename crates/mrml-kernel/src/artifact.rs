@@ -217,8 +217,8 @@ impl TrustRoot {
         }
         let candidate = Sha3_512::digest(public_key);
         let mut difference = 0u8;
-        for index in 0..64 {
-            difference |= candidate[index] ^ self.public_key_digest[index];
+        for (candidate_byte, trusted_byte) in candidate.iter().zip(&self.public_key_digest) {
+            difference |= *candidate_byte ^ *trusted_byte;
         }
         if difference != 0 {
             return Err(ArtifactError::UntrustedPublicKey);

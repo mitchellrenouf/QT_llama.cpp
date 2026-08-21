@@ -175,19 +175,20 @@ mod tests {
         let rgb =
             FramebufferInfo::new(0x1000, 64, 4, 4, 4, PixelFormat::RedGreenBlueReserved).unwrap();
         let mut bytes = [0u8; 64];
-        let mut surface = FramebufferSurface::new(rgb, &mut bytes).unwrap();
-        surface
-            .set_pixel(
-                1,
-                1,
-                Color {
-                    red: 1,
-                    green: 2,
-                    blue: 3,
-                },
-            )
-            .unwrap();
-        drop(surface);
+        {
+            let mut surface = FramebufferSurface::new(rgb, &mut bytes).unwrap();
+            surface
+                .set_pixel(
+                    1,
+                    1,
+                    Color {
+                        red: 1,
+                        green: 2,
+                        blue: 3,
+                    },
+                )
+                .unwrap();
+        }
         assert_eq!(&bytes[20..24], &[1, 2, 3, 0]);
 
         let bgr =

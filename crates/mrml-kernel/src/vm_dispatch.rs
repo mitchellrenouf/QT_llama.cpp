@@ -1,6 +1,6 @@
 use crate::{
-    decode_hypercall_exit, CapabilitySpace, GuestMemory, HypercallRouter, RoutedHypercall,
-    VmBackend, VmError, VmExit, VmId, VmRunError, VmTable,
+    CapabilitySpace, GuestMemory, HypercallRouter, RoutedHypercall, VmBackend, VmError, VmExit,
+    VmId, VmRunError, VmTable, decode_hypercall_exit,
 };
 
 pub const MAX_IO_PORT_RULES: usize = 32;
@@ -34,12 +34,10 @@ impl IoPortRule {
     fn permits(self, port: u16, size: u8, write: bool) -> bool {
         self.port == port
             && self.size == size
-            && match (self.direction, write) {
-                (IoDirection::Both, _)
-                | (IoDirection::Write, true)
-                | (IoDirection::Read, false) => true,
-                _ => false,
-            }
+            && matches!(
+                (self.direction, write),
+                (IoDirection::Both, _) | (IoDirection::Write, true) | (IoDirection::Read, false)
+            )
     }
 }
 
@@ -83,6 +81,9 @@ impl<const N: usize> IoPortPolicy<N> {
 /// Runs one vCPU until its next exit and applies the common policy. Backend
 /// execution errors fail the VM instance because register and device state may
 /// no longer be safely resumable.
+// Keep policy stores explicit at this security boundary so callers cannot
+// accidentally substitute a partially initialized aggregate context.
+#[allow(clippy::too_many_arguments)]
 pub fn run_vm_once<B: VmBackend, const V: usize, const C: usize, const M: usize, const I: usize>(
     backend: &mut B,
     vcpu: u32,
@@ -134,6 +135,7 @@ pub enum ExitDisposition {
 
 /// Accounts and dispatches one translated backend exit. Any malformed,
 /// unauthorized, unknown, or fault exit permanently fails this VM instance.
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch_vm_exit<
     B: VmBackend,
     const V: usize,

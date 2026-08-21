@@ -22,7 +22,7 @@ impl VirtAddr {
         if (sign == 0 && high != 0) || (sign == 1 && high != 0xffff) {
             return Err(PageError::NonCanonical);
         }
-        if address % PAGE_SIZE != 0 {
+        if !address.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
         Ok(Self(address))

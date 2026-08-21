@@ -150,10 +150,10 @@ impl BootPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{artifact_statement, ArtifactKind, TrustRoot};
+    use crate::{ArtifactKind, TrustRoot, artifact_statement};
     use mrml_crypto::{
-        lamport_public_key, lamport_sign, Sha3_512, LAMPORT_PRIVATE_KEY_BYTES,
-        LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES,
+        LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES, Sha3_512,
+        lamport_public_key, lamport_sign,
     };
 
     fn evidence(version: u64, secure: bool, measured: bool) -> BootEvidence {

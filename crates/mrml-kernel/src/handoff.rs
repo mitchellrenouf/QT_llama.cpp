@@ -162,6 +162,9 @@ impl BootHandoff {
     }
 }
 
+// Each argument is an independently validated field of the fixed wire format;
+// grouping them would hide rather than reduce this trust-boundary surface.
+#[allow(clippy::too_many_arguments)]
 pub fn encode_handoff(
     image_version: u64,
     entropy: [u8; 32],
@@ -209,9 +212,9 @@ pub fn encode_handoff(
     output[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
     output[16..20].copy_from_slice(&(length as u32).to_le_bytes());
     output[20..22].copy_from_slice(&(regions.len() as u16).to_le_bytes());
-    let flags = (secure_boot as u16) * FLAG_SECURE_BOOT
-        | (measured_boot as u16) * FLAG_MEASURED_BOOT
-        | (rollback_protected as u16) * FLAG_ROLLBACK_PROTECTED;
+    let flags = ((secure_boot as u16) * FLAG_SECURE_BOOT)
+        | ((measured_boot as u16) * FLAG_MEASURED_BOOT)
+        | ((rollback_protected as u16) * FLAG_ROLLBACK_PROTECTED);
     output[22..24].copy_from_slice(&flags.to_le_bytes());
     output[24..32].copy_from_slice(&image_version.to_le_bytes());
     output[32..64].copy_from_slice(&entropy);
@@ -329,8 +332,8 @@ mod tests {
         assert_eq!(handoff.evidence().image_measurement(), &[2; 64]);
         let mut round_trip = [0u8; THREE_REGION_BYTES];
         let mut regions = [decode_region(&encoded, 0).unwrap(); 3];
-        for index in 0..3 {
-            regions[index] = decode_region(&encoded, index).unwrap();
+        for (index, region) in regions.iter_mut().enumerate() {
+            *region = decode_region(&encoded, index).unwrap();
         }
         assert_eq!(
             encode_handoff(

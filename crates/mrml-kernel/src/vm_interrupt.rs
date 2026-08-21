@@ -44,6 +44,9 @@ impl Default for InterruptPolicy {
 
 /// Delivers an interrupt only when the caller owns SIGNAL authority for the
 /// VM's interrupt object and the vector is explicitly allowlisted.
+// Capability, object, vector, and VM identity remain separate so every
+// authorization input is visible at the call site.
+#[allow(clippy::too_many_arguments)]
 pub fn inject_vm_interrupt<B: VmBackend, const V: usize, const C: usize>(
     backend: &mut B,
     vms: &mut VmTable<V>,

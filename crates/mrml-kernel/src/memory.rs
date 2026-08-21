@@ -5,7 +5,7 @@ pub struct PhysAddr(u64);
 
 impl PhysAddr {
     pub const fn new(address: u64) -> Result<Self, MemoryError> {
-        if address % PAGE_SIZE != 0 {
+        if !address.is_multiple_of(PAGE_SIZE) {
             return Err(MemoryError::Unaligned);
         }
         Ok(Self(address))
