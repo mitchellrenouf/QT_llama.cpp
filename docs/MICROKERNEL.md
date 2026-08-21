@@ -551,12 +551,16 @@ isolated page for a canonical two-entry GDT, maps that descriptor page read-only
 and NX, supplies GDTR and the reset PAT value, and reads back all fifteen
 critical general, segment, table, control, and MSR values after WHP accepts the
 state. The readback tolerates only WHP's documented derivation of EFER.LMA;
-every requested bit and all other values must match exactly. A direct execution
-probe still exits on the real-mode exception-13 vector address (`0x34`) before
-reaching its test `HLT`; that result is retained as a blocker rather than being
-reported as a boot.
-A successful signed guest execution therefore remains pending, and this
-milestone does not claim Hyper-V bootability.
+every requested bit and all other values must match exactly. The initial probe's
+real-mode exception-13 vector access at `0x34` was traced to a cached CS limit
+of `0x000f_ffff`: the entry RIP at `0x20_0000` exceeded that limit before the
+processor activated long mode. The cached segment limit is now
+`0xffff_ffff`. A live regression guest builds hardware page tables, enters
+x86-64 mode, executes an `INT3`, and returns the expected breakpoint vector
+through WHP. Breakpoint exits are explicitly enabled in partition policy and
+decoded with reserved-bit validation. This demonstrates native long-mode guest
+execution, but a complete signed MRML PE image has not yet reached its entry
+point, so end-to-end Hyper-V bootability remains pending.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector

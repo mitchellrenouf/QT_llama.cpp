@@ -30,6 +30,10 @@ type RequestInterrupt = unsafe extern "system" fn(Handle, *const InterruptContro
 const PROCESSOR_COUNT: u32 = 0x1fff;
 const LOCAL_APIC_EMULATION_MODE: u32 = 0x1005;
 const XAPIC_EMULATION: u32 = 1;
+const EXTENDED_VM_EXITS: u32 = 1;
+const EXCEPTION_EXIT_BITMAP: u32 = 2;
+const EXCEPTION_EXIT: u64 = 1 << 2;
+const BREAKPOINT_EXCEPTION: u64 = 1 << 3;
 const CAPABILITY_HYPERVISOR_PRESENT: u32 = 0;
 const MEM_COMMIT_RESERVE: u32 = 0x3000;
 const MEM_RELEASE: u32 = 0x8000;
@@ -151,6 +155,22 @@ impl WhpSystem {
                 PROCESSOR_COUNT,
                 (&processor_count as *const u32).cast(),
                 4,
+            )
+        })?;
+        check(unsafe {
+            (self.api.set_partition_property)(
+                partition.as_ptr(),
+                EXTENDED_VM_EXITS,
+                (&EXCEPTION_EXIT as *const u64).cast(),
+                8,
+            )
+        })?;
+        check(unsafe {
+            (self.api.set_partition_property)(
+                partition.as_ptr(),
+                EXCEPTION_EXIT_BITMAP,
+                (&BREAKPOINT_EXCEPTION as *const u64).cast(),
+                8,
             )
         })?;
         check(unsafe {
@@ -522,7 +542,7 @@ impl RegisterValue {
         // WHV_X64_SEGMENT_REGISTER: Base, Limit, Selector, Attributes.
         Self {
             low: 0,
-            high: 0xfffff | ((selector as u64) << 32) | ((attributes as u64) << 48),
+            high: u32::MAX as u64 | ((selector as u64) << 32) | ((attributes as u64) << 48),
         }
     }
 
@@ -589,7 +609,7 @@ mod tests {
         assert_eq!(core::mem::align_of::<RegisterValue>(), 16);
         let code = RegisterValue::segment(8, 0xa09b);
         assert_eq!(code.low, 0);
-        assert_eq!(code.high, 0xa09b_0008_000f_ffff);
+        assert_eq!(code.high, 0xa09b_0008_ffff_ffff);
         assert_eq!(core::mem::size_of::<InterruptControl>(), 16);
     }
 

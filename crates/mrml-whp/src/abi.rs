@@ -123,15 +123,26 @@ pub fn decode_exit_context(input: &[u8]) -> Result<VmExit, WhpError> {
         EXIT_CANCELED | EXIT_INTERRUPT_WINDOW => Ok(VmExit::Interrupted),
         EXIT_MEMORY_ACCESS => decode_memory(input),
         EXIT_IO_PORT_ACCESS => decode_io(input),
+        EXIT_EXCEPTION => decode_exception(input),
         EXIT_UNRECOVERABLE_EXCEPTION
         | EXIT_INVALID_VP_REGISTER
         | EXIT_UNSUPPORTED_FEATURE
         | EXIT_APIC_EOI
         | EXIT_MSR_ACCESS
-        | EXIT_CPUID
-        | EXIT_EXCEPTION => Err(WhpError::UnsupportedExit),
+        | EXIT_CPUID => Err(WhpError::UnsupportedExit),
         _ => Err(WhpError::UnsupportedExit),
     }
+}
+
+fn decode_exception(input: &[u8]) -> Result<VmExit, WhpError> {
+    let info = u32_at(input, 68)?;
+    if info & !3 != 0 {
+        return Err(WhpError::MalformedExit);
+    }
+    let exception = *input.get(72).ok_or(WhpError::TruncatedExit)?;
+    Ok(VmExit::Unknown {
+        reason: (EXIT_EXCEPTION as u64) << 32 | exception as u64,
+    })
 }
 
 fn decode_memory(input: &[u8]) -> Result<VmExit, WhpError> {
@@ -240,6 +251,21 @@ mod tests {
         let mut bytes = [0u8; 80];
         bytes[..4].copy_from_slice(&EXIT_IO_PORT_ACCESS.to_ne_bytes());
         bytes[68..72].copy_from_slice(&(3u32 << 1).to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+    }
+
+    #[test]
+    fn breakpoint_exception_preserves_architectural_vector() {
+        let mut bytes = [0u8; 80];
+        bytes[..4].copy_from_slice(&EXIT_EXCEPTION.to_ne_bytes());
+        bytes[72] = 3;
+        assert_eq!(
+            decode_exit_context(&bytes),
+            Ok(VmExit::Unknown {
+                reason: (EXIT_EXCEPTION as u64) << 32 | 3,
+            })
+        );
+        bytes[68..72].copy_from_slice(&4u32.to_ne_bytes());
         assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
     }
 }

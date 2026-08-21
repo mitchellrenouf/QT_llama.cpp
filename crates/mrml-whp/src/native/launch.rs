@@ -505,4 +505,55 @@ mod tests {
             Err(WhpError::InvalidVcpu)
         );
     }
+
+    #[test]
+    fn live_long_mode_guest_reaches_breakpoint_exit() {
+        let system = WhpSystem::open().unwrap();
+        if !system.hypervisor_present().unwrap() {
+            return;
+        }
+        let mut partition = system.prepare_partition().unwrap();
+        partition
+            .map_zeroed(GuestRange::new(0x10_0000, 0x8000, MapPermissions::read_write()).unwrap())
+            .unwrap();
+        partition
+            .map_initialized(
+                GuestRange::new(0x20_0000, 0x1000, MapPermissions::read_execute()).unwrap(),
+                &[0xcc],
+            )
+            .unwrap();
+        partition
+            .map_zeroed(GuestRange::new(0x30_0000, 0x1000, MapPermissions::read_write()).unwrap())
+            .unwrap();
+        let root = {
+            partition
+                .write_guest(0x10_0008, &0x00af_9b00_0000_ffffu64.to_le_bytes())
+                .unwrap();
+            let store = WhpPageTableStore::new(&mut partition, 0x10_1000, 7).unwrap();
+            let mut tables = PageTableBuilder::new(store).unwrap();
+            for (address, permissions) in [
+                (0x10_0000, PagePermissions::KERNEL_READ),
+                (0x20_0000, PagePermissions::KERNEL_READ_EXECUTE),
+                (0x30_0000, PagePermissions::KERNEL_READ_WRITE),
+            ] {
+                tables
+                    .map_page(
+                        VirtAddr::new(address).unwrap(),
+                        PhysAddr::new(address).unwrap(),
+                        permissions,
+                    )
+                    .unwrap();
+            }
+            tables.root()
+        };
+        partition
+            .configure_long_mode(0x20_0000, 0x30_0ff8, root.get(), 0x10_0000, 0x30_0000, 8)
+            .unwrap();
+        assert_eq!(
+            partition.run(),
+            Ok(VmExit::Unknown {
+                reason: (0x1002u64 << 32) | 3,
+            })
+        );
+    }
 }
