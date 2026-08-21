@@ -1700,6 +1700,8 @@ impl Dispatch {
             2 => self.validate_qkv_q4_schema(false),
             3 => self.validate_quantized_gemv_schema(18, 16, 256),
             4 => self.validate_quantized_gemv_schema(34, 8, 128),
+            5 => self.validate_geglu_q4_schema(true),
+            6 => self.validate_geglu_q4_schema(false),
             7 | 9 | 10 => self.validate_three_f32_elementwise_schema(),
             8 => self.validate_embedding_f32_schema(),
             11 => self.validate_rope_f32_schema(),
@@ -1818,6 +1820,64 @@ impl Dispatch {
         if !weight_ok(q_weights, q_bytes)
             || !weight_ok(k_weights, kv_bytes)
             || !weight_ok(v_weights, kv_bytes)
+            || !valid_f32_access(input, u64::from(input_elements) * 4, BufferMode::Read)
+            || !valid_f32_access(output, u64::from(output_elements) * 4, BufferMode::Write)
+            || self.grid != expected_grid
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: output_elements,
+        })
+    }
+
+    fn validate_geglu_q4_schema(&self, batched: bool) -> Result<ValidatedKernelLaunch, GpuError> {
+        let expected_scalars = if batched { 3 } else { 2 };
+        let expected_block = if batched { 256 } else { 128 };
+        if self.access_count != 4
+            || self.scalar_count != expected_scalars
+            || self.shared_memory != 0
+            || self.block != [expected_block, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let gate_weights = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let up_weights = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let input = self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?;
+        let output = self.accesses[3].ok_or(GpuError::InvalidKernelSchema)?;
+        let rows = self.positive_i32_scalar(0)?;
+        let columns = self.positive_i32_scalar(1)?;
+        let batch = if batched {
+            self.positive_i32_scalar(2)?
+        } else {
+            1
+        };
+        if columns % 32 != 0 {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let weight_bytes = u64::from(rows)
+            .checked_mul(u64::from(columns / 32))
+            .and_then(|value| value.checked_mul(18))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let input_elements = columns
+            .checked_mul(batch)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let output_elements = rows
+            .checked_mul(batch)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let weight_ok = |access: BufferAccess| {
+            access.mode == BufferMode::Read
+                && access.offset.is_multiple_of(2)
+                && access.length == weight_bytes
+        };
+        let expected_grid = if batched {
+            [rows.div_ceil(16), batch.div_ceil(8), 1]
+        } else {
+            [rows.div_ceil(8), 1, 1]
+        };
+        if !weight_ok(gate_weights)
+            || !weight_ok(up_weights)
             || !valid_f32_access(input, u64::from(input_elements) * 4, BufferMode::Read)
             || !valid_f32_access(output, u64::from(output_elements) * 4, BufferMode::Write)
             || self.grid != expected_grid
@@ -2473,7 +2533,7 @@ mod tests {
             Err(GpuError::InvalidKernelSchema)
         );
         let unsupported = Dispatch::new(
-            KernelId::new(5).unwrap(),
+            KernelId::new(15).unwrap(),
             [1, 1, 1],
             [128, 1, 1],
             0,
@@ -2651,6 +2711,72 @@ mod tests {
         .unwrap();
         assert_eq!(
             short_v.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn executor_binds_fused_q4_geglu_matrices() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let batched_accesses = [
+            BufferAccess::new(id(0), 0, 288, BufferMode::Read),
+            BufferAccess::new(id(1), 0, 288, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 1024, BufferMode::Read),
+            BufferAccess::new(id(3), 0, 512, BufferMode::Write),
+        ];
+        let batched_scalars = [ScalarArg::i32(16), ScalarArg::i32(32), ScalarArg::i32(8)];
+        let batched = Dispatch::new_with_scalars(
+            KernelId::new(5).unwrap(),
+            [1, 1, 1],
+            [256, 1, 1],
+            0,
+            &batched_accesses,
+            &batched_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            batched.validate_executor_schema().unwrap().element_count(),
+            128
+        );
+
+        let gemv_accesses = [
+            batched_accesses[0],
+            batched_accesses[1],
+            BufferAccess::new(id(2), 0, 128, BufferMode::Read),
+            BufferAccess::new(id(3), 0, 64, BufferMode::Write),
+        ];
+        let gemv_scalars = [batched_scalars[0], batched_scalars[1]];
+        let gemv = Dispatch::new_with_scalars(
+            KernelId::new(6).unwrap(),
+            [2, 1, 1],
+            [128, 1, 1],
+            0,
+            &gemv_accesses,
+            &gemv_scalars,
+        )
+        .unwrap();
+        assert_eq!(gemv.validate_executor_schema().unwrap().element_count(), 16);
+
+        let short_up = [
+            batched_accesses[0],
+            BufferAccess::new(id(1), 0, 287, BufferMode::Read),
+            batched_accesses[2],
+            batched_accesses[3],
+        ];
+        let short_up = Dispatch::new_with_scalars(
+            KernelId::new(5).unwrap(),
+            [1, 1, 1],
+            [256, 1, 1],
+            0,
+            &short_up,
+            &batched_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            short_up.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
     }

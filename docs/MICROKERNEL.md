@@ -185,8 +185,12 @@ Kernel IDs 1 and 2 validate fused Q4_0 QKV GEMM and GEMV. Q, K, and V weight
 ranges are independently sized from Q rows, KV rows, and the shared 32-value
 column blocks. Input and packed output lengths are derived with checked batch
 products. GEMM and GEMV retain their distinct block widths and row/token tiles.
+Kernel IDs 5 and 6 validate fused Q4_0 GeGLU GEMM and GEMV. Gate and up weights
+must each exactly match the same positive row/column dimensions, while checked
+batch products determine the f32 input and output ranges. Their prefill and
+decode variants retain distinct row tiles, token tiles, and block widths.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 14 schemas and the
+registry alone cannot make it executable. The remaining 12 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
