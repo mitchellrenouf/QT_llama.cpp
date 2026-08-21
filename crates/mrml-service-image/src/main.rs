@@ -47,7 +47,7 @@ global_asm!(
             xor r8d, r8d
             xor r9d, r9d
             int 0x80
-            xor eax, eax
+            mov eax, 3
             xor edi, edi
             xor esi, esi
             xor edx, edx

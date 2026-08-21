@@ -104,6 +104,7 @@ const fn user_address(address: u64) -> bool {
 pub enum SyscallRequest {
     Yield,
     Receive,
+    Exit,
     SendInline {
         endpoint: Capability,
         receiver: TaskId,
@@ -161,13 +162,19 @@ impl SyscallRequest {
                 }
                 Ok(Self::Receive)
             }
+            3 => {
+                if rdi | rsi | rdx | r10 | r8 | r9 != 0 {
+                    return Err(SyscallError::ReservedArgument);
+                }
+                Ok(Self::Exit)
+            }
             _ => Err(SyscallError::UnknownOperation),
         }
     }
 
     pub fn payload(&self) -> &[u8] {
         match self {
-            Self::Yield | Self::Receive => &[],
+            Self::Yield | Self::Receive | Self::Exit => &[],
             Self::SendInline {
                 payload, length, ..
             } => &payload[..usize::from(*length)],
@@ -199,6 +206,18 @@ mod tests {
         );
         assert_eq!(
             SyscallRequest::decode(2, 0, 1, 0, 0, 0, 0),
+            Err(SyscallError::ReservedArgument)
+        );
+    }
+
+    #[test]
+    fn exit_requires_every_reserved_register_to_be_zero() {
+        assert_eq!(
+            SyscallRequest::decode(3, 0, 0, 0, 0, 0, 0),
+            Ok(SyscallRequest::Exit)
+        );
+        assert_eq!(
+            SyscallRequest::decode(3, 0, 0, 0, 0, 1, 0),
             Err(SyscallError::ReservedArgument)
         );
     }

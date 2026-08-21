@@ -32,6 +32,12 @@ pub struct FaultRetirement {
     pub next: ScheduleOutcome,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskTermination {
+    pub task: TaskId,
+    pub next: ScheduleOutcome,
+}
+
 struct TaskDomain<const CAPS: usize> {
     task: TaskId,
     context: UserContext,
@@ -196,6 +202,33 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
             context: domain.context,
             vector,
             address,
+            next,
+        })
+    }
+
+    /// Removes the current task's complete revocation domain for a voluntary
+    /// exit before selecting a replacement. No context or authority from the
+    /// removed domain is returned to its caller.
+    pub fn terminate_current(&mut self) -> Result<TaskTermination, TaskRuntimeError> {
+        let current = self
+            .scheduler
+            .current()
+            .ok_or(TaskRuntimeError::NoCurrentTask)?;
+        let slot = self
+            .domains
+            .iter()
+            .position(|domain| domain.as_ref().is_some_and(|domain| domain.task == current))
+            .ok_or(TaskRuntimeError::IntegrityFailure)?;
+        let domain = self.domains[slot]
+            .take()
+            .ok_or(TaskRuntimeError::IntegrityFailure)?;
+        let next = self
+            .scheduler
+            .terminate_current()
+            .map_err(TaskRuntimeError::Scheduler)?;
+        let _ = domain;
+        Ok(TaskTermination {
+            task: current,
             next,
         })
     }
@@ -434,6 +467,41 @@ mod tests {
             Err(TaskRuntimeError::NonRecoverableFault)
         );
         assert!(runtime.context(task).is_ok());
+    }
+
+    #[test]
+    fn voluntary_exit_revokes_domain_before_switching() {
+        let mut runtime = TaskRuntime::<2, 1>::new(1_000, 1).unwrap();
+        let exiting = runtime
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let replacement = runtime
+            .create(Priority::NORMAL, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        let capability = runtime
+            .capabilities_mut(exiting)
+            .unwrap()
+            .insert(ObjectId(17), Rights::READ)
+            .unwrap();
+        assert!(matches!(
+            runtime.start(),
+            ScheduleOutcome::Switch { to, .. } if to == exiting
+        ));
+        let terminated = runtime.terminate_current().unwrap();
+        assert_eq!(terminated.task, exiting);
+        assert_eq!(
+            terminated.next,
+            ScheduleOutcome::Switch {
+                from: Some(exiting),
+                to: replacement,
+            }
+        );
+        assert_eq!(runtime.context(exiting), Err(TaskRuntimeError::MissingTask));
+        assert_eq!(
+            runtime.capabilities_mut(exiting).map(|_| ()),
+            Err(TaskRuntimeError::MissingTask)
+        );
+        let _ = capability;
     }
 
     #[test]

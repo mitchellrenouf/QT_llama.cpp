@@ -128,9 +128,9 @@ marker. Before its first framebuffer write, the loader validates the complete
 GOP geometry, page-aligned physical base, non-overflowing allocation, and
 Rust raw-slice length bound through the same core validator used by the kernel.
 Before installing the guarded address space, the loader erases the
-entire page-rounded kernel allocation and all 64 KiB of the kernel stack arena,
+entire page-rounded kernel allocation and all 128 KiB of the kernel stack arena,
 so no firmware-era tail or stack data enters the kernel mapping. The arena has
-a six-page early stack, a four-page ring-transition stack, and a four-page
+a six-page early stack, a sixteen-page ring-transition stack, and an eight-page
 double-fault IST stack. Pages below the arena and between each stack class are
 deliberately absent from the new page tables, so underflow and cross-stack
 overflow fault instead of reaching another stack. KVM and WHP use the same
@@ -166,7 +166,8 @@ current probe materializes the authenticated service PE twice under distinct
 roots (`0xc00000` and `0xd00000`) with different physical image, stack, and
 table arenas and no shared user mappings. Receiver A issues pointer-free
 receive and blocks. The scheduler switches CR3 to sender B; B sends `ping`
-using its exact SIGNAL capability, wakes A, then yields. The kernel dequeues
+using its exact SIGNAL capability, wakes A, then exits. The kernel atomically
+removes B's complete context/capability domain before selecting A, dequeues
 the message into A's saved registers and restores A's post-`INT 0x80` context
 under A's root. Fresh signed runs completed this chain in 301 microseconds on
 WHP and 404 microseconds on nested KVM.
@@ -184,7 +185,7 @@ transferred right, and transactionally revokes all receiver capabilities if
 endpoint authorization fails. This path is covered on Windows and Linux but is
 invoked by the live sender's pointer-free user syscall.
 The x86 syscall boundary now reserves only DPL3 interrupt vector `0x80` and
-defines a pointer-free register ABI. Yield and receive require every reserved
+defines a pointer-free register ABI. Yield, receive, and exit require every reserved
 register to be zero; inline send carries generational endpoint/task tokens and at most 24
 payload bytes by value in registers. Unknown operations, malformed tokens, and
 oversized payloads fail before any user address can be dereferenced. The call
@@ -226,16 +227,20 @@ storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A
 freshly signed nested-KVM exception probe ran successfully after this setup.
-The two 16 KiB privilege stacks are currently static bring-up allocations
-without guard pages. A separate signed diagnostic build now performs a live
+The launcher-owned transition and double-fault stacks have absent lower guard
+pages and no static image fallback. The first guarded service IPC run exposed
+an otherwise silent transition-stack overflow at `CR2=...60006d88`; the fixed
+arena now provides 64 KiB for syscall/interrupt entry and 32 KiB for IST1. A
+separate signed diagnostic build performs a live
 `iretq` transition to CPL3, executes an invalid opcode, returns through TSS
 `RSP0`, validates the privilege-transition frame, and reaches user-task
 termination policy under nested KVM. That proof temporarily maps the entire
 diagnostic PE in the lower half with user permissions and is therefore not an
 acceptable service isolation design. Separate signed user mappings and
 distinct CR3 roots are now exercised by both the service IPC and timer probes.
-Guarded per-CPU privilege stacks and production service lifecycle remain
-unfinished. The live
+Independent arenas for additional CPUs and supervised restart policy remain
+unfinished. Clean user-requested service exit and domain revocation are now
+part of the signed two-root IPC proof. The live
 probe now uses the reusable context transition that writes its validated CR3,
 sanitizes DS/ES/FS/GS, restores all fifteen general registers, and constructs
 the exact ring-three `iretq` frame rather than probe-specific entry assembly.

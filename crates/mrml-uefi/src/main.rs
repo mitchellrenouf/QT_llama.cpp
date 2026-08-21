@@ -39,7 +39,7 @@ static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; PAGE_BYTES]));
 const _: () = assert!(HANDOFF_BYTES <= PAGE_BYTES);
 const _: () = assert!(core::mem::align_of::<HandoffBuffer>() == PAGE_BYTES);
 const _: () = assert!(core::mem::size_of::<HandoffBuffer>() == PAGE_BYTES);
-const KERNEL_STACK_PAGES: usize = 16;
+const KERNEL_STACK_PAGES: usize = 32;
 const KERNEL_STACK_GUARD_PAGES: usize = 1;
 const KERNEL_PATH: &[u16] = &[
     92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 75, 69, 82, 78, 69, 76, 46, 83, 73, 71, 78, 69, 68, 0,

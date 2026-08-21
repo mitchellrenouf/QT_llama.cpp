@@ -220,7 +220,7 @@ fn application_main() -> Result<()> {
         handoff_virtual,
         0x40_0000,
         stack_virtual,
-        16,
+        32,
         user_probe,
     )
     .map_err(|_| anyhow!("invalid fixed kernel launch layout"))?;

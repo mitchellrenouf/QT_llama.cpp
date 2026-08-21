@@ -383,7 +383,7 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
             SyscallRequest::SendInline {
                 endpoint, receiver, ..
             } => (*endpoint, *receiver),
-            SyscallRequest::Yield | SyscallRequest::Receive => halt(),
+            SyscallRequest::Yield | SyscallRequest::Receive | SyscallRequest::Exit => halt(),
         };
         let payload = request.payload();
         let runtime = match (*core::ptr::addr_of_mut!(USER_RUNTIME)).as_mut() {
@@ -498,6 +498,29 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
                 }
                 _ => halt(),
             },
+            SyscallRequest::Exit => {
+                let terminated = runtime.terminate_current().unwrap_or_else(|_| halt());
+                if terminated.task != current || runtime.context(current).is_ok() {
+                    halt();
+                }
+                match terminated.next {
+                    ScheduleOutcome::Switch { to, .. } => {
+                        let message = runtime.receive_ipc(to).unwrap_or_else(|_| halt());
+                        runtime
+                            .context_mut(to)
+                            .unwrap_or_else(|_| halt())
+                            .complete_message(message.payload());
+                        asm!(
+                            "out dx, eax",
+                            in("dx") SERVICE_CALL_PORT,
+                            in("eax") 3u32,
+                            options(nomem, nostack)
+                        );
+                        enter_service_task(runtime, to)
+                    }
+                    _ => halt(),
+                }
+            }
         }
     }
     #[cfg(not(any(feature = "user-probe", feature = "service-probe")))]

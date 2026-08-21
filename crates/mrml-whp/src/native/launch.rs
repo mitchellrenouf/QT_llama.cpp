@@ -1152,7 +1152,7 @@ mod tests {
                 0x200000,
                 0x30000,
                 0x300000,
-                16,
+                32,
                 false
             )
             .is_ok()
@@ -1267,7 +1267,7 @@ mod tests {
             0x30_0000,
             0x40_0000,
             0xffff_8000_0040_0000,
-            16,
+            32,
             true,
         )
         .unwrap();
@@ -1276,7 +1276,7 @@ mod tests {
             .prepare_gpu_guest(&executable, &valid_handoff(), layout, queue_layout)
             .unwrap();
         assert_eq!(guest.entry(), 0x20_1000);
-        let stack_layout = PrivilegeStackLayout::new(0xffff_8000_0040_0000, 16).unwrap();
+        let stack_layout = PrivilegeStackLayout::new(0xffff_8000_0040_0000, 32).unwrap();
         assert_eq!(
             guest
                 .page_walk(stack_layout.early_base())
@@ -1299,7 +1299,7 @@ mod tests {
                 .page_walk(double_fault_base)
                 .unwrap()
                 .physical_address(double_fault_base),
-            Some(0x40_c000)
+            Some(0x41_8000)
         );
         let command_walk = guest.page_walk(queue_layout.command_base()).unwrap();
         assert_eq!(command_walk.levels(), 4);

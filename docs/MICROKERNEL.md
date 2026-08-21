@@ -494,9 +494,9 @@ executable, non-writable section, and the loader-owned CR3 enforces those final
 section permissions in hardware.
 
 The x86-64 transition now allocates a new zeroed four-level page-table tree and
-a fully erased 64 KiB kernel stack arena before leaving firmware. The fixed
-arena contains a six-page early stack, an omitted guard page, a four-page
-ring-transition stack, a second omitted guard page, and a four-page
+a fully erased 128 KiB kernel stack arena before leaving firmware. The fixed
+arena contains a six-page early stack, an omitted guard page, a sixteen-page
+ring-transition stack, a second omitted guard page, and an eight-page
 double-fault IST stack. One additional lower allocation page is omitted as an
 early-stack underflow guard. The loader passes both protected stack tops through
 the PE entry ABI; the kernel rejects invalid tops before installing its TSS and
@@ -560,9 +560,13 @@ uses IST1, so a double fault does not depend on the interrupted stack. Windows
 and Linux unit tests verify the packed offsets and descriptor encoding. A fresh
 signed nested-KVM `fault-probe` reached its expected vector-6 halt after `LTR`
 in 157 microseconds (`verify=694us`, `prepare=1156us`, `total=4830us`). The
-entry and double-fault stacks now come from the fixed launcher-owned 64 KiB
-arena. They are separate four-page supervisor mappings with an absent guard
-below each; the kernel image contains no static fallback privilege stack.
+entry and double-fault stacks now come from the fixed launcher-owned 128 KiB
+arena. They are separate sixteen- and eight-page supervisor mappings with an
+absent guard below each; the kernel image contains no static fallback privilege
+stack. The first guarded two-syscall service run faulted at
+`CR2=...60006d88`, proving the former 16 KiB transition stack overflowed into
+its newly absent guard. Enlarging only the mapped stack regions retained both
+guards and made the same signed path complete on KVM and WHP.
 
 External vector installation is now a separate validated operation restricted
 to vectors 32--254 and performed only while interrupts are disabled. The
@@ -662,7 +666,10 @@ yield and accepts no nonzero reserved argument. Operation one carries an
 endpoint capability token, a generational receiver task token, a length no
 larger than 24, and three payload words in registers r10/r8/r9. Decoding zeros
 the unused payload tail and rejects unknown operations, generation-zero tokens,
-and oversized lengths without reading guest memory. Windows and Linux pass 120
+and oversized lengths without reading guest memory. Operation two receives or
+blocks, and operation three voluntarily exits with no arguments. Exit removes
+the complete context/capability domain before replacement selection, so an
+exited identity cannot retain authority or resume. Windows and Linux pass 134
 kernel tests, including exact gate privilege/vector placement and canonical ABI
 decoding. The live entry now preserves all fifteen registers in an exact
 160-byte `UserCallFrame`, validates the ring-three CS/SS, lower-half RIP/RSP,
@@ -726,12 +733,12 @@ distinct physical images, guarded stacks, and roots (`0xc00000` and
 `0xd00000`). Receiver A executes operation two, and the kernel validates and
 captures its exact post-interrupt continuation before blocking it. Sender B
 runs under the second CR3, uses its exact SIGNAL capability and A's generational
-task token to deliver `ping`, wakes A, and yields. The kernel dequeues into A's
+task token to deliver `ping`, wakes A, and exits. The kernel revokes B before it
+dequeues into A's
 saved registers and restores A under its own root; A validates RAX, RDX, and
 R10 before raising its completion breakpoint. Clean independently signed runs
-completed the chain in 301 microseconds on WHP (`verify=1781us`,
-`prepare=3154us`, `total=7091us`) and 404 microseconds on nested KVM
-(`verify=5508us`, `prepare=1443us`, `total=13300us`). One authenticated service
+completed the clean-exit chain in 326 microseconds on WHP and 491 microseconds
+on nested KVM. One authenticated service
 artifact supplies both instances; task identities, address spaces, physical
 copies, stacks, and table arenas remain separate.
 

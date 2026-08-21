@@ -848,7 +848,7 @@ mod tests {
                 0x200000,
                 0x30000,
                 0x300000,
-                16,
+                32,
                 true
             )
             .is_ok()
@@ -883,7 +883,7 @@ mod tests {
             0xffff_8001_5000_0000,
             0x40_0000,
             0xffff_8001_6000_0000,
-            16,
+            32,
             false,
         )
         .unwrap();
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(walk.levels(), 4);
         assert_eq!(walk.physical_address(guest.entry()), Some(0x20_1000));
         assert_eq!(walk.entries()[3] & (1 << 63), 0);
-        let stack_layout = PrivilegeStackLayout::new(0xffff_8001_6000_0000, 16).unwrap();
+        let stack_layout = PrivilegeStackLayout::new(0xffff_8001_6000_0000, 32).unwrap();
         assert_eq!(
             guest
                 .page_walk(stack_layout.early_base())
@@ -923,7 +923,7 @@ mod tests {
                 .page_walk(stack_layout.double_fault_base().unwrap())
                 .unwrap()
                 .physical_address(stack_layout.double_fault_base().unwrap()),
-            Some(0x40_c000)
+            Some(0x41_8000)
         );
         assert_eq!(
             guest.page_walk(0x0000_8000_0000_0000),
