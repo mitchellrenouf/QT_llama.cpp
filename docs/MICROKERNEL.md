@@ -255,9 +255,14 @@ first reserves a generational handle and rolls it back if CUDA allocation or
 binding fails. Free releases only the matching service-owned CUDA allocation
 before returning quota; raw external bindings cannot enter that path. Dropping
 the backend best-effort releases all remaining owned allocations.
+After lowering the ordered batch, the backend synchronizes its CUDA stream
+before the executor reports acceptance. Barrier failure is an uncertain result,
+not a clean rejection, so the watchdog retains every in-flight identity until
+completion or reset recovery resolves device state.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. Contextual batch integration of the 5 MoE schemas and the
-actual CUDA launch adapter are pending.
+registry alone cannot make it executable. All embedded kernel schemas,
+including the proof-bearing MoE variants, are integrated with the concrete CUDA
+launch adapter.
 
 ## Portability and boot
 

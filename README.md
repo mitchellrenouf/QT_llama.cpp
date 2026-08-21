@@ -224,6 +224,10 @@ memory transactionally: CUDA allocation failure rolls back the guest handle,
 free requires the matching owned generation before releasing quota, externally
 owned raw bindings cannot be freed through the owned path, and drop releases
 any remaining owned allocations.
+Mediated submission now synchronizes the CUDA stream after the ordered launch
+pass and reports acceptance only after that barrier succeeds. A synchronization
+error is not treated as rejection: watchdog identities remain live because GPU
+effects may have occurred and reset recovery is required.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject

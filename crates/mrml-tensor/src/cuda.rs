@@ -1812,6 +1812,18 @@ impl<const N: usize> GpuHostBackend for MediatedCudaBackend<N> {
         }
         .map_err(|_| MediatedCudaError::LaunchFailed)
     }
+
+    fn finish_batch(&mut self) -> Result<(), Self::Error> {
+        let status = unsafe {
+            cudaSetDevice(self.device_id);
+            cudaStreamSynchronize(self.stream)
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(MediatedCudaError::Driver(status))
+        }
+    }
 }
 
 pub struct CudaGraphExec {

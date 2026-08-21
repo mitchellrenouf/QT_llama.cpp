@@ -1509,6 +1509,8 @@ pub trait GpuHostBackend {
         prepared: PreparedGpuDispatch,
         launch: ValidatedKernelLaunch,
     ) -> Result<(), Self::Error>;
+
+    fn finish_batch(&mut self) -> Result<(), Self::Error>;
 }
 
 /// Ordered, allocation-free host executor. Proof verification is a complete
@@ -1548,6 +1550,7 @@ impl<B: GpuHostBackend, const N: usize> GpuBatchExecutor<N> for MediatedGpuExecu
         for (prepared, launch) in batch.entries() {
             self.backend.launch(prepared, launch)?;
         }
+        self.backend.finish_batch()?;
         Ok(true)
     }
 }
@@ -3226,6 +3229,7 @@ mod tests {
             verified: bool,
             launches: u32,
             launched_before_verify: bool,
+            finished: bool,
         }
         impl GpuHostBackend for Backend {
             type Error = ();
@@ -3243,6 +3247,10 @@ mod tests {
             ) -> Result<(), Self::Error> {
                 self.launched_before_verify |= !self.verified;
                 self.launches += 1;
+                Ok(())
+            }
+            fn finish_batch(&mut self) -> Result<(), Self::Error> {
+                self.finished = true;
                 Ok(())
             }
         }
@@ -3299,18 +3307,21 @@ mod tests {
             verified: false,
             launches: 0,
             launched_before_verify: false,
+            finished: false,
         });
         assert_eq!(
             GpuBatchExecutor::<2>::submit(&mut rejected, &batch),
             Ok(false)
         );
         assert_eq!(rejected.backend().launches, 0);
+        assert!(!rejected.backend().finished);
 
         let mut accepted = MediatedGpuExecutor::new(Backend {
             proof_valid: true,
             verified: false,
             launches: 0,
             launched_before_verify: false,
+            finished: false,
         });
         assert_eq!(
             GpuBatchExecutor::<2>::submit(&mut accepted, &batch),
@@ -3318,6 +3329,7 @@ mod tests {
         );
         assert_eq!(accepted.backend().launches, 2);
         assert!(!accepted.backend().launched_before_verify);
+        assert!(accepted.backend().finished);
     }
 
     #[test]
