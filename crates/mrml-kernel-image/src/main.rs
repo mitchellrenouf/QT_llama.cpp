@@ -6,10 +6,16 @@ use core::arch::{asm, global_asm};
 use mrml_kernel::BootPolicy;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::KernelScheduler;
+#[cfg(any(feature = "user-probe", feature = "service-probe"))]
+use mrml_kernel::SyscallRequest;
 use mrml_kernel::UserCallFrame;
+#[cfg(feature = "user-probe")]
+use mrml_kernel::arch::x86_64::enter_user_context;
+#[cfg(feature = "service-probe")]
+use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
-#[cfg(feature = "user-probe")]
+#[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::arch::x86_64::install_user_call_gate;
 use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
@@ -17,10 +23,6 @@ use mrml_kernel::arch::x86_64::{
 };
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::arch::x86_64::{TrapDisposition, UserContext};
-#[cfg(feature = "user-probe")]
-use mrml_kernel::arch::x86_64::enter_user_context;
-#[cfg(feature = "service-probe")]
-use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -34,7 +36,7 @@ use mrml_kernel::{
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
 #[cfg(feature = "user-probe")]
-use mrml_kernel::{Endpoint, ObjectId, Rights, SyscallRequest, TaskRuntime};
+use mrml_kernel::{Endpoint, ObjectId, Rights, TaskRuntime};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
 use mrml_kernel::{
     GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuGuestCommandPublisher, GpuQueueIdentity,
@@ -70,6 +72,8 @@ const USER_CALL_PROBE_PORT: u16 = 0x4d57;
 const SERVICE_PROBE_PORT: u16 = 0x4d58;
 #[cfg(feature = "service-probe")]
 const SERVICE_FRAME_PORT: u16 = 0x4d59;
+#[cfg(feature = "service-probe")]
+const SERVICE_CALL_PORT: u16 = 0x4d5a;
 #[cfg(feature = "service-probe")]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
 #[cfg(feature = "service-probe")]
@@ -286,6 +290,8 @@ unsafe extern "C" {
     fn mrml_user_replacement_probe() -> !;
     #[cfg(feature = "user-probe")]
     fn mrml_user_call() -> !;
+    #[cfg(all(feature = "service-probe", not(feature = "user-probe")))]
+    fn mrml_user_call() -> !;
     static mrml_exception_table: [u64; 32];
 }
 
@@ -342,7 +348,24 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
             options(nomem, nostack)
         );
     }
-    #[cfg(not(feature = "user-probe"))]
+    #[cfg(feature = "service-probe")]
+    unsafe {
+        let frame = match frame.as_mut() {
+            Some(frame) => frame,
+            None => halt(),
+        };
+        if frame.request() != Ok(SyscallRequest::Yield) {
+            halt();
+        }
+        frame.complete(0);
+        asm!(
+            "out dx, eax",
+            in("dx") SERVICE_CALL_PORT,
+            in("eax") 1u32,
+            options(nomem, nostack)
+        );
+    }
+    #[cfg(not(any(feature = "user-probe", feature = "service-probe")))]
     let _ = frame;
 }
 
@@ -855,7 +878,7 @@ unsafe fn install_descriptor_tables() {
     if unsafe { load_task_register(TSS_SELECTOR) }.is_err() {
         halt();
     }
-    #[cfg(feature = "user-probe")]
+    #[cfg(any(feature = "user-probe", feature = "service-probe"))]
     if unsafe {
         install_user_call_gate(
             core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),

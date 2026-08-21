@@ -691,7 +691,16 @@ IDT instead of stopping in the host. A signed Windows run completed in 216
 microseconds (`verify=1579us`, `prepare=2805us`, `total=6521us`). The runner
 stops at the explicit kernel proof because re-entering an interrupt-disabled
 HLT is not a portable WHP completion mechanism. Service syscalls and persistent
-service scheduling remain unfinished.
+service scheduling were then advanced by making the independently signed PE
+issue operation-zero through `INT 0x80` with every reserved register cleared.
+The kernel validates the complete call frame, returns zero status, restores all
+registers, and executes `IRETQ`; the service reaches its subsequent breakpoint
+only if that return succeeds. Fresh signed runs completed the call, return, and
+breakpoint chain in 260 microseconds on KVM (`verify=5908us`, `prepare=1325us`,
+`total=11398us`) and 190 microseconds on WHP (`verify=1565us`, `prepare=3535us`,
+`total=7117us`). A yield with one runnable service legitimately continues that
+service. Multi-service blocking, wakeup, and capability IPC from separately
+signed service images remain unfinished.
 
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel

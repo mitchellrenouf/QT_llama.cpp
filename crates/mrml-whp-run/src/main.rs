@@ -34,6 +34,8 @@ const SERVICE_FRAME_PORT: u16 = 0x4d59;
 #[cfg(target_os = "windows")]
 const SERVICE_PROBE_PORT: u16 = 0x4d58;
 #[cfg(target_os = "windows")]
+const SERVICE_CALL_PORT: u16 = 0x4d5a;
+#[cfg(target_os = "windows")]
 const SERVICE_PHYSICAL: u64 = 0x0060_0000;
 #[cfg(target_os = "windows")]
 const SERVICE_VIRTUAL: u64 = 0x0000_0001_4000_0000;
@@ -216,6 +218,21 @@ fn application_main() -> Result<()> {
         ));
     }
     if service_mode {
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_CALL_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!(
+                "isolated WHP service user call mismatch: {:?}",
+                exit
+            ));
+        }
+        let exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("WHP execution after service call failed: {:?}", error))?;
         if exit
             != (VmExit::Io {
                 port: SERVICE_FRAME_PORT,

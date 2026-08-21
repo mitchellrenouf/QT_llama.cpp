@@ -13,7 +13,20 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 /// the deliberate breakpoint with the pointer-free user-call ABI.
 #[unsafe(export_name = "efi_main")]
 pub extern "efiapi" fn service_entry() -> usize {
-    unsafe { asm!("int3", options(noreturn)) }
+    unsafe {
+        asm!(
+            "xor eax, eax",
+            "xor edi, edi",
+            "xor esi, esi",
+            "xor edx, edx",
+            "xor r10d, r10d",
+            "xor r8d, r8d",
+            "xor r9d, r9d",
+            "int 0x80",
+            "int3",
+            options(noreturn)
+        )
+    }
 }
 
 fn halt() -> ! {

@@ -159,7 +159,11 @@ service at CPL3. A separately built 2 KiB service PE raises its signed breakpoin
 and returns through the kernel IDT successfully. The Windows WHP path now uses
 the same artifact and mapping contract, disables its test-only breakpoint
 intercept for this partition, and completes the same guest-IDT proof. A useful
-service loop remains unfinished.
+service loop remains unfinished. The signed service now also issues the
+pointer-free vector-`0x80` yield call, receives a validated zero-status return,
+resumes in the same isolated address space, and only then raises its completion
+breakpoint on both KVM and WHP. Because this probe has one runnable service,
+yield returns to the caller; multi-service blocking and wakeup remain unfinished.
 Task-to-task IPC is now routed through those runtime domains. It rejects
 self-routing, requires the sender's exact endpoint capability, attenuates every
 transferred right, and transactionally revokes all receiver capabilities if
