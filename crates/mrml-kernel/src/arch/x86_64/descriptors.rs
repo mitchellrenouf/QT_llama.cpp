@@ -152,6 +152,104 @@ pub unsafe fn install_fail_stop_tables(
     Ok(())
 }
 
+/// Installs distinct handlers for all architectural exception vectors and a
+/// fail-stop fallback for every external vector. All descriptors are validated
+/// before either table is modified or loaded.
+///
+/// # Safety
+///
+/// The storage and privilege requirements are identical to
+/// [`install_fail_stop_tables`]. Every handler must remain executable for the
+/// lifetime of the loaded IDT.
+pub unsafe fn install_exception_tables(
+    gdt: *const u64,
+    gdt_entries: usize,
+    idt: *mut InterruptGate,
+    idt_entries: usize,
+    handlers: &[u64; 32],
+    fallback: u64,
+    selector: u16,
+) -> Result<(), DescriptorError> {
+    validate_table_storage(gdt, gdt_entries, idt, idt_entries, selector)?;
+    let fallback = InterruptGate::fail_stop(fallback, selector)?;
+    let mut exceptions = [InterruptGate::MISSING; 32];
+    for (vector, handler) in handlers.iter().copied().enumerate() {
+        let privilege = u8::from(vector == 3 || vector == 4) * 3;
+        exceptions[vector] = InterruptGate::interrupt(handler, selector, 0, privilege)?;
+    }
+    for (vector, gate) in exceptions.iter().copied().enumerate() {
+        unsafe { idt.add(vector).write(gate) };
+    }
+    for vector in 32..idt_entries {
+        unsafe { idt.add(vector).write(fallback) };
+    }
+    unsafe { load_tables(gdt, gdt_entries, idt, idt_entries) };
+    Ok(())
+}
+
+fn validate_table_storage(
+    gdt: *const u64,
+    gdt_entries: usize,
+    idt: *mut InterruptGate,
+    idt_entries: usize,
+    selector: u16,
+) -> Result<(), DescriptorError> {
+    if gdt.is_null() || idt.is_null() {
+        return Err(DescriptorError::MissingTable);
+    }
+    let gdt_bytes = gdt_entries
+        .checked_mul(core::mem::size_of::<u64>())
+        .ok_or(DescriptorError::InvalidTableSize)?;
+    let idt_bytes = idt_entries
+        .checked_mul(core::mem::size_of::<InterruptGate>())
+        .ok_or(DescriptorError::InvalidTableSize)?;
+    if gdt_bytes == 0
+        || idt_entries != 256
+        || gdt_bytes > usize::from(u16::MAX) + 1
+        || idt_bytes > usize::from(u16::MAX) + 1
+        || selector == 0
+        || selector & 7 != 0
+        || usize::from(selector >> 3) >= gdt_entries
+        || !canonical(gdt as u64)
+        || !canonical(idt as u64)
+        || gdt_bytes
+            .checked_sub(1)
+            .and_then(|bytes| (gdt as u64).checked_add(bytes as u64))
+            .is_none_or(|end| !canonical(end))
+        || idt_bytes
+            .checked_sub(1)
+            .and_then(|bytes| (idt as u64).checked_add(bytes as u64))
+            .is_none_or(|end| !canonical(end))
+    {
+        return Err(DescriptorError::InvalidTableSize);
+    }
+    let descriptor = unsafe { gdt.add(usize::from(selector >> 3)).read() };
+    if !valid_long_mode_code_descriptor(descriptor) {
+        return Err(DescriptorError::InvalidSelectorDescriptor);
+    }
+    Ok(())
+}
+
+unsafe fn load_tables(
+    gdt: *const u64,
+    gdt_entries: usize,
+    idt: *const InterruptGate,
+    idt_entries: usize,
+) {
+    let gdtr = DescriptorPointer {
+        limit: (gdt_entries * core::mem::size_of::<u64>() - 1) as u16,
+        base: gdt as u64,
+    };
+    let idtr = DescriptorPointer {
+        limit: (idt_entries * core::mem::size_of::<InterruptGate>() - 1) as u16,
+        base: idt as u64,
+    };
+    unsafe {
+        asm!("lgdt [{}]", in(reg) &gdtr, options(readonly, nostack, preserves_flags));
+        asm!("lidt [{}]", in(reg) &idtr, options(readonly, nostack, preserves_flags));
+    }
+}
+
 const fn canonical(address: u64) -> bool {
     ((address << 16) as i64 >> 16) as u64 == address
 }
@@ -252,5 +350,29 @@ mod tests {
         assert!(!valid_long_mode_code_descriptor(0x00af_9a00_0000_ffff));
         assert!(!valid_long_mode_code_descriptor(0x00af_9300_0000_ffff));
         assert!(!valid_long_mode_code_descriptor(0x00cf_9b00_0000_ffff));
+    }
+
+    #[test]
+    fn exception_table_validation_is_transactional() {
+        let mut gdt = [0u64; 8];
+        gdt[7] = 0x00af_9b00_0000_ffff;
+        let mut idt = [InterruptGate::MISSING; 256];
+        let mut handlers = [0xffff_8000_0000_1000; 32];
+        handlers[17] = 0x0000_8000_0000_0000;
+        assert_eq!(
+            unsafe {
+                install_exception_tables(
+                    gdt.as_ptr(),
+                    gdt.len(),
+                    idt.as_mut_ptr(),
+                    idt.len(),
+                    &handlers,
+                    0xffff_8000_0000_2000,
+                    0x38,
+                )
+            },
+            Err(DescriptorError::InvalidHandler)
+        );
+        assert!(idt.iter().all(|gate| *gate == InterruptGate::MISSING));
     }
 }

@@ -4,7 +4,7 @@
 use core::arch::{asm, global_asm};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
-use mrml_kernel::arch::x86_64::{InterruptGate, install_fail_stop_tables};
+use mrml_kernel::arch::x86_64::{HardwareTrapFrame, InterruptGate, install_exception_tables};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, Color, EarlyKernelContext, FramebufferSurface, HANDOFF_HEADER_BYTES,
@@ -27,6 +27,8 @@ const GPU_COMPLETION_BASE: usize = 0x00b0_1000;
 const GPU_BENCHMARK_ELEMENTS: u32 = 1 << 22;
 #[cfg(feature = "gpu-benchmark")]
 const GPU_BENCHMARK_ITERATIONS: u32 = 1_000;
+#[cfg(feature = "fault-probe")]
+const EXCEPTION_PROBE_PORT: u16 = 0x4d53;
 
 static GDT: [u64; 8] = [
     0,
@@ -49,11 +51,132 @@ mrml_exception_fail_stop:
 1:
     hlt
     jmp 1b
+
+    .macro MRML_NO_ERROR vector
+    .global mrml_exception_\vector
+mrml_exception_\vector:
+    push 0
+    push \vector
+    jmp mrml_exception_common
+    .endm
+
+    .macro MRML_ERROR vector
+    .global mrml_exception_\vector
+mrml_exception_\vector:
+    push \vector
+    jmp mrml_exception_common
+    .endm
+
+    MRML_NO_ERROR 0
+    MRML_NO_ERROR 1
+    MRML_NO_ERROR 2
+    MRML_NO_ERROR 3
+    MRML_NO_ERROR 4
+    MRML_NO_ERROR 5
+    MRML_NO_ERROR 6
+    MRML_NO_ERROR 7
+    MRML_ERROR 8
+    MRML_NO_ERROR 9
+    MRML_ERROR 10
+    MRML_ERROR 11
+    MRML_ERROR 12
+    MRML_ERROR 13
+    MRML_ERROR 14
+    MRML_NO_ERROR 15
+    MRML_NO_ERROR 16
+    MRML_ERROR 17
+    MRML_NO_ERROR 18
+    MRML_NO_ERROR 19
+    MRML_NO_ERROR 20
+    MRML_ERROR 21
+    MRML_NO_ERROR 22
+    MRML_NO_ERROR 23
+    MRML_NO_ERROR 24
+    MRML_NO_ERROR 25
+    MRML_NO_ERROR 26
+    MRML_NO_ERROR 27
+    MRML_NO_ERROR 28
+    MRML_ERROR 29
+    MRML_ERROR 30
+    MRML_NO_ERROR 31
+
+mrml_exception_common:
+    cld
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
+    and rsp, -16
+    call mrml_exception_dispatch
+    ud2
+
+    .section .rdata
+    .balign 8
+    .global mrml_exception_table
+mrml_exception_table:
+    .quad mrml_exception_0, mrml_exception_1, mrml_exception_2, mrml_exception_3
+    .quad mrml_exception_4, mrml_exception_5, mrml_exception_6, mrml_exception_7
+    .quad mrml_exception_8, mrml_exception_9, mrml_exception_10, mrml_exception_11
+    .quad mrml_exception_12, mrml_exception_13, mrml_exception_14, mrml_exception_15
+    .quad mrml_exception_16, mrml_exception_17, mrml_exception_18, mrml_exception_19
+    .quad mrml_exception_20, mrml_exception_21, mrml_exception_22, mrml_exception_23
+    .quad mrml_exception_24, mrml_exception_25, mrml_exception_26, mrml_exception_27
+    .quad mrml_exception_28, mrml_exception_29, mrml_exception_30, mrml_exception_31
     "#
 );
 
 unsafe extern "C" {
     fn mrml_exception_fail_stop() -> !;
+    static mrml_exception_table: [u64; 32];
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFrame) -> ! {
+    let frame = match unsafe { frame.as_ref() } {
+        Some(frame) => frame,
+        None => halt(),
+    };
+    let mut ss = 0u16;
+    unsafe { asm!("mov {0:x}, ss", out(reg) ss, options(nomem, nostack, preserves_flags)) };
+    let normalized = unsafe {
+        frame.normalize(
+            (frame as *const HardwareTrapFrame as u64)
+                + core::mem::size_of::<HardwareTrapFrame>() as u64,
+            u64::from(ss),
+        )
+    };
+    let fault_address = if normalized.vector == 14 {
+        let address: u64;
+        unsafe { asm!("mov {}, cr2", out(reg) address, options(nomem, nostack, preserves_flags)) };
+        Some(address)
+    } else {
+        None
+    };
+    if normalized.disposition(fault_address).is_err() {
+        halt();
+    }
+    #[cfg(feature = "fault-probe")]
+    unsafe {
+        asm!(
+            "out dx, eax",
+            in("dx") EXCEPTION_PROBE_PORT,
+            in("eax") normalized.vector as u32,
+            options(nomem, nostack)
+        )
+    };
+    halt()
 }
 
 #[cfg(feature = "fault-probe")]
@@ -269,14 +392,16 @@ fn embedded_minimum_version() -> Option<u64> {
 }
 
 unsafe fn install_descriptor_tables() {
-    let handler = mrml_exception_fail_stop as *const () as usize as u64;
+    let fallback = mrml_exception_fail_stop as *const () as usize as u64;
+    let handlers = unsafe { &mrml_exception_table };
     if unsafe {
-        install_fail_stop_tables(
+        install_exception_tables(
             core::ptr::addr_of!(GDT).cast::<u64>(),
             GDT.len(),
             core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
             256,
-            handler,
+            handlers,
+            fallback,
             0x38,
         )
     }

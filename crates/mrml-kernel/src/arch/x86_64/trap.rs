@@ -25,6 +25,33 @@ pub struct TrapFrame {
     pub ss: u64,
 }
 
+/// Stack prefix produced by the MRML exception stubs. For a ring transition,
+/// the CPU-provided user RSP and SS immediately follow this structure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct HardwareTrapFrame {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rax: u64,
+    pub vector: u64,
+    pub error: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrapError {
     InvalidVector,
@@ -102,6 +129,48 @@ impl TrapFrame {
             Ok(TrapDisposition::TerminateUser { vector, address })
         } else {
             Ok(TrapDisposition::HaltKernel { vector })
+        }
+    }
+}
+
+impl HardwareTrapFrame {
+    /// Copies the variable CPU entry frame into the fixed policy frame. This
+    /// reads the two-word tail only when CS proves a ring-three transition.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be the exact stack prefix created by an MRML exception stub.
+    /// For ring-three CS, the CPU-provided RSP and SS must immediately follow.
+    pub unsafe fn normalize(&self, kernel_rsp: u64, kernel_ss: u64) -> TrapFrame {
+        let (rsp, ss) = if self.cs & 3 == 3 {
+            let tail = unsafe { (self as *const Self).add(1).cast::<u64>() };
+            (unsafe { tail.read() }, unsafe { tail.add(1).read() })
+        } else {
+            (kernel_rsp, kernel_ss)
+        };
+        TrapFrame {
+            r15: self.r15,
+            r14: self.r14,
+            r13: self.r13,
+            r12: self.r12,
+            r11: self.r11,
+            r10: self.r10,
+            r9: self.r9,
+            r8: self.r8,
+            rdi: self.rdi,
+            rsi: self.rsi,
+            rbp: self.rbp,
+            rbx: self.rbx,
+            rdx: self.rdx,
+            rcx: self.rcx,
+            rax: self.rax,
+            vector: self.vector,
+            error: self.error,
+            rip: self.rip,
+            cs: self.cs,
+            rflags: self.rflags,
+            rsp,
+            ss,
         }
     }
 }
@@ -196,5 +265,8 @@ mod tests {
         assert_eq!(core::mem::size_of::<TrapFrame>(), 22 * 8);
         assert_eq!(core::mem::offset_of!(TrapFrame, vector), 15 * 8);
         assert_eq!(core::mem::offset_of!(TrapFrame, rip), 17 * 8);
+        assert_eq!(core::mem::size_of::<HardwareTrapFrame>(), 20 * 8);
+        assert_eq!(core::mem::offset_of!(HardwareTrapFrame, vector), 15 * 8);
+        assert_eq!(core::mem::offset_of!(HardwareTrapFrame, rip), 17 * 8);
     }
 }

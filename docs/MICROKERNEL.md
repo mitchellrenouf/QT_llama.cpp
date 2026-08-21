@@ -532,9 +532,18 @@ Validated ordinary user exceptions terminate only the current task; NMI,
 double fault, machine check, every kernel exception, and every malformed frame
 halt the kernel. Page faults additionally require a canonical captured CR2.
 This policy is tested on Windows and Linux, but the standalone image still uses
-the fail-stop assembly target until the per-vector stubs, task revocation, and
-context switcher are connected; recoverable exception execution is not yet
-claimed.
+fail-stop disposition until task revocation and the context switcher are
+connected; recoverable user-task execution is not yet claimed. The image now
+does install 32 distinct original assembly stubs. They normalize vectors with
+and without CPU error codes, preserve every general register, clear DF, and
+enter the Rust dispatcher through an explicit SysV64 boundary. IDT construction
+validates every handler before modifying the live table, exposes only breakpoint
+and overflow gates to ring three, and retains the fail-stop fallback for vectors
+32--255. A signed nested-KVM `fault-probe` build executed `UD2`, emitted the
+dispatcher's exact vector-6 proof through diagnostic port `0x4d53`, resumed,
+and halted cleanly in 156 microseconds. This proves the new IDT gate, assembly
+normalization, and checked Rust dispatch path execute in the booted kernel; it
+does not yet prove task recovery.
 and table ranges, a ring-zero GDT selector that names an existing entry, the
 exact 256-gate IDT size, and 16-bit descriptor limits before writing memory or
 executing `LGDT` or `LIDT`. Unit tests check the exact 16-byte gate encoding and

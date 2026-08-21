@@ -27,6 +27,8 @@ use mrml_runtime::mrml_println as println;
 const MAX_KERNEL_BUNDLE: usize = SIGNED_ARTIFACT_OVERHEAD_BYTES + 16 * 1024 * 1024;
 #[cfg(any(test, target_os = "linux"))]
 const FRAMEBUFFER: u64 = 0x00a0_0000;
+#[cfg(target_os = "linux")]
+const EXCEPTION_PROBE_PORT: u16 = 0x4d53;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg(any(test, target_os = "linux"))]
@@ -148,6 +150,22 @@ fn application_main() -> Result<()> {
         )?;
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after GPU completion failed: {:?}", error))?;
+    } else if mode == LaunchMode::FaultProbe {
+        if exit
+            != (VmExit::Io {
+                port: EXCEPTION_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 6,
+            })
+        {
+            return Err(anyhow!(
+                "fault probe did not reach the checked invalid-opcode dispatcher: {:?}",
+                exit
+            ));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution after exception probe failed: {:?}", error))?;
     }
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
