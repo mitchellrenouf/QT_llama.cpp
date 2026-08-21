@@ -249,13 +249,17 @@ KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
 guest execution. The kernel-owned completion transport preflights capacity for
 the whole batch before GPU-visible work, publishes authenticated results under
-an exclusive producer borrow, and erases consumed slots. Platform
+an exclusive producer borrow, and erases consumed slots.
 The `SubmitBatch` service path now joins sealed-control revalidation, canonical
 decode, current buffer-generation checks, transactional watchdog admission,
 signed schema validation, execution, and completion publication in one API.
-Platform cache-coherence validation, shared-ring command dequeue plus
-allocate/free response handling, CUDA graph lowering, IOMMU plumbing, and
-end-to-end performance measurements are still pending. Consequently MRML
+The resource service consumes one kernel-owned ring slot, authenticates it,
+executes allocation/free through the transactional CUDA resource backend, or
+returns a typed sealed-batch request. Invalid authenticated input is consumed
+without changing resource state, preventing a poisoned head from wedging the
+queue. Platform cache-coherence validation, guest-visible allocation response
+publication, CUDA graph lowering, IOMMU plumbing, and end-to-end performance
+measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
 to approach it for long-running LLM inference by avoiding copies, per-kernel VM
 exits, and repeated context setup; arbitrary CUDA applications are out of scope.

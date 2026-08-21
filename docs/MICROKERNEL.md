@@ -95,8 +95,10 @@ request IDs, rejects trailing/truncated/reserved encodings, and revalidates all
 session resources while decoding. The `SubmitBatch` control path revalidates
 the seal, decodes against current generations, admits watchdog identities,
 validates signed schemas, executes, and publishes authenticated completions in
-one fail-closed call. Shared-ring command dequeue and allocate/free response
-handling remain pending.
+one fail-closed call. The resource service dequeues and erases one owned slot,
+authenticates it, executes allocation/free through a narrow transactional
+backend, or yields a typed `SubmitBatch` outcome. Invalid messages cannot wedge
+the ring head. Guest-visible allocation response publication remains pending.
 Dispatch and batch wire version 2 now add a fixed tail of at most 16 typed
 32-bit scalar slots. Each slot identifies `u32`, `i32`, or raw IEEE-754 f32
 bits, has zero-only reserved bytes, and unused slots must be entirely zero.
@@ -129,8 +131,8 @@ verifies command writes, completion write denial, and continued execution of a
 verified PE guest. The kernel-owned completion ring reserves capacity for a
 whole validated batch before execution, receives authenticated results only
 after synchronized completion, and erases slots as the VMM consumes them.
-Platform cache-coherence validation, shared command dequeue and resource
-responses, CUDA graph capture, IOMMU plumbing, the platform-specific physical
+Platform cache-coherence validation, guest-visible resource responses, CUDA
+graph capture, IOMMU plumbing, the platform-specific physical
 device-reset callback, and end-to-end inference benchmarks remain pending.
 Until those pieces exist and are audited, this is not a working
 shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a

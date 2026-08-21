@@ -8,9 +8,9 @@ use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use mrml_kernel::{
-    BufferAccess, BufferId, GpuHostBackend, MAX_DISPATCH_BUFFERS, MAX_DISPATCH_SCALARS,
-    MAX_GPU_CONTROL_BYTES, PreparedGpuDispatch, ValidatedExpertSelection, ValidatedKernelLaunch,
-    VirtualGpuSession,
+    BufferAccess, BufferId, GpuHostBackend, GpuResourceBackend, MAX_DISPATCH_BUFFERS,
+    MAX_DISPATCH_SCALARS, MAX_GPU_CONTROL_BYTES, PreparedGpuDispatch, ValidatedExpertSelection,
+    ValidatedKernelLaunch, VirtualGpuSession,
 };
 use mrml_runtime::{OnceCell, OrderedMap, Shared, SpinMutex, Text, Vector};
 
@@ -1749,6 +1749,18 @@ impl<const N: usize> MediatedCudaService<N> {
     }
     pub fn backend_mut(&mut self) -> &mut MediatedCudaBackend<N> {
         &mut self.backend
+    }
+}
+
+impl<const N: usize> GpuResourceBackend for MediatedCudaService<N> {
+    type Error = MediatedCudaError;
+
+    fn allocate(&mut self, bytes: u64) -> Result<BufferId, Self::Error> {
+        MediatedCudaService::allocate(self, bytes)
+    }
+
+    fn free(&mut self, buffer: BufferId) -> Result<u64, Self::Error> {
+        MediatedCudaService::free(self, buffer)
     }
 }
 

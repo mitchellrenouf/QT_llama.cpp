@@ -1230,6 +1230,65 @@ pub enum ResourceCommand {
     SubmitBatch { control: ControlBufferId },
 }
 
+pub trait GpuResourceBackend {
+    type Error;
+
+    fn allocate(&mut self, bytes: u64) -> Result<BufferId, Self::Error>;
+    fn free(&mut self, buffer: BufferId) -> Result<u64, Self::Error>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuResourceOutcome {
+    Allocated {
+        request_id: u64,
+        buffer: BufferId,
+    },
+    Freed {
+        request_id: u64,
+        bytes: u64,
+    },
+    SubmitBatch {
+        request_id: u64,
+        control: ControlBufferId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuCommandServiceError<E> {
+    Protocol(GpuError),
+    Backend(E),
+}
+
+/// Consumes, authenticates, and executes exactly one kernel-owned resource
+/// command. Authentication failure still consumes the owned slot, preventing
+/// an attacker from permanently wedging the service on one invalid message.
+pub fn process_gpu_resource_command<B: GpuResourceBackend, const RING: usize>(
+    ring: &mut GpuCommandRing<RING>,
+    receiver: &mut GpuQueueReceiver,
+    backend: &mut B,
+) -> Result<GpuResourceOutcome, GpuCommandServiceError<B::Error>> {
+    let mut message = [0; GPU_QUEUE_MESSAGE_BYTES];
+    ring.dequeue(&mut message)
+        .map_err(GpuCommandServiceError::Protocol)?;
+    let (request_id, command) = receiver
+        .decode(&message)
+        .map_err(GpuCommandServiceError::Protocol)?;
+    match command {
+        ResourceCommand::Allocate { bytes } => backend
+            .allocate(bytes)
+            .map(|buffer| GpuResourceOutcome::Allocated { request_id, buffer })
+            .map_err(GpuCommandServiceError::Backend),
+        ResourceCommand::Free { buffer } => backend
+            .free(buffer)
+            .map(|bytes| GpuResourceOutcome::Freed { request_id, bytes })
+            .map_err(GpuCommandServiceError::Backend),
+        ResourceCommand::SubmitBatch { control } => Ok(GpuResourceOutcome::SubmitBatch {
+            request_id,
+            control,
+        }),
+    }
+}
+
 impl ResourceCommand {
     pub const WIRE_LENGTH: usize = 24;
 
@@ -1393,6 +1452,18 @@ impl<const BUFFERS: usize> VirtualGpuSession<BUFFERS> {
             .get_mut(id.slot as usize)
             .filter(|buffer| buffer.occupied && buffer.generation == id.generation)
             .ok_or(GpuError::InvalidBuffer)
+    }
+}
+
+impl<const BUFFERS: usize> GpuResourceBackend for VirtualGpuSession<BUFFERS> {
+    type Error = GpuError;
+
+    fn allocate(&mut self, bytes: u64) -> Result<BufferId, Self::Error> {
+        VirtualGpuSession::allocate(self, bytes)
+    }
+
+    fn free(&mut self, buffer: BufferId) -> Result<u64, Self::Error> {
+        VirtualGpuSession::free(self, buffer)
     }
 }
 
@@ -5195,6 +5266,69 @@ mod tests {
             GpuQueueSender::new(11, [0; 32]),
             Err(GpuError::InvalidQueueKey)
         ));
+    }
+
+    #[test]
+    fn resource_service_consumes_authenticated_allocate_free_and_submit_commands() {
+        let key = [0x2d; 32];
+        let mut sender = GpuQueueSender::new(31, key).unwrap();
+        let mut receiver = GpuQueueReceiver::new(31, key).unwrap();
+        let mut ring = GpuCommandRing::<2>::new().unwrap();
+        let mut session = VirtualGpuSession::<1>::new(4096);
+        let mut wire = [0; GPU_QUEUE_MESSAGE_BYTES];
+
+        sender
+            .encode(81, ResourceCommand::Allocate { bytes: 4096 }, &mut wire)
+            .unwrap();
+        let mut tampered = wire;
+        tampered[48] ^= 1;
+        ring.enqueue(&tampered).unwrap();
+        assert_eq!(
+            process_gpu_resource_command(&mut ring, &mut receiver, &mut session),
+            Err(GpuCommandServiceError::Protocol(
+                GpuError::AuthenticationFailed
+            ))
+        );
+        assert!(ring.is_empty());
+        assert_eq!(session.allocated_bytes(), 0);
+
+        ring.enqueue(&wire).unwrap();
+        let allocated =
+            process_gpu_resource_command(&mut ring, &mut receiver, &mut session).unwrap();
+        let buffer = match allocated {
+            GpuResourceOutcome::Allocated { request_id, buffer } => {
+                assert_eq!(request_id, 81);
+                buffer
+            }
+            _ => panic!("unexpected resource outcome"),
+        };
+        sender
+            .encode(82, ResourceCommand::Free { buffer }, &mut wire)
+            .unwrap();
+        ring.enqueue(&wire).unwrap();
+        assert_eq!(
+            process_gpu_resource_command(&mut ring, &mut receiver, &mut session),
+            Ok(GpuResourceOutcome::Freed {
+                request_id: 82,
+                bytes: 4096,
+            })
+        );
+
+        let control = ControlBufferId {
+            slot: 0,
+            generation: 1,
+        };
+        sender
+            .encode(83, ResourceCommand::SubmitBatch { control }, &mut wire)
+            .unwrap();
+        ring.enqueue(&wire).unwrap();
+        assert_eq!(
+            process_gpu_resource_command(&mut ring, &mut receiver, &mut session),
+            Ok(GpuResourceOutcome::SubmitBatch {
+                request_id: 83,
+                control,
+            })
+        );
     }
 
     #[test]
