@@ -8,6 +8,7 @@ use mrml_crypto::{
 use mrml_error::{Result, anyhow};
 use mrml_kernel::{
     ArtifactKind, PeImage, ReleaseManifest, SIGNED_ARTIFACT_HEADER_BYTES, artifact_statement,
+    executable_image_limit,
 };
 use mrml_runtime::{Text, Vector, mrml_println as println};
 
@@ -57,11 +58,9 @@ fn sign_bundle(
     if artifact.is_empty() {
         return Err(anyhow!("artifact must not be empty"));
     }
-    if matches!(
-        kind,
-        ArtifactKind::Kernel | ArtifactKind::VmImage | ArtifactKind::ServiceImage
-    ) {
-        PeImage::parse(&artifact).map_err(|_| anyhow!("OS executable must be valid MRML PE32+"))?;
+    if let Some(maximum) = executable_image_limit(kind) {
+        PeImage::parse_with_limit(&artifact, maximum)
+            .map_err(|_| anyhow!("OS executable violates its MRML PE32+ size or format policy"))?;
     }
     let mut private = mrml_runtime::read_file_bounded(private_path, LAMPORT_PRIVATE_KEY_BYTES)?;
     if private.len() != LAMPORT_PRIVATE_KEY_BYTES {

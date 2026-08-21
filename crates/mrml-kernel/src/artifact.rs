@@ -11,6 +11,19 @@ pub enum ArtifactKind {
     LaunchPolicy = 5,
 }
 
+pub const MAX_KERNEL_IMAGE_BYTES: u32 = 64 * 1024 * 1024;
+pub const MAX_SERVICE_IMAGE_BYTES: u32 = 128 * 1024 * 1024;
+pub const MAX_VM_IMAGE_BYTES: u32 = 512 * 1024 * 1024;
+
+pub const fn executable_image_limit(kind: ArtifactKind) -> Option<u32> {
+    match kind {
+        ArtifactKind::Kernel => Some(MAX_KERNEL_IMAGE_BYTES),
+        ArtifactKind::ServiceImage => Some(MAX_SERVICE_IMAGE_BYTES),
+        ArtifactKind::VmImage => Some(MAX_VM_IMAGE_BYTES),
+        ArtifactKind::CudaKernelBundle | ArtifactKind::LaunchPolicy => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ArtifactError {
     InvalidPublicKey,
@@ -144,16 +157,13 @@ impl<'a> SignedArtifact<'a> {
         root: &TrustRoot,
         expected_kind: ArtifactKind,
     ) -> Result<VerifiedExecutable<'a>, ExecutableArtifactError> {
-        if !matches!(
-            expected_kind,
-            ArtifactKind::Kernel | ArtifactKind::VmImage | ArtifactKind::ServiceImage
-        ) {
-            return Err(ExecutableArtifactError::NonExecutableKind);
-        }
+        let maximum = executable_image_limit(expected_kind)
+            .ok_or(ExecutableArtifactError::NonExecutableKind)?;
         let artifact = self
             .verify(root, expected_kind)
             .map_err(ExecutableArtifactError::Signature)?;
-        let image = PeImage::parse(self.payload).map_err(ExecutableArtifactError::Format)?;
+        let image = PeImage::parse_with_limit(self.payload, maximum)
+            .map_err(ExecutableArtifactError::Format)?;
         Ok(VerifiedExecutable { artifact, image })
     }
 

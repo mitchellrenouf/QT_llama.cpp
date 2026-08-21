@@ -107,6 +107,13 @@ pub struct PeImage<'a> {
 
 impl<'a> PeImage<'a> {
     pub fn parse(encoded: &'a [u8]) -> Result<Self, PeError> {
+        Self::parse_with_limit(encoded, MAX_PE_IMAGE_BYTES)
+    }
+
+    pub fn parse_with_limit(encoded: &'a [u8], maximum_image_bytes: u32) -> Result<Self, PeError> {
+        if maximum_image_bytes == 0 || maximum_image_bytes > MAX_PE_IMAGE_BYTES {
+            return Err(PeError::InvalidImageSize);
+        }
         if read_u16(encoded, 0)? != DOS_MAGIC {
             return Err(PeError::InvalidDosHeader);
         }
@@ -171,8 +178,8 @@ impl<'a> PeImage<'a> {
         }
         if entry_rva == 0
             || image_size == 0
-            || image_size > MAX_PE_IMAGE_BYTES
-            || encoded.len() > MAX_PE_IMAGE_BYTES as usize
+            || image_size > maximum_image_bytes
+            || encoded.len() > maximum_image_bytes as usize
             || image_size % section_alignment != 0
             || headers_size > image_size
             || image_base % 65_536 != 0
@@ -604,6 +611,11 @@ mod tests {
             image.section_data(image.section(0).unwrap()).unwrap().len(),
             0x200
         );
+        assert_eq!(
+            PeImage::parse_with_limit(&pe, 4096).err(),
+            Some(PeError::InvalidImageSize)
+        );
+        assert!(PeImage::parse_with_limit(&pe, 8192).is_ok());
     }
 
     #[test]

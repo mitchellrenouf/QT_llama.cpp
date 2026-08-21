@@ -169,8 +169,10 @@ bounded headers and section bytes to their RVAs, leaves virtual tails and gaps
 zeroed, and returns the checked preferred-base entry address. A separate load
 plan describes read-only NX headers and the final W^X permission of every
 section. Platform code must populate pages while NX is active and install the
-final permissions only after copying completes. Image size is capped at 512
-MiB to bound memory consumption. Optional PE base relocation tables are fully
+final permissions only after copying completes. Mapped image size is capped by
+artifact type: 64 MiB for the microkernel, 128 MiB for a service, and 512 MiB
+for a VM boot image. Both the signer and verified runtime admission enforce the
+same quota before allocation. Optional PE base relocation tables are fully
 validated before loading, capped at 65,536 entries, and accept only padding and
 x86-64 `DIR64` relocations; malformed blocks, unsupported relocation types,
 out-of-image targets, arithmetic overflow, and rebasing a fixed image fail
