@@ -484,9 +484,14 @@ the backing store for it are now shared with the microkernel's page-table
 builder. A fixed guest-RAM arena returns only freshly zeroed frames and rejects
 reads or writes to unallocated tables, out-of-range entries, read-only RAM, and
 arena exhaustion. KVM therefore inherits the same hardware W^X, NX, user-bit,
-and duplicate-mapping checks as bare metal. Loading a verified PE image and its
-boot handoff into this backend remains pending, so it does not yet launch a
-bootable KVM guest. The
+and duplicate-mapping checks as bare metal. PE materialization and final
+section mapping are implemented, but their public entry points accept only a
+`VerifiedExecutable` produced by signature verification. The exact image size
+is zero-filled and relocated in owned RAM, every mapping is prevalidated before
+hardware tables change, and final permissions come only from the validated PE
+load plan. A late page-table storage failure discards the unpublished VM.
+Constructing the signed boot handoff and completing the launch transaction
+remain pending, so this does not yet launch a bootable KVM guest. The
 current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
 the live capability probe records that as unavailable and no launch claim is
 made for this environment.

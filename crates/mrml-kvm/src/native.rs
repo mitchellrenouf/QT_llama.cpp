@@ -1,8 +1,13 @@
 use core::ffi::{c_char, c_int, c_ulong, c_void};
 use core::ptr::NonNull;
 use core::slice;
-use mrml_kernel::arch::x86_64::{PageTableBuildError, PageTableBuilder, PageTableStore};
-use mrml_kernel::{PhysAddr, VmBackend, VmExit, PAGE_SIZE};
+use mrml_kernel::arch::x86_64::{
+    AddressSpace, Mapping, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
+    VirtAddr,
+};
+use mrml_kernel::{
+    PeImage, PhysAddr, VerifiedExecutable, VmBackend, VmExit, MAX_PE_SECTIONS, PAGE_SIZE,
+};
 
 use crate::{decode_run_page, KvmError, KvmMemoryRegion, KVM_API_VERSION};
 
@@ -519,6 +524,42 @@ impl<const N: usize> KvmGuestMemory<N> {
         Ok(())
     }
 
+    pub fn load_verified_executable(
+        &mut self,
+        executable: &VerifiedExecutable<'_>,
+        guest_physical_base: u64,
+        virtual_base: u64,
+    ) -> Result<KvmLoadedImage, KvmError> {
+        self.load_pe(executable.image(), guest_physical_base, virtual_base)
+    }
+
+    fn load_pe(
+        &mut self,
+        image: &PeImage<'_>,
+        guest_physical_base: u64,
+        virtual_base: u64,
+    ) -> Result<KvmLoadedImage, KvmError> {
+        let image_bytes = image.image_size() as usize;
+        let (host, offset, readonly) = {
+            let (region, offset) = self.locate(guest_physical_base, image_bytes)?;
+            (region.host, offset, region.readonly)
+        };
+        if readonly {
+            return Err(KvmError::ReadOnlyMemory);
+        }
+        let destination =
+            unsafe { slice::from_raw_parts_mut(host.as_ptr().add(offset), image_bytes) };
+        let entry = image
+            .materialize_at(destination, virtual_base)
+            .map_err(KvmError::Pe)?;
+        Ok(KvmLoadedImage {
+            entry,
+            virtual_base,
+            physical_base: guest_physical_base,
+            image_bytes: image.image_size(),
+        })
+    }
+
     fn locate(&self, guest_address: u64, bytes: usize) -> Result<(&HostRegion, usize), KvmError> {
         if bytes == 0 {
             return Err(KvmError::UnmappedMemory);
@@ -533,6 +574,95 @@ impl<const N: usize> KvmGuestMemory<N> {
             .ok_or(KvmError::UnmappedMemory)?;
         Ok((region, (guest_address - region.guest_address) as usize))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvmLoadedImage {
+    entry: u64,
+    virtual_base: u64,
+    physical_base: u64,
+    image_bytes: u32,
+}
+
+impl KvmLoadedImage {
+    pub const fn entry(self) -> u64 {
+        self.entry
+    }
+    pub const fn virtual_base(self) -> u64 {
+        self.virtual_base
+    }
+    pub const fn physical_base(self) -> u64 {
+        self.physical_base
+    }
+    pub const fn image_bytes(self) -> u32 {
+        self.image_bytes
+    }
+}
+
+pub fn map_loaded_pe<S: PageTableStore>(
+    tables: &mut PageTableBuilder<S>,
+    executable: &VerifiedExecutable<'_>,
+    loaded: KvmLoadedImage,
+    user: bool,
+) -> Result<(), KvmError> {
+    map_pe(tables, executable.image(), loaded, user)
+}
+
+fn map_pe<S: PageTableStore>(
+    tables: &mut PageTableBuilder<S>,
+    image: &PeImage<'_>,
+    loaded: KvmLoadedImage,
+    user: bool,
+) -> Result<(), KvmError> {
+    if loaded.image_bytes != image.image_size() {
+        return Err(KvmError::InvalidMapping);
+    }
+    let mut validated = AddressSpace::<{ MAX_PE_SECTIONS + 1 }>::new();
+    for index in 0..image.load_region_count() {
+        validated
+            .map(pe_mapping(image, loaded, index, user)?)
+            .map_err(|_| KvmError::InvalidMapping)?;
+    }
+    for index in 0..image.load_region_count() {
+        tables
+            .map(pe_mapping(image, loaded, index, user)?)
+            .map_err(|_| KvmError::PageTable)?;
+    }
+    Ok(())
+}
+
+fn pe_mapping(
+    image: &PeImage<'_>,
+    loaded: KvmLoadedImage,
+    index: usize,
+    user: bool,
+) -> Result<Mapping, KvmError> {
+    let region = image.load_region(index).map_err(KvmError::Pe)?;
+    let offset = region.virtual_address() as u64;
+    let virtual_address = loaded
+        .virtual_base
+        .checked_add(offset)
+        .ok_or(KvmError::InvalidMapping)?;
+    let physical_address = loaded
+        .physical_base
+        .checked_add(offset)
+        .ok_or(KvmError::InvalidMapping)?;
+    let permissions = match (user, region.writable(), region.executable()) {
+        (true, true, false) => PagePermissions::USER_READ_WRITE,
+        (true, false, true) => PagePermissions::USER_READ_EXECUTE,
+        (true, false, false) => PagePermissions::USER_READ,
+        (false, true, false) => PagePermissions::KERNEL_READ_WRITE,
+        (false, false, true) => PagePermissions::KERNEL_READ_EXECUTE,
+        (false, false, false) => PagePermissions::KERNEL_READ,
+        (_, true, true) => return Err(KvmError::InvalidMapping),
+    };
+    Mapping::new(
+        VirtAddr::new(virtual_address).map_err(|_| KvmError::InvalidMapping)?,
+        PhysAddr::new(physical_address).map_err(|_| KvmError::InvalidMapping)?,
+        region.pages() as u64,
+        permissions,
+    )
+    .map_err(|_| KvmError::InvalidMapping)
 }
 
 impl<const N: usize> Default for KvmGuestMemory<N> {
@@ -704,6 +834,35 @@ impl<const N: usize> VmBackend for KvmBackend<N> {
 mod tests {
     use super::*;
 
+    fn valid_pe() -> [u8; 1024] {
+        let mut pe = [0u8; 1024];
+        pe[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(&0x0000_4550u32.to_le_bytes());
+        pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        pe[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+        pe[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+        pe[0x96..0x98].copy_from_slice(&2u16.to_le_bytes());
+        let optional = 0x98;
+        pe[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        pe[optional + 16..optional + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[optional + 24..optional + 32].copy_from_slice(&0x0000_0001_4000_0000u64.to_le_bytes());
+        pe[optional + 32..optional + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[optional + 36..optional + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[optional + 56..optional + 60].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[optional + 60..optional + 64].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[optional + 70..optional + 72].copy_from_slice(&0x100u16.to_le_bytes());
+        let section = optional + 240;
+        pe[section..section + 5].copy_from_slice(b".text");
+        pe[section + 8..section + 12].copy_from_slice(&0x20u32.to_le_bytes());
+        pe[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[section + 16..section + 20].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[section + 36..section + 40].copy_from_slice(&0x6000_0000u32.to_le_bytes());
+        pe[0x200] = 0xcc;
+        pe
+    }
+
     #[test]
     fn ioctl_numbers_match_x86_64_kvm_uapi() {
         assert_eq!(KVM_GET_API_VERSION, 0xae00);
@@ -783,5 +942,24 @@ mod tests {
             tables.store().read(PhysAddr::new(0x10_7000).unwrap(), 0),
             Err(PageTableBuildError::Storage)
         );
+    }
+
+    #[test]
+    fn pe_is_materialized_then_mapped_with_validated_permissions() {
+        let encoded = valid_pe();
+        let image = PeImage::parse(&encoded).unwrap();
+        let mut memory = KvmGuestMemory::<2>::new();
+        memory.allocate(0x10_0000, 0x8000, false).unwrap();
+        memory.allocate(0x20_0000, 0x2000, false).unwrap();
+        let loaded = memory
+            .load_pe(&image, 0x20_0000, image.image_base())
+            .unwrap();
+        assert_eq!(loaded.entry(), image.image_base() + 0x1000);
+        let mut opcode = [0u8; 1];
+        memory.read(0x20_1000, &mut opcode).unwrap();
+        assert_eq!(opcode, [0xcc]);
+        let store = KvmPageTableStore::new(&mut memory, 0x10_0000, 8).unwrap();
+        let mut tables = PageTableBuilder::new(store).unwrap();
+        map_pe(&mut tables, &image, loaded, true).unwrap();
     }
 }

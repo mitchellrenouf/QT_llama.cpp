@@ -9,4 +9,7 @@ pub use abi::{
     MAX_KVM_MEMORY_SLOTS, MRML_KVM_HYPERCALL,
 };
 #[cfg(target_os = "linux")]
-pub use native::{KvmBackend, KvmGuestMemory, KvmPageTableStore, KvmSystem, KvmVcpu, KvmVm};
+pub use native::{
+    map_loaded_pe, KvmBackend, KvmGuestMemory, KvmLoadedImage, KvmPageTableStore, KvmSystem,
+    KvmVcpu, KvmVm,
+};
