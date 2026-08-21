@@ -211,9 +211,13 @@ interrupted context to its current CR3, advances the scheduler quantum, selects
 task B, acknowledges EOI, and restores B through `iretq`. B's checked CPL3
 breakpoint proves execution without granting user I/O rights. The finalized
 artifact completed in 2,073 microseconds on nested KVM and 8,315 microseconds
-on WHP. This diagnostic deliberately shares one user-visible PE/root between A
-and B; timer preemption across the distinct service roots remains unfinished.
-Validated generational ring-three context
+on WHP. The signed `service-preemption-probe` repeats the complete path across
+independently materialized service roots: A runs under `CR3=0xc00000`, its
+validated frame is saved only into A's domain, and B is restored under
+`CR3=0xd00000`. Each root contains the supervisor kernel plus only its own user
+image and guarded stack; timer-enabled roots additionally receive the
+supervisor-only APIC page. The final cross-root proof completed in 2,063
+microseconds on nested KVM and 8,413 microseconds on WHP. Validated generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A
@@ -224,8 +228,10 @@ without guard pages. A separate signed diagnostic build now performs a live
 `RSP0`, validates the privilege-transition frame, and reaches user-task
 termination policy under nested KVM. That proof temporarily maps the entire
 diagnostic PE in the lower half with user permissions and is therefore not an
-acceptable service isolation design. Guarded per-CPU stacks, separate signed
-user mappings, and distinct production CR3 roots remain unfinished. The live
+acceptable service isolation design. Separate signed user mappings and
+distinct CR3 roots are now exercised by both the service IPC and timer probes.
+Guarded per-CPU privilege stacks and production service lifecycle remain
+unfinished. The live
 probe now uses the reusable context transition that writes its validated CR3,
 sanitizes DS/ES/FS/GS, restores all fifteen general registers, and constructs
 the exact ring-three `iretq` frame rather than probe-specific entry assembly.

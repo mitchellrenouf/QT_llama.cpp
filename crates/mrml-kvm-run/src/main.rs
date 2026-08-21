@@ -71,6 +71,7 @@ enum LaunchMode {
     PreemptionProbe,
     UserProbe,
     ServiceProbe,
+    ServicePreemptionProbe,
     GpuBenchmark,
 }
 
@@ -84,9 +85,10 @@ impl LaunchMode {
             "preemption-probe" => Ok(Self::PreemptionProbe),
             "user-probe" => Ok(Self::UserProbe),
             "service-probe" => Ok(Self::ServiceProbe),
+            "service-preemption-probe" => Ok(Self::ServicePreemptionProbe),
             "gpu-benchmark" => Ok(Self::GpuBenchmark),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, or gpu-benchmark"
+                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, or gpu-benchmark"
             )),
         }
     }
@@ -113,10 +115,13 @@ fn application_main() -> Result<()> {
         .filter(|version| *version != 0)
         .ok_or_else(|| anyhow!("minimum version must be a nonzero integer"))?;
     let mode = LaunchMode::parse(&arguments[4])?;
-    if matches!(mode, LaunchMode::GpuBenchmark | LaunchMode::ServiceProbe) != (arguments.len() == 8)
+    if matches!(
+        mode,
+        LaunchMode::GpuBenchmark | LaunchMode::ServiceProbe | LaunchMode::ServicePreemptionProbe
+    ) != (arguments.len() == 8)
     {
         return Err(anyhow!(
-            "gpu-benchmark and service-probe require exactly one matching signed artifact, public key, and minimum version"
+            "gpu-benchmark and service modes require exactly one matching signed artifact, public key, and minimum version"
         ));
     }
     let bundle = mrml_runtime::read_file_bounded(&arguments[1], MAX_KERNEL_BUNDLE)?;
@@ -134,7 +139,11 @@ fn application_main() -> Result<()> {
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
-    let service_bundle = if mode == LaunchMode::ServiceProbe {
+    let service_mode = matches!(
+        mode,
+        LaunchMode::ServiceProbe | LaunchMode::ServicePreemptionProbe
+    );
+    let service_bundle = if service_mode {
         Some(mrml_runtime::read_file_bounded(
             &arguments[5],
             SIGNED_ARTIFACT_OVERHEAD_BYTES + mrml_kernel::MAX_SERVICE_IMAGE_BYTES as usize,
@@ -142,7 +151,7 @@ fn application_main() -> Result<()> {
     } else {
         None
     };
-    let service_public = if mode == LaunchMode::ServiceProbe {
+    let service_public = if service_mode {
         let public = mrml_runtime::read_file_bounded(&arguments[6], LAMPORT_PUBLIC_KEY_BYTES)?;
         if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
             return Err(anyhow!("invalid service public-key length"));
@@ -224,15 +233,19 @@ fn application_main() -> Result<()> {
         LaunchMode::GpuBenchmark => {
             system.prepare_kernel_gpu_guest::<13>(0, &executable, &handoff, layout, queue_layout)
         }
-        LaunchMode::TimerProbe | LaunchMode::PreemptionProbe => {
+        LaunchMode::TimerProbe
+        | LaunchMode::PreemptionProbe
+        | LaunchMode::ServicePreemptionProbe => {
             system.prepare_timer_kernel_guest::<13>(0, &executable, &handoff, layout)
         }
         _ => system.prepare_kernel_guest::<13>(0, &executable, &handoff, layout),
     }
     .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
-    if mode == LaunchMode::ServiceProbe {
+    if service_mode {
+        let local_apic = mode == LaunchMode::ServicePreemptionProbe;
         guest = guest
-            .attach_isolated_service(
+            .attach_isolated_service_at(
+                0,
                 &executable,
                 layout,
                 service_executable
@@ -245,6 +258,7 @@ fn application_main() -> Result<()> {
                 2,
                 SERVICE_TABLE_PHYSICAL,
                 32,
+                local_apic,
             )
             .map_err(|error| anyhow!("isolated service preparation failed: {:?}", error))?;
         guest = guest
@@ -262,6 +276,7 @@ fn application_main() -> Result<()> {
                 2,
                 SERVICE_B_TABLE_PHYSICAL,
                 32,
+                local_apic,
             )
             .map_err(|error| anyhow!("second isolated service preparation failed: {:?}", error))?;
         if guest.service_entry() != Some(0x0000_0001_4000_1000)
@@ -306,6 +321,39 @@ fn application_main() -> Result<()> {
         }
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after exception probe failed: {:?}", error))?;
+    } else if mode == LaunchMode::ServicePreemptionProbe {
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!(
+                "service preemption probe did not initialize: {:?}",
+                exit
+            ));
+        }
+        for stage in [0x2320u32, 1, 2, 3, 4, 5, 6] {
+            exit = VmBackend::run(&mut guest, 0)
+                .map_err(|error| anyhow!("KVM service preemption failed: {:?}", error))?;
+            if exit
+                != (VmExit::Io {
+                    port: PREEMPTION_PROBE_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "service preemption stage {:#x} mismatch: {:?}",
+                    stage,
+                    exit
+                ));
+            }
+        }
+        exit = VmExit::Halted;
     } else if mode == LaunchMode::PreemptionProbe {
         if exit
             != (VmExit::Io {

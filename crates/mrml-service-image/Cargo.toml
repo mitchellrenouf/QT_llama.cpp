@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+preemption-probe = []
+
 [[bin]]
 name = "mrml-service-pe"
 path = "src/main.rs"

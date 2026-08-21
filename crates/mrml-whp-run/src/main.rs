@@ -68,11 +68,14 @@ fn application_main() -> Result<()> {
         return Ok(());
     }
     let service_mode = arguments.len() == 8 && arguments[4] == "service-probe";
+    let service_preemption_mode =
+        arguments.len() == 8 && arguments[4] == "service-preemption-probe";
+    let service_artifact_mode = service_mode || service_preemption_mode;
     let timer_mode = arguments.len() == 5 && arguments[4] == "timer-probe";
     let preemption_mode = arguments.len() == 5 && arguments[4] == "preemption-probe";
-    if arguments.len() != 7 && !service_mode && !timer_mode && !preemption_mode {
+    if arguments.len() != 7 && !service_artifact_mode && !timer_mode && !preemption_mode {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -95,7 +98,7 @@ fn application_main() -> Result<()> {
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
-    let service_bundle = if service_mode {
+    let service_bundle = if service_artifact_mode {
         Some(mrml_runtime::read_file_bounded(
             &arguments[5],
             SIGNED_ARTIFACT_OVERHEAD_BYTES + mrml_kernel::MAX_SERVICE_IMAGE_BYTES as usize,
@@ -103,7 +106,7 @@ fn application_main() -> Result<()> {
     } else {
         None
     };
-    let service_public = if service_mode {
+    let service_public = if service_artifact_mode {
         let public = mrml_runtime::read_file_bounded(&arguments[6], LAMPORT_PUBLIC_KEY_BYTES)?;
         if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
             return Err(anyhow!("invalid service public-key length"));
@@ -135,7 +138,7 @@ fn application_main() -> Result<()> {
         (None, None) => None,
         _ => return Err(anyhow!("incomplete service verification inputs")),
     };
-    let cuda_bundle = if service_mode || timer_mode || preemption_mode {
+    let cuda_bundle = if service_artifact_mode || timer_mode || preemption_mode {
         None
     } else {
         Some(verify_cuda_bundle(
@@ -182,6 +185,8 @@ fn application_main() -> Result<()> {
     let preparation_started = Instant::now();
     let mut guest = if service_mode {
         system.prepare_isolated_service_kernel(&executable, &handoff, layout)
+    } else if service_preemption_mode {
+        system.prepare_preemption_kernel(&executable, &handoff, layout)
     } else if timer_mode {
         system.prepare_timer_kernel(&executable, &handoff, layout)
     } else if preemption_mode {
@@ -190,9 +195,11 @@ fn application_main() -> Result<()> {
         system.prepare_kernel_gpu_guest(&executable, &handoff, layout, queue)
     }
     .map_err(|error| anyhow!("verified WHP kernel preparation failed: {:?}", error))?;
-    if service_mode {
+    if service_artifact_mode {
+        let local_apic = service_preemption_mode;
         guest = guest
-            .attach_isolated_service(
+            .attach_isolated_service_at(
+                0,
                 &executable,
                 layout,
                 service_executable
@@ -205,6 +212,7 @@ fn application_main() -> Result<()> {
                 2,
                 SERVICE_TABLE_PHYSICAL,
                 32,
+                local_apic,
             )
             .map_err(|error| anyhow!("isolated WHP service preparation failed: {:?}", error))?;
         guest = guest
@@ -222,6 +230,7 @@ fn application_main() -> Result<()> {
                 2,
                 SERVICE_B_TABLE_PHYSICAL,
                 32,
+                local_apic,
             )
             .map_err(|error| {
                 anyhow!(
@@ -267,6 +276,47 @@ fn application_main() -> Result<()> {
             physical,
             instruction
         ));
+    }
+    if service_preemption_mode {
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!(
+                "WHP service preemption did not initialize: {:?}",
+                exit
+            ));
+        }
+        for stage in [0x2320u32, 1, 2, 3, 4, 5, 6] {
+            let exit = VmBackend::run(&mut guest, 0)
+                .map_err(|error| anyhow!("WHP service preemption failed: {:?}", error))?;
+            if exit
+                != (VmExit::Io {
+                    port: PREEMPTION_PROBE_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "WHP service preemption stage {:#x} mismatch: {:?}",
+                    stage,
+                    exit
+                ));
+            }
+        }
+        println!(
+            "verified cross-root CPL3 timer preemption under WHP: verify={}us prepare={}us execute={}us total={}us",
+            verification_micros,
+            preparation_micros,
+            execution_started.elapsed().as_micros(),
+            total_started.elapsed().as_micros()
+        );
+        return Ok(());
     }
     if timer_mode {
         if exit

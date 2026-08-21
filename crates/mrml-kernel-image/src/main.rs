@@ -11,27 +11,34 @@ use mrml_kernel::SyscallRequest;
 #[cfg(any(
     feature = "user-probe",
     feature = "service-probe",
-    feature = "preemption-probe"
+    feature = "preemption-probe",
+    feature = "service-preemption-probe"
 ))]
 use mrml_kernel::TaskRuntime;
 use mrml_kernel::UserCallFrame;
 #[cfg(any(
     feature = "user-probe",
     feature = "service-probe",
-    feature = "preemption-probe"
+    feature = "preemption-probe",
+    feature = "service-preemption-probe"
 ))]
 use mrml_kernel::arch::x86_64::TrapDisposition;
 #[cfg(any(
     feature = "user-probe",
     feature = "service-probe",
-    feature = "preemption-probe"
+    feature = "preemption-probe",
+    feature = "service-preemption-probe"
 ))]
 use mrml_kernel::arch::x86_64::UserContext;
 #[cfg(any(feature = "user-probe", feature = "preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context;
-#[cfg(feature = "service-probe")]
+#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
-#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "preemption-probe",
+    feature = "service-preemption-probe"
+))]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::arch::x86_64::install_user_call_gate;
@@ -39,7 +46,11 @@ use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
     load_task_register, write_task_state_descriptor,
 };
-#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "preemption-probe",
+    feature = "service-preemption-probe"
+))]
 use mrml_kernel::arch::x86_64::{LocalApicTimer, TimerDivide};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
@@ -50,6 +61,7 @@ use mrml_kernel::{
     not(feature = "fault-probe"),
     not(feature = "timer-probe"),
     not(feature = "preemption-probe"),
+    not(feature = "service-preemption-probe"),
     not(feature = "user-probe"),
     not(feature = "service-probe")
 ))]
@@ -65,6 +77,7 @@ use mrml_kernel::{
 #[cfg(any(
     feature = "timer-probe",
     feature = "preemption-probe",
+    feature = "service-preemption-probe",
     feature = "user-probe",
     feature = "service-probe"
 ))]
@@ -82,11 +95,19 @@ const GPU_BENCHMARK_ELEMENTS: u32 = 1 << 22;
 const GPU_BENCHMARK_ITERATIONS: u32 = 1_000;
 #[cfg(feature = "fault-probe")]
 const EXCEPTION_PROBE_PORT: u16 = 0x4d53;
-#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "preemption-probe",
+    feature = "service-preemption-probe"
+))]
 const TIMER_READY_PORT: u16 = 0x4d54;
 #[cfg(feature = "timer-probe")]
 const TIMER_TICK_PORT: u16 = 0x4d55;
-#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "preemption-probe",
+    feature = "service-preemption-probe"
+))]
 const TIMER_VECTOR: u8 = 32;
 #[cfg(feature = "user-probe")]
 const USER_PROBE_PORT: u16 = 0x4d56;
@@ -98,15 +119,15 @@ const SERVICE_PROBE_PORT: u16 = 0x4d58;
 const SERVICE_FRAME_PORT: u16 = 0x4d59;
 #[cfg(feature = "service-probe")]
 const SERVICE_CALL_PORT: u16 = 0x4d5a;
-#[cfg(feature = "service-probe")]
+#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
-#[cfg(feature = "service-probe")]
+#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_B_ROOT: u64 = 0x00d0_0000;
-#[cfg(feature = "service-probe")]
+#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_ENTRY: u64 = 0x0000_0001_4000_1000;
-#[cfg(feature = "service-probe")]
+#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_SENDER_ENTRY: u64 = SERVICE_ENTRY + 0x80;
-#[cfg(feature = "service-probe")]
+#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 
 const GDT_ENTRIES: usize = 8;
@@ -133,7 +154,7 @@ static mut KERNEL_ENTRY_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STA
 static mut DOUBLE_FAULT_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_BYTES]);
 #[cfg(feature = "timer-probe")]
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
-#[cfg(feature = "preemption-probe")]
+#[cfg(any(feature = "preemption-probe", feature = "service-preemption-probe"))]
 static mut PREEMPTION_RUNTIME: Option<TaskRuntime<2, 0>> = None;
 #[cfg(feature = "user-probe")]
 static mut USER_RUNTIME: Option<TaskRuntime<2, 1>> = None;
@@ -330,7 +351,11 @@ mrml_exception_table:
 
 unsafe extern "C" {
     fn mrml_exception_fail_stop() -> !;
-    #[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
+    #[cfg(any(
+        feature = "timer-probe",
+        feature = "preemption-probe",
+        feature = "service-preemption-probe"
+    ))]
     fn mrml_timer_interrupt() -> !;
     #[cfg(feature = "preemption-probe")]
     fn mrml_preemption_spin() -> !;
@@ -505,7 +530,7 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
             options(nomem, nostack)
         );
     }
-    #[cfg(feature = "preemption-probe")]
+    #[cfg(any(feature = "preemption-probe", feature = "service-preemption-probe"))]
     unsafe {
         let frame = frame.as_ref().unwrap_or_else(|| halt());
         let normalized = frame.normalize(0, 0);
@@ -541,9 +566,16 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 4u32, options(nomem, nostack));
         LocalApicTimer::acknowledge();
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 5u32, options(nomem, nostack));
-        enter_user_context(&*context)
+        #[cfg(feature = "preemption-probe")]
+        {
+            enter_user_context(&*context)
+        }
+        #[cfg(feature = "service-preemption-probe")]
+        {
+            enter_service_preemption_context(&*context)
+        }
     }
-    #[cfg(not(feature = "preemption-probe"))]
+    #[cfg(not(any(feature = "preemption-probe", feature = "service-preemption-probe")))]
     {
         #[cfg(not(feature = "timer-probe"))]
         let _ = frame;
@@ -589,7 +621,7 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
         Ok(disposition) => disposition,
         Err(_) => halt(),
     };
-    #[cfg(feature = "preemption-probe")]
+    #[cfg(any(feature = "preemption-probe", feature = "service-preemption-probe"))]
     unsafe {
         let proof = if matches!(
             _disposition,
@@ -861,6 +893,57 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         };
         enter_user_probe_context(&*context_pointer);
     }
+    #[cfg(feature = "service-preemption-probe")]
+    unsafe {
+        asm!("cli", options(nomem, nostack));
+        let first_context = UserContext::new(
+            PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
+            SERVICE_ENTRY,
+            SERVICE_STACK_TOP,
+        )
+        .unwrap_or_else(|_| halt());
+        let second_context = UserContext::new(
+            PhysAddr::new(SERVICE_B_ROOT).unwrap_or_else(|_| halt()),
+            SERVICE_SENDER_ENTRY,
+            SERVICE_STACK_TOP,
+        )
+        .unwrap_or_else(|_| halt());
+        let mut runtime = TaskRuntime::<2, 0>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let first = runtime
+            .create(Priority::NORMAL, first_context)
+            .unwrap_or_else(|_| halt());
+        runtime
+            .create(Priority::NORMAL, second_context)
+            .unwrap_or_else(|_| halt());
+        if !matches!(runtime.start(), ScheduleOutcome::Switch { from: None, to } if to == first) {
+            halt();
+        }
+        core::ptr::addr_of_mut!(PREEMPTION_RUNTIME).write(Some(runtime));
+        LocalApicTimer::periodic(TIMER_VECTOR, 100_000, TimerDivide::By16)
+            .and_then(|timer| timer.enable())
+            .unwrap_or_else(|_| halt());
+        let mut previous = LocalApicTimer::current_count();
+        loop {
+            let current = LocalApicTimer::current_count();
+            if current > previous {
+                break;
+            }
+            previous = current;
+            core::hint::spin_loop();
+        }
+        asm!(
+            "out dx, eax",
+            in("dx") TIMER_READY_PORT,
+            in("eax") 1u32,
+            options(nomem, nostack)
+        );
+        let context = (*core::ptr::addr_of!(PREEMPTION_RUNTIME))
+            .as_ref()
+            .and_then(|runtime| runtime.context(first).ok())
+            .map(|context| context as *const UserContext)
+            .unwrap_or_else(|| halt());
+        enter_service_preemption_context(&*context)
+    }
     #[cfg(feature = "preemption-probe")]
     unsafe {
         asm!("cli", options(nomem, nostack));
@@ -963,6 +1046,7 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     #[cfg(all(
         not(feature = "timer-probe"),
         not(feature = "preemption-probe"),
+        not(feature = "service-preemption-probe"),
         not(feature = "user-probe"),
         not(feature = "service-probe")
     ))]
@@ -1058,6 +1142,13 @@ unsafe fn enter_user_probe_context(context: &UserContext) {
 
 #[cfg(feature = "service-probe")]
 unsafe fn enter_service_probe_context(context: &UserContext) -> ! {
+    let transition_stack =
+        core::ptr::addr_of!(KERNEL_ENTRY_STACK) as u64 + PRIVILEGE_STACK_BYTES as u64;
+    unsafe { enter_user_context_on_stack(context, transition_stack) }
+}
+
+#[cfg(feature = "service-preemption-probe")]
+unsafe fn enter_service_preemption_context(context: &UserContext) -> ! {
     let transition_stack =
         core::ptr::addr_of!(KERNEL_ENTRY_STACK) as u64 + PRIVILEGE_STACK_BYTES as u64;
     unsafe { enter_user_context_on_stack(context, transition_stack) }
@@ -1192,7 +1283,11 @@ unsafe fn install_descriptor_tables() {
     {
         halt();
     }
-    #[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
+    #[cfg(any(
+        feature = "timer-probe",
+        feature = "preemption-probe",
+        feature = "service-preemption-probe"
+    ))]
     if unsafe {
         install_external_interrupt_gate(
             core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),

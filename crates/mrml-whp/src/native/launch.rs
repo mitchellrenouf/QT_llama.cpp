@@ -206,6 +206,7 @@ impl PreparedWhpGuest<'_> {
             stack_pages,
             table_physical,
             table_pages,
+            false,
         )
     }
 
@@ -223,6 +224,7 @@ impl PreparedWhpGuest<'_> {
         stack_pages: u64,
         table_physical: u64,
         table_pages: u64,
+        local_apic: bool,
     ) -> Result<Self, WhpError> {
         if slot >= 2
             || self.service_root[slot].is_some()
@@ -301,6 +303,15 @@ impl PreparedWhpGuest<'_> {
             false,
         )?;
         map_pe(&mut tables, image, service_physical, service_virtual, true)?;
+        if local_apic {
+            tables
+                .map_page(
+                    VirtAddr::new(XAPIC_BASE).map_err(|_| WhpError::InvalidMapping)?,
+                    PhysAddr::new(XAPIC_BASE).map_err(|_| WhpError::InvalidMapping)?,
+                    PagePermissions::KERNEL_MMIO_READ_WRITE,
+                )
+                .map_err(|_| WhpError::InvalidRegisterState)?;
+        }
         tables
             .map(
                 Mapping::new(

@@ -10,6 +10,7 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 
 // This entry is assembly rather than a Rust ABI function because r12-r14 are
 // intentional launch registers, not compiler-owned callee-saved temporaries.
+#[cfg(not(feature = "preemption-probe"))]
 global_asm!(
     r#"
             .section .text
@@ -55,6 +56,26 @@ global_asm!(
             xor r9d, r9d
             int 0x80
             ud2
+    "#
+);
+
+#[cfg(feature = "preemption-probe")]
+global_asm!(
+    r#"
+            .section .text
+            .global efi_main
+        efi_main:
+        1:
+            pause
+            jmp 1b
+
+            .org efi_main + 128, 0xcc
+            .global mrml_service_sender
+        mrml_service_sender:
+            int3
+        2:
+            pause
+            jmp 2b
     "#
 );
 

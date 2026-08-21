@@ -192,6 +192,7 @@ impl<const N: usize> PreparedKvmGuest<N> {
             stack_pages,
             table_physical,
             table_pages,
+            false,
         )
     }
 
@@ -209,6 +210,7 @@ impl<const N: usize> PreparedKvmGuest<N> {
         stack_pages: u64,
         table_physical: u64,
         table_pages: u64,
+        local_apic: bool,
     ) -> Result<Self, KvmError> {
         if slot >= 2
             || self.service_root[slot].is_some()
@@ -272,6 +274,15 @@ impl<const N: usize> PreparedKvmGuest<N> {
         let mut tables = self.backend.page_tables(table_physical, table_pages)?;
         map_loaded_pe(&mut tables, kernel, loaded_kernel, false)?;
         map_loaded_pe(&mut tables, service, loaded_service, true)?;
+        if local_apic {
+            tables
+                .map_page(
+                    VirtAddr::new(XAPIC_BASE).map_err(|_| KvmError::InvalidMapping)?,
+                    PhysAddr::new(XAPIC_BASE).map_err(|_| KvmError::InvalidMapping)?,
+                    PagePermissions::KERNEL_MMIO_READ_WRITE,
+                )
+                .map_err(|_| KvmError::PageTable)?;
+        }
         tables
             .map(
                 Mapping::new(

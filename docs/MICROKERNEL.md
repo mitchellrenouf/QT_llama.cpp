@@ -584,9 +584,13 @@ that differs from A's bound address space, commits the quantum switch, selects
 B, acknowledges EOI, and restores B through the common `iretq` transition. B
 raises a checked CPL3 breakpoint rather than using forbidden port I/O. The
 final artifact completed in 2,073 microseconds on nested KVM and 8,315
-microseconds on WHP. This remains a
-diagnostic shared-root mapping; timer switching across the two independently
-materialized service roots is the next isolation gate.
+microseconds on WHP. The signed `service-preemption-probe` repeats the path
+across independently materialized service roots: A is interrupted under
+`CR3=0xc00000`, its frame remains bound to that domain, and B is restored under
+`CR3=0xd00000`. Each root maps the supervisor kernel and only its own user
+image/stack; timer-enabled roots add the APIC page supervisor-only. Final
+execution measured 2,063 microseconds on nested KVM and 8,413 microseconds on
+WHP.
 
 The `user-probe` diagnostic now gives the context and TSS work a live privilege-
 transition proof. Its signed PE is relocated into a bounded lower-half layout;
@@ -1306,8 +1310,7 @@ termination, stale identities, and invalid timer policies. A separate release
 microbenchmark now measures tick accounting. Validated x2APIC/xAPIC timer
 programming and acknowledgement primitives now execute in the signed KVM guest;
 the same primitives also execute in the signed WHP guest. Timer-driven context
-capture and restoration now execute on both, while switching across distinct
-service CR3 roots remains the next integration gate.
+capture and restoration now execute across distinct service CR3 roots on both.
 
 The x86_64 architecture layer now defines a fixed user-context record and a
 generational task-to-context table. New contexts require a nonzero page-aligned
@@ -1320,7 +1323,9 @@ replacement, lookup, and revocation use the complete generational `TaskId`, so
 a context belonging to a terminated task cannot attach to a reused scheduler
 slot. Windows and Linux tests exercise selector, flag, address, CR3, duplicate,
 revocation, and stale-generation rejection. GDT user descriptors, TSS/RSP0,
-assembly restore, CR3 switching, and live ring-three entry remain pending.
+assembly restore, CR3 switching, live ring-three entry, and cross-root timer
+preemption are exercised by signed KVM and WHP probes. Guarded per-CPU
+privilege stacks and production service lifecycle remain pending.
 
 ## Milestones
 
