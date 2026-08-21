@@ -9,6 +9,7 @@ pub enum DescriptorError {
     InvalidSelectorDescriptor,
     InvalidIst,
     InvalidPrivilege,
+    InvalidVector,
     InvalidTaskState,
 }
 
@@ -117,6 +118,27 @@ pub unsafe fn load_task_register(selector: u16) -> Result<(), DescriptorError> {
         return Err(DescriptorError::InvalidTaskState);
     }
     unsafe { asm!("ltr {0:x}", in(reg) selector, options(nostack, preserves_flags)) };
+    Ok(())
+}
+
+/// Replaces one external-vector gate while interrupts are disabled.
+///
+/// # Safety
+///
+/// `idt` must reference the live 256-entry IDT and the caller must serialize
+/// the write against interrupt delivery on every CPU that uses the table.
+pub unsafe fn install_external_interrupt_gate(
+    idt: *mut InterruptGate,
+    idt_entries: usize,
+    vector: u8,
+    handler: u64,
+    selector: u16,
+) -> Result<(), DescriptorError> {
+    if idt.is_null() || idt_entries != 256 || vector < 32 || vector == u8::MAX {
+        return Err(DescriptorError::InvalidVector);
+    }
+    let gate = InterruptGate::interrupt(handler, selector, 0, 0)?;
+    unsafe { idt.add(usize::from(vector)).write(gate) };
     Ok(())
 }
 
@@ -516,5 +538,42 @@ mod tests {
             Err(DescriptorError::InvalidTaskState)
         );
         assert_eq!(gdt, [0; 2]);
+    }
+
+    #[test]
+    fn external_gate_rejects_architectural_and_spurious_vectors() {
+        let mut idt = [InterruptGate::MISSING; 256];
+        for vector in [0, 31, 255] {
+            assert_eq!(
+                unsafe {
+                    install_external_interrupt_gate(
+                        idt.as_mut_ptr(),
+                        idt.len(),
+                        vector,
+                        0xffff_8000_0000_1000,
+                        0x38,
+                    )
+                },
+                Err(DescriptorError::InvalidVector)
+            );
+        }
+        assert!(idt.iter().all(|gate| *gate == InterruptGate::MISSING));
+        unsafe {
+            install_external_interrupt_gate(
+                idt.as_mut_ptr(),
+                idt.len(),
+                32,
+                0xffff_8000_0000_1000,
+                0x38,
+            )
+        }
+        .unwrap();
+        assert_ne!(idt[32], InterruptGate::MISSING);
+        assert!(
+            idt[..32]
+                .iter()
+                .chain(&idt[33..])
+                .all(|gate| *gate == InterruptGate::MISSING)
+        );
     }
 }

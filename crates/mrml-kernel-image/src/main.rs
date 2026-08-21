@@ -4,21 +4,27 @@
 use core::arch::{asm, global_asm};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
+#[cfg(feature = "timer-probe")]
+use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
 use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
     load_task_register, write_task_state_descriptor,
 };
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
-    BootHandoff, Color, EarlyKernelContext, FramebufferSurface, HANDOFF_HEADER_BYTES,
-    HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind, MemoryRegion, PhysAddr,
+    BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
+    MemoryRegion, PhysAddr,
 };
+#[cfg(all(not(feature = "fault-probe"), not(feature = "timer-probe")))]
+use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
 use mrml_kernel::{
     GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuGuestCommandPublisher, GpuQueueIdentity,
     GpuQueueSender, GpuResourceResponse, GpuResourceResponseReceiver, GpuSharedRingIndices,
     ResourceCommand,
 };
+#[cfg(feature = "timer-probe")]
+use mrml_kernel::{KernelScheduler, Priority, ScheduleOutcome};
 
 #[cfg(not(feature = "fault-probe"))]
 const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
@@ -32,6 +38,12 @@ const GPU_BENCHMARK_ELEMENTS: u32 = 1 << 22;
 const GPU_BENCHMARK_ITERATIONS: u32 = 1_000;
 #[cfg(feature = "fault-probe")]
 const EXCEPTION_PROBE_PORT: u16 = 0x4d53;
+#[cfg(feature = "timer-probe")]
+const TIMER_READY_PORT: u16 = 0x4d54;
+#[cfg(feature = "timer-probe")]
+const TIMER_TICK_PORT: u16 = 0x4d55;
+#[cfg(feature = "timer-probe")]
+const TIMER_VECTOR: u8 = 32;
 
 const GDT_ENTRIES: usize = 8;
 const TSS_SELECTOR: u16 = 0x08;
@@ -55,6 +67,8 @@ struct PrivilegeStack([u8; PRIVILEGE_STACK_BYTES]);
 
 static mut KERNEL_ENTRY_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_BYTES]);
 static mut DOUBLE_FAULT_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_BYTES]);
+#[cfg(feature = "timer-probe")]
+static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 
 global_asm!(
     r#"
@@ -136,6 +150,28 @@ mrml_exception_common:
     call mrml_exception_dispatch
     ud2
 
+    .global mrml_timer_interrupt
+mrml_timer_interrupt:
+    cld
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    and rsp, -16
+    call mrml_timer_dispatch
+    ud2
+
     .section .rdata
     .balign 8
     .global mrml_exception_table
@@ -153,7 +189,30 @@ mrml_exception_table:
 
 unsafe extern "C" {
     fn mrml_exception_fail_stop() -> !;
+    #[cfg(feature = "timer-probe")]
+    fn mrml_timer_interrupt() -> !;
     static mrml_exception_table: [u64; 32];
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "sysv64" fn mrml_timer_dispatch() -> ! {
+    #[cfg(feature = "timer-probe")]
+    unsafe {
+        let scheduler = match (*core::ptr::addr_of_mut!(TIMER_SCHEDULER)).as_mut() {
+            Some(scheduler) => scheduler,
+            None => halt(),
+        };
+        if scheduler.timer_tick().is_err() || scheduler.ticks() != 1 {
+            halt();
+        }
+        asm!(
+            "out dx, eax",
+            in("dx") TIMER_TICK_PORT,
+            in("eax") 1u32,
+            options(nomem, nostack)
+        );
+    }
+    halt()
 }
 
 #[unsafe(no_mangle)]
@@ -258,86 +317,111 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     if region_count != handoff.region_count() {
         halt();
     }
-    #[cfg(feature = "production-policy")]
-    {
-        let minimum_version = match embedded_minimum_version() {
-            Some(value) => value,
-            None => halt(),
+    #[cfg(feature = "timer-probe")]
+    unsafe {
+        let mut scheduler = match KernelScheduler::<1>::new(1_000, 1) {
+            Ok(scheduler) => scheduler,
+            Err(_) => halt(),
         };
-        if BootPolicy::production(minimum_version)
-            .validate(handoff.evidence())
+        if scheduler.create(Priority::NORMAL).is_err()
+            || !matches!(scheduler.start(), ScheduleOutcome::Switch { .. })
+        {
+            halt();
+        }
+        core::ptr::addr_of_mut!(TIMER_SCHEDULER).write(Some(scheduler));
+        asm!(
+            "out dx, eax",
+            "sti",
+            "hlt",
+            "cli",
+            in("dx") TIMER_READY_PORT,
+            in("eax") 1u32,
+            options(nomem, nostack)
+        );
+    }
+    #[cfg(not(feature = "timer-probe"))]
+    {
+        #[cfg(feature = "production-policy")]
+        {
+            let minimum_version = match embedded_minimum_version() {
+                Some(value) => value,
+                None => halt(),
+            };
+            if BootPolicy::production(minimum_version)
+                .validate(handoff.evidence())
+                .is_err()
+            {
+                halt();
+            }
+        }
+        let framebuffer = handoff.framebuffer();
+        let _early = match EarlyKernelContext::new(
+            *handoff.evidence().entropy(),
+            handoff.acpi_root(),
+            framebuffer,
+            &regions[..region_count],
+        ) {
+            Ok(value) => value,
+            Err(_) => halt(),
+        };
+        let framebuffer_bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                framebuffer.base().get() as *mut u8,
+                framebuffer.byte_length() as usize,
+            )
+        };
+        let mut surface = match FramebufferSurface::new(framebuffer, framebuffer_bytes) {
+            Ok(value) => value,
+            Err(_) => halt(),
+        };
+        if surface
+            .fill_rectangle(
+                0,
+                0,
+                framebuffer.width(),
+                framebuffer.height(),
+                Color {
+                    red: 0x0b,
+                    green: 0x3b,
+                    blue: 0x5a,
+                },
+            )
             .is_err()
         {
             halt();
         }
-    }
-    let framebuffer = handoff.framebuffer();
-    let _early = match EarlyKernelContext::new(
-        *handoff.evidence().entropy(),
-        handoff.acpi_root(),
-        framebuffer,
-        &regions[..region_count],
-    ) {
-        Ok(value) => value,
-        Err(_) => halt(),
-    };
-    let framebuffer_bytes = unsafe {
-        core::slice::from_raw_parts_mut(
-            framebuffer.base().get() as *mut u8,
-            framebuffer.byte_length() as usize,
-        )
-    };
-    let mut surface = match FramebufferSurface::new(framebuffer, framebuffer_bytes) {
-        Ok(value) => value,
-        Err(_) => halt(),
-    };
-    if surface
-        .fill_rectangle(
+        let _ = surface.fill_rectangle(
             0,
             0,
-            framebuffer.width(),
-            framebuffer.height(),
+            framebuffer.width().min(96),
+            framebuffer.height().min(12),
             Color {
-                red: 0x0b,
-                green: 0x3b,
-                blue: 0x5a,
+                red: 0xff,
+                green: 0xc8,
+                blue: 0x57,
             },
-        )
-        .is_err()
-    {
-        halt();
+        );
+        #[cfg(feature = "gpu-benchmark")]
+        if run_gpu_benchmark(handoff.evidence().entropy()).is_err() {
+            halt();
+        }
+        #[cfg(feature = "gpu-benchmark")]
+        let _ = surface.fill_rectangle(
+            0,
+            0,
+            framebuffer.width().min(96),
+            framebuffer.height().min(12),
+            Color {
+                red: 0x46,
+                green: 0xe0,
+                blue: 0x78,
+            },
+        );
+        #[cfg(feature = "whp-gpu-benchmark")]
+        unsafe {
+            asm!("out dx, eax", in("dx") GPU_DOORBELL_PORT, in("eax") 2u32, options(nomem, nostack))
+        };
     }
-    let _ = surface.fill_rectangle(
-        0,
-        0,
-        framebuffer.width().min(96),
-        framebuffer.height().min(12),
-        Color {
-            red: 0xff,
-            green: 0xc8,
-            blue: 0x57,
-        },
-    );
-    #[cfg(feature = "gpu-benchmark")]
-    if run_gpu_benchmark(handoff.evidence().entropy()).is_err() {
-        halt();
-    }
-    #[cfg(feature = "gpu-benchmark")]
-    let _ = surface.fill_rectangle(
-        0,
-        0,
-        framebuffer.width().min(96),
-        framebuffer.height().min(12),
-        Color {
-            red: 0x46,
-            green: 0xe0,
-            blue: 0x78,
-        },
-    );
-    #[cfg(feature = "whp-gpu-benchmark")]
-    unsafe {
-        asm!("out dx, eax", in("dx") GPU_DOORBELL_PORT, in("eax") 2u32, options(nomem, nostack))
-    };
     halt()
 }
 
@@ -446,6 +530,20 @@ unsafe fn install_descriptor_tables() {
         halt();
     }
     if unsafe { load_task_register(TSS_SELECTOR) }.is_err() {
+        halt();
+    }
+    #[cfg(feature = "timer-probe")]
+    if unsafe {
+        install_external_interrupt_gate(
+            core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
+            256,
+            TIMER_VECTOR,
+            mrml_timer_interrupt as *const () as usize as u64,
+            0x38,
+        )
+    }
+    .is_err()
+    {
         halt();
     }
 }

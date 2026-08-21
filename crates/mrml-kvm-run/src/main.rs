@@ -29,12 +29,19 @@ const MAX_KERNEL_BUNDLE: usize = SIGNED_ARTIFACT_OVERHEAD_BYTES + 16 * 1024 * 10
 const FRAMEBUFFER: u64 = 0x00a0_0000;
 #[cfg(target_os = "linux")]
 const EXCEPTION_PROBE_PORT: u16 = 0x4d53;
+#[cfg(target_os = "linux")]
+const TIMER_READY_PORT: u16 = 0x4d54;
+#[cfg(target_os = "linux")]
+const TIMER_TICK_PORT: u16 = 0x4d55;
+#[cfg(target_os = "linux")]
+const TIMER_VECTOR: u8 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg(any(test, target_os = "linux"))]
 enum LaunchMode {
     Boot,
     FaultProbe,
+    TimerProbe,
     GpuBenchmark,
 }
 
@@ -44,8 +51,11 @@ impl LaunchMode {
         match value {
             "boot" => Ok(Self::Boot),
             "fault-probe" => Ok(Self::FaultProbe),
+            "timer-probe" => Ok(Self::TimerProbe),
             "gpu-benchmark" => Ok(Self::GpuBenchmark),
-            _ => Err(anyhow!("mode must be boot, fault-probe, or gpu-benchmark")),
+            _ => Err(anyhow!(
+                "mode must be boot, fault-probe, timer-probe, or gpu-benchmark"
+            )),
         }
     }
 }
@@ -166,6 +176,47 @@ fn application_main() -> Result<()> {
         }
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after exception probe failed: {:?}", error))?;
+    } else if mode == LaunchMode::TimerProbe {
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!(
+                "timer probe did not reach its interruptible wait: {:?}",
+                exit
+            ));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution entering timer wait failed: {:?}", error))?;
+        if exit != VmExit::Halted {
+            return Err(anyhow!(
+                "timer probe did not halt with interrupts enabled: {:?}",
+                exit
+            ));
+        }
+        VmBackend::inject_interrupt(&mut guest, 0, TIMER_VECTOR)
+            .map_err(|error| anyhow!("timer interrupt injection failed: {:?}", error))?;
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution after timer injection failed: {:?}", error))?;
+        if exit
+            != (VmExit::Io {
+                port: TIMER_TICK_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!(
+                "timer probe did not execute one scheduler tick: {:?}",
+                exit
+            ));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution after timer proof failed: {:?}", error))?;
     }
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
@@ -229,6 +280,9 @@ fn application_main() -> Result<()> {
         }
         LaunchMode::FaultProbe if marker != [0; 4] => {
             return Err(anyhow!("fault probe unexpectedly modified the framebuffer"));
+        }
+        LaunchMode::TimerProbe if marker != [0; 4] => {
+            return Err(anyhow!("timer probe unexpectedly modified the framebuffer"));
         }
         LaunchMode::GpuBenchmark if marker != [0x78, 0xe0, 0x46, 0] => {
             return Err(anyhow!(
@@ -403,6 +457,7 @@ fn execute_cuda_add_benchmark(
 }
 
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 fn application_main() -> Result<()> {
     Err(anyhow!("mrml-kvm-run is available only on Linux hosts"))
 }
@@ -474,6 +529,10 @@ mod tests {
         assert_eq!(
             LaunchMode::parse("fault-probe").unwrap(),
             LaunchMode::FaultProbe
+        );
+        assert_eq!(
+            LaunchMode::parse("timer-probe").unwrap(),
+            LaunchMode::TimerProbe
         );
         assert!(LaunchMode::parse("diagnostic").is_err());
         assert_eq!(

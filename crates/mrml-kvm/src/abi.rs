@@ -20,7 +20,7 @@ const MEMORY_READONLY: u32 = 1 << 1;
 pub enum KvmError {
     TruncatedRun,
     MalformedExit,
-    UnsupportedExit,
+    UnsupportedExit(u32),
     UnalignedMemory,
     EmptyMemory,
     MemoryOverflow,
@@ -125,7 +125,7 @@ pub fn decode_run_page(run: &[u8]) -> Result<VmExit, KvmError> {
             reason: EXIT_SHUTDOWN as u64,
         }),
         EXIT_INTR => Ok(VmExit::Interrupted),
-        _ => Err(KvmError::UnsupportedExit),
+        _ => Err(KvmError::UnsupportedExit(reason)),
     }
 }
 
@@ -154,7 +154,7 @@ fn decode_io(run: &[u8]) -> Result<VmExit, KvmError> {
 
 fn decode_hypercall(run: &[u8]) -> Result<VmExit, KvmError> {
     if u64_at(run, 32)? != MRML_KVM_HYPERCALL {
-        return Err(KvmError::UnsupportedExit);
+        return Err(KvmError::UnsupportedExit(EXIT_HYPERCALL));
     }
     let descriptor_address = u64_at(run, 40)?;
     for at in [48, 56, 64, 72, 80] {
@@ -358,5 +358,12 @@ mod tests {
         run[2] = 0;
         run[16..24].copy_from_slice(&16u64.to_ne_bytes());
         assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
+    }
+
+    #[test]
+    fn unsupported_exit_preserves_the_kernel_reason() {
+        let mut run = [0u8; 48];
+        run[8..12].copy_from_slice(&9u32.to_ne_bytes());
+        assert_eq!(decode_run_page(&run), Err(KvmError::UnsupportedExit(9)));
     }
 }

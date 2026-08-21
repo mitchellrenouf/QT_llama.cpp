@@ -140,8 +140,11 @@ kernel now has a validated x86_64 trap-frame and user-fault termination policy,
 32 vector-specific assembly entries, and a live signed nested-KVM invalid-opcode
 dispatch proof. User-task revocation and task-switch integration remain unfinished.
 Bounded timer-driven scheduler policy and faulted-task retirement are
-implemented, but hardware timer interrupts and context restoration in the
-standalone image remain unfinished. Validated generational ring-three context
+implemented. A signed nested-KVM probe now proves external vector 32 enters the
+booted kernel and advances that scheduler by exactly one tick. This currently
+uses capability-controlled VMM interrupt injection; local APIC timer setup,
+interrupt acknowledgement, and context restoration in the standalone image
+remain unfinished. Validated generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A

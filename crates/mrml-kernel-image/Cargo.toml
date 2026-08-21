@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 kernel-image = []
 fault-probe = []
+timer-probe = []
 production-policy = []
 gpu-benchmark = []
 whp-gpu-benchmark = ["gpu-benchmark"]

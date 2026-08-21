@@ -560,6 +560,19 @@ current 16 KiB entry and double-fault stacks are page-aligned static bring-up
 storage but do not yet have unmapped guard pages; they must be replaced with
 guarded per-CPU allocations before user execution or production claims.
 
+External vector installation is now a separate validated operation restricted
+to vectors 32--254 and performed only while interrupts are disabled. The
+`timer-probe` image constructs one runnable scheduler task, emits its readiness
+marker, executes `STI; HLT`, and accepts vector 32 only after KVM has observed
+the IF-enabled halt. Its assembly entry preserves all general registers before
+calling the Rust handler. The handler advances `KernelScheduler` exactly one
+tick, emits a distinct proof, and fails closed. A freshly signed nested-KVM run
+completed this path in 145 microseconds (`verify=724us`, `prepare=1030us`,
+`total=4621us`). KVM exit errors now retain the exact numeric reason; this
+exposed and prevented an invalid early injection while IF was clear. This is a
+live external-interrupt/scheduler proof, not yet a local-APIC timer, end-of-
+interrupt acknowledgement, or resumable context switch.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.
