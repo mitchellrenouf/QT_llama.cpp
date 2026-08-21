@@ -19,6 +19,7 @@ pub struct BootEvidence {
     image_version: u64,
     secure_boot: bool,
     measured_boot: bool,
+    rollback_protected: bool,
 }
 
 impl BootEvidence {
@@ -28,6 +29,7 @@ impl BootEvidence {
         image_version: u64,
         secure_boot: bool,
         measured_boot: bool,
+        rollback_protected: bool,
     ) -> Result<Self, BootValidationError> {
         if entropy.iter().all(|byte| *byte == 0) {
             return Err(BootValidationError::MissingEntropy);
@@ -41,6 +43,7 @@ impl BootEvidence {
             image_version,
             secure_boot,
             measured_boot,
+            rollback_protected,
         })
     }
 
@@ -51,6 +54,10 @@ impl BootEvidence {
     pub const fn image_measurement(&self) -> &[u8; 64] {
         &self.image_measurement
     }
+
+    pub const fn rollback_protected(&self) -> bool {
+        self.rollback_protected
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,6 +65,7 @@ pub struct BootPolicy {
     minimum_image_version: u64,
     require_secure_boot: bool,
     require_measured_boot: bool,
+    require_rollback_protection: bool,
 }
 
 impl BootPolicy {
@@ -66,6 +74,7 @@ impl BootPolicy {
             minimum_image_version,
             require_secure_boot: true,
             require_measured_boot: true,
+            require_rollback_protection: true,
         }
     }
 
@@ -74,6 +83,7 @@ impl BootPolicy {
             minimum_image_version,
             require_secure_boot: false,
             require_measured_boot: false,
+            require_rollback_protection: false,
         }
     }
 
@@ -83,6 +93,9 @@ impl BootPolicy {
         }
         if self.require_measured_boot && !evidence.measured_boot {
             return Err(BootValidationError::MeasuredBootRequired);
+        }
+        if self.require_rollback_protection && !evidence.rollback_protected {
+            return Err(BootValidationError::RollbackDetected);
         }
         if evidence.image_version < self.minimum_image_version {
             return Err(BootValidationError::RollbackDetected);
@@ -125,24 +138,24 @@ impl BootPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ArtifactKind, TrustRoot, artifact_statement};
+    use crate::{artifact_statement, ArtifactKind, TrustRoot};
     use mrml_crypto::{
-        LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES, Sha3_512,
-        lamport_public_key, lamport_sign,
+        lamport_public_key, lamport_sign, Sha3_512, LAMPORT_PRIVATE_KEY_BYTES,
+        LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES,
     };
 
     fn evidence(version: u64, secure: bool, measured: bool) -> BootEvidence {
-        BootEvidence::new([1; 32], [2; 64], version, secure, measured).unwrap()
+        BootEvidence::new([1; 32], [2; 64], version, secure, measured, true).unwrap()
     }
 
     #[test]
     fn rejects_absent_entropy_and_measurement() {
         assert!(matches!(
-            BootEvidence::new([0; 32], [1; 64], 1, true, true),
+            BootEvidence::new([0; 32], [1; 64], 1, true, true, true),
             Err(BootValidationError::MissingEntropy)
         ));
         assert!(matches!(
-            BootEvidence::new([1; 32], [0; 64], 1, true, true),
+            BootEvidence::new([1; 32], [0; 64], 1, true, true, true),
             Err(BootValidationError::MissingMeasurement)
         ));
     }
@@ -160,6 +173,11 @@ mod tests {
         );
         assert_eq!(
             policy.validate(&evidence(6, true, true)),
+            Err(BootValidationError::RollbackDetected)
+        );
+        let no_counter = BootEvidence::new([1; 32], [2; 64], 7, true, true, false).unwrap();
+        assert_eq!(
+            policy.validate(&no_counter),
             Err(BootValidationError::RollbackDetected)
         );
         assert_eq!(policy.validate(&evidence(7, true, true)), Ok(()));
@@ -214,20 +232,21 @@ mod tests {
             &artifacts[3],
             &artifacts[4],
         ];
-        let valid = BootEvidence::new([1; 32], Sha3_512::digest(kernel), 8, true, true).unwrap();
+        let valid =
+            BootEvidence::new([1; 32], Sha3_512::digest(kernel), 8, true, true, true).unwrap();
         assert_eq!(
             BootPolicy::production(8).validate_signed_chain(&valid, &references),
             Ok(())
         );
 
-        let wrong_measurement = BootEvidence::new([1; 32], [9; 64], 8, true, true).unwrap();
+        let wrong_measurement = BootEvidence::new([1; 32], [9; 64], 8, true, true, true).unwrap();
         assert_eq!(
             BootPolicy::production(8).validate_signed_chain(&wrong_measurement, &references),
             Err(BootValidationError::KernelMeasurementMismatch)
         );
 
         let wrong_release =
-            BootEvidence::new([1; 32], Sha3_512::digest(kernel), 9, true, true).unwrap();
+            BootEvidence::new([1; 32], Sha3_512::digest(kernel), 9, true, true, true).unwrap();
         assert_eq!(
             BootPolicy::production(8).validate_signed_chain(&wrong_release, &references),
             Err(BootValidationError::MixedArtifactRelease)

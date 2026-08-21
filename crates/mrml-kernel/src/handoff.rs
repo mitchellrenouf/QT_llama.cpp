@@ -9,7 +9,8 @@ pub const MAX_HANDOFF_REGIONS: usize = 128;
 
 const FLAG_SECURE_BOOT: u16 = 1;
 const FLAG_MEASURED_BOOT: u16 = 1 << 1;
-const KNOWN_FLAGS: u16 = FLAG_SECURE_BOOT | FLAG_MEASURED_BOOT;
+const FLAG_ROLLBACK_PROTECTED: u16 = 1 << 2;
+const KNOWN_FLAGS: u16 = FLAG_SECURE_BOOT | FLAG_MEASURED_BOOT | FLAG_ROLLBACK_PROTECTED;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandoffError {
@@ -146,6 +147,7 @@ impl BootHandoff {
             image_version,
             flags & FLAG_SECURE_BOOT != 0,
             flags & FLAG_MEASURED_BOOT != 0,
+            flags & FLAG_ROLLBACK_PROTECTED != 0,
         )
         .map_err(HandoffError::InvalidBootEvidence)?;
         for index in 0..region_count {
@@ -166,6 +168,7 @@ pub fn encode_handoff(
     image_measurement: [u8; 64],
     secure_boot: bool,
     measured_boot: bool,
+    rollback_protected: bool,
     acpi_root: u64,
     framebuffer: FramebufferInfo,
     regions: &[MemoryRegion],
@@ -199,14 +202,16 @@ pub fn encode_handoff(
         image_version,
         secure_boot,
         measured_boot,
+        rollback_protected,
     )
     .map_err(HandoffError::InvalidBootEvidence)?;
     output[..length].fill(0);
     output[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
     output[16..20].copy_from_slice(&(length as u32).to_le_bytes());
     output[20..22].copy_from_slice(&(regions.len() as u16).to_le_bytes());
-    let flags =
-        (secure_boot as u16) * FLAG_SECURE_BOOT | (measured_boot as u16) * FLAG_MEASURED_BOOT;
+    let flags = (secure_boot as u16) * FLAG_SECURE_BOOT
+        | (measured_boot as u16) * FLAG_MEASURED_BOOT
+        | (rollback_protected as u16) * FLAG_ROLLBACK_PROTECTED;
     output[22..24].copy_from_slice(&flags.to_le_bytes());
     output[24..32].copy_from_slice(&image_version.to_le_bytes());
     output[32..64].copy_from_slice(&entropy);
@@ -332,6 +337,7 @@ mod tests {
                 7,
                 [1; 32],
                 [2; 64],
+                true,
                 true,
                 true,
                 0x9008,

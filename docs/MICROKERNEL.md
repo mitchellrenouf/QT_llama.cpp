@@ -218,6 +218,14 @@ increments (denial of service) but never decrement or rollback; a production
 deployment should provision a policy-authorized index once policy sessions are
 implemented.
 
+Successful NV validation and advancement is now represented by a dedicated bit
+in the canonical UEFI-to-kernel handoff rather than inferred from the image
+version. The decoder rejects unknown bits, `BootEvidence` retains the result,
+and production `BootPolicy` independently requires Secure Boot, measured boot,
+and rollback protection. A version meeting the compiled floor is therefore not
+enough when monotonic enforcement was skipped. A freshly signed version-5
+kernel using the expanded evidence contract still reached the QEMU GOP marker.
+
 The loader also reads the standard global `SecureBoot` and `SetupMode`
 variables through its original raw runtime-services ABI. It reports secure boot
 only when `SecureBoot` is exactly one and `SetupMode` is exactly zero; absent,
