@@ -122,6 +122,11 @@ The CUDA service must verify the exact embedded PTX bundle as a
 `CudaKernelBundle` artifact before module loading. Kernel IDs are enabled only
 after this verification token exists; a digest mismatch or missing signature
 leaves the virtual GPU unavailable and inference falls back to CPU.
+`VerifiedGpuKernelBundle` now enforces this boundary: it accepts only the
+unforgeable result of typed artifact verification and constant-time compares
+that signed digest with the exact embedded bytes. A different artifact kind,
+empty bundle, or changed PTX cannot mint the token even when a numeric
+`KernelId` is otherwise valid.
 
 ## Portability and boot
 

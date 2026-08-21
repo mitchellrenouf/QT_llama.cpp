@@ -134,8 +134,11 @@ resource-revalidated after decoding. Whole batches are admitted to the
 watchdog transactionally: every dispatch receives a generational identity or
 all partial admissions are invalidated before service handoff. The executor
 contract distinguishes acceptance, definite pre-accept rejection, and
-uncertain failure; uncertain work remains tracked until timeout/reset. Also implemented are the dispatch watchdog and
-adversarial unit tests. The cross-VM
+uncertain failure; uncertain work remains tracked until timeout/reset. A
+launch-enabling token can only be minted from a verified `CudaKernelBundle`
+whose digest exactly matches the PTX embedded in the service. Wrong artifact
+types or changed PTX fail closed. Also implemented are the dispatch watchdog
+and adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion

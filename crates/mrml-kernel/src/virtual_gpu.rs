@@ -1,4 +1,4 @@
-use crate::PAGE_SIZE;
+use crate::{ArtifactKind, PAGE_SIZE, VerifiedArtifact};
 use core::{
     array,
     sync::atomic::{AtomicU64, Ordering},
@@ -49,6 +49,7 @@ pub enum GpuError {
     ControlBufferTooLarge,
     InvalidControlBuffer,
     ControlBufferChanged,
+    UntrustedKernelBundle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1104,6 +1105,46 @@ impl KernelId {
     }
 }
 
+/// Proof that the release-signed CUDA bundle is byte-for-byte identical to
+/// the PTX embedded in the host GPU service. Construction requires an artifact
+/// verification result that callers cannot forge through this module.
+pub struct VerifiedGpuKernelBundle {
+    version: u64,
+    digest: [u8; 64],
+}
+
+impl VerifiedGpuKernelBundle {
+    pub fn admit(artifact: &VerifiedArtifact, embedded_bundle: &[u8]) -> Result<Self, GpuError> {
+        if artifact.kind() != ArtifactKind::CudaKernelBundle || embedded_bundle.is_empty() {
+            return Err(GpuError::UntrustedKernelBundle);
+        }
+        let digest = Sha3_512::digest(embedded_bundle);
+        let mut difference = 0u8;
+        for (verified, embedded) in artifact.digest().iter().zip(digest.iter()) {
+            difference |= *verified ^ *embedded;
+        }
+        if difference != 0 {
+            return Err(GpuError::UntrustedKernelBundle);
+        }
+        Ok(Self {
+            version: artifact.version(),
+            digest,
+        })
+    }
+
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub const fn digest(&self) -> &[u8; 64] {
+        &self.digest
+    }
+
+    pub const fn permits(&self, _: KernelId) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BufferMode {
     Read,
@@ -1609,6 +1650,11 @@ fn read_u64(input: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{TrustRoot, artifact_statement};
+    use mrml_crypto::{
+        LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES,
+        lamport_public_key, lamport_sign,
+    };
 
     struct MockExecutor(Result<bool, u8>);
 
@@ -1656,6 +1702,48 @@ mod tests {
         assert!(matches!(
             Dispatch::new(kernel, [1, 1, 1], [32, 1, 1], MAX_SHARED_MEMORY + 1, &[]),
             Err(GpuError::ExcessiveSharedMemory)
+        ));
+    }
+
+    #[test]
+    fn kernel_bundle_token_requires_signed_bytes_matching_embedded_ptx() {
+        let bundle = b"original embedded MRML PTX bundle";
+        let mut private = [0u8; LAMPORT_PRIVATE_KEY_BYTES];
+        for (index, byte) in private.iter_mut().enumerate() {
+            *byte = (index as u64).wrapping_mul(29).wrapping_add(3) as u8;
+        }
+        let mut public = [0u8; LAMPORT_PUBLIC_KEY_BYTES];
+        lamport_public_key(&private, &mut public).unwrap();
+        let root = TrustRoot::new(ArtifactKind::CudaKernelBundle, Sha3_512::digest(&public), 5);
+        let statement = artifact_statement(
+            ArtifactKind::CudaKernelBundle,
+            5,
+            bundle.len() as u64,
+            Sha3_512::digest(bundle),
+        );
+        let mut signature = [0u8; LAMPORT_SIGNATURE_BYTES];
+        lamport_sign(&private, &statement, &mut signature).unwrap();
+        let artifact = root.verify(5, bundle, &public, &signature).unwrap();
+        let admitted = VerifiedGpuKernelBundle::admit(&artifact, bundle).unwrap();
+        assert_eq!(admitted.version(), 5);
+        assert!(admitted.permits(KernelId::new(27).unwrap()));
+        assert!(matches!(
+            VerifiedGpuKernelBundle::admit(&artifact, b"changed PTX"),
+            Err(GpuError::UntrustedKernelBundle)
+        ));
+
+        let wrong_root = TrustRoot::new(ArtifactKind::VmImage, Sha3_512::digest(&public), 5);
+        let wrong_statement = artifact_statement(
+            ArtifactKind::VmImage,
+            5,
+            bundle.len() as u64,
+            Sha3_512::digest(bundle),
+        );
+        lamport_sign(&private, &wrong_statement, &mut signature).unwrap();
+        let wrong_artifact = wrong_root.verify(5, bundle, &public, &signature).unwrap();
+        assert!(matches!(
+            VerifiedGpuKernelBundle::admit(&wrong_artifact, bundle),
+            Err(GpuError::UntrustedKernelBundle)
         ));
     }
 
