@@ -494,11 +494,15 @@ executable, non-writable section, and the loader-owned CR3 enforces those final
 section permissions in hardware.
 
 The x86-64 transition now allocates a new zeroed four-level page-table tree and
-a dedicated, fully erased 64 KiB kernel stack before leaving firmware. One
-additional lower allocation page is deliberately omitted from the new address
-space as a stack-underflow guard. It identity-maps only
+a fully erased 64 KiB kernel stack arena before leaving firmware. The fixed
+arena contains a six-page early stack, an omitted guard page, a four-page
+ring-transition stack, a second omitted guard page, and a four-page
+double-fault IST stack. One additional lower allocation page is omitted as an
+early-stack underflow guard. The loader passes both protected stack tops through
+the PE entry ABI; the kernel rejects invalid tops before installing its TSS and
+retains no static fallback privilege stack inside the image. It identity-maps only
 the authenticated PE regions with their final read-only, writable/NX, or
-read-only/executable permissions; the stack and GOP aperture writable/NX; the
+read-only/executable permissions; the three stack regions and GOP aperture writable/NX; the
 canonical handoff read-only; and one page-aligned read-only/executable assembly
 trampoline. The trampoline enables EFER.NXE and CR0.WP, replaces CR3, changes
 to the dedicated stack, and jumps without returning. No writable alias of an
@@ -509,6 +513,9 @@ symbols do not prove that it fits entirely within its dedicated page. Thus
 neither restricted mapping silently grants access to adjacent loader data or
 code. QEMU 11.1 reached the independent kernel
 marker with `CR0=0x80010033`, `EFER=0xd00`, and the loader-created CR3 root.
+The same signed cross-root timer-preemption images ran under KVM and WHP with
+the launcher-provisioned supervisor stacks; isolated service roots omit both
+internal guard pages.
 Before the loader's first GOP write, the shared framebuffer validator now
 rejects misaligned bases, unsupported geometry or stride, undersized or
 overflowing apertures, and lengths above Rust's `isize::MAX` raw-slice bound.

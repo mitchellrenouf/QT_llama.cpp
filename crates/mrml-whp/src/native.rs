@@ -43,6 +43,8 @@ const MAX_SUBMAPPINGS: usize = MAX_PE_SECTIONS + 1;
 const REG_RCX: u32 = 1;
 const REG_RDX: u32 = 2;
 const REG_RSP: u32 = 4;
+const REG_R8: u32 = 8;
+const REG_R9: u32 = 9;
 const REG_RIP: u32 = 0x10;
 const REG_RFLAGS: u32 = 0x11;
 const REG_ES: u32 = 0x12;
@@ -570,6 +572,7 @@ impl PreparedWhpPartition<'_> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn configure_long_mode(
         &mut self,
         entry: u64,
@@ -578,6 +581,8 @@ impl PreparedWhpPartition<'_> {
         descriptor_table: u64,
         handoff: u64,
         handoff_bytes: u64,
+        entry_stack_top: u64,
+        double_fault_stack_top: u64,
     ) -> Result<(), WhpError> {
         if !canonical(entry)
             || !canonical(stack_pointer)
@@ -593,9 +598,9 @@ impl PreparedWhpPartition<'_> {
         }
         let names = [
             REG_RIP, REG_RSP, REG_RFLAGS, REG_RCX, REG_RDX, REG_CS, REG_SS, REG_DS, REG_ES,
-            REG_GDTR, REG_CR0, REG_CR3, REG_CR4, REG_EFER, REG_PAT,
+            REG_GDTR, REG_CR0, REG_CR3, REG_CR4, REG_EFER, REG_PAT, REG_R8, REG_R9,
         ];
-        let mut values = [RegisterValue::zero(); 15];
+        let mut values = [RegisterValue::zero(); 17];
         values[0] = RegisterValue::scalar(entry);
         values[1] = RegisterValue::scalar(stack_pointer);
         values[2] = RegisterValue::scalar(2);
@@ -611,6 +616,8 @@ impl PreparedWhpPartition<'_> {
         values[12] = RegisterValue::scalar(CR4_LONG_MODE_RUST);
         values[13] = RegisterValue::scalar(EFER_ACTIVE_LONG_MODE_NX);
         values[14] = RegisterValue::scalar(RESET_PAT);
+        values[15] = RegisterValue::scalar(entry_stack_top);
+        values[16] = RegisterValue::scalar(double_fault_stack_top);
         check(unsafe {
             (self.api.set_registers)(
                 self.partition.as_ptr(),
@@ -841,7 +848,10 @@ mod tests {
                 Err(WhpError::InvalidInterrupt)
             );
             partition
-                .configure_long_mode(0x20_0000, 0x30_0ff8, 0x10_0000, 0x11_0000, 0x40_0000, 240)
+                .configure_long_mode(
+                    0x20_0000, 0x30_0ff8, 0x10_0000, 0x11_0000, 0x40_0000, 240, 0x50_0000,
+                    0x60_0000,
+                )
                 .unwrap();
         }
     }

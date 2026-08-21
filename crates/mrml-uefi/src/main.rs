@@ -8,7 +8,8 @@ use mrml_kernel::{
     MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PeImage, PhysAddr, PixelFormat,
     SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
     arch::x86_64::{
-        PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore, VirtAddr,
+        PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
+        PrivilegeStackLayout, VirtAddr,
     },
     encode_handoff,
 };
@@ -58,6 +59,8 @@ struct Framebuffer {
 struct Transition {
     root: u64,
     stack_top: u64,
+    entry_stack_top: u64,
+    double_fault_stack_top: u64,
 }
 
 struct FirmwarePageTables {
@@ -140,6 +143,9 @@ mrml_activate_address_space:
     mov r11, rcx
     mov r12, rdx
     mov r10, qword ptr [rsp + 40]
+    mov r13, qword ptr [rsp + 48]
+    mov r14, qword ptr [rsp + 56]
+    mov r15, r8
     mov ecx, 0xc0000080
     rdmsr
     or eax, 0x800
@@ -151,7 +157,9 @@ mrml_activate_address_space:
     mov rsp, r12
     mov rcx, r9
     mov rdx, r10
-    jmp r8
+    mov r8, r13
+    mov r9, r14
+    jmp r15
     .global mrml_activate_address_space_end
 mrml_activate_address_space_end:
     "#
@@ -164,6 +172,8 @@ unsafe extern "efiapi" {
         entry: u64,
         handoff: *const u8,
         handoff_length: usize,
+        entry_stack_top: u64,
+        double_fault_stack_top: u64,
     ) -> !;
     static mrml_activate_address_space_end: u8;
 }
@@ -707,6 +717,8 @@ fn enter_kernel(
             kernel_entry,
             handoff.as_ptr(),
             handoff_length,
+            transition.entry_stack_top,
+            transition.double_fault_stack_top,
         )
     }
 }
@@ -727,15 +739,13 @@ fn prepare_transition(
     let stack_base = stack_allocation_base
         .checked_add((KERNEL_STACK_GUARD_PAGES as u64) * 4096)
         .ok_or(LOAD_ERROR)?;
-    let stack_bytes = (KERNEL_STACK_PAGES as u64)
-        .checked_mul(4096)
-        .ok_or(LOAD_ERROR)?;
-    let stack_end = stack_base.checked_add(stack_bytes).ok_or(LOAD_ERROR)?;
-    let stack_top = stack_end.checked_sub(8).ok_or(LOAD_ERROR)?;
+    let stack_layout =
+        PrivilegeStackLayout::new(stack_base, KERNEL_STACK_PAGES as u64).map_err(|_| LOAD_ERROR)?;
+    let stack_top = stack_layout.early_top().map_err(|_| LOAD_ERROR)?;
     if stack_allocation_base == 0
         || !stack_allocation_base.is_multiple_of(4096)
         || !stack_base.is_multiple_of(4096)
-        || !stack_end.is_multiple_of(16)
+        || !stack_top.wrapping_add(8).is_multiple_of(16)
     {
         return Err(LOAD_ERROR);
     }
@@ -760,12 +770,19 @@ fn prepare_transition(
         };
         map_identity(&mut tables, start, region.pages() as u64, permissions)?;
     }
-    map_identity(
-        &mut tables,
-        stack_base,
-        KERNEL_STACK_PAGES as u64,
-        PagePermissions::KERNEL_READ_WRITE,
-    )?;
+    for (base, pages) in [
+        (stack_layout.early_base(), stack_layout.early_pages()),
+        (
+            stack_layout.entry_base().map_err(|_| LOAD_ERROR)?,
+            stack_layout.entry_pages(),
+        ),
+        (
+            stack_layout.double_fault_base().map_err(|_| LOAD_ERROR)?,
+            stack_layout.double_fault_pages(),
+        ),
+    ] {
+        map_identity(&mut tables, base, pages, PagePermissions::KERNEL_READ_WRITE)?;
+    }
     let handoff_address = HANDOFF.0.get() as u64;
     if !handoff_address.is_multiple_of(PAGE_BYTES as u64) {
         return Err(LOAD_ERROR);
@@ -802,6 +819,8 @@ fn prepare_transition(
     Ok(Transition {
         root: tables.root().get(),
         stack_top,
+        entry_stack_top: stack_layout.entry_top().map_err(|_| LOAD_ERROR)?,
+        double_fault_stack_top: stack_layout.double_fault_top().map_err(|_| LOAD_ERROR)?,
     })
 }
 

@@ -1,4 +1,4 @@
-use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, VirtAddr};
+use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, PrivilegeStackLayout, VirtAddr};
 use mrml_kernel::{
     ArtifactKind, BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, PAGE_SIZE, PhysAddr,
     VerifiedExecutable, VmBackend, VmExit,
@@ -59,6 +59,10 @@ impl KvmLaunchLayout {
         {
             return Err(KvmError::InvalidMapping);
         }
+        PrivilegeStackLayout::new(stack_virtual, stack_pages)
+            .map_err(|_| KvmError::InvalidMapping)?;
+        PrivilegeStackLayout::new(stack_physical, stack_pages)
+            .map_err(|_| KvmError::InvalidMapping)?;
         Ok(Self {
             table_physical,
             table_pages,
@@ -274,6 +278,38 @@ impl<const N: usize> PreparedKvmGuest<N> {
         let mut tables = self.backend.page_tables(table_physical, table_pages)?;
         map_loaded_pe(&mut tables, kernel, loaded_kernel, false)?;
         map_loaded_pe(&mut tables, service, loaded_service, true)?;
+        let kernel_stack =
+            PrivilegeStackLayout::new(kernel_layout.stack_virtual, kernel_layout.stack_pages)
+                .map_err(|_| KvmError::InvalidMapping)?;
+        let kernel_stack_physical =
+            PrivilegeStackLayout::new(kernel_layout.stack_physical, kernel_layout.stack_pages)
+                .map_err(|_| KvmError::InvalidMapping)?;
+        for (virtual_base, physical_base, pages) in [
+            (
+                kernel_stack.entry_base(),
+                kernel_stack_physical.entry_base(),
+                kernel_stack.entry_pages(),
+            ),
+            (
+                kernel_stack.double_fault_base(),
+                kernel_stack_physical.double_fault_base(),
+                kernel_stack.double_fault_pages(),
+            ),
+        ] {
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(virtual_base.map_err(|_| KvmError::InvalidMapping)?)
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        PhysAddr::new(physical_base.map_err(|_| KvmError::InvalidMapping)?)
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        pages,
+                        PagePermissions::KERNEL_READ_WRITE,
+                    )
+                    .map_err(|_| KvmError::InvalidMapping)?,
+                )
+                .map_err(|_| KvmError::PageTable)?;
+        }
         if local_apic {
             tables
                 .map_page(
@@ -458,6 +494,10 @@ impl KvmSystem {
             .stack_pages
             .checked_mul(PAGE_SIZE)
             .ok_or(KvmError::MemoryOverflow)?;
+        let stack_layout = PrivilegeStackLayout::new(layout.stack_virtual, layout.stack_pages)
+            .map_err(|_| KvmError::InvalidMapping)?;
+        let physical_stack = PrivilegeStackLayout::new(layout.stack_physical, layout.stack_pages)
+            .map_err(|_| KvmError::InvalidMapping)?;
         let framebuffer = decoded.framebuffer();
         let framebuffer_bytes = page_bytes(framebuffer.byte_length())?;
         let queue_bytes = match queue {
@@ -515,18 +555,15 @@ impl KvmSystem {
         let loaded_handoff = backend
             .memory
             .load_boot_handoff(handoff, layout.handoff_physical)?;
-        let stack_physical_end = layout
-            .stack_physical
-            .checked_add(stack_bytes)
-            .ok_or(KvmError::MemoryOverflow)?;
-        backend
-            .memory
-            .write(stack_physical_end - 8, &0u64.to_le_bytes())?;
-        let stack = layout
-            .stack_virtual
-            .checked_add(stack_bytes)
-            .and_then(|end| end.checked_sub(8))
-            .ok_or(KvmError::MemoryOverflow)?;
+        backend.memory.write(
+            physical_stack
+                .early_top()
+                .map_err(|_| KvmError::MemoryOverflow)?,
+            &0u64.to_le_bytes(),
+        )?;
+        let stack = stack_layout
+            .early_top()
+            .map_err(|_| KvmError::MemoryOverflow)?;
         let mut tables = backend.page_tables(layout.table_physical, layout.table_pages)?;
         map_loaded_pe(&mut tables, executable, loaded_image, layout.user)?;
         map_loaded_handoff(
@@ -535,22 +572,47 @@ impl KvmSystem {
             layout.handoff_virtual,
             layout.user,
         )?;
-        let stack_permissions = if layout.user {
-            PagePermissions::USER_READ_WRITE
-        } else {
-            PagePermissions::KERNEL_READ_WRITE
-        };
-        tables
-            .map(
-                Mapping::new(
-                    VirtAddr::new(layout.stack_virtual).map_err(|_| KvmError::InvalidMapping)?,
-                    PhysAddr::new(layout.stack_physical).map_err(|_| KvmError::InvalidMapping)?,
-                    layout.stack_pages,
-                    stack_permissions,
+        let stack_permissions = PagePermissions::KERNEL_READ_WRITE;
+        for (virtual_base, physical_base, pages, permissions) in [
+            (
+                stack_layout.early_base(),
+                physical_stack.early_base(),
+                stack_layout.early_pages(),
+                stack_permissions,
+            ),
+            (
+                stack_layout
+                    .entry_base()
+                    .map_err(|_| KvmError::MemoryOverflow)?,
+                physical_stack
+                    .entry_base()
+                    .map_err(|_| KvmError::MemoryOverflow)?,
+                stack_layout.entry_pages(),
+                PagePermissions::KERNEL_READ_WRITE,
+            ),
+            (
+                stack_layout
+                    .double_fault_base()
+                    .map_err(|_| KvmError::MemoryOverflow)?,
+                physical_stack
+                    .double_fault_base()
+                    .map_err(|_| KvmError::MemoryOverflow)?,
+                stack_layout.double_fault_pages(),
+                PagePermissions::KERNEL_READ_WRITE,
+            ),
+        ] {
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(virtual_base).map_err(|_| KvmError::InvalidMapping)?,
+                        PhysAddr::new(physical_base).map_err(|_| KvmError::InvalidMapping)?,
+                        pages,
+                        permissions,
+                    )
+                    .map_err(|_| KvmError::InvalidMapping)?,
                 )
-                .map_err(|_| KvmError::InvalidMapping)?,
-            )
-            .map_err(|_| KvmError::PageTable)?;
+                .map_err(|_| KvmError::PageTable)?;
+        }
         if local_apic {
             tables
                 .map(
@@ -615,6 +677,12 @@ impl KvmSystem {
             root.get(),
             layout.handoff_virtual,
             loaded_handoff.bytes() as u64,
+            stack_layout
+                .entry_top()
+                .map_err(|_| KvmError::MemoryOverflow)?,
+            stack_layout
+                .double_fault_top()
+                .map_err(|_| KvmError::MemoryOverflow)?,
         )?;
         Ok(PreparedKvmGuest {
             backend,
@@ -760,7 +828,7 @@ mod tests {
                 0x20000,
                 0x200000,
                 0x30000,
-                0x300000,
+                0xffff_8000_0030_0000,
                 2,
                 true
             ),
@@ -780,7 +848,7 @@ mod tests {
                 0x200000,
                 0x30000,
                 0x300000,
-                2,
+                16,
                 true
             )
             .is_ok()
@@ -815,7 +883,7 @@ mod tests {
             0xffff_8001_5000_0000,
             0x40_0000,
             0xffff_8001_6000_0000,
-            2,
+            16,
             false,
         )
         .unwrap();
@@ -828,6 +896,35 @@ mod tests {
         assert_eq!(walk.levels(), 4);
         assert_eq!(walk.physical_address(guest.entry()), Some(0x20_1000));
         assert_eq!(walk.entries()[3] & (1 << 63), 0);
+        let stack_layout = PrivilegeStackLayout::new(0xffff_8001_6000_0000, 16).unwrap();
+        assert_eq!(
+            guest
+                .page_walk(stack_layout.early_base())
+                .unwrap()
+                .physical_address(stack_layout.early_base()),
+            Some(0x40_0000)
+        );
+        assert_eq!(
+            guest
+                .page_walk(stack_layout.entry_guard().unwrap())
+                .unwrap()
+                .physical_address(stack_layout.entry_guard().unwrap()),
+            None
+        );
+        assert_eq!(
+            guest
+                .page_walk(stack_layout.double_fault_guard().unwrap())
+                .unwrap()
+                .physical_address(stack_layout.double_fault_guard().unwrap()),
+            None
+        );
+        assert_eq!(
+            guest
+                .page_walk(stack_layout.double_fault_base().unwrap())
+                .unwrap()
+                .physical_address(stack_layout.double_fault_base().unwrap()),
+            Some(0x40_c000)
+        );
         assert_eq!(
             guest.page_walk(0x0000_8000_0000_0000),
             Err(KvmError::InvalidMapping)

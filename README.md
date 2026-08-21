@@ -122,16 +122,20 @@ ready for bare-metal deployment. The original x86-64 PE32+ kernel does now boot
 through the original UEFI loader under QEMU and directly under nested KVM. It
 validates the bounded handoff, installs its own GDT and 256-entry fail-stop IDT,
 retains the bounded normalized regions in fixed storage, constructs the common
-validated early-kernel context, uses a dedicated stack and guarded page tables,
-and renders a GOP framebuffer
+validated early-kernel context, uses launcher-provisioned guarded privilege
+stacks and guarded page tables, and renders a GOP framebuffer
 marker. Before its first framebuffer write, the loader validates the complete
 GOP geometry, page-aligned physical base, non-overflowing allocation, and
 Rust raw-slice length bound through the same core validator used by the kernel.
 Before installing the guarded address space, the loader erases the
-entire page-rounded kernel allocation and all 64 KiB of the kernel stack, so no
-firmware-era tail or stack data enters the kernel mapping. A separately
-allocated lower guard page is deliberately absent from the new page tables, so
-downward stack overflow faults instead of reaching an adjacent allocation. The
+entire page-rounded kernel allocation and all 64 KiB of the kernel stack arena,
+so no firmware-era tail or stack data enters the kernel mapping. The arena has
+a six-page early stack, a four-page ring-transition stack, and a four-page
+double-fault IST stack. Pages below the arena and between each stack class are
+deliberately absent from the new page tables, so underflow and cross-stack
+overflow fault instead of reaching another stack. KVM and WHP use the same
+fixed layout, and isolated service roots map the protected stacks
+supervisor-only while omitting both internal guard pages. The
 canonical handoff occupies its own compile-time-checked 4 KiB-aligned page, so
 making it read-only cannot expose neighboring loader statics. The loader owns
 and erases every byte of that page immediately before encoding the bounded

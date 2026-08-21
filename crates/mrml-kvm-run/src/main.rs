@@ -203,7 +203,7 @@ fn application_main() -> Result<()> {
     )?;
     let user_probe = matches!(mode, LaunchMode::UserProbe | LaunchMode::PreemptionProbe);
     let (image_virtual, handoff_virtual, stack_virtual) = if user_probe {
-        (0x0040_0000, 0x0200_0000, 0x0300_0000)
+        (0x0040_0000, 0x0200_0000, 0xffff_8001_6000_0000)
     } else {
         (
             0xffff_8001_4000_0000,
@@ -220,7 +220,7 @@ fn application_main() -> Result<()> {
         handoff_virtual,
         0x40_0000,
         stack_virtual,
-        8,
+        16,
         user_probe,
     )
     .map_err(|_| anyhow!("invalid fixed kernel launch layout"))?;

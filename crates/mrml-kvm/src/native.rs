@@ -281,6 +281,8 @@ impl KvmVcpu {
         cr3: u64,
         argument0: u64,
         argument1: u64,
+        argument2: u64,
+        argument3: u64,
     ) -> Result<(), KvmError> {
         if !canonical(entry) || !canonical(stack) || !cr3.is_multiple_of(PAGE_SIZE) {
             return Err(KvmError::InvalidRegisterState);
@@ -303,7 +305,8 @@ impl KvmVcpu {
         if unsafe { ioctl(self.file.0, KVM_SET_SREGS, &special) } < 0 {
             return Err(KvmError::SystemCall);
         }
-        let registers = KvmRegisters::initial(entry, stack, argument0, argument1);
+        let registers =
+            KvmRegisters::initial(entry, stack, argument0, argument1, argument2, argument3);
         if unsafe { ioctl(self.file.0, KVM_SET_REGS, &registers) } < 0 {
             return Err(KvmError::SystemCall);
         }
@@ -405,9 +408,16 @@ struct KvmRegisters {
 
 impl KvmRegisters {
     const fn zeroed() -> Self {
-        Self::initial(0, 0, 0, 0)
+        Self::initial(0, 0, 0, 0, 0, 0)
     }
-    const fn initial(entry: u64, stack: u64, argument0: u64, argument1: u64) -> Self {
+    const fn initial(
+        entry: u64,
+        stack: u64,
+        argument0: u64,
+        argument1: u64,
+        argument2: u64,
+        argument3: u64,
+    ) -> Self {
         Self {
             rax: 0,
             rbx: 0,
@@ -417,8 +427,8 @@ impl KvmRegisters {
             rdi: 0,
             rsp: stack,
             rbp: 0,
-            r8: 0,
-            r9: 0,
+            r8: argument2,
+            r9: argument3,
             r10: 0,
             r11: 0,
             r12: 0,
@@ -1223,11 +1233,13 @@ mod tests {
 
     #[test]
     fn initial_register_state_enables_hardened_long_mode() {
-        let registers = KvmRegisters::initial(0x20_0000, 0x40_0000, 0x50_0000, 240);
+        let registers =
+            KvmRegisters::initial(0x20_0000, 0x40_0000, 0x50_0000, 240, 0x60_0000, 0x70_0000);
         assert_eq!(registers.rip, 0x20_0000);
         assert_eq!(registers.rsp, 0x40_0000);
         assert_eq!(registers.rflags, 2);
         assert_eq!((registers.rcx, registers.rdx), (0x50_0000, 240));
+        assert_eq!((registers.r8, registers.r9), (0x60_0000, 0x70_0000));
         assert!(canonical(0xffff_8000_0000_0000));
         assert!(!canonical(0x0001_0000_0000_0000));
         let code = KvmSegment::code64();

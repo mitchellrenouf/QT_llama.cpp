@@ -1,6 +1,6 @@
 use mrml_kernel::arch::x86_64::{
     AddressSpace, Mapping, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
-    VirtAddr,
+    PrivilegeStackLayout, VirtAddr,
 };
 use mrml_kernel::{
     ArtifactKind, BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, MAX_PE_SECTIONS, PAGE_SIZE,
@@ -303,6 +303,38 @@ impl PreparedWhpGuest<'_> {
             false,
         )?;
         map_pe(&mut tables, image, service_physical, service_virtual, true)?;
+        let kernel_stack =
+            PrivilegeStackLayout::new(kernel_layout.stack_virtual, kernel_layout.stack_pages)
+                .map_err(|_| WhpError::InvalidMapping)?;
+        let kernel_stack_physical =
+            PrivilegeStackLayout::new(kernel_layout.stack_physical, kernel_layout.stack_pages)
+                .map_err(|_| WhpError::InvalidMapping)?;
+        for (virtual_base, physical_base, pages) in [
+            (
+                kernel_stack.entry_base(),
+                kernel_stack_physical.entry_base(),
+                kernel_stack.entry_pages(),
+            ),
+            (
+                kernel_stack.double_fault_base(),
+                kernel_stack_physical.double_fault_base(),
+                kernel_stack.double_fault_pages(),
+            ),
+        ] {
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(virtual_base.map_err(|_| WhpError::InvalidMapping)?)
+                            .map_err(|_| WhpError::InvalidMapping)?,
+                        PhysAddr::new(physical_base.map_err(|_| WhpError::InvalidMapping)?)
+                            .map_err(|_| WhpError::InvalidMapping)?,
+                        pages,
+                        PagePermissions::KERNEL_READ_WRITE,
+                    )
+                    .map_err(|_| WhpError::InvalidMapping)?,
+                )
+                .map_err(|_| WhpError::InvalidRegisterState)?;
+        }
         if local_apic {
             tables
                 .map_page(
@@ -530,6 +562,10 @@ impl WhpSystem {
             .stack_pages
             .checked_mul(PAGE_SIZE)
             .ok_or(WhpError::MemoryOverflow)?;
+        let stack_layout = PrivilegeStackLayout::new(layout.stack_virtual, layout.stack_pages)
+            .map_err(|_| WhpError::InvalidMapping)?;
+        let physical_stack = PrivilegeStackLayout::new(layout.stack_physical, layout.stack_pages)
+            .map_err(|_| WhpError::InvalidMapping)?;
         let framebuffer = decoded.framebuffer();
         let framebuffer_bytes = page_bytes(framebuffer.byte_length())?;
         let queue_bytes = match queue {
@@ -632,12 +668,15 @@ impl WhpSystem {
             .map_err(WhpError::Pe)?;
         partition.seal_pe(image_mapping, image)?;
 
-        let stack = layout
-            .stack_virtual
-            .checked_add(stack_bytes)
-            .and_then(|end| end.checked_sub(8))
-            .ok_or(WhpError::MemoryOverflow)?;
-        partition.write_guest(layout.stack_physical + stack_bytes - 8, &0u64.to_le_bytes())?;
+        let stack = stack_layout
+            .early_top()
+            .map_err(|_| WhpError::MemoryOverflow)?;
+        partition.write_guest(
+            physical_stack
+                .early_top()
+                .map_err(|_| WhpError::MemoryOverflow)?,
+            &0u64.to_le_bytes(),
+        )?;
 
         let root = build_page_tables(
             &mut partition,
@@ -655,6 +694,12 @@ impl WhpSystem {
             layout.table_physical,
             layout.handoff_virtual,
             handoff.len() as u64,
+            stack_layout
+                .entry_top()
+                .map_err(|_| WhpError::MemoryOverflow)?,
+            stack_layout
+                .double_fault_top()
+                .map_err(|_| WhpError::MemoryOverflow)?,
         )?;
         Ok(PreparedWhpGuest {
             partition,
@@ -742,22 +787,51 @@ fn build_page_tables(
             },
         )
         .map_err(|_| WhpError::PageTable)?;
-    let stack_permissions = if layout.user {
-        PagePermissions::USER_READ_WRITE
-    } else {
-        PagePermissions::KERNEL_READ_WRITE
-    };
-    tables
-        .map(
-            Mapping::new(
-                VirtAddr::new(layout.stack_virtual).map_err(|_| WhpError::InvalidMapping)?,
-                PhysAddr::new(layout.stack_physical).map_err(|_| WhpError::InvalidMapping)?,
-                layout.stack_pages,
-                stack_permissions,
+    let stack_permissions = PagePermissions::KERNEL_READ_WRITE;
+    let stack_layout = PrivilegeStackLayout::new(layout.stack_virtual, layout.stack_pages)
+        .map_err(|_| WhpError::InvalidMapping)?;
+    let physical_stack = PrivilegeStackLayout::new(layout.stack_physical, layout.stack_pages)
+        .map_err(|_| WhpError::InvalidMapping)?;
+    for (virtual_base, physical_base, pages, permissions) in [
+        (
+            stack_layout.early_base(),
+            physical_stack.early_base(),
+            stack_layout.early_pages(),
+            stack_permissions,
+        ),
+        (
+            stack_layout
+                .entry_base()
+                .map_err(|_| WhpError::MemoryOverflow)?,
+            physical_stack
+                .entry_base()
+                .map_err(|_| WhpError::MemoryOverflow)?,
+            stack_layout.entry_pages(),
+            PagePermissions::KERNEL_READ_WRITE,
+        ),
+        (
+            stack_layout
+                .double_fault_base()
+                .map_err(|_| WhpError::MemoryOverflow)?,
+            physical_stack
+                .double_fault_base()
+                .map_err(|_| WhpError::MemoryOverflow)?,
+            stack_layout.double_fault_pages(),
+            PagePermissions::KERNEL_READ_WRITE,
+        ),
+    ] {
+        tables
+            .map(
+                Mapping::new(
+                    VirtAddr::new(virtual_base).map_err(|_| WhpError::InvalidMapping)?,
+                    PhysAddr::new(physical_base).map_err(|_| WhpError::InvalidMapping)?,
+                    pages,
+                    permissions,
+                )
+                .map_err(|_| WhpError::InvalidMapping)?,
             )
-            .map_err(|_| WhpError::InvalidMapping)?,
-        )
-        .map_err(|_| WhpError::PageTable)?;
+            .map_err(|_| WhpError::PageTable)?;
+    }
     if let Some(queue) = queue {
         tables
             .map(
@@ -1058,7 +1132,7 @@ mod tests {
                 0x20000,
                 0x200000,
                 0x30000,
-                0x300000,
+                0xffff_8000_0030_0000,
                 2,
                 false
             ),
@@ -1078,7 +1152,7 @@ mod tests {
                 0x200000,
                 0x30000,
                 0x300000,
-                2,
+                16,
                 false
             )
             .is_ok()
@@ -1147,7 +1221,16 @@ mod tests {
             tables.root()
         };
         partition
-            .configure_long_mode(0x20_0000, 0x30_0ff8, root.get(), 0x10_0000, 0x30_0000, 8)
+            .configure_long_mode(
+                0x20_0000,
+                0x30_0ff8,
+                root.get(),
+                0x10_0000,
+                0x30_0000,
+                8,
+                0x50_0000,
+                0x60_0000,
+            )
             .unwrap();
         assert_eq!(
             partition.run(),
@@ -1176,7 +1259,15 @@ mod tests {
             .verify_executable(&root, ArtifactKind::VmImage)
             .unwrap();
         let layout = WhpLaunchLayout::new(
-            0x10_0000, 16, 0x20_0000, 0x20_0000, 0x30_0000, 0x30_0000, 0x40_0000, 0x40_0000, 2,
+            0x10_0000,
+            16,
+            0x20_0000,
+            0x20_0000,
+            0x30_0000,
+            0x30_0000,
+            0x40_0000,
+            0xffff_8000_0040_0000,
+            16,
             true,
         )
         .unwrap();
@@ -1185,6 +1276,31 @@ mod tests {
             .prepare_gpu_guest(&executable, &valid_handoff(), layout, queue_layout)
             .unwrap();
         assert_eq!(guest.entry(), 0x20_1000);
+        let stack_layout = PrivilegeStackLayout::new(0xffff_8000_0040_0000, 16).unwrap();
+        assert_eq!(
+            guest
+                .page_walk(stack_layout.early_base())
+                .unwrap()
+                .physical_address(stack_layout.early_base()),
+            Some(0x40_0000)
+        );
+        for guard in [
+            stack_layout.entry_guard().unwrap(),
+            stack_layout.double_fault_guard().unwrap(),
+        ] {
+            assert_eq!(
+                guest.page_walk(guard).unwrap().physical_address(guard),
+                None
+            );
+        }
+        let double_fault_base = stack_layout.double_fault_base().unwrap();
+        assert_eq!(
+            guest
+                .page_walk(double_fault_base)
+                .unwrap()
+                .physical_address(double_fault_base),
+            Some(0x40_c000)
+        );
         let command_walk = guest.page_walk(queue_layout.command_base()).unwrap();
         assert_eq!(command_walk.levels(), 4);
         assert_eq!(
