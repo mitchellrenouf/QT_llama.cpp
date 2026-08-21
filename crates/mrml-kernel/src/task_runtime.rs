@@ -100,6 +100,12 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
             .map_err(TaskRuntimeError::Scheduler)
     }
 
+    pub fn yield_current(&mut self) -> Result<ScheduleOutcome, TaskRuntimeError> {
+        self.scheduler
+            .yield_current()
+            .map_err(TaskRuntimeError::Scheduler)
+    }
+
     pub fn context(&self, task: TaskId) -> Result<&UserContext, TaskRuntimeError> {
         self.domain(task)
             .map(|domain| &domain.context)

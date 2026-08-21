@@ -55,7 +55,7 @@ pub struct UserCallFrame {
 }
 
 impl UserCallFrame {
-    pub fn request(&self) -> Result<SyscallRequest, SyscallError> {
+    pub fn validate_return(&self) -> Result<(), SyscallError> {
         if self.cs != u64::from(USER_CODE_SELECTOR) || self.ss != u64::from(USER_DATA_SELECTOR) {
             return Err(SyscallError::InvalidPrivilege);
         }
@@ -68,6 +68,11 @@ impl UserCallFrame {
         if self.rflags & 2 == 0 || self.rflags & !USER_RETURN_FLAGS != 0 {
             return Err(SyscallError::InvalidFlags);
         }
+        Ok(())
+    }
+
+    pub fn request(&self) -> Result<SyscallRequest, SyscallError> {
+        self.validate_return()?;
         SyscallRequest::decode(
             self.rax, self.rdi, self.rsi, self.rdx, self.r10, self.r8, self.r9,
         )
@@ -76,6 +81,18 @@ impl UserCallFrame {
     pub fn complete(&mut self, sequence: u64) {
         self.rax = 0;
         self.rdx = sequence;
+    }
+
+    pub fn complete_message(&mut self, payload: &[u8]) {
+        let mut words = [0u64; 3];
+        for (index, byte) in payload.iter().take(MAX_SYSCALL_INLINE_PAYLOAD).enumerate() {
+            words[index / 8] |= u64::from(*byte) << ((index % 8) * 8);
+        }
+        self.rax = 0;
+        self.rdx = payload.len().min(MAX_SYSCALL_INLINE_PAYLOAD) as u64;
+        self.r10 = words[0];
+        self.r8 = words[1];
+        self.r9 = words[2];
     }
 }
 
@@ -86,6 +103,7 @@ const fn user_address(address: u64) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallRequest {
     Yield,
+    Receive,
     SendInline {
         endpoint: Capability,
         receiver: TaskId,
@@ -137,13 +155,19 @@ impl SyscallRequest {
                     length: length as u8,
                 })
             }
+            2 => {
+                if rdi | rsi | rdx | r10 | r8 | r9 != 0 {
+                    return Err(SyscallError::ReservedArgument);
+                }
+                Ok(Self::Receive)
+            }
             _ => Err(SyscallError::UnknownOperation),
         }
     }
 
     pub fn payload(&self) -> &[u8] {
         match self {
-            Self::Yield => &[],
+            Self::Yield | Self::Receive => &[],
             Self::SendInline {
                 payload, length, ..
             } => &payload[..usize::from(*length)],
@@ -165,6 +189,31 @@ mod tests {
             SyscallRequest::decode(0, 0, 0, 0, 1, 0, 0),
             Err(SyscallError::ReservedArgument)
         );
+    }
+
+    #[test]
+    fn receive_requires_reserved_registers_to_be_zero() {
+        assert_eq!(
+            SyscallRequest::decode(2, 0, 0, 0, 0, 0, 0),
+            Ok(SyscallRequest::Receive)
+        );
+        assert_eq!(
+            SyscallRequest::decode(2, 0, 1, 0, 0, 0, 0),
+            Err(SyscallError::ReservedArgument)
+        );
+    }
+
+    #[test]
+    fn message_completion_is_pointer_free_and_zero_padded() {
+        let mut frame = valid_yield_frame();
+        frame.r8 = u64::MAX;
+        frame.r9 = u64::MAX;
+        frame.complete_message(b"ping");
+        assert_eq!(frame.rax, 0);
+        assert_eq!(frame.rdx, 4);
+        assert_eq!(frame.r10, u64::from_le_bytes(*b"ping\0\0\0\0"));
+        assert_eq!(frame.r8, 0);
+        assert_eq!(frame.r9, 0);
     }
 
     #[test]
@@ -211,7 +260,22 @@ mod tests {
         assert_eq!(core::mem::offset_of!(UserCallFrame, rax), 14 * 8);
         assert_eq!(core::mem::offset_of!(UserCallFrame, rip), 15 * 8);
         assert_eq!(core::mem::offset_of!(UserCallFrame, rsp), 18 * 8);
-        let mut frame = UserCallFrame {
+        let mut frame = valid_yield_frame();
+        assert_eq!(frame.request(), Ok(SyscallRequest::Yield));
+        frame.cs = 0x38;
+        assert_eq!(frame.request(), Err(SyscallError::InvalidPrivilege));
+        frame.cs = u64::from(USER_CODE_SELECTOR);
+        frame.rip = 0xffff_8000_0000_0000;
+        assert_eq!(frame.request(), Err(SyscallError::InvalidInstruction));
+        frame.rip = 0x40_1000;
+        frame.rflags = 0;
+        assert_eq!(frame.request(), Err(SyscallError::InvalidFlags));
+        frame.rflags = 0x202 | (3 << 12);
+        assert_eq!(frame.request(), Err(SyscallError::InvalidFlags));
+    }
+
+    fn valid_yield_frame() -> UserCallFrame {
+        UserCallFrame {
             r15: 0,
             r14: 0,
             r13: 0,
@@ -232,17 +296,6 @@ mod tests {
             rflags: 0x202,
             rsp: 0x7000_0000,
             ss: u64::from(USER_DATA_SELECTOR),
-        };
-        assert_eq!(frame.request(), Ok(SyscallRequest::Yield));
-        frame.cs = 0x38;
-        assert_eq!(frame.request(), Err(SyscallError::InvalidPrivilege));
-        frame.cs = u64::from(USER_CODE_SELECTOR);
-        frame.rip = 0xffff_8000_0000_0000;
-        assert_eq!(frame.request(), Err(SyscallError::InvalidInstruction));
-        frame.rip = 0x40_1000;
-        frame.rflags = 0;
-        assert_eq!(frame.request(), Err(SyscallError::InvalidFlags));
-        frame.rflags = 0x202 | (3 << 12);
-        assert_eq!(frame.request(), Err(SyscallError::InvalidFlags));
+        }
     }
 }

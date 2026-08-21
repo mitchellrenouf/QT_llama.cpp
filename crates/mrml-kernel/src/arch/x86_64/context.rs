@@ -1,5 +1,5 @@
 use super::{TrapFrame, VirtAddr};
-use crate::{PAGE_SIZE, PhysAddr, TaskId};
+use crate::{PAGE_SIZE, PhysAddr, TaskId, UserCallFrame};
 use core::arch::{asm, global_asm};
 
 global_asm!(
@@ -154,6 +154,54 @@ impl UserContext {
             rflags: frame.rflags,
             page_table,
         })
+    }
+
+    pub fn from_user_call(
+        page_table: PhysAddr,
+        frame: &UserCallFrame,
+    ) -> Result<Self, ContextError> {
+        frame.validate_return().map_err(|error| match error {
+            crate::SyscallError::InvalidPrivilege => ContextError::InvalidSelectors,
+            crate::SyscallError::InvalidInstruction => ContextError::InvalidEntry,
+            crate::SyscallError::InvalidStack => ContextError::InvalidStack,
+            _ => ContextError::InvalidFlags,
+        })?;
+        if page_table.get() == 0 {
+            return Err(ContextError::KernelPageTable);
+        }
+        Ok(Self {
+            r15: frame.r15,
+            r14: frame.r14,
+            r13: frame.r13,
+            r12: frame.r12,
+            r11: frame.r11,
+            r10: frame.r10,
+            r9: frame.r9,
+            r8: frame.r8,
+            rdi: frame.rdi,
+            rsi: frame.rsi,
+            rbp: frame.rbp,
+            rbx: frame.rbx,
+            rdx: frame.rdx,
+            rcx: frame.rcx,
+            rax: frame.rax,
+            rip: frame.rip,
+            rsp: frame.rsp,
+            rflags: frame.rflags,
+            page_table,
+        })
+    }
+
+    pub fn complete_message(&mut self, payload: &[u8]) {
+        let mut words = [0u64; 3];
+        for (index, byte) in payload.iter().take(24).enumerate() {
+            words[index / 8] |= u64::from(*byte) << ((index % 8) * 8);
+        }
+        self.rax = 0;
+        self.rdx = payload.len().min(24) as u64;
+        self.r10 = words[0];
+        self.r8 = words[1];
+        self.r9 = words[2];
     }
 
     pub const fn instruction_pointer(&self) -> u64 {
@@ -387,6 +435,39 @@ mod tests {
             UserContext::from_trap(root, &forged),
             Err(ContextError::InvalidFlags)
         );
+    }
+
+    #[test]
+    fn user_call_conversion_preserves_the_exact_post_interrupt_context() {
+        let root = PhysAddr::new(0x30_0000).unwrap();
+        let frame = crate::UserCallFrame {
+            r15: 15,
+            r14: 14,
+            r13: 13,
+            r12: 12,
+            r11: 11,
+            r10: 10,
+            r9: 9,
+            r8: 8,
+            rdi: 7,
+            rsi: 6,
+            rbp: 5,
+            rbx: 4,
+            rdx: 0,
+            rcx: 3,
+            rax: 2,
+            rip: 0x40_1000,
+            cs: u64::from(USER_CODE_SELECTOR),
+            rflags: USER_INITIAL_RFLAGS,
+            rsp: 0x7000_0000,
+            ss: u64::from(USER_DATA_SELECTOR),
+        };
+        let context = UserContext::from_user_call(root, &frame).unwrap();
+        assert_eq!(context.page_table(), root);
+        assert_eq!(context.instruction_pointer(), frame.rip);
+        assert_eq!(context.stack_pointer(), frame.rsp);
+        assert_eq!(context.r15, 15);
+        assert_eq!(context.rax, 2);
     }
 
     #[test]

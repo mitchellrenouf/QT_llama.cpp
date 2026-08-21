@@ -238,6 +238,11 @@ impl<const TASKS: usize> KernelScheduler<TASKS> {
         Ok(self.select_replacement(Some(current)))
     }
 
+    pub fn yield_current(&mut self) -> Result<ScheduleOutcome, KernelScheduleError> {
+        let current = self.current.ok_or(KernelScheduleError::NoCurrentTask)?;
+        Ok(self.select_replacement(Some(current)))
+    }
+
     pub fn block_current(&mut self) -> Result<ScheduleOutcome, KernelScheduleError> {
         let current = self
             .current
@@ -352,6 +357,27 @@ mod tests {
             })
         );
         assert_eq!(kernel.ticks(), 3);
+    }
+
+    #[test]
+    fn voluntary_yield_selects_the_next_runnable_task() {
+        let mut kernel = KernelScheduler::<2>::new(1_000, 10).unwrap();
+        let first = kernel.create(Priority::NORMAL).unwrap();
+        let second = kernel.create(Priority::NORMAL).unwrap();
+        assert_eq!(
+            kernel.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: first
+            }
+        );
+        assert_eq!(
+            kernel.yield_current().unwrap(),
+            ScheduleOutcome::Switch {
+                from: Some(first),
+                to: second
+            }
+        );
     }
 
     #[test]
