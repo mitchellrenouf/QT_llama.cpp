@@ -1484,6 +1484,65 @@ pub trait GpuBatchExecutor<const N: usize> {
     fn submit(&mut self, batch: &ValidatedGpuBatch<N>) -> Result<bool, Self::Error>;
 }
 
+/// Trusted platform adapter used by the mediated host executor. Implementors
+/// resolve opaque buffer IDs inside the isolated CUDA context, re-read sealed
+/// expert bytes, and lower only the fixed kernel ID contained in `launch`.
+pub trait GpuHostBackend {
+    type Error;
+
+    fn reverify_expert_selection(
+        &mut self,
+        selection: &ValidatedExpertSelection,
+    ) -> Result<bool, Self::Error>;
+
+    fn launch(
+        &mut self,
+        prepared: PreparedGpuDispatch,
+        launch: ValidatedKernelLaunch,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Ordered, allocation-free host executor. Proof verification is a complete
+/// preflight pass, ensuring rejection cannot occur after an earlier launch has
+/// become GPU-visible. Driver failures during the launch pass are uncertain
+/// and are handled by the existing watchdog/reset contract.
+pub struct MediatedGpuExecutor<B> {
+    backend: B,
+}
+
+impl<B> MediatedGpuExecutor<B> {
+    pub const fn new(backend: B) -> Self {
+        Self { backend }
+    }
+    pub const fn backend(&self) -> &B {
+        &self.backend
+    }
+    pub const fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+    pub fn into_backend(self) -> B {
+        self.backend
+    }
+}
+
+impl<B: GpuHostBackend, const N: usize> GpuBatchExecutor<N> for MediatedGpuExecutor<B> {
+    type Error = B::Error;
+
+    fn submit(&mut self, batch: &ValidatedGpuBatch<N>) -> Result<bool, Self::Error> {
+        for index in 0..batch.len() {
+            if let Some(selection) = batch.moe_selection(index)
+                && !self.backend.reverify_expert_selection(selection)?
+            {
+                return Ok(false);
+            }
+        }
+        for (prepared, launch) in batch.entries() {
+            self.backend.launch(prepared, launch)?;
+        }
+        Ok(true)
+    }
+}
+
 impl<const N: usize> PreparedGpuBatch<N> {
     fn new() -> Self {
         Self {
@@ -3148,6 +3207,108 @@ mod tests {
             session.validate_access(BufferAccess::new(buffer, 0, 1, BufferMode::Read)),
             Err(GpuError::InvalidBuffer)
         );
+    }
+
+    #[test]
+    fn mediated_executor_preflights_all_proofs_before_ordered_launches() {
+        #[derive(Clone, Copy)]
+        struct Backend {
+            proof_valid: bool,
+            verified: bool,
+            launches: u32,
+            launched_before_verify: bool,
+        }
+        impl GpuHostBackend for Backend {
+            type Error = ();
+            fn reverify_expert_selection(
+                &mut self,
+                _: &ValidatedExpertSelection,
+            ) -> Result<bool, Self::Error> {
+                self.verified = true;
+                Ok(self.proof_valid)
+            }
+            fn launch(
+                &mut self,
+                _: PreparedGpuDispatch,
+                _: ValidatedKernelLaunch,
+            ) -> Result<(), Self::Error> {
+                self.launched_before_verify |= !self.verified;
+                self.launches += 1;
+                Ok(())
+            }
+        }
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let access = BufferAccess::new(id(0), 0, 4, BufferMode::Read);
+        let mut ids = [0u8; 4];
+        ids.copy_from_slice(&0_i32.to_le_bytes());
+        let mut weights = [0u8; 4];
+        weights.copy_from_slice(&1.0_f32.to_bits().to_le_bytes());
+        let selection = ValidatedExpertSelection::admit(
+            access,
+            &ids,
+            BufferAccess::new(id(1), 0, 4, BufferMode::Read),
+            &weights,
+            1,
+            1,
+            1,
+        )
+        .unwrap();
+        let dispatch = Dispatch::new(
+            KernelId::new(7).unwrap(),
+            [1, 1, 1],
+            [256, 1, 1],
+            0,
+            &[
+                access,
+                access,
+                BufferAccess::new(id(2), 0, 4, BufferMode::Write),
+            ],
+        )
+        .unwrap();
+        let launch = dispatch.validate_executor_schema().unwrap();
+        let prepared_entry = |request_id, slot| PreparedGpuDispatch {
+            request_id,
+            dispatch_id: DispatchId {
+                slot,
+                generation: 1,
+            },
+            dispatch,
+        };
+        let batch = ValidatedGpuBatch {
+            prepared: PreparedGpuBatch {
+                entries: [Some(prepared_entry(1, 0)), Some(prepared_entry(2, 1))],
+                count: 2,
+            },
+            launches: [Some(launch), Some(launch)],
+            moe_selections: [None, Some(selection)],
+        };
+        let mut rejected = MediatedGpuExecutor::new(Backend {
+            proof_valid: false,
+            verified: false,
+            launches: 0,
+            launched_before_verify: false,
+        });
+        assert_eq!(
+            GpuBatchExecutor::<2>::submit(&mut rejected, &batch),
+            Ok(false)
+        );
+        assert_eq!(rejected.backend().launches, 0);
+
+        let mut accepted = MediatedGpuExecutor::new(Backend {
+            proof_valid: true,
+            verified: false,
+            launches: 0,
+            launched_before_verify: false,
+        });
+        assert_eq!(
+            GpuBatchExecutor::<2>::submit(&mut accepted, &batch),
+            Ok(true)
+        );
+        assert_eq!(accepted.backend().launches, 2);
+        assert!(!accepted.backend().launched_before_verify);
     }
 
     #[test]

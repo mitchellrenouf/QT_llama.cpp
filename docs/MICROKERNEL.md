@@ -239,6 +239,11 @@ batches atomically. It searches only supplied sealed proofs, rejects any MoE
 entry without an exact buffer/dimension match, and stores the matched proof at
 the same batch index. The ordinary batch admission path continues to reject
 MoE IDs, so contextual provenance cannot be omitted accidentally.
+`MediatedGpuExecutor` implements the host orchestration boundary in two passes.
+The first asks the trusted isolated-memory backend to re-read and verify every
+retained expert selection; any mismatch rejects before a launch. Only after the
+entire preflight succeeds does the second pass lower validated entries in order.
+Backend errors during that pass retain uncertain-acceptance watchdog semantics.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
 registry alone cannot make it executable. Contextual batch integration of the 5 MoE schemas and the
 actual CUDA launch adapter are pending.
