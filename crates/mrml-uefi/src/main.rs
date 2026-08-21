@@ -216,6 +216,20 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         stride: info.pixels_per_scan_line,
         format: info.pixel_format,
     };
+    let pixel_format = if framebuffer.format == 0 {
+        PixelFormat::RedGreenBlueReserved
+    } else {
+        PixelFormat::BlueGreenRedReserved
+    };
+    FramebufferInfo::new(
+        framebuffer.base,
+        framebuffer.size as u64,
+        framebuffer.width,
+        framebuffer.height,
+        framebuffer.stride,
+        pixel_format,
+    )
+    .map_err(|_| LOAD_ERROR)?;
     paint(framebuffer, [0x80, 0x00, 0x00]);
 
     let mut rng_pointer = core::ptr::null_mut();

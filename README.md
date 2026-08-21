@@ -90,7 +90,10 @@ validates the bounded handoff, installs its own GDT and 256-entry fail-stop IDT,
 retains the bounded normalized regions in fixed storage, constructs the common
 validated early-kernel context, uses a dedicated stack and guarded page tables,
 and renders a GOP framebuffer
-marker. Before installing the guarded address space, the loader erases the
+marker. Before its first framebuffer write, the loader validates the complete
+GOP geometry, page-aligned physical base, non-overflowing allocation, and
+Rust raw-slice length bound through the same core validator used by the kernel.
+Before installing the guarded address space, the loader erases the
 entire page-rounded kernel allocation and all 64 KiB of the kernel stack, so no
 firmware-era tail or stack data enters the kernel mapping. A separately
 allocated lower guard page is deliberately absent from the new page tables, so

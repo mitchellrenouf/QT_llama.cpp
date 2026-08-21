@@ -56,7 +56,10 @@ impl FramebufferInfo {
             .checked_mul(u64::from(height))
             .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL))
             .ok_or(FramebufferError::Overflow)?;
-        if byte_length < required || base.get().checked_add(byte_length).is_none() {
+        if byte_length < required
+            || byte_length > isize::MAX as u64
+            || base.get().checked_add(byte_length).is_none()
+        {
             return Err(FramebufferError::InvalidLength);
         }
         Ok(Self {
@@ -235,6 +238,21 @@ mod tests {
                 }
             ),
             Err(FramebufferError::OutOfBounds)
+        );
+        assert_eq!(
+            FramebufferInfo::new(
+                0x1000,
+                (isize::MAX as u64) + 1,
+                1,
+                1,
+                1,
+                PixelFormat::RedGreenBlueReserved,
+            ),
+            Err(FramebufferError::InvalidLength)
+        );
+        assert_eq!(
+            FramebufferInfo::new(!0xfff, 4096, 1, 1, 1, PixelFormat::RedGreenBlueReserved,),
+            Err(FramebufferError::InvalidLength)
         );
     }
 }

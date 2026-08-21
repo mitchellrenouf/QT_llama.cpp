@@ -413,6 +413,12 @@ symbols do not prove that it fits entirely within its dedicated page. Thus
 neither restricted mapping silently grants access to adjacent loader data or
 code. QEMU 11.1 reached the independent kernel
 marker with `CR0=0x80010033`, `EFER=0xd00`, and the loader-created CR3 root.
+Before the loader's first GOP write, the shared framebuffer validator now
+rejects misaligned bases, unsupported geometry or stride, undersized or
+overflowing apertures, and lengths above Rust's `isize::MAX` raw-slice bound.
+The kernel applies the same validation again when decoding the authenticated
+handoff.
+
 The standalone kernel immediately installs an image-owned GDT preserving the
 transition selectors and a complete image-owned IDT whose gates all target a
 non-returning interrupt-disabled halt stub. Interrupts remain disabled; this is
