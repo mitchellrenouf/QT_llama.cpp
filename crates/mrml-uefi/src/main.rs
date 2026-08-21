@@ -76,6 +76,11 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
 
     paint(framebuffer, [0x14, 0x21, 0x35]);
 
+    let acpi_root = unsafe { find_acpi_root(system) }.map_err(|_| LOAD_ERROR)?;
+    if acpi_root == 0 {
+        return Err(LOAD_ERROR);
+    }
+
     unsafe { exit_boot_services(image, services) }?;
 
     paint(framebuffer, [0x16, 0x61, 0x3a]);

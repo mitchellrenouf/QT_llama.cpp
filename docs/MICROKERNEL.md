@@ -109,9 +109,23 @@ cargo build --release -p mrml-uefi --bin mrml-loader --features uefi-image --tar
 
 This is the first executable boot stage, not yet a complete kernel loader: it
 does not load and verify a separate kernel image, normalize the firmware map
-into the kernel handoff, locate ACPI, measure the loaded image, or transfer to a
+into the kernel handoff, measure the loaded image, or transfer to a
 kernel entry point. Those security-critical steps remain required before MRML
 can be described as booting its microkernel.
+
+ACPI RSDP discovery is now implemented before firmware exit. The loader prefers
+the ACPI 2.0 configuration-table GUID, accepts ACPI 1.0 only as a fallback,
+bounds the extended RSDP length, and validates both the legacy and extended
+checksums. It does not assume configuration-table pointers retain legacy BIOS
+alignment.
+
+QEMU 11.1.0 interoperability was exercised on Windows with its bundled EDK2
+firmware strictly as an external test oracle. With `virtio-rng-pci` and the EFI
+image at `EFI/BOOT/BOOTX64.EFI`, a 1280x800 GOP capture after boot contained the
+uniform post-exit marker `RGB(22,97,58)`. This demonstrates that QEMU loaded the
+PE image and that GOP discovery, RNG, ACPI validation, memory-map retrieval,
+and `ExitBootServices` completed. EDK2 is not linked, copied into repository
+artifacts, or part of the planned MRML VMM firmware.
 
 GOP is the primary early console because contemporary physical machines cannot
 be assumed to expose a usable serial port. Only the standard 32-bit RGB-reserved

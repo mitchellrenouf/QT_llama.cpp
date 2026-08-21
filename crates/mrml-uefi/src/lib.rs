@@ -29,6 +29,34 @@ pub const RNG_GUID: Guid = Guid {
     data3: 0x433d,
     data4: [0x86, 0x2e, 0xc0, 0x1c, 0xdc, 0x29, 0x1f, 0x44],
 };
+pub const ACPI_20_TABLE_GUID: Guid = Guid {
+    data1: 0x8868_e871,
+    data2: 0xe4f1,
+    data3: 0x11d3,
+    data4: [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81],
+};
+pub const ACPI_TABLE_GUID: Guid = Guid {
+    data1: 0xeb9d_2d30,
+    data2: 0x2d88,
+    data3: 0x11d3,
+    data4: [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d],
+};
+
+impl Guid {
+    pub const fn equals(&self, other: &Self) -> bool {
+        self.data1 == other.data1
+            && self.data2 == other.data2
+            && self.data3 == other.data3
+            && self.data4[0] == other.data4[0]
+            && self.data4[1] == other.data4[1]
+            && self.data4[2] == other.data4[2]
+            && self.data4[3] == other.data4[3]
+            && self.data4[4] == other.data4[4]
+            && self.data4[5] == other.data4[5]
+            && self.data4[6] == other.data4[6]
+            && self.data4[7] == other.data4[7]
+    }
+}
 
 #[repr(C)]
 pub struct TableHeader {
@@ -107,7 +135,73 @@ pub struct SystemTable {
     pub runtime_services: *mut c_void,
     pub boot_services: *mut BootServices,
     pub table_entry_count: usize,
-    pub configuration_table: *mut c_void,
+    pub configuration_table: *mut ConfigurationTable,
+}
+
+#[repr(C)]
+pub struct ConfigurationTable {
+    pub vendor_guid: Guid,
+    pub vendor_table: *mut c_void,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AcpiError {
+    Missing,
+    TooManyConfigurationTables,
+    NullTable,
+    BadSignature,
+    BadChecksum,
+    BadLength,
+}
+
+/// Locates ACPI 2.0 preferentially, falling back to ACPI 1.0. The returned
+/// physical pointer is admitted only after the complete applicable RSDP
+/// checksum validates.
+pub unsafe fn find_acpi_root(system: &SystemTable) -> Result<u64, AcpiError> {
+    if system.table_entry_count > 1024 {
+        return Err(AcpiError::TooManyConfigurationTables);
+    }
+    if system.table_entry_count != 0 && system.configuration_table.is_null() {
+        return Err(AcpiError::NullTable);
+    }
+    let entries = unsafe {
+        core::slice::from_raw_parts(system.configuration_table, system.table_entry_count)
+    };
+    for wanted in [&ACPI_20_TABLE_GUID, &ACPI_TABLE_GUID] {
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.vendor_guid.equals(wanted))
+        {
+            if entry.vendor_table.is_null() {
+                return Err(AcpiError::NullTable);
+            }
+            let rsdp = entry.vendor_table.cast::<u8>();
+            let first = unsafe { core::slice::from_raw_parts(rsdp, 20) };
+            if &first[..8] != b"RSD PTR " {
+                return Err(AcpiError::BadSignature);
+            }
+            if checksum(first) != 0 {
+                return Err(AcpiError::BadChecksum);
+            }
+            if wanted.equals(&ACPI_20_TABLE_GUID) {
+                let length_bytes = unsafe { core::slice::from_raw_parts(rsdp.add(20), 4) };
+                let length = u32::from_le_bytes(length_bytes.try_into().unwrap()) as usize;
+                if !(36..=4096).contains(&length) {
+                    return Err(AcpiError::BadLength);
+                }
+                let complete = unsafe { core::slice::from_raw_parts(rsdp, length) };
+                if checksum(complete) != 0 {
+                    return Err(AcpiError::BadChecksum);
+                }
+            }
+            return Ok(entry.vendor_table as u64);
+        }
+    }
+    Err(AcpiError::Missing)
+}
+
+fn checksum(bytes: &[u8]) -> u8 {
+    bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte))
 }
 
 #[repr(C)]
@@ -172,5 +266,55 @@ mod tests {
         assert_eq!(core::mem::offset_of!(BootServices, exit_boot_services), 232);
         assert_eq!(core::mem::offset_of!(BootServices, locate_protocol), 320);
         assert_eq!(core::mem::offset_of!(SystemTable, boot_services), 96);
+    }
+
+    #[test]
+    fn acpi_root_requires_both_checksums() {
+        let mut rsdp = [0u8; 36];
+        rsdp[..8].copy_from_slice(b"RSD PTR ");
+        rsdp[15] = 2;
+        rsdp[20..24].copy_from_slice(&36u32.to_le_bytes());
+        rsdp[8] = 0u8.wrapping_sub(checksum(&rsdp[..20]));
+        rsdp[32] = 0u8.wrapping_sub(checksum(&rsdp));
+        let mut entry = ConfigurationTable {
+            vendor_guid: ACPI_20_TABLE_GUID,
+            vendor_table: rsdp.as_mut_ptr().cast(),
+        };
+        let system = SystemTable {
+            header: TableHeader {
+                signature: 0,
+                revision: 0,
+                header_size: 0,
+                crc32: 0,
+                reserved: 0,
+            },
+            firmware_vendor: core::ptr::null_mut(),
+            firmware_revision: 0,
+            console_in_handle: core::ptr::null_mut(),
+            con_in: core::ptr::null_mut(),
+            console_out_handle: core::ptr::null_mut(),
+            con_out: core::ptr::null_mut(),
+            standard_error_handle: core::ptr::null_mut(),
+            std_err: core::ptr::null_mut(),
+            runtime_services: core::ptr::null_mut(),
+            boot_services: core::ptr::null_mut(),
+            table_entry_count: 1,
+            configuration_table: &mut entry,
+        };
+        assert_eq!(unsafe { find_acpi_root(&system) }, Ok(rsdp.as_ptr() as u64));
+        let mut corrupt = rsdp;
+        corrupt[35] ^= 1;
+        let mut corrupt_entry = ConfigurationTable {
+            vendor_guid: ACPI_20_TABLE_GUID,
+            vendor_table: corrupt.as_mut_ptr().cast(),
+        };
+        let corrupt_system = SystemTable {
+            configuration_table: &mut corrupt_entry,
+            ..system
+        };
+        assert_eq!(
+            unsafe { find_acpi_root(&corrupt_system) },
+            Err(AcpiError::BadChecksum)
+        );
     }
 }
