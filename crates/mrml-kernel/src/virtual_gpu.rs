@@ -518,6 +518,151 @@ fn ring_ticket<const N: usize>(position: u64) -> GpuRingTicket {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum GpuVmmQueueError<E> {
+    Protocol(GpuError),
+    Backend(E),
+    Poisoned,
+}
+
+/// Copy boundary between a platform VMM mapping and kernel-owned GPU queues.
+/// Backend I/O failure is uncertain, so the bridge poisons itself and requires
+/// VM teardown instead of risking duplicate consumption or publication.
+pub struct GpuVmmQueueBridge<const N: usize> {
+    layout: GpuSharedQueueLayout,
+    command_consumer: GpuRingConsumer<N>,
+    completion_producer: GpuRingProducer<N>,
+    poisoned: bool,
+}
+
+impl<const N: usize> GpuVmmQueueBridge<N> {
+    pub fn new(layout: GpuSharedQueueLayout) -> Result<Self, GpuError> {
+        if usize::from(layout.slots()) != N {
+            return Err(GpuError::InvalidQueueCapacity);
+        }
+        Ok(Self {
+            layout,
+            command_consumer: GpuRingConsumer::new()?,
+            completion_producer: GpuRingProducer::new()?,
+            poisoned: false,
+        })
+    }
+
+    pub const fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    pub fn consume_command<B: crate::VmBackend>(
+        &mut self,
+        backend: &mut B,
+        owned: &mut GpuCommandRing<N>,
+    ) -> Result<(), GpuVmmQueueError<B::Error>> {
+        self.require_live()?;
+        let published = self.read_counter(backend, self.layout.command_base())?;
+        let ticket = self
+            .command_consumer
+            .acquire(published)
+            .map_err(GpuVmmQueueError::Protocol)?;
+        if owned.is_full() {
+            return Err(GpuVmmQueueError::Protocol(GpuError::QueueFull));
+        }
+        let mut message = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+        let address =
+            slot_address(self.layout.command_base(), ticket).map_err(GpuVmmQueueError::Protocol)?;
+        self.read(backend, address, &mut message)?;
+        owned
+            .enqueue(&message)
+            .map_err(GpuVmmQueueError::Protocol)?;
+        let consumed = self
+            .command_consumer
+            .release(ticket)
+            .map_err(GpuVmmQueueError::Protocol)?;
+        self.write_counter(backend, self.layout.command_base() + 64, consumed)
+    }
+
+    pub fn publish_completion<B: crate::VmBackend>(
+        &mut self,
+        backend: &mut B,
+        message: &[u8; GPU_QUEUE_MESSAGE_BYTES],
+    ) -> Result<(), GpuVmmQueueError<B::Error>> {
+        self.require_live()?;
+        let consumed = self.read_counter(backend, self.layout.completion_base() + 64)?;
+        let previous = self.completion_producer.published();
+        let ticket = self
+            .completion_producer
+            .reserve(consumed)
+            .map_err(GpuVmmQueueError::Protocol)?;
+        let address = slot_address(self.layout.completion_base(), ticket)
+            .map_err(GpuVmmQueueError::Protocol)?;
+        self.write(backend, address, message)?;
+        self.write_counter(backend, self.layout.completion_base(), ticket.position())?;
+        self.completion_producer
+            .commit(ticket)
+            .map_err(GpuVmmQueueError::Protocol)?;
+        debug_assert_eq!(self.completion_producer.published(), previous + 1);
+        Ok(())
+    }
+
+    fn require_live<E>(&self) -> Result<(), GpuVmmQueueError<E>> {
+        if self.poisoned {
+            Err(GpuVmmQueueError::Poisoned)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn read_counter<B: crate::VmBackend>(
+        &mut self,
+        backend: &B,
+        address: u64,
+    ) -> Result<u64, GpuVmmQueueError<B::Error>> {
+        let mut encoded = [0u8; 8];
+        self.read(backend, address, &mut encoded)?;
+        Ok(u64::from_le_bytes(encoded))
+    }
+
+    fn write_counter<B: crate::VmBackend>(
+        &mut self,
+        backend: &mut B,
+        address: u64,
+        value: u64,
+    ) -> Result<(), GpuVmmQueueError<B::Error>> {
+        self.write(backend, address, &value.to_le_bytes())
+    }
+
+    fn read<B: crate::VmBackend>(
+        &mut self,
+        backend: &B,
+        address: u64,
+        output: &mut [u8],
+    ) -> Result<(), GpuVmmQueueError<B::Error>> {
+        backend.read_guest(address, output).map_err(|error| {
+            self.poisoned = true;
+            GpuVmmQueueError::Backend(error)
+        })
+    }
+
+    fn write<B: crate::VmBackend>(
+        &mut self,
+        backend: &mut B,
+        address: u64,
+        input: &[u8],
+    ) -> Result<(), GpuVmmQueueError<B::Error>> {
+        backend.write_guest(address, input).map_err(|error| {
+            self.poisoned = true;
+            GpuVmmQueueError::Backend(error)
+        })
+    }
+}
+
+fn slot_address(base: u64, ticket: GpuRingTicket) -> Result<u64, GpuError> {
+    base.checked_add(core::mem::size_of::<GpuSharedRingIndices>() as u64)
+        .and_then(|address| {
+            address.checked_add(u64::from(ticket.slot()) * GPU_QUEUE_MESSAGE_BYTES as u64)
+        })
+        .ok_or(GpuError::RangeOverflow)
+}
+
 /// Fixed-capacity command transport between a guest-facing VMM endpoint and
 /// the isolated GPU service. Messages are copied into kernel-owned slots so an
 /// untrusted producer cannot mutate a command after it has been admitted. The
@@ -3725,7 +3870,7 @@ fn read_u64(input: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TrustRoot, artifact_statement};
+    use crate::{TrustRoot, VmBackend, artifact_statement};
     use mrml_crypto::{
         LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES,
         lamport_public_key, lamport_sign,
@@ -3739,6 +3884,110 @@ mod tests {
         fn submit(&mut self, _: &ValidatedGpuBatch<N>) -> Result<bool, Self::Error> {
             self.0
         }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum MockVmmError {
+        Bounds,
+        Injected,
+    }
+
+    struct MockVmm {
+        memory: [u8; 0x6000],
+        fail_io: bool,
+    }
+
+    impl MockVmm {
+        const fn new() -> Self {
+            Self {
+                memory: [0; 0x6000],
+                fail_io: false,
+            }
+        }
+    }
+
+    impl crate::VmBackend for MockVmm {
+        type Error = MockVmmError;
+
+        fn run(&mut self, _: u32) -> Result<crate::VmExit, Self::Error> {
+            Ok(crate::VmExit::Halted)
+        }
+
+        fn read_guest(&self, address: u64, output: &mut [u8]) -> Result<(), Self::Error> {
+            if self.fail_io {
+                return Err(MockVmmError::Injected);
+            }
+            let start = usize::try_from(address).map_err(|_| MockVmmError::Bounds)?;
+            let end = start
+                .checked_add(output.len())
+                .ok_or(MockVmmError::Bounds)?;
+            output.copy_from_slice(self.memory.get(start..end).ok_or(MockVmmError::Bounds)?);
+            Ok(())
+        }
+
+        fn write_guest(&mut self, address: u64, input: &[u8]) -> Result<(), Self::Error> {
+            if self.fail_io {
+                return Err(MockVmmError::Injected);
+            }
+            let start = usize::try_from(address).map_err(|_| MockVmmError::Bounds)?;
+            let end = start.checked_add(input.len()).ok_or(MockVmmError::Bounds)?;
+            self.memory
+                .get_mut(start..end)
+                .ok_or(MockVmmError::Bounds)?
+                .copy_from_slice(input);
+            Ok(())
+        }
+
+        fn inject_interrupt(&mut self, _: u32, _: u8) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn vmm_bridge_copies_disjoint_rings_and_poison_fails_closed() {
+        const SLOTS: usize = 4;
+        let layout = GpuSharedQueueLayout::new(0x1000, 0x3000, SLOTS).unwrap();
+        let mut backend = MockVmm::new();
+        let mut bridge = GpuVmmQueueBridge::<SLOTS>::new(layout).unwrap();
+        let mut owned = GpuCommandRing::<SLOTS>::new().unwrap();
+        let command = [0x5a; GPU_QUEUE_MESSAGE_BYTES];
+        let command_slot = 0x1000 + core::mem::size_of::<GpuSharedRingIndices>() as u64;
+        backend.write_guest(command_slot, &command).unwrap();
+        backend.write_guest(0x1000, &1u64.to_le_bytes()).unwrap();
+
+        bridge.consume_command(&mut backend, &mut owned).unwrap();
+        let mut copied = [0; GPU_QUEUE_MESSAGE_BYTES];
+        owned.dequeue(&mut copied).unwrap();
+        assert_eq!(copied, command);
+        let mut consumed = [0; 8];
+        backend.read_guest(0x1040, &mut consumed).unwrap();
+        assert_eq!(u64::from_le_bytes(consumed), 1);
+
+        let completion = [0xa5; GPU_QUEUE_MESSAGE_BYTES];
+        bridge
+            .publish_completion(&mut backend, &completion)
+            .unwrap();
+        let completion_slot = 0x3000 + core::mem::size_of::<GpuSharedRingIndices>() as u64;
+        let mut copied_completion = [0; GPU_QUEUE_MESSAGE_BYTES];
+        backend
+            .read_guest(completion_slot, &mut copied_completion)
+            .unwrap();
+        assert_eq!(copied_completion, completion);
+        let mut published = [0; 8];
+        backend.read_guest(0x3000, &mut published).unwrap();
+        assert_eq!(u64::from_le_bytes(published), 1);
+
+        backend.fail_io = true;
+        assert_eq!(
+            bridge.consume_command(&mut backend, &mut owned),
+            Err(GpuVmmQueueError::Backend(MockVmmError::Injected))
+        );
+        assert!(bridge.is_poisoned());
+        backend.fail_io = false;
+        assert_eq!(
+            bridge.publish_completion(&mut backend, &completion),
+            Err(GpuVmmQueueError::Poisoned)
+        );
     }
 
     #[test]

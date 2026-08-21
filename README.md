@@ -267,6 +267,11 @@ ring guest-read-only, and have live backend regressions that preserve verified
 guest execution. The kernel-owned completion transport preflights capacity for
 the whole batch before GPU-visible work, publishes authenticated results under
 an exclusive producer borrow, and erases consumed slots.
+A common VMM queue bridge now copies guest-published command slots into
+kernel-owned storage and publishes service completions through the protected
+ring using the `VmBackend` contract shared by KVM and WHP. It enforces monotonic
+slot ownership and permanently poisons itself after uncertain backend I/O, so a
+VM reset is required instead of risking duplicate GPU work.
 The `SubmitBatch` service path now joins sealed-control revalidation, canonical
 decode, current buffer-generation checks, transactional watchdog admission,
 signed schema validation, execution, and completion publication in one API.

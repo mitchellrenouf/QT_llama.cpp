@@ -136,6 +136,11 @@ verifies command writes, completion write denial, and continued execution of a
 verified PE guest. The kernel-owned completion ring reserves capacity for a
 whole validated batch before execution, receives authenticated results only
 after synchronized completion, and erases slots as the VMM consumes them.
+The platform-neutral VMM bridge now performs the missing bounded copy between
+those mapped slots and the kernel-owned command/completion queues through the
+common `VmBackend` interface. Monotonic tickets prevent reuse before
+consumption, and any uncertain backend read or write permanently poisons the
+bridge until VM teardown.
 Platform cache-coherence validation, CUDA graph capture, IOMMU plumbing, the
 platform-specific physical
 device-reset callback, and end-to-end inference benchmarks remain pending.
