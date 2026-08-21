@@ -2,15 +2,17 @@
 #![cfg_attr(not(test), no_main)]
 
 use mrml_crypto::{
-    LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES, Sha3_512,
-    lamport_public_key, lamport_sign, lamport_verify,
+    lamport_public_key, lamport_sign, lamport_verify, Sha3_512, LAMPORT_PRIVATE_KEY_BYTES,
+    LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES,
 };
-use mrml_error::{Result, anyhow};
+use mrml_error::{anyhow, Result};
 use mrml_kernel::{
-    ArtifactKind, PeImage, ReleaseManifest, SIGNED_ARTIFACT_HEADER_BYTES, artifact_statement,
-    executable_image_limit,
+    artifact_statement, executable_image_limit, ArtifactKind, PeImage, ReleaseManifest,
+    SIGNED_ARTIFACT_HEADER_BYTES,
 };
-use mrml_runtime::{Text, Vector, mrml_println as println};
+use mrml_runtime::{mrml_println as println, Text, Vector};
+
+mod authenticode;
 
 const MAX_ARTIFACT: usize = 512 * 1024 * 1024;
 
@@ -37,11 +39,26 @@ fn application_main() -> Result<()> {
             &args[6],
         ),
         Some("key-digest") if args.len() == 3 => key_digest(&args[2]),
+        Some("authenticode-digest") if args.len() == 3 => authenticode_digest(&args[2]),
         Some("manifest") if args.len() == 10 => manifest(&args),
         _ => Err(anyhow!(
-            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign sign-bundle KIND VERSION ARTIFACT PRIVATE OUTPUT\n  mrml-sign key-digest PUBLIC\n  mrml-sign manifest VERSION OUTPUT NEXT_ROOT KERNEL VM SERVICE CUDA POLICY"
+            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign sign-bundle KIND VERSION ARTIFACT PRIVATE OUTPUT\n  mrml-sign key-digest PUBLIC\n  mrml-sign authenticode-digest IMAGE.efi\n  mrml-sign manifest VERSION OUTPUT NEXT_ROOT KERNEL VM SERVICE CUDA POLICY"
         )),
     }
+}
+
+fn authenticode_digest(path: &str) -> Result<()> {
+    let image = mrml_runtime::read_file_bounded(path, MAX_ARTIFACT)?;
+    let digest = authenticode::sha256(&image)
+        .map_err(|_| anyhow!("invalid or noncanonical PE image for Authenticode hashing"))?;
+    let mut output = Text::with_capacity(64).map_err(|_| anyhow!("allocation failed"))?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 15) as usize] as char);
+    }
+    println!("{}", output);
+    Ok(())
 }
 
 fn sign_bundle(

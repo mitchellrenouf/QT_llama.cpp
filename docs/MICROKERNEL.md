@@ -228,6 +228,16 @@ platform-compatible RSA/CMS signing path remains an optional build-tool task;
 the inner hash-based MRML signature remains mandatory regardless of firmware
 mode.
 
+`mrml-sign authenticode-digest IMAGE.efi` now computes the SHA-256 PE image
+digest used by conventional Authenticode. Its parser accepts only x86-64
+PE32+, bounds the optional and section tables, sorts raw sections, rejects
+overlap and overflow, requires a terminal eight-byte-aligned certificate table,
+and excludes exactly the checksum field, security-directory entry, and
+certificate bytes. This is hashing groundwork, not a signature generator:
+RSA/PKCS#1 and CMS `SignedData` emission plus verification against an
+independent platform tool remain necessary before claiming firmware-compatible
+signing.
+
 ### OS executable format
 
 PE32+ is the sole executable binary format for MRML on x86-64. The kernel, VM
