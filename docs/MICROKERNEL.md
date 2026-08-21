@@ -109,10 +109,10 @@ cargo build --release -p mrml-uefi --bin mrml-loader --features uefi-image --tar
 ```
 
 This remains a bring-up loader rather than a production boot chain. It loads,
-authenticates, relocates, and transfers to a separate kernel image, but still
-executes under inherited firmware page tables. Installing loader-owned page
-tables with final W^X permissions, persistent rollback state, measurement into
-a hardware trust anchor, and recovery policy remain required.
+authenticates, relocates, and transfers to a separate kernel image under fresh
+loader-owned page tables. Persistent rollback state, measurement into a
+hardware trust anchor, recovery policy, and kernel-owned interrupt tables
+remain required.
 
 ACPI RSDP discovery is now implemented before firmware exit. The loader prefers
 the ACPI 2.0 configuration-table GUID, accepts ACPI 1.0 only as a fallback,
@@ -173,8 +173,21 @@ The admitted PE is copied into zeroed UEFI LoaderCode pages and only bounded
 DIR64 relocations are applied. Each nonzero relocation must originally point
 inside the preferred image and is converted to the corresponding checked RVA
 at the actual 4 KiB-aligned load address. The entry must be inside a validated
-executable, non-writable section. Section-level W^X is validated now; enforcing
-it in hardware awaits the loader-owned CR3 transition described above.
+executable, non-writable section, and the loader-owned CR3 enforces those final
+section permissions in hardware.
+
+The x86-64 transition now allocates a new zeroed four-level page-table tree and
+a dedicated 64 KiB kernel stack before leaving firmware. It identity-maps only
+the authenticated PE regions with their final read-only, writable/NX, or
+read-only/executable permissions; the stack and GOP aperture writable/NX; the
+canonical handoff read-only; and one page-aligned read-only/executable assembly
+trampoline. The trampoline enables EFER.NXE and CR0.WP, replaces CR3, changes
+to the dedicated stack, and jumps without returning. No writable alias of an
+executable image page is retained. QEMU 11.1 reached the independent kernel
+marker with `CR0=0x80010033`, `EFER=0xd00`, and the loader-created CR3 root.
+The current fail-stop transition deliberately has no mapped firmware IDT/GDT
+memory; the next kernel checkpoint must install owned descriptor and exception
+tables before enabling interrupts or attempting recoverable fault handling.
 
 ### OS executable format
 

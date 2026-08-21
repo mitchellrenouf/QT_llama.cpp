@@ -1,11 +1,15 @@
 #![no_std]
 #![no_main]
 
+use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use mrml_kernel::{
-    ArtifactKind, FramebufferInfo, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS,
-    MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PhysAddr, PixelFormat,
-    SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot, encode_handoff,
+    arch::x86_64::{
+        PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore, VirtAddr,
+    },
+    encode_handoff, ArtifactKind, FramebufferInfo, MemoryKind, MemoryRegion, PeImage, PhysAddr,
+    PixelFormat, SignedArtifact, TrustRoot, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
+    MAX_HANDOFF_REGIONS, MAX_KERNEL_IMAGE_BYTES, SIGNED_ARTIFACT_OVERHEAD_BYTES,
 };
 use mrml_uefi::*;
 
@@ -27,6 +31,7 @@ const HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOF
 struct HandoffBuffer(UnsafeCell<[u8; HANDOFF_BYTES]>);
 unsafe impl Sync for HandoffBuffer {}
 static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; HANDOFF_BYTES]));
+const KERNEL_STACK_PAGES: usize = 16;
 const KERNEL_PATH: &[u16] = &[
     92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 75, 69, 82, 78, 69, 76, 46, 83, 73, 71, 78, 69, 68, 0,
 ];
@@ -39,6 +44,82 @@ struct Framebuffer {
     height: u32,
     stride: u32,
     format: u32,
+}
+
+#[derive(Clone, Copy)]
+struct Transition {
+    root: u64,
+    stack_top: u64,
+}
+
+struct FirmwarePageTables {
+    services: *const BootServices,
+}
+
+impl PageTableStore for FirmwarePageTables {
+    fn allocate_zeroed(&mut self) -> Result<PhysAddr, PageTableBuildError> {
+        let services = unsafe { self.services.as_ref() }.ok_or(PageTableBuildError::Storage)?;
+        let mut address = 0u64;
+        check(unsafe { (services.allocate_pages)(0, 2, 1, &mut address) })
+            .map_err(|_| PageTableBuildError::Storage)?;
+        let frame = PhysAddr::new(address).map_err(|_| PageTableBuildError::Storage)?;
+        unsafe { core::ptr::write_bytes(address as *mut u8, 0, 4096) };
+        Ok(frame)
+    }
+
+    fn read(&self, table: PhysAddr, index: usize) -> Result<u64, PageTableBuildError> {
+        if index >= 512 {
+            return Err(PageTableBuildError::Storage);
+        }
+        Ok(unsafe { *((table.get() as *const u64).add(index)) })
+    }
+
+    fn write(
+        &mut self,
+        table: PhysAddr,
+        index: usize,
+        value: u64,
+    ) -> Result<(), PageTableBuildError> {
+        if index >= 512 {
+            return Err(PageTableBuildError::Storage);
+        }
+        unsafe { *((table.get() as *mut u64).add(index)) = value };
+        Ok(())
+    }
+}
+
+global_asm!(
+    r#"
+    .section .text
+    .p2align 12
+    .global mrml_activate_address_space
+mrml_activate_address_space:
+    mov r11, rcx
+    mov r12, rdx
+    mov r10, qword ptr [rsp + 40]
+    mov ecx, 0xc0000080
+    rdmsr
+    or eax, 0x800
+    wrmsr
+    mov rax, cr0
+    or rax, 0x10000
+    mov cr0, rax
+    mov cr3, r11
+    mov rsp, r12
+    mov rcx, r9
+    mov rdx, r10
+    jmp r8
+    "#
+);
+
+unsafe extern "efiapi" {
+    fn mrml_activate_address_space(
+        root: u64,
+        stack_top: u64,
+        entry: u64,
+        handoff: *const u8,
+        handoff_length: usize,
+    ) -> !;
 }
 
 #[panic_handler]
@@ -139,6 +220,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         .image()
         .materialize_at(image_destination, image_address)
         .map_err(|_| LOAD_ERROR)?;
+    let transition = prepare_transition(services, &verified.image(), image_address, framebuffer)?;
     let kernel_version = verified.artifact().version();
     let kernel_measurement = *verified.artifact().digest();
     paint(framebuffer, [0x00, 0x60, 0x20]);
@@ -165,6 +247,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         return Err(LOAD_ERROR);
     }
     enter_kernel(
+        transition,
         kernel_entry,
         kernel_version,
         kernel_measurement,
@@ -290,6 +373,7 @@ unsafe fn read_file_pages(
 }
 
 fn enter_kernel(
+    transition: Transition,
     kernel_entry: u64,
     kernel_version: u64,
     kernel_measurement: [u8; 64],
@@ -354,10 +438,119 @@ fn enter_kernel(
     // SAFETY: the authenticated PE parser proved the entry lies in an
     // executable section, materialization completed before boot-services exit,
     // and the canonical handoff remains in static loader memory.
-    let entry: unsafe extern "efiapi" fn(*const u8, usize) -> usize =
-        unsafe { core::mem::transmute(kernel_entry as usize) };
-    let _ = unsafe { entry(handoff.as_ptr(), handoff_length) };
-    Err(LOAD_ERROR)
+    unsafe {
+        mrml_activate_address_space(
+            transition.root,
+            transition.stack_top,
+            kernel_entry,
+            handoff.as_ptr(),
+            handoff_length,
+        )
+    }
+}
+
+fn prepare_transition(
+    services: &BootServices,
+    image: &PeImage<'_>,
+    image_address: u64,
+    framebuffer: Framebuffer,
+) -> Result<Transition, Status> {
+    let mut stack_base = 0u64;
+    check(unsafe { (services.allocate_pages)(0, 2, KERNEL_STACK_PAGES, &mut stack_base) })?;
+    let stack_bytes = (KERNEL_STACK_PAGES as u64)
+        .checked_mul(4096)
+        .ok_or(LOAD_ERROR)?;
+    let stack_end = stack_base.checked_add(stack_bytes).ok_or(LOAD_ERROR)?;
+    let stack_top = stack_end.checked_sub(8).ok_or(LOAD_ERROR)?;
+    if stack_base == 0 || stack_base % 4096 != 0 || stack_end % 16 != 0 {
+        return Err(LOAD_ERROR);
+    }
+    unsafe { *(stack_top as *mut u64) = 0 };
+
+    let store = FirmwarePageTables {
+        services: services as *const BootServices,
+    };
+    let mut tables = PageTableBuilder::new(store).map_err(|_| LOAD_ERROR)?;
+    for index in 0..image.load_region_count() {
+        let region = image.load_region(index).map_err(|_| LOAD_ERROR)?;
+        let start = image_address
+            .checked_add(region.virtual_address() as u64)
+            .ok_or(LOAD_ERROR)?;
+        let permissions = match (region.writable(), region.executable()) {
+            (true, false) => PagePermissions::KERNEL_READ_WRITE,
+            (false, true) => PagePermissions::KERNEL_READ_EXECUTE,
+            (false, false) => PagePermissions::KERNEL_READ,
+            (true, true) => return Err(LOAD_ERROR),
+        };
+        map_identity(&mut tables, start, region.pages() as u64, permissions)?;
+    }
+    map_identity(
+        &mut tables,
+        stack_base,
+        KERNEL_STACK_PAGES as u64,
+        PagePermissions::KERNEL_READ_WRITE,
+    )?;
+    map_containing_identity(
+        &mut tables,
+        HANDOFF.0.get() as u64,
+        HANDOFF_BYTES as u64,
+        PagePermissions::KERNEL_READ,
+    )?;
+    map_containing_identity(
+        &mut tables,
+        framebuffer.base,
+        framebuffer.size as u64,
+        PagePermissions::KERNEL_READ_WRITE,
+    )?;
+    map_containing_identity(
+        &mut tables,
+        mrml_activate_address_space as *const () as usize as u64,
+        1,
+        PagePermissions::KERNEL_READ_EXECUTE,
+    )?;
+    Ok(Transition {
+        root: tables.root().get(),
+        stack_top,
+    })
+}
+
+fn map_containing_identity(
+    tables: &mut PageTableBuilder<FirmwarePageTables>,
+    address: u64,
+    length: u64,
+    permissions: PagePermissions,
+) -> Result<(), Status> {
+    if length == 0 {
+        return Err(LOAD_ERROR);
+    }
+    let start = address & !4095;
+    let end = address.checked_add(length).ok_or(LOAD_ERROR)?;
+    let rounded_end = end.checked_add(4095).ok_or(LOAD_ERROR)? & !4095;
+    map_identity(tables, start, (rounded_end - start) / 4096, permissions)
+}
+
+fn map_identity(
+    tables: &mut PageTableBuilder<FirmwarePageTables>,
+    start: u64,
+    pages: u64,
+    permissions: PagePermissions,
+) -> Result<(), Status> {
+    if start % 4096 != 0 || pages == 0 {
+        return Err(LOAD_ERROR);
+    }
+    for page in 0..pages {
+        let address = start
+            .checked_add(page.checked_mul(4096).ok_or(LOAD_ERROR)?)
+            .ok_or(LOAD_ERROR)?;
+        tables
+            .map_page(
+                VirtAddr::new(address).map_err(|_| LOAD_ERROR)?,
+                PhysAddr::new(address).map_err(|_| LOAD_ERROR)?,
+                permissions,
+            )
+            .map_err(|_| LOAD_ERROR)?;
+    }
+    Ok(())
 }
 
 unsafe fn exit_boot_services(
