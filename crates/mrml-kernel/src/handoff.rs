@@ -1,6 +1,9 @@
-use crate::{BootEvidence, BootValidationError, MemoryError, MemoryKind, MemoryRegion, PhysAddr};
+use crate::{
+    BootEvidence, BootValidationError, FramebufferError, FramebufferInfo, MemoryError, MemoryKind,
+    MemoryRegion, PhysAddr, PixelFormat,
+};
 
-pub const HANDOFF_HEADER_BYTES: usize = 136;
+pub const HANDOFF_HEADER_BYTES: usize = 168;
 pub const HANDOFF_REGION_BYTES: usize = 24;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
 
@@ -16,6 +19,8 @@ pub enum HandoffError {
     UnknownFlags,
     TooManyRegions,
     MissingAcpiRoot,
+    InvalidFramebuffer(FramebufferError),
+    FramebufferOutsideMmio,
     InvalidMemoryMap(MemoryError),
     InvalidBootEvidence(BootValidationError),
 }
@@ -25,6 +30,7 @@ pub enum HandoffError {
 pub struct BootHandoff {
     evidence: BootEvidence,
     acpi_root: PhysAddr,
+    framebuffer: FramebufferInfo,
     region_count: usize,
 }
 
@@ -39,6 +45,10 @@ impl BootHandoff {
 
     pub const fn region_count(&self) -> usize {
         self.region_count
+    }
+
+    pub const fn framebuffer(&self) -> FramebufferInfo {
+        self.framebuffer
     }
 
     /// Parses a bounded canonical handoff and emits validated regions in
@@ -83,9 +93,31 @@ impl BootHandoff {
             return Err(HandoffError::MissingAcpiRoot);
         }
         let acpi_root = PhysAddr::new(acpi_address).map_err(HandoffError::InvalidMemoryMap)?;
+        if input[165..168].iter().any(|byte| *byte != 0) {
+            return Err(HandoffError::NonCanonical);
+        }
+        let pixel_format = match input[164] {
+            0 => PixelFormat::RedGreenBlueReserved,
+            1 => PixelFormat::BlueGreenRedReserved,
+            _ => {
+                return Err(HandoffError::InvalidFramebuffer(
+                    FramebufferError::UnsupportedPixelFormat,
+                ));
+            }
+        };
+        let framebuffer = FramebufferInfo::new(
+            read_u64(input, 136),
+            read_u64(input, 144),
+            read_u32(input, 152),
+            read_u32(input, 156),
+            read_u32(input, 160),
+            pixel_format,
+        )
+        .map_err(HandoffError::InvalidFramebuffer)?;
 
         let mut previous_start = 0u64;
         let mut previous_end = 0u64;
+        let mut framebuffer_is_mmio = false;
         for index in 0..region_count {
             let region = decode_region(input, index)?;
             let start = region.start().get();
@@ -97,6 +129,15 @@ impl BootHandoff {
             }
             previous_start = start;
             previous_end = region.end();
+            if region.kind() == MemoryKind::Mmio
+                && region.start().get() <= framebuffer.base().get()
+                && region.end() >= framebuffer.end()
+            {
+                framebuffer_is_mmio = true;
+            }
+        }
+        if !framebuffer_is_mmio {
+            return Err(HandoffError::FramebufferOutsideMmio);
         }
 
         let evidence = BootEvidence::new(
@@ -113,6 +154,7 @@ impl BootHandoff {
         Ok(Self {
             evidence,
             acpi_root,
+            framebuffer,
             region_count,
         })
     }
@@ -165,40 +207,50 @@ fn read_u64(input: &[u8], offset: usize) -> u64 {
 mod tests {
     use super::*;
 
-    const TWO_REGION_BYTES: usize = HANDOFF_HEADER_BYTES + 2 * HANDOFF_REGION_BYTES;
+    const THREE_REGION_BYTES: usize = HANDOFF_HEADER_BYTES + 3 * HANDOFF_REGION_BYTES;
 
-    fn valid_handoff() -> [u8; TWO_REGION_BYTES] {
-        let mut encoded = [0u8; TWO_REGION_BYTES];
+    fn valid_handoff() -> [u8; THREE_REGION_BYTES] {
+        let mut encoded = [0u8; THREE_REGION_BYTES];
         encoded[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
-        encoded[16..20].copy_from_slice(&(TWO_REGION_BYTES as u32).to_le_bytes());
-        encoded[20..22].copy_from_slice(&2u16.to_le_bytes());
+        encoded[16..20].copy_from_slice(&(THREE_REGION_BYTES as u32).to_le_bytes());
+        encoded[20..22].copy_from_slice(&3u16.to_le_bytes());
         encoded[22..24].copy_from_slice(&KNOWN_FLAGS.to_le_bytes());
         encoded[24..32].copy_from_slice(&7u64.to_le_bytes());
         encoded[32..64].fill(1);
         encoded[64..128].fill(2);
         encoded[128..136].copy_from_slice(&0x9000u64.to_le_bytes());
-        encoded[136..144].copy_from_slice(&0x1000u64.to_le_bytes());
-        encoded[144..152].copy_from_slice(&2u64.to_le_bytes());
-        encoded[152] = 0;
-        encoded[160..168].copy_from_slice(&0x3000u64.to_le_bytes());
-        encoded[168..176].copy_from_slice(&1u64.to_le_bytes());
-        encoded[176] = 1;
+        encoded[136..144].copy_from_slice(&0xa0000u64.to_le_bytes());
+        encoded[144..152].copy_from_slice(&0x1000u64.to_le_bytes());
+        encoded[152..156].copy_from_slice(&16u32.to_le_bytes());
+        encoded[156..160].copy_from_slice(&16u32.to_le_bytes());
+        encoded[160..164].copy_from_slice(&16u32.to_le_bytes());
+        encoded[164] = 1;
+        encoded[168..176].copy_from_slice(&0x1000u64.to_le_bytes());
+        encoded[176..184].copy_from_slice(&2u64.to_le_bytes());
+        encoded[184] = 0;
+        encoded[192..200].copy_from_slice(&0x3000u64.to_le_bytes());
+        encoded[200..208].copy_from_slice(&1u64.to_le_bytes());
+        encoded[208] = 1;
+        encoded[216..224].copy_from_slice(&0xa0000u64.to_le_bytes());
+        encoded[224..232].copy_from_slice(&1u64.to_le_bytes());
+        encoded[232] = 3;
         encoded
     }
 
     #[test]
     fn decodes_canonical_bounded_handoff() {
         let encoded = valid_handoff();
-        let mut starts = [0u64; 2];
+        let mut starts = [0u64; 3];
         let mut count = 0;
         let handoff = BootHandoff::decode(&encoded, |region| {
             starts[count] = region.start().get();
             count += 1;
         })
         .unwrap();
-        assert_eq!(handoff.region_count(), 2);
+        assert_eq!(handoff.region_count(), 3);
         assert_eq!(handoff.acpi_root().get(), 0x9000);
-        assert_eq!(starts, [0x1000, 0x3000]);
+        assert_eq!(starts, [0x1000, 0x3000, 0xa0000]);
+        assert_eq!(handoff.framebuffer().width(), 16);
         assert_eq!(handoff.evidence().image_measurement(), &[2; 64]);
     }
 
@@ -212,14 +264,14 @@ mod tests {
         );
 
         let mut encoded = valid_handoff();
-        encoded[153] = 1;
+        encoded[185] = 1;
         assert_eq!(
             BootHandoff::decode(&encoded, |_| {}).err(),
             Some(HandoffError::NonCanonical)
         );
 
         let mut encoded = valid_handoff();
-        encoded[160..168].copy_from_slice(&0x2000u64.to_le_bytes());
+        encoded[192..200].copy_from_slice(&0x2000u64.to_le_bytes());
         let mut emitted = 0;
         assert_eq!(
             BootHandoff::decode(&encoded, |_| emitted += 1).err(),

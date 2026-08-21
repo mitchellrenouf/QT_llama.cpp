@@ -88,12 +88,20 @@ relax firmware requirements but must not be accepted by production launchers.
 
 The normalized UEFI-to-kernel handoff now has a fixed, versioned, little-endian
 encoding and a bounded streaming parser. It carries boot flags, release,
-entropy, kernel measurement, ACPI root, and at most 128 normalized memory
+entropy, kernel measurement, ACPI root, a required GOP framebuffer, and at most 128 normalized memory
 regions. The parser does not allocate or dereference firmware pointers and
 rejects unknown flags or region kinds, nonzero reserved bytes, noncanonical
 lengths, unaligned or overflowing regions, and overlap before emitting data to
 caller-owned early-boot storage. A UEFI executable that obtains these values,
 exits boot services, and transfers control to the kernel remains pending.
+
+GOP is the primary early console because contemporary physical machines cannot
+be assumed to expose a usable serial port. Only the standard 32-bit RGB-reserved
+and BGR-reserved pixel layouts are accepted. Geometry, stride, byte length,
+address overflow, and containment inside a normalized MMIO region are checked
+before the framebuffer is admitted. The safe renderer clips nothing silently:
+out-of-range pixels and rectangles are rejected and row padding is never used
+as visible storage. Serial remains an optional developer diagnostic path.
 
 The native artifact chain uses an original SHA3-512 Lamport signature verifier.
 Production policy requires separately typed signatures for the microkernel, VM
