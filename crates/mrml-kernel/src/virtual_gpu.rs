@@ -25,6 +25,140 @@ pub enum GpuError {
     WrongSession,
     Replay,
     SequenceExhausted,
+    DuplicateRequest,
+    DispatchTableFull,
+    InvalidDispatch,
+    InvalidDeadline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispatchId {
+    slot: u32,
+    generation: u32,
+}
+
+#[derive(Clone, Copy)]
+struct InFlightDispatch {
+    generation: u32,
+    request_id: u64,
+    deadline: u64,
+    occupied: bool,
+}
+
+impl InFlightDispatch {
+    const EMPTY: Self = Self {
+        generation: 1,
+        request_id: 0,
+        deadline: 0,
+        occupied: false,
+    };
+}
+
+/// Fixed-capacity watchdog state for host-executed GPU work. Request IDs are
+/// never handles: completion and cancellation require a generational ID minted
+/// when the dispatch enters this table.
+pub struct DispatchTable<const N: usize> {
+    entries: [InFlightDispatch; N],
+}
+
+impl<const N: usize> DispatchTable<N> {
+    pub const fn new() -> Self {
+        Self {
+            entries: [InFlightDispatch::EMPTY; N],
+        }
+    }
+
+    pub fn begin(
+        &mut self,
+        request_id: u64,
+        now: u64,
+        deadline: u64,
+    ) -> Result<DispatchId, GpuError> {
+        if request_id == 0 || deadline <= now {
+            return Err(GpuError::InvalidDeadline);
+        }
+        if self
+            .entries
+            .iter()
+            .any(|entry| entry.occupied && entry.request_id == request_id)
+        {
+            return Err(GpuError::DuplicateRequest);
+        }
+        let (slot, entry) = self
+            .entries
+            .iter_mut()
+            .enumerate()
+            .find(|(_, entry)| !entry.occupied && entry.generation != 0)
+            .ok_or(GpuError::DispatchTableFull)?;
+        entry.request_id = request_id;
+        entry.deadline = deadline;
+        entry.occupied = true;
+        Ok(DispatchId {
+            slot: slot as u32,
+            generation: entry.generation,
+        })
+    }
+
+    pub fn complete(&mut self, id: DispatchId) -> Result<u64, GpuError> {
+        self.remove(id)
+    }
+
+    pub fn cancel(&mut self, id: DispatchId) -> Result<u64, GpuError> {
+        self.remove(id)
+    }
+
+    /// Invalidates every expired ID before invoking `expired`, so callbacks
+    /// that initiate device reset cannot race a stale completion into a reused
+    /// slot. Returns the number of invalidated dispatches.
+    pub fn expire<F>(&mut self, now: u64, mut expired: F) -> usize
+    where
+        F: FnMut(DispatchId, u64),
+    {
+        let mut count = 0;
+        for (slot, entry) in self.entries.iter_mut().enumerate() {
+            if entry.occupied && entry.deadline <= now {
+                let id = DispatchId {
+                    slot: slot as u32,
+                    generation: entry.generation,
+                };
+                let request_id = entry.request_id;
+                invalidate_dispatch(entry);
+                count += 1;
+                expired(id, request_id);
+            }
+        }
+        count
+    }
+
+    pub fn contains(&self, id: DispatchId) -> bool {
+        self.entries
+            .get(id.slot as usize)
+            .is_some_and(|entry| entry.occupied && entry.generation == id.generation)
+    }
+
+    fn remove(&mut self, id: DispatchId) -> Result<u64, GpuError> {
+        let entry = self
+            .entries
+            .get_mut(id.slot as usize)
+            .filter(|entry| entry.occupied && entry.generation == id.generation)
+            .ok_or(GpuError::InvalidDispatch)?;
+        let request_id = entry.request_id;
+        invalidate_dispatch(entry);
+        Ok(request_id)
+    }
+}
+
+impl<const N: usize> Default for DispatchTable<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn invalidate_dispatch(entry: &mut InFlightDispatch) {
+    entry.occupied = false;
+    entry.request_id = 0;
+    entry.deadline = 0;
+    entry.generation = entry.generation.checked_add(1).unwrap_or(0);
 }
 
 pub const GPU_QUEUE_MESSAGE_BYTES: usize = 80;
@@ -721,5 +855,32 @@ mod tests {
             Dispatch::decode(&wire).err(),
             Some(GpuError::MalformedCommand)
         );
+    }
+
+    #[test]
+    fn dispatch_watchdog_rejects_duplicates_and_stale_completions() {
+        let mut table = DispatchTable::<2>::new();
+        let first = table.begin(41, 100, 120).unwrap();
+        assert_eq!(table.begin(41, 100, 130), Err(GpuError::DuplicateRequest));
+        assert_eq!(table.begin(42, 100, 100), Err(GpuError::InvalidDeadline));
+        let second = table.begin(42, 100, 140).unwrap();
+        assert_eq!(table.begin(43, 100, 150), Err(GpuError::DispatchTableFull));
+
+        let mut expired_id = None;
+        assert_eq!(
+            table.expire(120, |id, request| {
+                expired_id = Some((id, request));
+            }),
+            1
+        );
+        assert_eq!(expired_id, Some((first, 41)));
+        assert!(!table.contains(first));
+        assert_eq!(table.complete(first), Err(GpuError::InvalidDispatch));
+
+        let replacement = table.begin(43, 120, 150).unwrap();
+        assert_ne!(replacement, first);
+        assert_eq!(table.cancel(second), Ok(42));
+        assert_eq!(table.complete(second), Err(GpuError::InvalidDispatch));
+        assert_eq!(table.complete(replacement), Ok(43));
     }
 }

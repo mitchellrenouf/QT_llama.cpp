@@ -54,8 +54,12 @@ artifact signing. Dispatches also have one fixed-size canonical encoding: they
 contain an embedded kernel ID, bounded launch geometry, and up to 16 opaque
 generational buffer ranges with explicit access modes. Unused slots must be
 zero and there is no representation for PTX, pointers, driver calls, or
-variable argument blobs. The Hyper-V transport, host CUDA executor, kernel-specific argument schemas,
-copy staging, cancellation, watchdog reset, and end-to-end inference benchmarks
+variable argument blobs. In-flight work uses a fixed-capacity watchdog table
+with unique request IDs, kernel-minted generational dispatch IDs, explicit
+cancellation, and deadline expiry. Expiry invalidates an ID before requesting
+host recovery, so a late completion cannot affect a reused slot. The Hyper-V
+transport, host CUDA executor, kernel-specific argument schemas, copy staging,
+the platform-specific device-reset callback, and end-to-end inference benchmarks
 remain pending. Until those pieces exist and are audited, this is not a working
 shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a
 general `virtio-cuda` compatibility layer.
