@@ -9,7 +9,7 @@ use mrml_kernel::{
     ArtifactKind, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuQueueIdentity,
     GpuQueueReceiver, GpuResourceResponse, GpuResourceResponseSender, GpuSharedQueueLayout,
     GpuVmmQueueBridge, ResourceCommand, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
-    VmBackend, VmExit,
+    VerifiedGpuKernelBundle, VmBackend, VmExit, verify_gpu_kernel_bundle,
 };
 #[cfg(any(test, target_os = "linux"))]
 use mrml_kernel::{
@@ -53,9 +53,14 @@ impl LaunchMode {
 fn application_main() -> Result<()> {
     let total_started = Instant::now();
     let arguments = mrml_runtime::command_arguments();
-    if arguments.len() != 5 {
+    if arguments.len() == 3 && arguments[1] == "--export-cuda-bundle" {
+        mrml_runtime::write_file(&arguments[2], mrml_tensor::cuda::embedded_cuda_bundle())?;
+        println!("wrote exact embedded CUDA PTX bundle to {}", arguments[2]);
+        return Ok(());
+    }
+    if arguments.len() != 5 && arguments.len() != 8 {
         return Err(anyhow!(
-            "usage: mrml-kvm-run KERNEL.signed RELEASE.public MINIMUM_VERSION MODE"
+            "usage: mrml-kvm-run KERNEL.signed RELEASE.public MINIMUM_VERSION MODE [CUDA.signed CUDA.public CUDA_MINIMUM_VERSION]\n       mrml-kvm-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -64,6 +69,11 @@ fn application_main() -> Result<()> {
         .filter(|version| *version != 0)
         .ok_or_else(|| anyhow!("minimum version must be a nonzero integer"))?;
     let mode = LaunchMode::parse(&arguments[4])?;
+    if (mode == LaunchMode::GpuBenchmark) != (arguments.len() == 8) {
+        return Err(anyhow!(
+            "gpu-benchmark requires exactly one signed CUDA bundle, public key, and minimum version"
+        ));
+    }
     let bundle = mrml_runtime::read_file_bounded(&arguments[1], MAX_KERNEL_BUNDLE)?;
     let public = mrml_runtime::read_file_bounded(&arguments[2], LAMPORT_PUBLIC_KEY_BYTES)?;
     if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
@@ -79,6 +89,15 @@ fn application_main() -> Result<()> {
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
+    let cuda_bundle = if mode == LaunchMode::GpuBenchmark {
+        Some(verify_cuda_bundle(
+            &arguments[5],
+            &arguments[6],
+            &arguments[7],
+        )?)
+    } else {
+        None
+    };
     let verification_micros = verification_started.elapsed().as_micros();
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
@@ -118,7 +137,15 @@ fn application_main() -> Result<()> {
     let mut exit = VmBackend::run(&mut guest, 0)
         .map_err(|error| anyhow!("KVM execution failed: {:?}", error))?;
     if mode == LaunchMode::GpuBenchmark {
-        service_gpu_benchmark(&mut guest, queue_layout, handoff_entropy(&handoff)?, exit)?;
+        service_gpu_benchmark(
+            &mut guest,
+            queue_layout,
+            handoff_entropy(&handoff)?,
+            cuda_bundle
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing verified CUDA bundle"))?,
+            exit,
+        )?;
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after GPU completion failed: {:?}", error))?;
     }
@@ -204,6 +231,28 @@ fn application_main() -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+fn verify_cuda_bundle(
+    bundle_path: &str,
+    public_path: &str,
+    minimum_version: &str,
+) -> Result<VerifiedGpuKernelBundle> {
+    let minimum_version = minimum_version
+        .parse::<u64>()
+        .ok()
+        .filter(|version| *version != 0)
+        .ok_or_else(|| anyhow!("CUDA minimum version must be a nonzero integer"))?;
+    let bundle = mrml_runtime::read_file_bounded(bundle_path, MAX_KERNEL_BUNDLE)?;
+    let public = mrml_runtime::read_file_bounded(public_path, LAMPORT_PUBLIC_KEY_BYTES)?;
+    verify_gpu_kernel_bundle(
+        &bundle,
+        &public,
+        minimum_version,
+        mrml_tensor::cuda::embedded_cuda_bundle(),
+    )
+    .map_err(|_| anyhow!("CUDA bundle signature, kind, version, or embedded PTX rejected"))
+}
+
+#[cfg(target_os = "linux")]
 fn handoff_entropy(handoff: &[u8]) -> Result<[u8; 32]> {
     let decoded = mrml_kernel::BootHandoff::decode(handoff, |_| {})
         .map_err(|_| anyhow!("invalid benchmark handoff"))?;
@@ -215,6 +264,7 @@ fn service_gpu_benchmark(
     guest: &mut mrml_kvm::PreparedKvmGuest<7>,
     layout: GpuSharedQueueLayout,
     entropy: [u8; 32],
+    cuda_bundle: &VerifiedGpuKernelBundle,
     exit: VmExit,
 ) -> Result<()> {
     if exit
@@ -255,7 +305,7 @@ fn service_gpu_benchmark(
     else {
         return Err(anyhow!("GPU doorbell carried a non-benchmark command"));
     };
-    let elapsed_ns = execute_cuda_add_benchmark(elements, iterations)?;
+    let elapsed_ns = execute_cuda_add_benchmark(cuda_bundle, elements, iterations)?;
     let mut response = [0u8; GPU_QUEUE_MESSAGE_BYTES];
     GpuResourceResponseSender::new(identity.session(), identity.key())
         .and_then(|mut sender| {
@@ -275,7 +325,11 @@ fn service_gpu_benchmark(
 }
 
 #[cfg(target_os = "linux")]
-fn execute_cuda_add_benchmark(elements: u32, iterations: u32) -> Result<u64> {
+fn execute_cuda_add_benchmark(
+    _: &VerifiedGpuKernelBundle,
+    elements: u32,
+    iterations: u32,
+) -> Result<u64> {
     use mrml_runtime::Vector;
     use mrml_tensor::cuda::{CudaBuffer, CudaDevice};
 

@@ -74,7 +74,7 @@ pub use virtual_gpu::{
     VerifiedGpuKernelBundle, VirtualGpuSession, process_gpu_resource_command,
     process_gpu_resource_command_with_response, submit_gpu_batch,
     submit_gpu_batch_to_completion_ring, submit_gpu_batch_with_completions,
-    submit_gpu_control_batch,
+    submit_gpu_control_batch, verify_gpu_kernel_bundle,
 };
 pub use vm::{
     GuestAccess, GuestMappingId, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall,

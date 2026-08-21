@@ -9,7 +9,7 @@ use mrml_kernel::{
     ArtifactKind, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuQueueIdentity,
     GpuQueueReceiver, GpuResourceResponse, GpuResourceResponseSender, GpuSharedQueueLayout,
     GpuVmmQueueBridge, ResourceCommand, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
-    VmBackend, VmExit,
+    VerifiedGpuKernelBundle, VmBackend, VmExit, verify_gpu_kernel_bundle,
 };
 #[cfg(any(test, target_os = "windows"))]
 use mrml_kernel::{
@@ -33,9 +33,14 @@ const COMPLETION_BASE: u64 = 0x00b0_1000;
 fn application_main() -> Result<()> {
     let total_started = Instant::now();
     let arguments = mrml_runtime::command_arguments();
-    if arguments.len() != 4 {
+    if arguments.len() == 3 && arguments[1] == "--export-cuda-bundle" {
+        mrml_runtime::write_file(&arguments[2], mrml_tensor::cuda::embedded_cuda_bundle())?;
+        println!("wrote exact embedded CUDA PTX bundle to {}", arguments[2]);
+        return Ok(());
+    }
+    if arguments.len() != 7 {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -58,6 +63,7 @@ fn application_main() -> Result<()> {
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
+    let cuda_bundle = verify_cuda_bundle(&arguments[4], &arguments[5], &arguments[6])?;
     let verification_micros = verification_started.elapsed().as_micros();
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
@@ -119,7 +125,7 @@ fn application_main() -> Result<()> {
             instruction
         ));
     }
-    service_gpu_benchmark(&mut guest, queue, entropy, exit)?;
+    service_gpu_benchmark(&mut guest, queue, entropy, &cuda_bundle, exit)?;
     let exit = VmBackend::run(&mut guest, 0)
         .map_err(|error| anyhow!("WHP execution after GPU completion failed: {:?}", error))?;
     if exit
@@ -154,10 +160,33 @@ fn application_main() -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+fn verify_cuda_bundle(
+    bundle_path: &str,
+    public_path: &str,
+    minimum_version: &str,
+) -> Result<VerifiedGpuKernelBundle> {
+    let minimum_version = minimum_version
+        .parse::<u64>()
+        .ok()
+        .filter(|version| *version != 0)
+        .ok_or_else(|| anyhow!("CUDA minimum version must be a nonzero integer"))?;
+    let bundle = mrml_runtime::read_file_bounded(bundle_path, MAX_KERNEL_BUNDLE)?;
+    let public = mrml_runtime::read_file_bounded(public_path, LAMPORT_PUBLIC_KEY_BYTES)?;
+    verify_gpu_kernel_bundle(
+        &bundle,
+        &public,
+        minimum_version,
+        mrml_tensor::cuda::embedded_cuda_bundle(),
+    )
+    .map_err(|_| anyhow!("CUDA bundle signature, kind, version, or embedded PTX rejected"))
+}
+
+#[cfg(target_os = "windows")]
 fn service_gpu_benchmark(
     guest: &mut PreparedWhpGuest<'_>,
     layout: GpuSharedQueueLayout,
     entropy: [u8; 32],
+    cuda_bundle: &VerifiedGpuKernelBundle,
     exit: VmExit,
 ) -> Result<()> {
     if exit
@@ -198,7 +227,7 @@ fn service_gpu_benchmark(
     else {
         return Err(anyhow!("GPU doorbell carried a non-benchmark command"));
     };
-    let elapsed_ns = execute_cuda_add_benchmark(elements, iterations)?;
+    let elapsed_ns = execute_cuda_add_benchmark(cuda_bundle, elements, iterations)?;
     let mut response = [0u8; GPU_QUEUE_MESSAGE_BYTES];
     GpuResourceResponseSender::new(identity.session(), identity.key())
         .and_then(|mut sender| {
@@ -218,7 +247,11 @@ fn service_gpu_benchmark(
 }
 
 #[cfg(target_os = "windows")]
-fn execute_cuda_add_benchmark(elements: u32, iterations: u32) -> Result<u64> {
+fn execute_cuda_add_benchmark(
+    _: &VerifiedGpuKernelBundle,
+    elements: u32,
+    iterations: u32,
+) -> Result<u64> {
     use mrml_tensor::cuda::{CudaBuffer, CudaDevice};
 
     let elements = usize::try_from(elements).map_err(|_| anyhow!("element count overflow"))?;

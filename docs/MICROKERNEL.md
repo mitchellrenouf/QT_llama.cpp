@@ -222,6 +222,19 @@ measured 28.429 us per 4,194,304-element launch over 1,000 iterations (1,770.41
 GB/s effective traffic). This is mediated CUDA from a genuinely running guest,
 not GPU assignment: the compromised host remains able to forge the measurement.
 
+The live KVM and WHP launchers now enforce the signed-kernel-bundle boundary
+rather than merely relying on the embedded PTX. Each runner can export its exact
+compiled PTX with `--export-cuda-bundle`; release tooling signs those bytes as a
+separate `CudaKernelBundle` using a one-use key. GPU benchmark mode requires the
+signed bundle, its public key, and a nonzero minimum version. Before VM creation
+or CUDA initialization, the launcher validates the artifact kind, Lamport
+signature, rollback floor, and constant-time digest equality against the PTX
+compiled into that runner. A live Windows mismatch test signed the kernel PE as
+a valid CUDA-kind artifact and was rejected before WHP entry because its bytes
+did not match. The successfully admitted Windows run measured 21.444 us and the
+corresponding nested-KVM run measured 35.506 us per 4,194,304-element launch;
+these single samples are functional gates, not updated performance baselines.
+
 The CUDA service must verify the exact embedded PTX bundle as a
 `CudaKernelBundle` artifact before module loading. Kernel IDs are enabled only
 after this verification token exists; a digest mismatch or missing signature

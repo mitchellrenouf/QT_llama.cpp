@@ -1,9 +1,9 @@
-use crate::{ArtifactKind, PAGE_SIZE, VerifiedArtifact};
+use crate::{ArtifactKind, PAGE_SIZE, SignedArtifact, TrustRoot, VerifiedArtifact};
 use core::{
     array,
     sync::atomic::{AtomicU64, Ordering},
 };
-use mrml_crypto::{Sha3_512, hmac_sha256};
+use mrml_crypto::{LAMPORT_PUBLIC_KEY_BYTES, Sha3_512, hmac_sha256};
 
 pub const MAX_DISPATCH_BUFFERS: usize = 16;
 pub const MAX_DISPATCH_SCALARS: usize = 16;
@@ -2021,6 +2021,30 @@ impl VerifiedGpuKernelBundle {
     pub const fn permits(&self, _: KernelId) -> bool {
         true
     }
+}
+
+/// Authenticate a canonical CUDA artifact and bind it byte-for-byte to the
+/// bundle embedded in a GPU service. VMMs use this single admission path before
+/// creating a CUDA context or making guest work executable.
+pub fn verify_gpu_kernel_bundle(
+    encoded: &[u8],
+    public_key: &[u8],
+    minimum_version: u64,
+    embedded_bundle: &[u8],
+) -> Result<VerifiedGpuKernelBundle, GpuError> {
+    if public_key.len() != LAMPORT_PUBLIC_KEY_BYTES || minimum_version == 0 {
+        return Err(GpuError::UntrustedKernelBundle);
+    }
+    let root = TrustRoot::new(
+        ArtifactKind::CudaKernelBundle,
+        Sha3_512::digest(public_key),
+        minimum_version,
+    );
+    let signed = SignedArtifact::decode(encoded).map_err(|_| GpuError::UntrustedKernelBundle)?;
+    let artifact = signed
+        .verify(&root, ArtifactKind::CudaKernelBundle)
+        .map_err(|_| GpuError::UntrustedKernelBundle)?;
+    VerifiedGpuKernelBundle::admit(&artifact, embedded_bundle)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5449,7 +5473,9 @@ mod tests {
 
     #[test]
     fn kernel_bundle_token_requires_signed_bytes_matching_embedded_ptx() {
-        let bundle = b"original embedded MRML PTX bundle";
+        const BUNDLE: &[u8] = b"original embedded MRML PTX bundle";
+        const ENCODED_BYTES: usize = crate::SIGNED_ARTIFACT_OVERHEAD_BYTES + BUNDLE.len();
+        let bundle = BUNDLE;
         let mut private = [0u8; LAMPORT_PRIVATE_KEY_BYTES];
         for (index, byte) in private.iter_mut().enumerate() {
             *byte = (index as u64).wrapping_mul(29).wrapping_add(3) as u8;
@@ -5469,6 +5495,36 @@ mod tests {
         let admitted = VerifiedGpuKernelBundle::admit(&artifact, bundle).unwrap();
         assert_eq!(admitted.version(), 5);
         assert!(admitted.permits(KernelId::new(27).unwrap()));
+
+        let mut encoded = [0u8; ENCODED_BYTES];
+        encoded[..16].copy_from_slice(b"MRML-SIGNED-v1\0\0");
+        encoded[16] = ArtifactKind::CudaKernelBundle as u8;
+        encoded[24..32].copy_from_slice(&5u64.to_le_bytes());
+        encoded[32..40].copy_from_slice(&(bundle.len() as u64).to_le_bytes());
+        encoded[40..104].copy_from_slice(&Sha3_512::digest(bundle));
+        let public_end = crate::SIGNED_ARTIFACT_HEADER_BYTES + LAMPORT_PUBLIC_KEY_BYTES;
+        let signature_end = public_end + LAMPORT_SIGNATURE_BYTES;
+        encoded[crate::SIGNED_ARTIFACT_HEADER_BYTES..public_end].copy_from_slice(&public);
+        encoded[public_end..signature_end].copy_from_slice(&signature);
+        encoded[signature_end..].copy_from_slice(bundle);
+        assert_eq!(
+            verify_gpu_kernel_bundle(&encoded, &public, 5, bundle)
+                .unwrap()
+                .digest(),
+            &Sha3_512::digest(bundle)
+        );
+        assert!(matches!(
+            verify_gpu_kernel_bundle(&encoded, &public, 6, bundle),
+            Err(GpuError::UntrustedKernelBundle)
+        ));
+        assert!(matches!(
+            verify_gpu_kernel_bundle(&encoded, &public[..public.len() - 1], 5, bundle),
+            Err(GpuError::UntrustedKernelBundle)
+        ));
+        assert!(matches!(
+            verify_gpu_kernel_bundle(&encoded, &public, 5, b"changed PTX"),
+            Err(GpuError::UntrustedKernelBundle)
+        ));
         assert!(matches!(
             VerifiedGpuKernelBundle::admit(&artifact, b"changed PTX"),
             Err(GpuError::UntrustedKernelBundle)

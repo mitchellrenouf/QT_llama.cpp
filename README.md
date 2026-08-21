@@ -174,19 +174,35 @@ can still forge memory, timings, or responses, so this is a functional and
 performance benchmark, not a hostile-host security proof.
 
 Reproduce the KVM benchmark after generating a one-use release key and signing
-the benchmark PE as described in `docs/MICROKERNEL.md`:
+the benchmark PE as described in `docs/MICROKERNEL.md`. Export the exact PTX
+embedded in the final runner, sign that file as `cuda` with a separate one-use
+key, and supply both independently signed artifacts:
 
 ```bash
+cargo run --release -p mrml-kvm-run -- --export-cuda-bundle target/cuda.ptx
+target/release/mrml-sign keygen target/cuda.private target/cuda.public
+target/release/mrml-sign sign-bundle cuda 1 target/cuda.ptx \
+  target/cuda.private target/cuda.signed
 cargo run --release -p mrml-kvm-run -- \
-  target/gpu-bench.signed target/gpu-bench.public 1 gpu-benchmark
+  target/gpu-bench.signed target/gpu-bench.public 1 gpu-benchmark \
+  target/cuda.signed target/cuda.public 1
 ```
 
 On Windows, build the PE with `whp-gpu-benchmark`, sign it with a fresh one-use
-release key, build `mrml-whp-run` with the GNU/LLVM Rust toolchain, then run:
+release key, build `mrml-whp-run` with the GNU/LLVM Rust toolchain, then export
+and independently sign that binary's embedded PTX before running:
 
 ```text
-target\release\mrml-whp-run.exe KERNEL.signed RELEASE.public 1
+target\release\mrml-whp-run.exe --export-cuda-bundle target\cuda.ptx
+target\release\mrml-sign.exe keygen target\cuda.private target\cuda.public
+target\release\mrml-sign.exe sign-bundle cuda 1 target\cuda.ptx target\cuda.private target\cuda.signed
+target\release\mrml-whp-run.exe KERNEL.signed RELEASE.public 1 target\cuda.signed target\cuda.public 1
 ```
+
+Both launchers verify the CUDA artifact's kind, signature, minimum version, and
+constant-time digest equality with their embedded PTX before creating the VM or
+CUDA device. A correctly signed artifact containing different bytes is rejected.
+Rebuilding either runner requires exporting and signing its embedded PTX again.
 
 ### Secure mediated CUDA design
 
