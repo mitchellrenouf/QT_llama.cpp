@@ -48,8 +48,13 @@ The resource/session validator, authenticated queue wire format, and bounded
 kernel-owned FIFO are implemented. The FIFO accepts only exact-size messages,
 never overwrites unread work, erases consumed slots, and safely wraps its
 indices. Copying into owned storage closes the mutation-after-admission window;
-the later shared-page transport must preserve that property with an explicit
-ownership protocol. Each fixed-size command is bound to a nonzero session and strict
+the later shared-page transport must preserve that property. Monotonic
+producer/consumer ownership state now models reserve-before-write,
+commit-after-write, acquire-before-read, and release-after-read. It rejects
+forged counters, producer lapping, double reservation, out-of-order release,
+premature slot reuse, and counter exhaustion; positions never wrap within a
+session. Platform adapters must implement the documented acquire/release memory
+ordering around these state transitions. Each fixed-size command is bound to a nonzero session and strict
 sequence and carries an HMAC tag under a per-session key; tampering, replay,
 cross-session substitution, noncanonical encoding, and zero keys are rejected
 before resource state changes. HMAC-SHA-256 is conservatively treated as a
@@ -63,7 +68,7 @@ variable argument blobs. In-flight work uses a fixed-capacity watchdog table
 with unique request IDs, kernel-minted generational dispatch IDs, explicit
 cancellation, and deadline expiry. Expiry invalidates an ID before requesting
 host recovery, so a late completion cannot affect a reused slot. The Hyper-V
-shared-page mapping and lock-free ownership protocol, host CUDA executor,
+shared-page mapping and atomic memory-ordering adapter, host CUDA executor,
 kernel-specific argument schemas, operation-graph batching, completion queue,
 IOMMU plumbing, the platform-specific device-reset callback, and end-to-end
 inference benchmarks remain pending. Until those pieces exist and are audited, this is not a working

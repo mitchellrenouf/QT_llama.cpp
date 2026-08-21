@@ -32,6 +32,9 @@ pub enum GpuError {
     InvalidQueueCapacity,
     QueueFull,
     QueueEmpty,
+    InvalidQueueState,
+    ReservationPending,
+    InvalidReservation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,6 +170,120 @@ fn invalidate_dispatch(entry: &mut InFlightDispatch) {
 pub const GPU_QUEUE_MESSAGE_BYTES: usize = 80;
 pub const MAX_GPU_QUEUE_SLOTS: usize = 256;
 const GPU_QUEUE_AUTHENTICATED_BYTES: usize = 48;
+
+/// A monotonic position and its derived physical slot. Positions do not wrap;
+/// exhaustion requires establishing a new authenticated GPU session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuRingTicket {
+    position: u64,
+    slot: u16,
+}
+
+impl GpuRingTicket {
+    pub const fn position(self) -> u64 {
+        self.position
+    }
+
+    pub const fn slot(self) -> u16 {
+        self.slot
+    }
+}
+
+/// Producer-side ownership state for a future shared-page SPSC queue. A slot
+/// is reserved, filled, and only then committed. At most one unpublished slot
+/// exists, making the required release-store boundary explicit to adapters.
+pub struct GpuRingProducer<const N: usize> {
+    published: u64,
+    reserved: Option<GpuRingTicket>,
+}
+
+impl<const N: usize> GpuRingProducer<N> {
+    pub const fn new() -> Result<Self, GpuError> {
+        if N == 0 || N > MAX_GPU_QUEUE_SLOTS {
+            return Err(GpuError::InvalidQueueCapacity);
+        }
+        Ok(Self {
+            published: 0,
+            reserved: None,
+        })
+    }
+
+    pub fn reserve(&mut self, consumed: u64) -> Result<GpuRingTicket, GpuError> {
+        if self.reserved.is_some() {
+            return Err(GpuError::ReservationPending);
+        }
+        if consumed > self.published {
+            return Err(GpuError::InvalidQueueState);
+        }
+        if self.published - consumed >= N as u64 {
+            return Err(GpuError::QueueFull);
+        }
+        let position = self
+            .published
+            .checked_add(1)
+            .ok_or(GpuError::SequenceExhausted)?;
+        let ticket = ring_ticket::<N>(position);
+        self.reserved = Some(ticket);
+        Ok(ticket)
+    }
+
+    pub fn commit(&mut self, ticket: GpuRingTicket) -> Result<u64, GpuError> {
+        if self.reserved != Some(ticket) || ticket.position != self.published + 1 {
+            return Err(GpuError::InvalidReservation);
+        }
+        self.published = ticket.position;
+        self.reserved = None;
+        Ok(self.published)
+    }
+
+    pub const fn published(&self) -> u64 {
+        self.published
+    }
+}
+
+/// Consumer-side ownership state. The adapter must acquire-load `published`,
+/// copy the indicated immutable slot, authenticate it, then release `ticket`.
+pub struct GpuRingConsumer<const N: usize> {
+    consumed: u64,
+}
+
+impl<const N: usize> GpuRingConsumer<N> {
+    pub const fn new() -> Result<Self, GpuError> {
+        if N == 0 || N > MAX_GPU_QUEUE_SLOTS {
+            return Err(GpuError::InvalidQueueCapacity);
+        }
+        Ok(Self { consumed: 0 })
+    }
+
+    pub fn acquire(&self, published: u64) -> Result<GpuRingTicket, GpuError> {
+        if published < self.consumed || published - self.consumed > N as u64 {
+            return Err(GpuError::InvalidQueueState);
+        }
+        if published == self.consumed {
+            return Err(GpuError::QueueEmpty);
+        }
+        Ok(ring_ticket::<N>(self.consumed + 1))
+    }
+
+    pub fn release(&mut self, ticket: GpuRingTicket) -> Result<u64, GpuError> {
+        if ticket != ring_ticket::<N>(self.consumed + 1) {
+            return Err(GpuError::InvalidReservation);
+        }
+        self.consumed = ticket.position;
+        Ok(self.consumed)
+    }
+
+    pub const fn consumed(&self) -> u64 {
+        self.consumed
+    }
+}
+
+fn ring_ticket<const N: usize>(position: u64) -> GpuRingTicket {
+    GpuRingTicket {
+        position,
+        slot: ((position - 1) % N as u64) as u16,
+    }
+}
 
 /// Fixed-capacity command transport between a guest-facing VMM endpoint and
 /// the isolated GPU service. Messages are copied into kernel-owned slots so an
@@ -864,6 +981,60 @@ mod tests {
         assert_eq!(output, third);
         assert!(ring.is_empty());
         assert_eq!(ring.enqueue(&first[..79]), Err(GpuError::MalformedCommand));
+    }
+
+    #[test]
+    fn shared_ring_ownership_rejects_lapping_forgery_and_reuse() {
+        let mut producer = GpuRingProducer::<2>::new().unwrap();
+        let mut consumer = GpuRingConsumer::<2>::new().unwrap();
+        assert_eq!(consumer.acquire(0), Err(GpuError::QueueEmpty));
+
+        let first = producer.reserve(consumer.consumed()).unwrap();
+        assert_eq!(
+            first,
+            GpuRingTicket {
+                position: 1,
+                slot: 0
+            }
+        );
+        assert_eq!(
+            producer.reserve(consumer.consumed()),
+            Err(GpuError::ReservationPending)
+        );
+        assert_eq!(producer.commit(first), Ok(1));
+        let second = producer.reserve(consumer.consumed()).unwrap();
+        assert_eq!(
+            second,
+            GpuRingTicket {
+                position: 2,
+                slot: 1
+            }
+        );
+        producer.commit(second).unwrap();
+        assert_eq!(
+            producer.reserve(consumer.consumed()),
+            Err(GpuError::QueueFull)
+        );
+
+        assert_eq!(consumer.acquire(producer.published()), Ok(first));
+        assert_eq!(consumer.release(second), Err(GpuError::InvalidReservation));
+        consumer.release(first).unwrap();
+        let third = producer.reserve(consumer.consumed()).unwrap();
+        assert_eq!(
+            third,
+            GpuRingTicket {
+                position: 3,
+                slot: 0
+            }
+        );
+        producer.commit(third).unwrap();
+        assert_eq!(consumer.acquire(producer.published()), Ok(second));
+        consumer.release(second).unwrap();
+        assert_eq!(consumer.acquire(producer.published()), Ok(third));
+        consumer.release(third).unwrap();
+        assert_eq!(consumer.acquire(2), Err(GpuError::InvalidQueueState));
+        assert_eq!(consumer.acquire(6), Err(GpuError::InvalidQueueState));
+        assert_eq!(producer.reserve(4), Err(GpuError::InvalidQueueState));
     }
 
     #[test]

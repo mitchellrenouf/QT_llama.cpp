@@ -121,8 +121,9 @@ execution dominates transport cost and VM exits are amortized. The contract is:
 
 Implemented today are the core-only buffer/session policy, canonical resource
 and dispatch encodings, authenticated sender/receiver state, bounded FIFO,
-embedded-kernel allowlist, launch validation, dispatch watchdog, and adversarial
-unit tests. The cross-VM shared-page mapping, lock-free ownership protocol,
+monotonic producer/consumer ownership state, embedded-kernel allowlist, launch
+validation, dispatch watchdog, and adversarial unit tests. The cross-VM
+shared-page mapping, platform atomic adapter and memory-ordering validation,
 host CUDA executor, operation-graph batching, completion queue, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
