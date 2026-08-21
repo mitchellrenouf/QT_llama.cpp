@@ -213,6 +213,219 @@ pub struct MemoryDescriptor {
     pub attributes: u64,
 }
 
+pub const MAX_NORMALIZED_REGIONS: usize = 128;
+const PAGE_SIZE: u64 = 4096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum NormalizedMemoryKind {
+    Free = 0,
+    Kernel = 1,
+    Firmware = 2,
+    Mmio = 3,
+    Acpi = 4,
+    Reserved = 5,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NormalizedRegion {
+    pub start: u64,
+    pub pages: u64,
+    pub kind: NormalizedMemoryKind,
+}
+
+impl NormalizedRegion {
+    pub const EMPTY: Self = Self {
+        start: 0,
+        pages: 0,
+        kind: NormalizedMemoryKind::Reserved,
+    };
+
+    pub const fn end(self) -> u64 {
+        self.start + self.pages * PAGE_SIZE
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NormalizeError {
+    Empty,
+    BadDescriptorSize,
+    Truncated,
+    Unaligned,
+    ZeroPages,
+    Overflow,
+    Unsorted,
+    Overlap,
+    TooManyRegions,
+    FramebufferConflict,
+}
+
+/// Converts an untrusted variable-stride UEFI map into the fixed MRML memory
+/// model. Only conventional memory becomes free; boot-service and loader pages
+/// remain reserved until a later kernel phase can prove they are reclaimable.
+pub fn normalize_memory_map(
+    bytes: &[u8],
+    descriptor_size: usize,
+    framebuffer_base: u64,
+    framebuffer_bytes: u64,
+    output: &mut [NormalizedRegion; MAX_NORMALIZED_REGIONS],
+) -> Result<usize, NormalizeError> {
+    if bytes.is_empty() {
+        return Err(NormalizeError::Empty);
+    }
+    if descriptor_size < core::mem::size_of::<MemoryDescriptor>() {
+        return Err(NormalizeError::BadDescriptorSize);
+    }
+    if bytes.len() % descriptor_size != 0 {
+        return Err(NormalizeError::Truncated);
+    }
+    if framebuffer_base % PAGE_SIZE != 0 || framebuffer_bytes == 0 {
+        return Err(NormalizeError::FramebufferConflict);
+    }
+    let framebuffer_end_unaligned = framebuffer_base
+        .checked_add(framebuffer_bytes)
+        .ok_or(NormalizeError::Overflow)?;
+    let framebuffer_end = framebuffer_end_unaligned
+        .checked_add(PAGE_SIZE - 1)
+        .map(|end| end & !(PAGE_SIZE - 1))
+        .ok_or(NormalizeError::Overflow)?;
+    let mut count = 0usize;
+    let mut previous_start = 0u64;
+    let mut previous_end = 0u64;
+    for (index, descriptor) in bytes.chunks_exact(descriptor_size).enumerate() {
+        let kind = u32::from_le_bytes(descriptor[..4].try_into().unwrap());
+        let start = u64::from_le_bytes(descriptor[8..16].try_into().unwrap());
+        let pages = u64::from_le_bytes(descriptor[24..32].try_into().unwrap());
+        if start % PAGE_SIZE != 0 {
+            return Err(NormalizeError::Unaligned);
+        }
+        if pages == 0 {
+            return Err(NormalizeError::ZeroPages);
+        }
+        let end = pages
+            .checked_mul(PAGE_SIZE)
+            .and_then(|length| start.checked_add(length))
+            .ok_or(NormalizeError::Overflow)?;
+        if index != 0 && start < previous_start {
+            return Err(NormalizeError::Unsorted);
+        }
+        if index != 0 && start < previous_end {
+            return Err(NormalizeError::Overlap);
+        }
+        previous_start = start;
+        previous_end = end;
+        let normalized_kind = match kind {
+            7 => NormalizedMemoryKind::Free,
+            5 | 6 => NormalizedMemoryKind::Firmware,
+            9 | 10 => NormalizedMemoryKind::Acpi,
+            11 | 12 => NormalizedMemoryKind::Mmio,
+            _ => NormalizedMemoryKind::Reserved,
+        };
+        if count != 0
+            && output[count - 1].kind == normalized_kind
+            && output[count - 1].end() == start
+        {
+            output[count - 1].pages = output[count - 1]
+                .pages
+                .checked_add(pages)
+                .ok_or(NormalizeError::Overflow)?;
+            continue;
+        }
+        let slot = output
+            .get_mut(count)
+            .ok_or(NormalizeError::TooManyRegions)?;
+        *slot = NormalizedRegion {
+            start,
+            pages,
+            kind: normalized_kind,
+        };
+        count += 1;
+    }
+    overlay_framebuffer(output, count, framebuffer_base, framebuffer_end)
+}
+
+fn overlay_framebuffer(
+    output: &mut [NormalizedRegion; MAX_NORMALIZED_REGIONS],
+    count: usize,
+    framebuffer_start: u64,
+    framebuffer_end: u64,
+) -> Result<usize, NormalizeError> {
+    let framebuffer = NormalizedRegion {
+        start: framebuffer_start,
+        pages: (framebuffer_end - framebuffer_start) / PAGE_SIZE,
+        kind: NormalizedMemoryKind::Mmio,
+    };
+    let mut rebuilt = [NormalizedRegion::EMPTY; MAX_NORMALIZED_REGIONS];
+    let mut rebuilt_count = 0usize;
+    let mut inserted = false;
+    for region in output[..count].iter().copied() {
+        if !inserted && framebuffer_end <= region.start {
+            push_region(&mut rebuilt, &mut rebuilt_count, framebuffer)?;
+            inserted = true;
+        }
+        let overlaps = region.start < framebuffer_end && region.end() > framebuffer_start;
+        if !overlaps {
+            push_region(&mut rebuilt, &mut rebuilt_count, region)?;
+            continue;
+        }
+        if inserted || framebuffer_start < region.start || framebuffer_end > region.end() {
+            return Err(NormalizeError::FramebufferConflict);
+        }
+        if region.start < framebuffer_start {
+            push_region(
+                &mut rebuilt,
+                &mut rebuilt_count,
+                NormalizedRegion {
+                    start: region.start,
+                    pages: (framebuffer_start - region.start) / PAGE_SIZE,
+                    kind: region.kind,
+                },
+            )?;
+        }
+        push_region(&mut rebuilt, &mut rebuilt_count, framebuffer)?;
+        if framebuffer_end < region.end() {
+            push_region(
+                &mut rebuilt,
+                &mut rebuilt_count,
+                NormalizedRegion {
+                    start: framebuffer_end,
+                    pages: (region.end() - framebuffer_end) / PAGE_SIZE,
+                    kind: region.kind,
+                },
+            )?;
+        }
+        inserted = true;
+    }
+    if !inserted {
+        push_region(&mut rebuilt, &mut rebuilt_count, framebuffer)?;
+    }
+    output[..rebuilt_count].copy_from_slice(&rebuilt[..rebuilt_count]);
+    Ok(rebuilt_count)
+}
+
+fn push_region(
+    output: &mut [NormalizedRegion; MAX_NORMALIZED_REGIONS],
+    count: &mut usize,
+    region: NormalizedRegion,
+) -> Result<(), NormalizeError> {
+    if *count != 0
+        && output[*count - 1].kind == region.kind
+        && output[*count - 1].end() == region.start
+    {
+        output[*count - 1].pages = output[*count - 1]
+            .pages
+            .checked_add(region.pages)
+            .ok_or(NormalizeError::Overflow)?;
+        return Ok(());
+    }
+    let slot = output
+        .get_mut(*count)
+        .ok_or(NormalizeError::TooManyRegions)?;
+    *slot = region;
+    *count += 1;
+    Ok(())
+}
+
 #[repr(C)]
 pub struct GraphicsOutputModeInformation {
     pub version: u32,
@@ -316,5 +529,42 @@ mod tests {
             unsafe { find_acpi_root(&corrupt_system) },
             Err(AcpiError::BadChecksum)
         );
+    }
+
+    fn descriptor(kind: u32, start: u64, pages: u64) -> [u8; 40] {
+        let mut bytes = [0u8; 40];
+        bytes[..4].copy_from_slice(&kind.to_le_bytes());
+        bytes[8..16].copy_from_slice(&start.to_le_bytes());
+        bytes[24..32].copy_from_slice(&pages.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn normalizes_merges_and_requires_mmio_framebuffer() {
+        let descriptors = [
+            descriptor(7, 0x1000, 2),
+            descriptor(7, 0x3000, 1),
+            descriptor(11, 0xa0000, 4),
+        ];
+        let mut bytes = [0u8; 120];
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            bytes[index * 40..index * 40 + 40].copy_from_slice(descriptor);
+        }
+        let mut output = [NormalizedRegion::EMPTY; MAX_NORMALIZED_REGIONS];
+        assert_eq!(
+            normalize_memory_map(&bytes, 40, 0xa0000, 4096, &mut output),
+            Ok(2)
+        );
+        assert_eq!(output[0].pages, 3);
+        assert_eq!(output[0].kind, NormalizedMemoryKind::Free);
+        assert_eq!(output[1].kind, NormalizedMemoryKind::Mmio);
+
+        let mut output = [NormalizedRegion::EMPTY; MAX_NORMALIZED_REGIONS];
+        assert_eq!(
+            normalize_memory_map(&bytes, 40, 0xb0000, 4096, &mut output),
+            Ok(3)
+        );
+        assert_eq!(output[2].start, 0xb0000);
+        assert_eq!(output[2].kind, NormalizedMemoryKind::Mmio);
     }
 }

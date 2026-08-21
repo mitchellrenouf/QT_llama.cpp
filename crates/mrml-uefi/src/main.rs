@@ -9,6 +9,11 @@ const MAP_BYTES: usize = 64 * 1024;
 struct FirmwareBuffer(UnsafeCell<[u8; MAP_BYTES]>);
 unsafe impl Sync for FirmwareBuffer {}
 static MEMORY_MAP: FirmwareBuffer = FirmwareBuffer(UnsafeCell::new([0; MAP_BYTES]));
+struct RegionBuffer(UnsafeCell<[NormalizedRegion; MAX_NORMALIZED_REGIONS]>);
+unsafe impl Sync for RegionBuffer {}
+static REGIONS: RegionBuffer = RegionBuffer(UnsafeCell::new(
+    [NormalizedRegion::EMPTY; MAX_NORMALIZED_REGIONS],
+));
 
 #[derive(Clone, Copy)]
 struct Framebuffer {
@@ -81,13 +86,29 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         return Err(LOAD_ERROR);
     }
 
-    unsafe { exit_boot_services(image, services) }?;
+    let (map_size, descriptor_size) = unsafe { exit_boot_services(image, services) }?;
+    let map_bytes = unsafe { core::slice::from_raw_parts(MEMORY_MAP.0.get().cast(), map_size) };
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    let region_count = normalize_memory_map(
+        map_bytes,
+        descriptor_size,
+        framebuffer.base,
+        framebuffer.size as u64,
+        regions,
+    )
+    .map_err(|_| LOAD_ERROR)?;
+    if region_count == 0 {
+        return Err(LOAD_ERROR);
+    }
 
     paint(framebuffer, [0x16, 0x61, 0x3a]);
     halt()
 }
 
-unsafe fn exit_boot_services(image: Handle, services: &BootServices) -> Result<(), Status> {
+unsafe fn exit_boot_services(
+    image: Handle,
+    services: &BootServices,
+) -> Result<(usize, usize), Status> {
     let map = MEMORY_MAP.0.get().cast::<MemoryDescriptor>();
     let mut last_status = LOAD_ERROR;
     for _ in 0..3 {
@@ -113,7 +134,7 @@ unsafe fn exit_boot_services(image: Handle, services: &BootServices) -> Result<(
         }
         last_status = unsafe { (services.exit_boot_services)(image, map_key) };
         if !status_is_error(last_status) {
-            return Ok(());
+            return Ok((map_size, descriptor_size));
         }
     }
     Err(last_status)

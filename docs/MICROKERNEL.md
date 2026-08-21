@@ -127,6 +127,16 @@ PE image and that GOP discovery, RNG, ACPI validation, memory-map retrieval,
 and `ExitBootServices` completed. EDK2 is not linked, copied into repository
 artifacts, or part of the planned MRML VMM firmware.
 
+The loader now normalizes the variable-stride UEFI memory map after firmware
+exit into at most 128 sorted, nonoverlapping MRML regions. Only conventional
+memory is immediately free; loader and boot-service pages remain conservatively
+reserved. Runtime firmware, ACPI, and MMIO receive distinct kinds, adjacent
+equal regions are merged, and all page arithmetic is checked. Because GOP BARs
+need not appear in the UEFI map, the firmware-authorized framebuffer is overlaid
+as MMIO: it is inserted into an address gap or splits one containing region,
+while cross-region conflicts fail closed. QEMU still reached the green marker
+after this normalization was enabled.
+
 GOP is the primary early console because contemporary physical machines cannot
 be assumed to expose a usable serial port. Only the standard 32-bit RGB-reserved
 and BGR-reserved pixel layouts are accepted. Geometry, stride, byte length,
