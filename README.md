@@ -164,6 +164,13 @@ pointer-free vector-`0x80` yield call, receives a validated zero-status return,
 resumes in the same isolated address space, and only then raises its completion
 breakpoint on both KVM and WHP. Because this probe has one runnable service,
 yield returns to the caller; multi-service blocking and wakeup remain unfinished.
+Kernel task domains now contain a two-message, allocation-free inbox. Receiving
+from an empty inbox blocks only the current task and immediately selects a
+replacement; capability-authorized delivery enqueues in FIFO order and wakes
+the receiver. A full inbox is rejected before endpoint sequence or capability
+state changes, so overflow cannot grant authority or create a replay gap. This
+is tested on Windows and Linux but is not yet exercised by two independently
+signed live services.
 Task-to-task IPC is now routed through those runtime domains. It rejects
 self-routing, requires the sender's exact endpoint capability, attenuates every
 transferred right, and transactionally revokes all receiver capabilities if

@@ -702,6 +702,17 @@ breakpoint chain in 260 microseconds on KVM (`verify=5908us`, `prepare=1325us`,
 service. Multi-service blocking, wakeup, and capability IPC from separately
 signed service images remain unfinished.
 
+Each `TaskRuntime` domain now owns a fixed two-message inbox in addition to its
+context and capability space. `receive_or_block_current` dequeues immediately
+or marks only the empty receiver blocked and selects a replacement.
+`deliver_ipc` checks capacity before authorization, sequence advancement, or
+capability derivation; after transactional `send_ipc` succeeds it publishes at
+the tail and wakes the receiver. FIFO head/tail/count invariants make overwrite
+impossible, and a full inbox returns without consuming endpoint sequence or
+creating receiver capabilities. Windows and Linux pass 123 kernel tests,
+including block, wake, FIFO, and overflow behavior. Two-service live delivery
+and syscall-visible receive results remain unfinished.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.

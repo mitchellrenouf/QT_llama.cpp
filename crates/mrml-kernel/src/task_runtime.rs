@@ -6,6 +6,8 @@ use crate::{
     Priority, Rights, ScheduleOutcome, TaskId,
 };
 
+pub const TASK_INBOX_MESSAGES: usize = 2;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskRuntimeError {
     Full,
@@ -16,6 +18,8 @@ pub enum TaskRuntimeError {
     IntegrityFailure,
     SameTaskIpc,
     Ipc(IpcError),
+    InboxFull,
+    InboxEmpty,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +35,10 @@ struct TaskDomain<const CAPS: usize> {
     task: TaskId,
     context: UserContext,
     capabilities: CapabilitySpace<CAPS>,
+    inbox: [Option<Message>; TASK_INBOX_MESSAGES],
+    inbox_head: u8,
+    inbox_tail: u8,
+    inbox_count: u8,
 }
 
 /// Owns the scheduler-visible identity, saved context, and capability space as
@@ -70,6 +78,10 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
             task,
             context,
             capabilities: CapabilitySpace::new(),
+            inbox: array::from_fn(|_| None),
+            inbox_head: 0,
+            inbox_tail: 0,
+            inbox_count: 0,
         });
         Ok(task)
     }
@@ -205,6 +217,94 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
                 }
                 Err(TaskRuntimeError::Ipc(error))
             }
+        }
+    }
+
+    /// Delivers into the receiver's bounded kernel-owned inbox and makes a
+    /// blocked receiver runnable. Capacity is checked before endpoint sequence
+    /// or capability state changes.
+    pub fn deliver_ipc(
+        &mut self,
+        sender: TaskId,
+        receiver: TaskId,
+        endpoint: &mut Endpoint,
+        endpoint_capability: Capability,
+        payload: &[u8],
+        requested: &[(Capability, Rights)],
+    ) -> Result<u64, TaskRuntimeError> {
+        let receiver_slot = self
+            .domains
+            .iter()
+            .position(|domain| {
+                domain
+                    .as_ref()
+                    .is_some_and(|domain| domain.task == receiver)
+            })
+            .ok_or(TaskRuntimeError::MissingTask)?;
+        if self.domains[receiver_slot]
+            .as_ref()
+            .is_none_or(|domain| usize::from(domain.inbox_count) == TASK_INBOX_MESSAGES)
+        {
+            return Err(TaskRuntimeError::InboxFull);
+        }
+        let (sequence, message) = self.send_ipc(
+            sender,
+            receiver,
+            endpoint,
+            endpoint_capability,
+            payload,
+            requested,
+        )?;
+        let domain = self.domains[receiver_slot]
+            .as_mut()
+            .ok_or(TaskRuntimeError::IntegrityFailure)?;
+        let tail = usize::from(domain.inbox_tail);
+        if domain.inbox[tail].is_some() {
+            return Err(TaskRuntimeError::IntegrityFailure);
+        }
+        domain.inbox[tail] = Some(message);
+        domain.inbox_tail = ((tail + 1) % TASK_INBOX_MESSAGES) as u8;
+        domain.inbox_count += 1;
+        self.scheduler
+            .wake(receiver)
+            .map_err(TaskRuntimeError::Scheduler)?;
+        Ok(sequence)
+    }
+
+    pub fn receive_ipc(&mut self, task: TaskId) -> Result<Message, TaskRuntimeError> {
+        let domain = self
+            .domains
+            .iter_mut()
+            .flatten()
+            .find(|domain| domain.task == task)
+            .ok_or(TaskRuntimeError::MissingTask)?;
+        if domain.inbox_count == 0 {
+            return Err(TaskRuntimeError::InboxEmpty);
+        }
+        let head = usize::from(domain.inbox_head);
+        let message = domain.inbox[head]
+            .take()
+            .ok_or(TaskRuntimeError::IntegrityFailure)?;
+        domain.inbox_head = ((head + 1) % TASK_INBOX_MESSAGES) as u8;
+        domain.inbox_count -= 1;
+        Ok(message)
+    }
+
+    pub fn receive_or_block_current(
+        &mut self,
+    ) -> Result<Result<Message, ScheduleOutcome>, TaskRuntimeError> {
+        let current = self
+            .scheduler
+            .current()
+            .ok_or(TaskRuntimeError::NoCurrentTask)?;
+        match self.receive_ipc(current) {
+            Ok(message) => Ok(Ok(message)),
+            Err(TaskRuntimeError::InboxEmpty) => self
+                .scheduler
+                .block_current()
+                .map(Err)
+                .map_err(TaskRuntimeError::Scheduler),
+            Err(error) => Err(error),
         }
     }
 
@@ -370,5 +470,76 @@ mod tests {
         let receiver_space = runtime.capabilities_mut(receiver).unwrap();
         assert!(receiver_space.insert(ObjectId(8), Rights::READ).is_ok());
         assert!(receiver_space.insert(ObjectId(9), Rights::READ).is_ok());
+    }
+
+    #[test]
+    fn empty_receive_blocks_and_delivery_wakes_without_overwriting() {
+        let mut runtime = TaskRuntime::<2, 2>::new(1_000, 1).unwrap();
+        let receiver = runtime
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let sender = runtime
+            .create(Priority::NORMAL, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        let object = ObjectId(44);
+        let endpoint_capability = runtime
+            .capabilities_mut(sender)
+            .unwrap()
+            .insert(object, Rights::SIGNAL)
+            .unwrap();
+        let mut endpoint = Endpoint::new(object);
+        assert_eq!(
+            runtime.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: receiver
+            }
+        );
+        assert!(matches!(
+            runtime.receive_or_block_current(),
+            Ok(Err(ScheduleOutcome::Switch { to, .. })) if to == sender
+        ));
+        assert_eq!(
+            runtime
+                .deliver_ipc(
+                    sender,
+                    receiver,
+                    &mut endpoint,
+                    endpoint_capability,
+                    b"one",
+                    &[],
+                )
+                .unwrap(),
+            1
+        );
+        runtime
+            .deliver_ipc(
+                sender,
+                receiver,
+                &mut endpoint,
+                endpoint_capability,
+                b"two",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            runtime
+                .deliver_ipc(
+                    sender,
+                    receiver,
+                    &mut endpoint,
+                    endpoint_capability,
+                    b"three",
+                    &[],
+                )
+                .err(),
+            Some(TaskRuntimeError::InboxFull)
+        );
+        assert_eq!(runtime.receive_ipc(receiver).unwrap().payload(), b"one");
+        assert_eq!(runtime.receive_ipc(receiver).unwrap().payload(), b"two");
+        assert_eq!(
+            runtime.receive_ipc(receiver).err(),
+            Some(TaskRuntimeError::InboxEmpty)
+        );
     }
 }
