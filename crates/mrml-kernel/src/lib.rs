@@ -19,6 +19,7 @@ mod pe;
 mod platform;
 mod policy;
 mod scheduler;
+mod task_runtime;
 mod virtual_gpu;
 mod vm;
 mod vm_dispatch;
@@ -60,6 +61,7 @@ pub use scheduler::{
     KernelScheduleError, KernelScheduler, Priority, ScheduleOutcome, Scheduler, SchedulerError,
     TaskId, TaskState,
 };
+pub use task_runtime::{FaultRetirement, TaskRuntime, TaskRuntimeError};
 pub use virtual_gpu::{
     BatchedDispatch, BufferAccess, BufferId, BufferMode, ControlBufferId, ControlBufferTable,
     Dispatch, DispatchId, DispatchTable, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES,

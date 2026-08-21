@@ -603,6 +603,20 @@ uses the same root before and after CR3 solely because isolated service roots
 are the next milestone; it proves the transition mechanism, not address-space
 separation.
 
+`TaskRuntime` now binds each scheduler identity to exactly one saved
+`UserContext` and one fixed-capacity `CapabilitySpace`. Recoverable fault
+handling first takes the complete domain—making its context and all task-local
+handles unreachable—then calls `terminate_current` and exposes only the
+resulting replacement outcome. Missing domains are integrity failures, kernel
+fault dispositions cannot enter this path, and generation changes prevent the
+retired task identity from addressing a reused slot. Windows and Linux pass 115
+kernel tests, including fail-closed retirement ordering. The signed CPL3 probe
+now creates a real runtime task and emits success only after vector 6 has removed
+its domain and the scheduler has reached `Idle`; nested KVM completed that path
+in 196 microseconds (`verify=777us`, `prepare=1100us`, `total=6696us`). A live
+two-task exception return is still required before replacement restoration is
+claimed.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.

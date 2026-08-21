@@ -5,6 +5,10 @@ use core::arch::{asm, global_asm};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
 #[cfg(feature = "timer-probe")]
+use mrml_kernel::KernelScheduler;
+#[cfg(feature = "user-probe")]
+use mrml_kernel::TaskRuntime;
+#[cfg(feature = "timer-probe")]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
 use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
@@ -29,8 +33,8 @@ use mrml_kernel::{
     GpuQueueSender, GpuResourceResponse, GpuResourceResponseReceiver, GpuSharedRingIndices,
     ResourceCommand,
 };
-#[cfg(feature = "timer-probe")]
-use mrml_kernel::{KernelScheduler, Priority, ScheduleOutcome};
+#[cfg(any(feature = "timer-probe", feature = "user-probe"))]
+use mrml_kernel::{Priority, ScheduleOutcome};
 
 #[cfg(not(feature = "fault-probe"))]
 const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
@@ -77,6 +81,8 @@ static mut KERNEL_ENTRY_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STA
 static mut DOUBLE_FAULT_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_BYTES]);
 #[cfg(feature = "timer-probe")]
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
+#[cfg(feature = "user-probe")]
+static mut USER_RUNTIME: Option<TaskRuntime<1, 1>> = None;
 
 global_asm!(
     r#"
@@ -273,6 +279,19 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
             address: None,
         })
     {
+        let runtime = unsafe {
+            match (*core::ptr::addr_of_mut!(USER_RUNTIME)).as_mut() {
+                Some(runtime) => runtime,
+                None => halt(),
+            }
+        };
+        let retired = match runtime.terminate_current_fault(_disposition) {
+            Ok(retired) => retired,
+            Err(_) => halt(),
+        };
+        if retired.next != ScheduleOutcome::Idle {
+            halt();
+        }
         unsafe {
             asm!(
                 "out dx, eax",
@@ -368,7 +387,30 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             Ok(context) => context,
             Err(_) => halt(),
         };
-        enter_user_probe_context(&context);
+        let mut runtime = match TaskRuntime::<1, 1>::new(1_000, 1) {
+            Ok(runtime) => runtime,
+            Err(_) => halt(),
+        };
+        let task = match runtime.create(Priority::NORMAL, context) {
+            Ok(task) => task,
+            Err(_) => halt(),
+        };
+        if !matches!(
+            runtime.start(),
+            ScheduleOutcome::Switch { from: None, to } if to == task
+        ) {
+            halt();
+        }
+        let runtime_pointer = core::ptr::addr_of_mut!(USER_RUNTIME);
+        runtime_pointer.write(Some(runtime));
+        let context_pointer = match (*runtime_pointer).as_ref() {
+            Some(runtime) => match runtime.context(task) {
+                Ok(context) => context as *const UserContext,
+                Err(_) => halt(),
+            },
+            None => halt(),
+        };
+        enter_user_probe_context(&*context_pointer);
     }
     #[cfg(feature = "timer-probe")]
     unsafe {

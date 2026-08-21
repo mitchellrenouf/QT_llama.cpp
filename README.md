@@ -138,7 +138,11 @@ and erases every byte of that page immediately before encoding the bounded
 handoff, preventing uninitialized tail data from crossing the boundary. The
 kernel now has a validated x86_64 trap-frame and user-fault termination policy,
 32 vector-specific assembly entries, and a live signed nested-KVM invalid-opcode
-dispatch proof. User-task revocation and task-switch integration remain unfinished.
+dispatch proof. A task runtime now owns scheduler identity, saved context, and
+task-local capability space as one revocation domain. The live CPL3 probe proves
+a checked user fault removes that complete domain and retires the current
+generational task before it may report success. Restoring a replacement task
+from the exception path remains unfinished.
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented. A signed nested-KVM probe now proves external vector 32 enters the
 booted kernel and advances that scheduler by exactly one tick. This currently
