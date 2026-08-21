@@ -17,12 +17,30 @@ type UnmapGpaRange = unsafe extern "system" fn(Handle, u64, u64) -> Hresult;
 type CreateVirtualProcessor = unsafe extern "system" fn(Handle, u32, u32) -> Hresult;
 type DeleteVirtualProcessor = unsafe extern "system" fn(Handle, u32) -> Hresult;
 type RunVirtualProcessor = unsafe extern "system" fn(Handle, u32, *mut c_void, u32) -> Hresult;
+type SetVirtualProcessorRegisters =
+    unsafe extern "system" fn(Handle, u32, *const u32, u32, *const RegisterValue) -> Hresult;
 
 const PROCESSOR_COUNT: u32 = 0x1fff;
 const MEM_COMMIT_RESERVE: u32 = 0x3000;
 const MEM_RELEASE: u32 = 0x8000;
 const PAGE_READWRITE: u32 = 4;
 const MAX_MAPPINGS: usize = 32;
+const REG_RCX: u32 = 1;
+const REG_RDX: u32 = 2;
+const REG_RSP: u32 = 4;
+const REG_RIP: u32 = 0x10;
+const REG_RFLAGS: u32 = 0x11;
+const REG_ES: u32 = 0x12;
+const REG_CS: u32 = 0x13;
+const REG_SS: u32 = 0x14;
+const REG_DS: u32 = 0x15;
+const REG_CR0: u32 = 0x1000;
+const REG_CR3: u32 = 0x1002;
+const REG_CR4: u32 = 0x1003;
+const REG_EFER: u32 = 0x2001;
+const CR0_LONG_MODE: u64 = (1 << 0) | (1 << 16) | (1 << 31);
+const CR4_PAE: u64 = 1 << 5;
+const EFER_LONG_MODE_NX: u64 = (1 << 8) | (1 << 11);
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -59,6 +77,7 @@ struct Api {
     create_vp: CreateVirtualProcessor,
     delete_vp: DeleteVirtualProcessor,
     run_vp: RunVirtualProcessor,
+    set_registers: SetVirtualProcessorRegisters,
 }
 
 pub struct WhpSystem {
@@ -84,6 +103,7 @@ impl WhpSystem {
                 create_vp: resolve(module, b"WHvCreateVirtualProcessor\0")?,
                 delete_vp: resolve(module, b"WHvDeleteVirtualProcessor\0")?,
                 run_vp: resolve(module, b"WHvRunVirtualProcessor\0")?,
+                set_registers: resolve(module, b"WHvSetVirtualProcessorRegisters\0")?,
             }
         };
         Ok(Self {
@@ -92,7 +112,7 @@ impl WhpSystem {
         })
     }
 
-    pub fn prepare_partition(&self) -> Result<PreparedWhpPartition, WhpError> {
+    pub fn prepare_partition(&self) -> Result<PreparedWhpPartition<'_>, WhpError> {
         let mut partition = core::ptr::null_mut();
         check(unsafe { (self.api.create_partition)(&mut partition) })?;
         let partition = NonNull::new(partition).ok_or(WhpError::PlatformUnavailable)?;
@@ -119,19 +139,21 @@ impl WhpSystem {
             partition,
             api: self.api,
             mappings: [const { None }; MAX_MAPPINGS],
+            _system: core::marker::PhantomData,
         };
         core::mem::forget(guard);
         Ok(prepared)
     }
 }
 
-pub struct PreparedWhpPartition {
+pub struct PreparedWhpPartition<'system> {
     partition: NonNull<c_void>,
     api: Api,
     mappings: [Option<OwnedMapping>; MAX_MAPPINGS],
+    _system: core::marker::PhantomData<&'system WhpSystem>,
 }
 
-impl PreparedWhpPartition {
+impl PreparedWhpPartition<'_> {
     pub fn map_initialized(
         &mut self,
         range: GuestRange,
@@ -145,14 +167,14 @@ impl PreparedWhpPartition {
             .mappings
             .iter()
             .position(Option::is_none)
-            .ok_or(WhpError::MemoryOverflow)?;
+            .ok_or(WhpError::MemoryTableFull)?;
         if self
             .mappings
             .iter()
             .flatten()
             .any(|entry| overlaps(entry.range, range))
         {
-            return Err(WhpError::MalformedExit);
+            return Err(WhpError::MemoryOverlap);
         }
         let address = NonNull::new(unsafe {
             VirtualAlloc(
@@ -223,9 +245,56 @@ impl PreparedWhpPartition {
         })?;
         decode_exit_context(&context)
     }
+
+    pub fn configure_long_mode(
+        &mut self,
+        entry: u64,
+        stack_pointer: u64,
+        page_table: u64,
+        handoff: u64,
+        handoff_bytes: u64,
+    ) -> Result<(), WhpError> {
+        if !canonical(entry)
+            || !canonical(stack_pointer)
+            || !canonical(handoff)
+            || !page_table.is_multiple_of(4096)
+            || stack_pointer & 0xf != 8
+            || handoff_bytes == 0
+            || handoff.checked_add(handoff_bytes).is_none()
+        {
+            return Err(WhpError::InvalidRegisterState);
+        }
+        let names = [
+            REG_RIP, REG_RSP, REG_RFLAGS, REG_RCX, REG_RDX, REG_CR0, REG_CR3, REG_CR4, REG_EFER,
+            REG_CS, REG_SS, REG_DS, REG_ES,
+        ];
+        let mut values = [RegisterValue::zero(); 13];
+        values[0] = RegisterValue::scalar(entry);
+        values[1] = RegisterValue::scalar(stack_pointer);
+        values[2] = RegisterValue::scalar(2);
+        values[3] = RegisterValue::scalar(handoff);
+        values[4] = RegisterValue::scalar(handoff_bytes);
+        values[5] = RegisterValue::scalar(CR0_LONG_MODE);
+        values[6] = RegisterValue::scalar(page_table);
+        values[7] = RegisterValue::scalar(CR4_PAE);
+        values[8] = RegisterValue::scalar(EFER_LONG_MODE_NX);
+        values[9] = RegisterValue::segment(0x8, 0xa09b);
+        for value in &mut values[10..] {
+            *value = RegisterValue::segment(0x10, 0x8093);
+        }
+        check(unsafe {
+            (self.api.set_registers)(
+                self.partition.as_ptr(),
+                0,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_ptr(),
+            )
+        })
+    }
 }
 
-impl Drop for PreparedWhpPartition {
+impl Drop for PreparedWhpPartition<'_> {
     fn drop(&mut self) {
         for mapping in &mut self.mappings {
             if let Some(value) = mapping.take() {
@@ -263,6 +332,34 @@ struct OwnedMapping {
     address: NonNull<c_void>,
     range: GuestRange,
 }
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct RegisterValue {
+    low: u64,
+    high: u64,
+}
+
+impl RegisterValue {
+    const fn zero() -> Self {
+        Self { low: 0, high: 0 }
+    }
+
+    const fn scalar(value: u64) -> Self {
+        Self {
+            low: value,
+            high: 0,
+        }
+    }
+
+    const fn segment(selector: u16, attributes: u16) -> Self {
+        // WHV_X64_SEGMENT_REGISTER: Base, Limit, Selector, Attributes.
+        Self {
+            low: 0,
+            high: 0xfffff | ((selector as u64) << 32) | ((attributes as u64) << 48),
+        }
+    }
+}
 impl Drop for OwnedMapping {
     fn drop(&mut self) {
         let _ = unsafe { VirtualFree(self.address.as_ptr(), 0, MEM_RELEASE) };
@@ -272,6 +369,15 @@ impl Drop for OwnedMapping {
 fn overlaps(left: GuestRange, right: GuestRange) -> bool {
     left.guest_address() < right.guest_address() + right.size()
         && right.guest_address() < left.guest_address() + left.size()
+}
+
+const fn canonical(address: u64) -> bool {
+    let top = address >> 48;
+    if address & (1 << 47) == 0 {
+        top == 0
+    } else {
+        top == 0xffff
+    }
 }
 
 fn check(result: Hresult) -> Result<(), WhpError> {
@@ -297,4 +403,31 @@ const fn wide_name() -> [u16; 18] {
     [
         87, 105, 110, 72, 118, 80, 108, 97, 116, 102, 111, 114, 109, 46, 100, 108, 108, 0,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_values_match_whp_union_layout() {
+        assert_eq!(core::mem::size_of::<RegisterValue>(), 16);
+        assert_eq!(core::mem::align_of::<RegisterValue>(), 16);
+        let code = RegisterValue::segment(8, 0xa09b);
+        assert_eq!(code.low, 0);
+        assert_eq!(code.high, 0xa09b_0008_000f_ffff);
+    }
+
+    #[test]
+    fn only_x64_canonical_addresses_are_accepted() {
+        assert!(canonical(0x0000_7fff_ffff_ffff));
+        assert!(canonical(0xffff_8000_0000_0000));
+        assert!(!canonical(0x0000_8000_0000_0000));
+        assert!(!canonical(0xffff_0000_0000_0000));
+    }
+
+    #[test]
+    fn installed_platform_exports_are_complete() {
+        assert!(WhpSystem::open().is_ok());
+    }
 }

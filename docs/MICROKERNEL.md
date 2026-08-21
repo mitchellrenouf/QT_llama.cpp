@@ -525,9 +525,14 @@ I/O widths and reserved bits are checked, and memory exits preserve the exact
 read/write/execute fault type rather than inventing an MMIO width. Unknown or
 unfaithfully representable exits fail closed. The public native object is
 `PreparedWhpPartition`; raw partitions and partially initialized vCPUs cannot
-escape construction. Register/page-table setup, signed PE launch composition,
-interrupt injection, and a successful live WHP guest execution remain pending,
-so this milestone does not claim Hyper-V bootability.
+escape construction, and its lifetime is tied to the loaded DLL so resolved
+function pointers cannot outlive their code. Hardened x64 register setup now
+validates canonical entry/stack/handoff addresses, aligned CR3, Microsoft ABI
+stack alignment, and bounded handoff length. It installs explicit long-mode,
+PAE, supervisor write-protect, NX, RFLAGS, code/data segments, and RCX/RDX
+handoff state through one register transaction. Page-table construction, signed
+PE launch composition, interrupt injection, and a successful live WHP guest
+execution remain pending, so this milestone does not claim Hyper-V bootability.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector
