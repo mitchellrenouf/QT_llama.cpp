@@ -2109,6 +2109,61 @@ where
         .map_err(GpuLifecycleError::InvalidState)
 }
 
+/// Complete `SubmitBatch` control path after authenticated command decoding.
+/// The sealed bytes are rehashed, decoded against current buffer generations,
+/// admitted to the watchdog transactionally, validated against the signed
+/// kernel bundle, and submitted to the bounded completion transport.
+#[allow(clippy::too_many_arguments)]
+pub fn submit_gpu_control_batch<
+    E,
+    const CONTROLS: usize,
+    const BUFFERS: usize,
+    const WATCHDOG: usize,
+    const BATCH: usize,
+    const RING: usize,
+>(
+    controls: &ControlBufferTable<CONTROLS>,
+    control: ControlBufferId,
+    control_bytes: &[u8],
+    session: &VirtualGpuSession<BUFFERS>,
+    watchdog: &mut DispatchTable<WATCHDOG>,
+    bundle: &VerifiedGpuKernelBundle,
+    expert_selections: &[ValidatedExpertSelection],
+    executor: &mut E,
+    sender: &mut GpuCompletionSender,
+    completion_ring: &mut GpuCompletionRing<RING>,
+    now: u64,
+    deadline: u64,
+) -> Result<u64, GpuLifecycleError<E::Error>>
+where
+    E: GpuBatchExecutor<BATCH>,
+{
+    controls
+        .verify(control, control_bytes)
+        .map_err(GpuLifecycleError::InvalidState)?;
+    let (batch_id, batch) = GpuDispatchBatch::<BATCH>::decode(control_bytes, session)
+        .map_err(GpuLifecycleError::InvalidState)?;
+    completion_ring
+        .ensure_capacity(batch.len())
+        .map_err(GpuLifecycleError::InvalidState)?;
+    sender
+        .ensure_capacity(batch.len())
+        .map_err(GpuLifecycleError::InvalidState)?;
+    let prepared = watchdog
+        .begin_batch(&batch, now, deadline)
+        .map_err(GpuLifecycleError::InvalidState)?;
+    let validated = match bundle.validate_batch_with_expert_selections(&prepared, expert_selections)
+    {
+        Ok(validated) => validated,
+        Err(error) => {
+            watchdog.cancel_batch(&prepared);
+            return Err(GpuLifecycleError::InvalidState(error));
+        }
+    };
+    submit_gpu_batch_to_completion_ring(executor, watchdog, sender, completion_ring, &validated)?;
+    Ok(batch_id)
+}
+
 impl Dispatch {
     const SCALAR_WIRE_OFFSET: usize = 48 + MAX_DISPATCH_BUFFERS * 32;
     pub const WIRE_LENGTH: usize = Self::SCALAR_WIRE_OFFSET + MAX_DISPATCH_SCALARS * 8;
@@ -5310,50 +5365,53 @@ mod tests {
         }
 
         let mut accepted_watchdog = DispatchTable::<2>::new();
-        let accepted_batch = accepted_watchdog.begin_batch(&batch, 100, 200).unwrap();
-        let validated_accepted = bundle.validate_batch(&accepted_batch).unwrap();
         let completion_key = [0x5a; 32];
         let mut completion_sender = GpuCompletionSender::new(71, completion_key).unwrap();
         let mut completion_receiver = GpuCompletionReceiver::new(71, completion_key).unwrap();
         let mut too_small_ring = GpuCompletionRing::<1>::new().unwrap();
         assert_eq!(
-            submit_gpu_batch_to_completion_ring(
-                &mut MockExecutor(Ok(true)),
+            submit_gpu_control_batch::<MockExecutor, 1, 2, 2, 2, 1>(
+                &controls,
+                control,
+                &wire,
+                &session,
                 &mut accepted_watchdog,
+                &bundle,
+                &[],
+                &mut MockExecutor(Ok(true)),
                 &mut completion_sender,
                 &mut too_small_ring,
-                &validated_accepted,
+                100,
+                200,
             ),
             Err(GpuLifecycleError::InvalidState(GpuError::QueueFull))
         );
-        for entry in accepted_batch.entries() {
-            assert!(accepted_watchdog.contains(entry.dispatch_id()));
-        }
         let mut completion_ring = GpuCompletionRing::<2>::new().unwrap();
-        assert!(
-            submit_gpu_batch_to_completion_ring(
-                &mut MockExecutor(Ok(true)),
+        assert_eq!(
+            submit_gpu_control_batch::<MockExecutor, 1, 2, 2, 2, 2>(
+                &controls,
+                control,
+                &wire,
+                &session,
                 &mut accepted_watchdog,
+                &bundle,
+                &[],
+                &mut MockExecutor(Ok(true)),
                 &mut completion_sender,
                 &mut completion_ring,
-                &validated_accepted,
-            )
-            .is_ok()
+                100,
+                200,
+            ),
+            Ok(77)
         );
         assert_eq!(completion_ring.len(), 2);
-        for entry in accepted_batch.entries() {
+        for expected in batch.entries() {
             let mut frame = [0; GPU_QUEUE_MESSAGE_BYTES];
             completion_ring.dequeue(&mut frame).unwrap();
-            assert!(!accepted_watchdog.contains(entry.dispatch_id()));
-            assert_eq!(
-                completion_receiver.decode(&frame).unwrap(),
-                GpuCompletion::new(
-                    entry.request_id(),
-                    entry.dispatch_id(),
-                    GpuCompletionStatus::Success,
-                )
-                .unwrap()
-            );
+            let completion = completion_receiver.decode(&frame).unwrap();
+            assert_eq!(completion.request_id(), expected.request_id());
+            assert_eq!(completion.status(), GpuCompletionStatus::Success);
+            assert!(!accepted_watchdog.contains(completion.dispatch()));
         }
         assert!(completion_ring.is_empty());
 

@@ -69,6 +69,7 @@ pub use virtual_gpu::{
     ResourceCommand, ScalarArg, ScalarKind, ValidatedExpertSelection, ValidatedGpuBatch,
     ValidatedKernelLaunch, ValidatedMoeKernelLaunch, VerifiedGpuKernelBundle, VirtualGpuSession,
     submit_gpu_batch, submit_gpu_batch_to_completion_ring, submit_gpu_batch_with_completions,
+    submit_gpu_control_batch,
 };
 pub use vm::{
     GuestAccess, GuestMappingId, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall,

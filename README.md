@@ -250,9 +250,12 @@ ring guest-read-only, and have live backend regressions that preserve verified
 guest execution. The kernel-owned completion transport preflights capacity for
 the whole batch before GPU-visible work, publishes authenticated results under
 an exclusive producer borrow, and erases consumed slots. Platform
-cache-coherence validation, the resource-command service pump, CUDA graph
-lowering, IOMMU plumbing, and end-to-end performance measurements are still
-pending. Consequently MRML
+The `SubmitBatch` service path now joins sealed-control revalidation, canonical
+decode, current buffer-generation checks, transactional watchdog admission,
+signed schema validation, execution, and completion publication in one API.
+Platform cache-coherence validation, shared-ring command dequeue plus
+allocate/free response handling, CUDA graph lowering, IOMMU plumbing, and
+end-to-end performance measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
 to approach it for long-running LLM inference by avoiding copies, per-kernel VM
 exits, and repeated context setup; arbitrary CUDA applications are out of scope.
