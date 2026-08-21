@@ -6,6 +6,7 @@ mod descriptors;
 mod local_apic;
 mod page_table;
 mod pe_mapping;
+mod privilege_stack;
 mod service_space;
 mod trap;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
@@ -21,6 +22,7 @@ pub use descriptors::{
 pub use local_apic::{LocalApicError, LocalApicTimer, TimerDivide};
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
+pub use privilege_stack::{PRIVILEGE_STACK_ARENA_PAGES, PrivilegeStackError, PrivilegeStackLayout};
 pub use service_space::{ServiceAddressSpace, ServiceSpaceError};
 pub use trap::{HardwareTrapFrame, TrapDisposition, TrapError, TrapFrame};
 
