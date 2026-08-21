@@ -144,7 +144,11 @@ an arbitrary module loader or guest-controlled symbol lookup. A fail-closed
 executor ABI validator is implemented for `add_f32`: it requires exactly three
 equal, nonempty, four-byte-aligned ranges with read/read/write rights, fixed
 launch geometry, and no dynamic shared memory. The other kernel schemas remain
-disabled until specified. Also implemented are the dispatch watchdog and
+disabled until specified. Dispatch wire version 2 carries at most 16 explicitly
+typed 32-bit scalar arguments (`u32`, `i32`, or IEEE-754 bits); unused slots and
+per-scalar reserved bytes must be zero, and version-1 records are rejected.
+This provides bounded scalar transport without pointers or variable blobs.
+Also implemented are the dispatch watchdog and
 adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.

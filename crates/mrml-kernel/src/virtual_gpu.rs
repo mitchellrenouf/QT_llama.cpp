@@ -6,6 +6,7 @@ use core::{
 use mrml_crypto::{Sha3_512, hmac_sha256};
 
 pub const MAX_DISPATCH_BUFFERS: usize = 16;
+pub const MAX_DISPATCH_SCALARS: usize = 16;
 pub const MAX_BATCH_DISPATCHES: usize = 32;
 pub const MAX_GPU_CONTROL_BYTES: usize = 64 * 1024;
 const MAX_BLOCK_THREADS: u64 = 1024;
@@ -22,6 +23,7 @@ pub enum GpuError {
     InvalidKernel,
     InvalidGrid,
     TooManyBuffers,
+    TooManyScalars,
     ExcessiveSharedMemory,
     MalformedCommand,
     CommandBufferTooSmall,
@@ -1155,6 +1157,52 @@ pub enum BufferMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScalarKind {
+    U32,
+    I32,
+    F32,
+}
+
+/// One explicitly typed, pointer-free CUDA scalar argument. Floating-point
+/// values retain their canonical IEEE-754 bit representation for validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScalarArg {
+    kind: ScalarKind,
+    bits: u32,
+}
+
+impl ScalarArg {
+    pub const fn u32(value: u32) -> Self {
+        Self {
+            kind: ScalarKind::U32,
+            bits: value,
+        }
+    }
+
+    pub const fn i32(value: i32) -> Self {
+        Self {
+            kind: ScalarKind::I32,
+            bits: value as u32,
+        }
+    }
+
+    pub const fn f32_bits(bits: u32) -> Self {
+        Self {
+            kind: ScalarKind::F32,
+            bits,
+        }
+    }
+
+    pub const fn kind(self) -> ScalarKind {
+        self.kind
+    }
+
+    pub const fn bits(self) -> u32 {
+        self.bits
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferAccess {
     buffer: BufferId,
     offset: u64,
@@ -1193,6 +1241,8 @@ pub struct Dispatch {
     shared_memory: u32,
     accesses: [Option<BufferAccess>; MAX_DISPATCH_BUFFERS],
     access_count: u8,
+    scalars: [Option<ScalarArg>; MAX_DISPATCH_SCALARS],
+    scalar_count: u8,
 }
 
 /// Proof that a dispatch matches a kernel-specific executor ABI. Construction
@@ -1385,7 +1435,7 @@ impl<const N: usize> GpuDispatchBatch<N> {
             .ok_or(GpuError::CommandBufferTooSmall)?;
         output.fill(0);
         output[..4].copy_from_slice(b"MRGB");
-        output[4] = 1;
+        output[4] = 2;
         output[6..8].copy_from_slice(&(self.count as u16).to_le_bytes());
         output[8..16].copy_from_slice(&batch_id.to_le_bytes());
         for (index, entry) in self.entries().enumerate() {
@@ -1404,7 +1454,7 @@ impl<const N: usize> GpuDispatchBatch<N> {
     ) -> Result<(u64, Self), GpuError> {
         if input.len() < Self::WIRE_HEADER_BYTES
             || &input[..4] != b"MRGB"
-            || input[4] != 1
+            || input[4] != 2
             || input[5] != 0
         {
             return Err(GpuError::MalformedCommand);
@@ -1497,7 +1547,8 @@ where
 }
 
 impl Dispatch {
-    pub const WIRE_LENGTH: usize = 48 + MAX_DISPATCH_BUFFERS * 32;
+    const SCALAR_WIRE_OFFSET: usize = 48 + MAX_DISPATCH_BUFFERS * 32;
+    pub const WIRE_LENGTH: usize = Self::SCALAR_WIRE_OFFSET + MAX_DISPATCH_SCALARS * 8;
 
     pub fn new(
         kernel: KernelId,
@@ -1505,6 +1556,17 @@ impl Dispatch {
         block: [u32; 3],
         shared_memory: u32,
         accesses: &[BufferAccess],
+    ) -> Result<Self, GpuError> {
+        Self::new_with_scalars(kernel, grid, block, shared_memory, accesses, &[])
+    }
+
+    pub fn new_with_scalars(
+        kernel: KernelId,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_memory: u32,
+        accesses: &[BufferAccess],
+        scalars: &[ScalarArg],
     ) -> Result<Self, GpuError> {
         if grid.contains(&0) || block.contains(&0) {
             return Err(GpuError::InvalidGrid);
@@ -1522,9 +1584,16 @@ impl Dispatch {
         if accesses.len() > MAX_DISPATCH_BUFFERS {
             return Err(GpuError::TooManyBuffers);
         }
+        if scalars.len() > MAX_DISPATCH_SCALARS {
+            return Err(GpuError::TooManyScalars);
+        }
         let mut stored = [None; MAX_DISPATCH_BUFFERS];
         for (slot, access) in stored.iter_mut().zip(accesses) {
             *slot = Some(*access);
+        }
+        let mut stored_scalars = [None; MAX_DISPATCH_SCALARS];
+        for (slot, scalar) in stored_scalars.iter_mut().zip(scalars) {
+            *slot = Some(*scalar);
         }
         Ok(Self {
             kernel,
@@ -1533,6 +1602,8 @@ impl Dispatch {
             shared_memory,
             accesses: stored,
             access_count: accesses.len() as u8,
+            scalars: stored_scalars,
+            scalar_count: scalars.len() as u8,
         })
     }
 
@@ -1554,6 +1625,12 @@ impl Dispatch {
             .flatten()
             .copied()
     }
+    pub fn scalars(&self) -> impl Iterator<Item = ScalarArg> + '_ {
+        self.scalars[..self.scalar_count as usize]
+            .iter()
+            .flatten()
+            .copied()
+    }
 
     /// Validate the pointer-free dispatch against the exact ABI and launch
     /// geometry supported by the service executor. Schemas are enabled one at
@@ -1566,7 +1643,11 @@ impl Dispatch {
     }
 
     fn validate_add_f32_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
-        if self.access_count != 3 || self.shared_memory != 0 || self.block != [256, 1, 1] {
+        if self.access_count != 3
+            || self.scalar_count != 0
+            || self.shared_memory != 0
+            || self.block != [256, 1, 1]
+        {
             return Err(GpuError::InvalidKernelSchema);
         }
         let a = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
@@ -1609,9 +1690,10 @@ impl Dispatch {
             .ok_or(GpuError::CommandBufferTooSmall)?;
         output.fill(0);
         output[..4].copy_from_slice(b"MRGD");
-        output[4] = 1;
+        output[4] = 2;
         output[5] = self.kernel.get();
         output[6] = self.access_count;
+        output[7] = self.scalar_count;
         output[8..16].copy_from_slice(&request_id.to_le_bytes());
         for axis in 0..3 {
             let grid_offset = 16 + axis * 4;
@@ -1631,21 +1713,33 @@ impl Dispatch {
                 BufferMode::ReadWrite => 3,
             };
         }
+        for (index, scalar) in self.scalars().enumerate() {
+            let offset = Self::SCALAR_WIRE_OFFSET + index * 8;
+            output[offset] = match scalar.kind {
+                ScalarKind::U32 => 1,
+                ScalarKind::I32 => 2,
+                ScalarKind::F32 => 3,
+            };
+            output[offset + 4..offset + 8].copy_from_slice(&scalar.bits.to_le_bytes());
+        }
         Ok(())
     }
 
     pub fn decode(input: &[u8]) -> Result<(u64, Self), GpuError> {
         if input.len() != Self::WIRE_LENGTH
             || &input[..4] != b"MRGD"
-            || input[4] != 1
-            || input[7] != 0
+            || input[4] != 2
             || input[44..48].iter().any(|byte| *byte != 0)
         {
             return Err(GpuError::MalformedCommand);
         }
         let request_id = u64::from_le_bytes(input[8..16].try_into().unwrap());
         let access_count = input[6] as usize;
-        if request_id == 0 || access_count > MAX_DISPATCH_BUFFERS {
+        let scalar_count = input[7] as usize;
+        if request_id == 0
+            || access_count > MAX_DISPATCH_BUFFERS
+            || scalar_count > MAX_DISPATCH_SCALARS
+        {
             return Err(GpuError::MalformedCommand);
         }
         let kernel = KernelId::new(input[5])?;
@@ -1674,7 +1768,30 @@ impl Dispatch {
                 mode,
             ));
         }
-        if input[48 + access_count * 32..]
+        if input[48 + access_count * 32..Self::SCALAR_WIRE_OFFSET]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let mut scalars = [None; MAX_DISPATCH_SCALARS];
+        for (index, slot) in scalars[..scalar_count].iter_mut().enumerate() {
+            let offset = Self::SCALAR_WIRE_OFFSET + index * 8;
+            if input[offset + 1..offset + 4].iter().any(|byte| *byte != 0) {
+                return Err(GpuError::MalformedCommand);
+            }
+            let kind = match input[offset] {
+                1 => ScalarKind::U32,
+                2 => ScalarKind::I32,
+                3 => ScalarKind::F32,
+                _ => return Err(GpuError::MalformedCommand),
+            };
+            *slot = Some(ScalarArg {
+                kind,
+                bits: read_u32(input, offset + 4),
+            });
+        }
+        if input[Self::SCALAR_WIRE_OFFSET + scalar_count * 8..]
             .iter()
             .any(|byte| *byte != 0)
         {
@@ -1691,12 +1808,16 @@ impl Dispatch {
                 BufferMode::Read,
             ))
         });
-        let dispatch = Self::new(
+        let scalar_values = core::array::from_fn::<_, MAX_DISPATCH_SCALARS, _>(|index| {
+            scalars[index].unwrap_or(ScalarArg::u32(0))
+        });
+        let dispatch = Self::new_with_scalars(
             kernel,
             grid,
             block,
             shared_memory,
             &access_values[..access_count],
+            &scalar_values[..scalar_count],
         )?;
         Ok((request_id, dispatch))
     }
@@ -1766,6 +1887,17 @@ mod tests {
             Dispatch::new(kernel, [1, 1, 1], [32, 1, 1], MAX_SHARED_MEMORY + 1, &[]),
             Err(GpuError::ExcessiveSharedMemory)
         ));
+        assert_eq!(
+            Dispatch::new_with_scalars(
+                kernel,
+                [1, 1, 1],
+                [32, 1, 1],
+                0,
+                &[],
+                &[ScalarArg::u32(0); MAX_DISPATCH_SCALARS + 1],
+            ),
+            Err(GpuError::TooManyScalars)
+        );
     }
 
     #[test]
@@ -2297,12 +2429,18 @@ mod tests {
                 BufferMode::Write,
             ),
         ];
-        let dispatch = Dispatch::new(
+        let scalars = [
+            ScalarArg::u32(17),
+            ScalarArg::i32(-9),
+            ScalarArg::f32_bits(1.5f32.to_bits()),
+        ];
+        let dispatch = Dispatch::new_with_scalars(
             KernelId::new(7).unwrap(),
             [2, 3, 4],
             [32, 2, 1],
             1024,
             &accesses,
+            &scalars,
         )
         .unwrap();
         let mut wire = [0u8; Dispatch::WIRE_LENGTH];
@@ -2316,6 +2454,14 @@ mod tests {
         assert_eq!(decoded_accesses.next(), Some(accesses[0]));
         assert_eq!(decoded_accesses.next(), Some(accesses[1]));
         assert_eq!(decoded_accesses.next(), None);
+        assert!(decoded.scalars().eq(scalars));
+
+        let mut old_version = wire;
+        old_version[4] = 1;
+        assert_eq!(
+            Dispatch::decode(&old_version),
+            Err(GpuError::MalformedCommand)
+        );
 
         wire[48 + 25] = 1;
         assert_eq!(
@@ -2336,6 +2482,14 @@ mod tests {
             Dispatch::decode(&wire).err(),
             Some(GpuError::MalformedCommand)
         );
+        let mut wire = [0u8; Dispatch::WIRE_LENGTH];
+        dispatch.encode(19, &mut wire).unwrap();
+        wire[Dispatch::SCALAR_WIRE_OFFSET + 1] = 1;
+        assert_eq!(Dispatch::decode(&wire), Err(GpuError::MalformedCommand));
+        let mut wire = [0u8; Dispatch::WIRE_LENGTH];
+        dispatch.encode(19, &mut wire).unwrap();
+        wire[Dispatch::SCALAR_WIRE_OFFSET + scalars.len() * 8] = 1;
+        assert_eq!(Dispatch::decode(&wire), Err(GpuError::MalformedCommand));
     }
 
     #[test]

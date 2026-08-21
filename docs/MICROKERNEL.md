@@ -93,6 +93,12 @@ an exact-length `MRGB` header followed by one to 32 existing canonical dispatch
 records. It contains no pointers or offsets, preserves order and independent
 request IDs, rejects trailing/truncated/reserved encodings, and revalidates all
 session resources while decoding. The service-side executor remains pending.
+Dispatch and batch wire version 2 now add a fixed tail of at most 16 typed
+32-bit scalar slots. Each slot identifies `u32`, `i32`, or raw IEEE-754 f32
+bits, has zero-only reserved bytes, and unused slots must be entirely zero.
+Oversized scalar lists, unknown kinds, nonzero padding, old-version records,
+and alternate lengths fail closed. The original constructor still produces an
+empty-scalar dispatch, so existing pointer-free operations remain explicit.
 Before executor handoff, the dispatch watchdog now admits the entire batch
 transactionally. Each request receives a generational `DispatchId`; capacity,
 deadline, or duplicate failures cancel every ID minted by that attempt. A
