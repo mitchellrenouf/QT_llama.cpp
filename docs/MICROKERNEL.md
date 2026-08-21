@@ -504,12 +504,15 @@ registers four disjoint memory slots, installs the signed image, immutable
 handoff, guarded stack, and page tables, then writes CR3 and entry registers
 last. The Microsoft x64 entry frame places the handoff pointer and length in
 RCX/RDX and reserves a zero return slot with the required stack alignment.
-Low-level construction and mutable backend extraction are not public. Executing
-this transaction on a KVM-capable host remains pending, so the current host has
-not demonstrated a bootable KVM guest. The
-current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
-the live capability probe records that as unavailable and no launch claim is
-made for this environment.
+Low-level construction and mutable backend extraction are not public. The Arch
+WSL2 environment now exposes nested KVM through Hyper-V enlightened VMCS; API
+version 12 and the 12,288-byte vCPU mapping query both succeed. A live regression
+constructs and verifies a complete Lamport-signed VM artifact, materializes its
+PE at a canonical supervisor high-half address, creates the VM, IRQ chip, vCPU,
+four memory slots, and hardware page tables, enters at the signed entry point,
+executes `HLT`, and observes `VmExit::Halted`. This proves the complete signed
+artifact-to-native-KVM execution boundary. It is not yet a boot of the full
+standalone MRML kernel image with its complete device environment.
 
 The allocation-free `kvm_run` decoder validates the fixed x86 header before it
 reads the kernel-owned union: padding is zero, readiness and IF fields are

@@ -222,6 +222,96 @@ fn validate_ranges(ranges: &[(u64, u64)]) -> Result<(), KvmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mrml_crypto::{
+        LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES, Sha3_512,
+        lamport_public_key, lamport_sign,
+    };
+    use mrml_kernel::{
+        ArtifactKind, SIGNED_ARTIFACT_HEADER_BYTES, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact,
+        TrustRoot, artifact_statement,
+    };
+
+    fn halted_pe() -> [u8; 1024] {
+        let mut pe = [0u8; 1024];
+        pe[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(&0x0000_4550u32.to_le_bytes());
+        pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        pe[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+        pe[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+        pe[0x96..0x98].copy_from_slice(&2u16.to_le_bytes());
+        let optional = 0x98;
+        pe[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        pe[optional + 16..optional + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[optional + 24..optional + 32].copy_from_slice(&0xffff_8001_4000_0000u64.to_le_bytes());
+        pe[optional + 32..optional + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[optional + 36..optional + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[optional + 56..optional + 60].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[optional + 60..optional + 64].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[optional + 70..optional + 72].copy_from_slice(&0x100u16.to_le_bytes());
+        let section = optional + 240;
+        pe[section..section + 5].copy_from_slice(b".text");
+        pe[section + 8..section + 12].copy_from_slice(&1u32.to_le_bytes());
+        pe[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[section + 16..section + 20].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[section + 36..section + 40].copy_from_slice(&0x6000_0000u32.to_le_bytes());
+        pe[0x200] = 0xf4;
+        pe
+    }
+
+    fn valid_handoff() -> [u8; 240] {
+        let mut encoded = [0u8; 240];
+        encoded[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
+        encoded[16..20].copy_from_slice(&240u32.to_le_bytes());
+        encoded[20..22].copy_from_slice(&3u16.to_le_bytes());
+        encoded[22..24].copy_from_slice(&7u16.to_le_bytes());
+        encoded[24..32].copy_from_slice(&7u64.to_le_bytes());
+        encoded[32..64].fill(1);
+        encoded[64..128].fill(2);
+        encoded[128..136].copy_from_slice(&0x9000u64.to_le_bytes());
+        encoded[136..144].copy_from_slice(&0xa0000u64.to_le_bytes());
+        encoded[144..152].copy_from_slice(&0x1000u64.to_le_bytes());
+        encoded[152..156].copy_from_slice(&16u32.to_le_bytes());
+        encoded[156..160].copy_from_slice(&16u32.to_le_bytes());
+        encoded[160..164].copy_from_slice(&16u32.to_le_bytes());
+        encoded[164] = 1;
+        encoded[168..176].copy_from_slice(&0x1000u64.to_le_bytes());
+        encoded[176..184].copy_from_slice(&2u64.to_le_bytes());
+        encoded[192..200].copy_from_slice(&0x3000u64.to_le_bytes());
+        encoded[200..208].copy_from_slice(&1u64.to_le_bytes());
+        encoded[208] = 1;
+        encoded[216..224].copy_from_slice(&0xa0000u64.to_le_bytes());
+        encoded[224..232].copy_from_slice(&1u64.to_le_bytes());
+        encoded[232] = 3;
+        encoded
+    }
+
+    fn signed_pe() -> [u8; SIGNED_ARTIFACT_OVERHEAD_BYTES + 1024] {
+        let payload = halted_pe();
+        let mut private = [0u8; LAMPORT_PRIVATE_KEY_BYTES];
+        for (index, byte) in private.iter_mut().enumerate() {
+            *byte = (index as u64).wrapping_mul(61).wrapping_add(17) as u8;
+        }
+        let mut public = [0u8; LAMPORT_PUBLIC_KEY_BYTES];
+        lamport_public_key(&private, &mut public).unwrap();
+        let digest = Sha3_512::digest(&payload);
+        let statement = artifact_statement(ArtifactKind::VmImage, 1, payload.len() as u64, digest);
+        let mut signature = [0u8; LAMPORT_SIGNATURE_BYTES];
+        lamport_sign(&private, &statement, &mut signature).unwrap();
+        let mut encoded = [0u8; SIGNED_ARTIFACT_OVERHEAD_BYTES + 1024];
+        encoded[..16].copy_from_slice(b"MRML-SIGNED-v1\0\0");
+        encoded[16] = ArtifactKind::VmImage as u8;
+        encoded[24..32].copy_from_slice(&1u64.to_le_bytes());
+        encoded[32..40].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+        encoded[40..104].copy_from_slice(&digest);
+        let signature_at = SIGNED_ARTIFACT_HEADER_BYTES + LAMPORT_PUBLIC_KEY_BYTES;
+        let payload_at = signature_at + LAMPORT_SIGNATURE_BYTES;
+        encoded[SIGNED_ARTIFACT_HEADER_BYTES..signature_at].copy_from_slice(&public);
+        encoded[signature_at..payload_at].copy_from_slice(&signature);
+        encoded[payload_at..].copy_from_slice(&payload);
+        encoded
+    }
 
     #[test]
     fn launch_layout_rejects_small_table_arenas_and_overlaps() {
@@ -259,5 +349,47 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn live_signed_high_half_pe_reaches_halt() {
+        let system = match KvmSystem::open() {
+            Ok(system) => system,
+            Err(KvmError::SystemCall) => return,
+            Err(error) => panic!("available KVM failed validation: {error:?}"),
+        };
+        let encoded = signed_pe();
+        let public_at = SIGNED_ARTIFACT_HEADER_BYTES;
+        let public_end = public_at + LAMPORT_PUBLIC_KEY_BYTES;
+        let root = TrustRoot::new(
+            ArtifactKind::VmImage,
+            Sha3_512::digest(&encoded[public_at..public_end]),
+            1,
+        );
+        let signed = SignedArtifact::decode(&encoded).unwrap();
+        let executable = signed
+            .verify_executable(&root, ArtifactKind::VmImage)
+            .unwrap();
+        let layout = KvmLaunchLayout::new(
+            0x10_0000,
+            16,
+            0x20_0000,
+            0xffff_8001_4000_0000,
+            0x30_0000,
+            0xffff_8001_5000_0000,
+            0x40_0000,
+            0xffff_8001_6000_0000,
+            2,
+            false,
+        )
+        .unwrap();
+        let mut guest = system
+            .prepare_guest::<4>(0, &executable, &valid_handoff(), layout)
+            .unwrap();
+        assert_eq!(guest.entry(), 0xffff_8001_4000_1000);
+        let mut opcode = [0u8; 1];
+        VmBackend::read_guest(&guest, 0x20_1000, &mut opcode).unwrap();
+        assert_eq!(opcode, [0xf4]);
+        assert_eq!(VmBackend::run(&mut guest, 0), Ok(VmExit::Halted));
     }
 }
