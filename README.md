@@ -83,8 +83,51 @@ Changes that do not satisfy every rule must not be merged:
 ## Status
 
 The experimental microkernel foundation and its security model are documented
-in [`docs/MICROKERNEL.md`](docs/MICROKERNEL.md). It is an early design and
-capability-policy crate, not yet a bootable or production-secure kernel.
+in [`docs/MICROKERNEL.md`](docs/MICROKERNEL.md). It is not production-secure or
+ready for bare-metal deployment. The original x86-64 PE32+ kernel does now boot
+through the original UEFI loader under QEMU and directly under nested KVM. It
+validates the bounded handoff, installs its own GDT and 256-entry fail-stop IDT,
+uses a dedicated stack and guarded page tables, and renders a GOP framebuffer
+marker. Recoverable exception dispatch, timers, scheduling from the standalone
+image, service VMs, and bare-metal validation remain unfinished.
+
+### Secure mediated CUDA design
+
+MRML's preferred VM accelerator path is an inference-specific paravirtual
+device, not forwarding NVIDIA ioctls or exposing GPU MMIO to an untrusted VM.
+An isolated GPU service owns the real CUDA context and keeps model weights and
+KV cache resident. Guests submit coarse tensor operations in batches so GPU
+execution dominates transport cost and VM exits are amortized. The contract is:
+
+- Buffers use opaque generational IDs with fixed per-session byte quotas. Wire
+  messages never contain host pointers or guest-selected device addresses.
+- Only kernel IDs from the measured, release-signed MRML CUDA bundle are
+  dispatchable. Arbitrary PTX, runtime compilation, firmware operations, and
+  raw CUDA driver calls are rejected.
+- Every access includes a checked buffer range and mode. Grid, block, shared
+  memory, argument count, request lifetime, and concurrent work are bounded.
+- Queue messages have one fixed canonical encoding, an independent session
+  identity, a monotonic sequence, and an HMAC tag. Replays, mutation, cross-VM
+  use, malformed padding, stale handles, and duplicate requests fail closed.
+- Commands are copied into a bounded kernel-owned FIFO before consumption, so
+  an untrusted shared-memory producer cannot change admitted bytes. Full queues
+  apply backpressure and never overwrite unread work; consumed slots are erased.
+- Dispatch IDs are generational and protected by deadlines. Timeout handling
+  invalidates the ID before reset or recovery begins, preventing stale
+  completion from affecting a reused slot.
+- The eventual GPU service must use IOMMU-confined pinned/shared pages, deny
+  peer-to-peer DMA by default, validate the signed CUDA bundle before creating
+  a context, and expose completion through capability-authorized interrupts.
+
+Implemented today are the core-only buffer/session policy, canonical resource
+and dispatch encodings, authenticated sender/receiver state, bounded FIFO,
+embedded-kernel allowlist, launch validation, dispatch watchdog, and adversarial
+unit tests. The cross-VM shared-page mapping, lock-free ownership protocol,
+host CUDA executor, operation-graph batching, completion queue, IOMMU plumbing,
+and end-to-end performance measurements are still pending. Consequently MRML
+does not yet claim passthrough-equivalent VM CUDA performance. The design aims
+to approach it for long-running LLM inference by avoiding copies, per-kernel VM
+exits, and repeated context setup; arbitrary CUDA applications are out of scope.
 
 MRML is under active development and currently specializes in
 `ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0`.

@@ -44,8 +44,12 @@ MRML kernels embedded in the same measured build. Requests contain checked
 buffer ranges and bounded grid, block, and shared-memory values. They contain no
 host pointers, arbitrary PTX, CUDA ioctls, firmware operations, or device MMIO.
 
-The resource/session validator and authenticated queue wire format are
-implemented. Each fixed-size command is bound to a nonzero session and strict
+The resource/session validator, authenticated queue wire format, and bounded
+kernel-owned FIFO are implemented. The FIFO accepts only exact-size messages,
+never overwrites unread work, erases consumed slots, and safely wraps its
+indices. Copying into owned storage closes the mutation-after-admission window;
+the later shared-page transport must preserve that property with an explicit
+ownership protocol. Each fixed-size command is bound to a nonzero session and strict
 sequence and carries an HMAC tag under a per-session key; tampering, replay,
 cross-session substitution, noncanonical encoding, and zero keys are rejected
 before resource state changes. HMAC-SHA-256 is conservatively treated as a
@@ -59,9 +63,10 @@ variable argument blobs. In-flight work uses a fixed-capacity watchdog table
 with unique request IDs, kernel-minted generational dispatch IDs, explicit
 cancellation, and deadline expiry. Expiry invalidates an ID before requesting
 host recovery, so a late completion cannot affect a reused slot. The Hyper-V
-transport, host CUDA executor, kernel-specific argument schemas, copy staging,
-the platform-specific device-reset callback, and end-to-end inference benchmarks
-remain pending. Until those pieces exist and are audited, this is not a working
+shared-page mapping and lock-free ownership protocol, host CUDA executor,
+kernel-specific argument schemas, operation-graph batching, completion queue,
+IOMMU plumbing, the platform-specific device-reset callback, and end-to-end
+inference benchmarks remain pending. Until those pieces exist and are audited, this is not a working
 shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a
 general `virtio-cuda` compatibility layer.
 
@@ -733,13 +738,13 @@ The generous automated ceiling detects catastrophic regressions; comparative
 optimization decisions require repeated samples on pinned hardware and a
 recorded baseline.
 
-Baseline recorded 2026-08-20 on the current development host, one million
+Baseline recorded 2026-08-20 and rechecked on Arch Linux 2026-08-21 on the current development host, one million
 iterations per sample:
 
 | Environment | Capability authorization | Scheduler selection | VM exit accounting |
 | --- | ---: | ---: | ---: |
 | Windows `x86_64-pc-windows-gnullvm` | 548,200 ns total (548 ps/op) | 1,859,500 ns total (1,859 ps/op) | 729,600 ns total (729 ps/op) |
-| Arch Linux under WSL2 | 552,195 ns total (552 ps/op) | 1,824,970 ns total (1,824 ps/op) | 876,643 ns total (876 ps/op) |
+| Arch Linux under WSL2 | 547,390 ns total (547 ps/op) | 1,862,494 ns total (1,862 ps/op) | 728,894 ns total (728 ps/op) |
 
 These measure optimized in-process policy operations, not VM exits, page-table
 changes, context switches, or end-to-end IPC. Sub-nanosecond averages can result

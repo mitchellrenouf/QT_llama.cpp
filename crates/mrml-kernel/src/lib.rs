@@ -59,8 +59,8 @@ pub use policy::{
 pub use scheduler::{Priority, Scheduler, SchedulerError, TaskId, TaskState};
 pub use virtual_gpu::{
     BufferAccess, BufferId, BufferMode, Dispatch, DispatchId, DispatchTable,
-    GPU_QUEUE_MESSAGE_BYTES, GpuError, GpuQueueReceiver, GpuQueueSender, KernelId,
-    MAX_DISPATCH_BUFFERS, ResourceCommand, VirtualGpuSession,
+    GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuError, GpuQueueReceiver, GpuQueueSender, KernelId,
+    MAX_DISPATCH_BUFFERS, MAX_GPU_QUEUE_SLOTS, ResourceCommand, VirtualGpuSession,
 };
 pub use vm::{
     GuestAccess, GuestMappingId, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall,

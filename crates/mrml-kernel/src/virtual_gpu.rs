@@ -29,6 +29,9 @@ pub enum GpuError {
     DispatchTableFull,
     InvalidDispatch,
     InvalidDeadline,
+    InvalidQueueCapacity,
+    QueueFull,
+    QueueEmpty,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,7 +165,72 @@ fn invalidate_dispatch(entry: &mut InFlightDispatch) {
 }
 
 pub const GPU_QUEUE_MESSAGE_BYTES: usize = 80;
+pub const MAX_GPU_QUEUE_SLOTS: usize = 256;
 const GPU_QUEUE_AUTHENTICATED_BYTES: usize = 48;
+
+/// Fixed-capacity command transport between a guest-facing VMM endpoint and
+/// the isolated GPU service. Messages are copied into kernel-owned slots so an
+/// untrusted producer cannot mutate a command after it has been admitted. The
+/// authenticated receiver still validates the session, sequence, tag, and
+/// canonical command after dequeue.
+pub struct GpuCommandRing<const N: usize> {
+    slots: [[u8; GPU_QUEUE_MESSAGE_BYTES]; N],
+    read: usize,
+    write: usize,
+    count: usize,
+}
+
+impl<const N: usize> GpuCommandRing<N> {
+    pub const fn new() -> Result<Self, GpuError> {
+        if N == 0 || N > MAX_GPU_QUEUE_SLOTS {
+            return Err(GpuError::InvalidQueueCapacity);
+        }
+        Ok(Self {
+            slots: [[0; GPU_QUEUE_MESSAGE_BYTES]; N],
+            read: 0,
+            write: 0,
+            count: 0,
+        })
+    }
+
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub const fn is_full(&self) -> bool {
+        self.count == N
+    }
+
+    /// Copies exactly one authenticated wire message into an owned slot.
+    /// Admission never overwrites unread work.
+    pub fn enqueue(&mut self, message: &[u8]) -> Result<(), GpuError> {
+        let message: &[u8; GPU_QUEUE_MESSAGE_BYTES] =
+            message.try_into().map_err(|_| GpuError::MalformedCommand)?;
+        if self.is_full() {
+            return Err(GpuError::QueueFull);
+        }
+        self.slots[self.write].copy_from_slice(message);
+        self.write = (self.write + 1) % N;
+        self.count += 1;
+        Ok(())
+    }
+
+    /// Copies one owned slot to the consumer and erases it before reuse.
+    pub fn dequeue(&mut self, output: &mut [u8; GPU_QUEUE_MESSAGE_BYTES]) -> Result<(), GpuError> {
+        if self.is_empty() {
+            return Err(GpuError::QueueEmpty);
+        }
+        output.copy_from_slice(&self.slots[self.read]);
+        self.slots[self.read].fill(0);
+        self.read = (self.read + 1) % N;
+        self.count -= 1;
+        Ok(())
+    }
+}
 
 /// Authenticated producer state for an untrusted shared-memory transport.
 /// The transport may copy or modify bytes but cannot mint accepted commands
@@ -764,6 +832,38 @@ mod tests {
             ResourceCommand::decode(&wire),
             Err(GpuError::MalformedCommand)
         );
+    }
+
+    #[test]
+    fn command_ring_is_bounded_fifo_and_wraps_without_overwrite() {
+        assert!(matches!(
+            GpuCommandRing::<0>::new(),
+            Err(GpuError::InvalidQueueCapacity)
+        ));
+        assert!(matches!(
+            GpuCommandRing::<257>::new(),
+            Err(GpuError::InvalidQueueCapacity)
+        ));
+        let mut ring = GpuCommandRing::<2>::new().unwrap();
+        let first = [1u8; GPU_QUEUE_MESSAGE_BYTES];
+        let second = [2u8; GPU_QUEUE_MESSAGE_BYTES];
+        let third = [3u8; GPU_QUEUE_MESSAGE_BYTES];
+        let mut output = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+
+        assert_eq!(ring.dequeue(&mut output), Err(GpuError::QueueEmpty));
+        assert!(ring.enqueue(&first).is_ok());
+        assert!(ring.enqueue(&second).is_ok());
+        assert_eq!(ring.len(), 2);
+        assert_eq!(ring.enqueue(&third), Err(GpuError::QueueFull));
+        ring.dequeue(&mut output).unwrap();
+        assert_eq!(output, first);
+        assert!(ring.enqueue(&third).is_ok());
+        ring.dequeue(&mut output).unwrap();
+        assert_eq!(output, second);
+        ring.dequeue(&mut output).unwrap();
+        assert_eq!(output, third);
+        assert!(ring.is_empty());
+        assert_eq!(ring.enqueue(&first[..79]), Err(GpuError::MalformedCommand));
     }
 
     #[test]
