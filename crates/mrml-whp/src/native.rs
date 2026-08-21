@@ -8,6 +8,7 @@ use crate::{GuestRange, WHP_EXIT_CONTEXT_BYTES, WhpError, decode_exit_context};
 
 type Handle = *mut c_void;
 type Hresult = i32;
+type GetCapability = unsafe extern "system" fn(u32, *mut c_void, u32, *mut u32) -> Hresult;
 type CreatePartition = unsafe extern "system" fn(*mut Handle) -> Hresult;
 type DeletePartition = unsafe extern "system" fn(Handle) -> Hresult;
 type SetPartitionProperty = unsafe extern "system" fn(Handle, u32, *const c_void, u32) -> Hresult;
@@ -21,6 +22,7 @@ type SetVirtualProcessorRegisters =
     unsafe extern "system" fn(Handle, u32, *const u32, u32, *const RegisterValue) -> Hresult;
 
 const PROCESSOR_COUNT: u32 = 0x1fff;
+const CAPABILITY_HYPERVISOR_PRESENT: u32 = 0;
 const MEM_COMMIT_RESERVE: u32 = 0x3000;
 const MEM_RELEASE: u32 = 0x8000;
 const PAGE_READWRITE: u32 = 4;
@@ -68,6 +70,7 @@ impl Drop for Library {
 
 #[derive(Clone, Copy)]
 struct Api {
+    get_capability: GetCapability,
     create_partition: CreatePartition,
     delete_partition: DeletePartition,
     set_partition_property: SetPartitionProperty,
@@ -94,6 +97,7 @@ impl WhpSystem {
         let library = Library(module);
         let api = unsafe {
             Api {
+                get_capability: resolve(module, b"WHvGetCapability\0")?,
                 create_partition: resolve(module, b"WHvCreatePartition\0")?,
                 delete_partition: resolve(module, b"WHvDeletePartition\0")?,
                 set_partition_property: resolve(module, b"WHvSetPartitionProperty\0")?,
@@ -113,13 +117,15 @@ impl WhpSystem {
     }
 
     pub fn prepare_partition(&self) -> Result<PreparedWhpPartition<'_>, WhpError> {
+        if !self.hypervisor_present()? {
+            return Err(WhpError::PlatformUnavailable);
+        }
         let mut partition = core::ptr::null_mut();
         check(unsafe { (self.api.create_partition)(&mut partition) })?;
         let partition = NonNull::new(partition).ok_or(WhpError::PlatformUnavailable)?;
         let mut guard = PartitionGuard {
             partition,
             api: self.api,
-            setup: false,
             vp: false,
         };
         let processor_count = 1u32;
@@ -132,7 +138,6 @@ impl WhpSystem {
             )
         })?;
         check(unsafe { (self.api.setup_partition)(partition.as_ptr()) })?;
-        guard.setup = true;
         check(unsafe { (self.api.create_vp)(partition.as_ptr(), 0, 0) })?;
         guard.vp = true;
         let prepared = PreparedWhpPartition {
@@ -143,6 +148,23 @@ impl WhpSystem {
         };
         core::mem::forget(guard);
         Ok(prepared)
+    }
+
+    pub fn hypervisor_present(&self) -> Result<bool, WhpError> {
+        let mut present = 0u32;
+        let mut written = 0u32;
+        check(unsafe {
+            (self.api.get_capability)(
+                CAPABILITY_HYPERVISOR_PRESENT,
+                (&mut present as *mut u32).cast(),
+                4,
+                &mut written,
+            )
+        })?;
+        if written != 4 || present > 1 {
+            return Err(WhpError::PlatformUnavailable);
+        }
+        Ok(present == 1)
     }
 }
 
@@ -316,7 +338,6 @@ impl Drop for PreparedWhpPartition<'_> {
 struct PartitionGuard {
     partition: NonNull<c_void>,
     api: Api,
-    setup: bool,
     vp: bool,
 }
 impl Drop for PartitionGuard {
@@ -428,6 +449,7 @@ mod tests {
 
     #[test]
     fn installed_platform_exports_are_complete() {
-        assert!(WhpSystem::open().is_ok());
+        let system = WhpSystem::open().unwrap();
+        assert!(system.hypervisor_present().is_ok());
     }
 }

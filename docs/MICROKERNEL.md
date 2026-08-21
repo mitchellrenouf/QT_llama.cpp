@@ -514,7 +514,8 @@ made for this environment.
 The separate core-only `mrml-whp` crate now provides the first Windows
 Hypervisor Platform boundary without SDK bindings, import libraries, `std`, or
 third-party crates. It dynamically resolves the documented C entry points from
-`WinHvPlatform.dll`, creates a one-vCPU partition in the required property,
+`WinHvPlatform.dll`, validates the hypervisor-present capability and its exact
+result size before allocating a partition, creates a one-vCPU partition in the required property,
 setup, and vCPU order, and unwinds partial construction with owned guards.
 Guest ranges must be page-aligned, nonempty, overflow-free, nonoverlapping, and
 W^X. Fixed-capacity, zero-initialized host allocations are filled before being
