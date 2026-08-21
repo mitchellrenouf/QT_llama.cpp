@@ -6,8 +6,6 @@ use core::arch::{asm, global_asm};
 use mrml_kernel::BootPolicy;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::KernelScheduler;
-#[cfg(feature = "service-probe")]
-use mrml_kernel::ServiceSupervisor;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::SyscallRequest;
 #[cfg(any(
@@ -59,6 +57,8 @@ use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
     MemoryRegion, PhysAddr,
 };
+#[cfg(feature = "service-probe")]
+use mrml_kernel::{Capability, CapabilitySpace, ServiceId, ServiceSupervisor};
 #[cfg(all(
     not(feature = "fault-probe"),
     not(feature = "timer-probe"),
@@ -163,6 +163,14 @@ static mut SERVICE_RUNTIME: Option<TaskRuntime<2, 1>> = None;
 static mut SERVICE_ENDPOINT: Option<Endpoint> = None;
 #[cfg(feature = "service-probe")]
 static mut SERVICE_SUPERVISOR: Option<ServiceSupervisor<2>> = None;
+#[cfg(feature = "service-probe")]
+static mut SERVICE_MANAGEMENT: Option<CapabilitySpace<2>> = None;
+#[cfg(feature = "service-probe")]
+static mut SERVICE_CONTROLS: Option<[Capability; 2]> = None;
+#[cfg(feature = "service-probe")]
+static mut SERVICE_IDS: Option<[ServiceId; 2]> = None;
+#[cfg(feature = "service-probe")]
+static mut SERVICE_RESTARTED: bool = false;
 
 global_asm!(
     r#"
@@ -718,12 +726,34 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
         })
     {
         unsafe {
+            let runtime = (*core::ptr::addr_of_mut!(SERVICE_RUNTIME))
+                .as_mut()
+                .unwrap_or_else(|| halt());
+            let supervisor = (*core::ptr::addr_of_mut!(SERVICE_SUPERVISOR))
+                .as_mut()
+                .unwrap_or_else(|| halt());
+            let fault = supervisor
+                .fault_current(runtime, _disposition)
+                .unwrap_or_else(|_| halt());
+            if !matches!(fault.retirement.next, ScheduleOutcome::Idle) {
+                halt();
+            }
+            if core::ptr::addr_of!(SERVICE_RESTARTED).read() {
+                asm!(
+                    "out dx, eax",
+                    in("dx") SERVICE_PROBE_PORT,
+                    in("eax") 4u32,
+                    options(nomem, nostack)
+                );
+                halt();
+            }
             asm!(
                 "out dx, eax",
                 in("dx") SERVICE_PROBE_PORT,
                 in("eax") 3u32,
                 options(nomem, nostack)
-            )
+            );
+            restart_service_pair(runtime, supervisor);
         };
     }
     halt()
@@ -824,11 +854,18 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             .create(Priority::NORMAL, context_b)
             .unwrap_or_else(|_| halt());
         let mut supervisor = ServiceSupervisor::<2>::new();
-        supervisor
+        let service_a = supervisor
             .register(ObjectId(0xa0), receiver)
             .unwrap_or_else(|_| halt());
-        supervisor
+        let service_b = supervisor
             .register(ObjectId(0xa1), sender)
+            .unwrap_or_else(|_| halt());
+        let mut management = CapabilitySpace::<2>::new();
+        let control_a = management
+            .insert(ObjectId(0xa0), Rights::CONTROL)
+            .unwrap_or_else(|_| halt());
+        let control_b = management
+            .insert(ObjectId(0xa1), Rights::CONTROL)
             .unwrap_or_else(|_| halt());
         let endpoint_object = ObjectId(0x91);
         let capability = runtime
@@ -848,6 +885,9 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         }
         core::ptr::addr_of_mut!(SERVICE_ENDPOINT).write(Some(Endpoint::new(endpoint_object)));
         core::ptr::addr_of_mut!(SERVICE_SUPERVISOR).write(Some(supervisor));
+        core::ptr::addr_of_mut!(SERVICE_MANAGEMENT).write(Some(management));
+        core::ptr::addr_of_mut!(SERVICE_CONTROLS).write(Some([control_a, control_b]));
+        core::ptr::addr_of_mut!(SERVICE_IDS).write(Some([service_a, service_b]));
         let runtime_pointer = core::ptr::addr_of_mut!(SERVICE_RUNTIME);
         runtime_pointer.write(Some(runtime));
         let context = (*runtime_pointer)
@@ -1187,6 +1227,106 @@ unsafe fn enter_service_probe_context(context: &UserContext) -> ! {
         halt();
     }
     unsafe { enter_user_context_on_stack(context, transition_stack) }
+}
+
+#[cfg(feature = "service-probe")]
+unsafe fn restart_service_pair(
+    runtime: &mut TaskRuntime<2, 1>,
+    supervisor: &mut ServiceSupervisor<2>,
+) -> ! {
+    let management = unsafe {
+        (*core::ptr::addr_of!(SERVICE_MANAGEMENT))
+            .as_ref()
+            .unwrap_or_else(|| halt())
+    };
+    let controls = unsafe { (*core::ptr::addr_of!(SERVICE_CONTROLS)).unwrap_or_else(|| halt()) };
+    let retired = unsafe { (*core::ptr::addr_of!(SERVICE_IDS)).unwrap_or_else(|| halt()) };
+    let receiver_context = UserContext::new(
+        PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
+        SERVICE_ENTRY,
+        SERVICE_STACK_TOP,
+    )
+    .unwrap_or_else(|_| halt());
+    let sender_context = UserContext::new(
+        PhysAddr::new(SERVICE_B_ROOT).unwrap_or_else(|_| halt()),
+        SERVICE_SENDER_ENTRY,
+        SERVICE_STACK_TOP,
+    )
+    .unwrap_or_else(|_| halt());
+    // Recreate the sender first so the scheduler's retained round-robin cursor
+    // selects the receiver slot. This preserves the proof that an empty receive
+    // blocks before the replacement sender is allowed to run.
+    let sender_service = supervisor
+        .restart(
+            retired[1],
+            management,
+            controls[1],
+            runtime,
+            Priority::NORMAL,
+            sender_context,
+        )
+        .unwrap_or_else(|_| halt());
+    unsafe { service_restart_stage(0x31) };
+    let receiver_service = supervisor
+        .restart(
+            retired[0],
+            management,
+            controls[0],
+            runtime,
+            Priority::NORMAL,
+            receiver_context,
+        )
+        .unwrap_or_else(|_| halt());
+    unsafe { service_restart_stage(0x32) };
+    let receiver = supervisor
+        .task(receiver_service)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| halt());
+    let sender = supervisor
+        .task(sender_service)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| halt());
+    unsafe { service_restart_stage(0x34) };
+    if unsafe { (*core::ptr::addr_of!(SERVICE_ENDPOINT)).as_ref() }.is_none() {
+        halt();
+    }
+    unsafe { service_restart_stage(0x35) };
+    let capability = runtime
+        .capabilities_mut(sender)
+        .and_then(|space| {
+            space
+                .insert(ObjectId(0x91), Rights::SIGNAL)
+                .map_err(|_| mrml_kernel::TaskRuntimeError::IntegrityFailure)
+        })
+        .unwrap_or_else(|_| halt());
+    unsafe { service_restart_stage(0x36) };
+    let sender_context = runtime.context_mut(sender).unwrap_or_else(|_| halt());
+    sender_context.r13 = capability.token();
+    sender_context.r14 = receiver.token();
+    unsafe { service_restart_stage(0x37) };
+    if !matches!(runtime.start(), ScheduleOutcome::Switch { from: None, to } if to == receiver) {
+        halt();
+    }
+    unsafe {
+        core::ptr::addr_of_mut!(SERVICE_IDS).write(Some([receiver_service, sender_service]));
+        core::ptr::addr_of_mut!(SERVICE_RESTARTED).write(true);
+    }
+    unsafe { service_restart_stage(0x33) };
+    unsafe { enter_service_task(runtime, receiver) }
+}
+
+#[cfg(feature = "service-probe")]
+unsafe fn service_restart_stage(stage: u32) {
+    unsafe {
+        asm!(
+            "out dx, eax",
+            in("dx") SERVICE_PROBE_PORT,
+            in("eax") stage,
+            options(nomem, nostack)
+        )
+    }
 }
 
 #[cfg(feature = "service-preemption-probe")]

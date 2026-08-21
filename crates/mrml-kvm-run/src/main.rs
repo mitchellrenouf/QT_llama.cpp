@@ -468,38 +468,6 @@ fn application_main() -> Result<()> {
                 exit
             ));
         }
-        if guest
-            .reprovision_isolated_service_at(1, &executable)
-            .is_ok()
-        {
-            return Err(anyhow!(
-                "KVM service reprovision accepted a different signed executable"
-            ));
-        }
-        let sentinel = [0xa5u8; 32];
-        VmBackend::write_guest(&mut guest, SERVICE_B_STACK_PHYSICAL, &sentinel)
-            .map_err(|error| anyhow!("failed to seed stopped KVM service state: {:?}", error))?;
-        let (entry, root) = guest
-            .reprovision_isolated_service_at(
-                1,
-                service_executable
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("missing verified service executable"))?,
-            )
-            .map_err(|error| anyhow!("KVM service reprovision failed: {:?}", error))?;
-        let mut erased = [0xffu8; 32];
-        VmBackend::read_guest(&guest, SERVICE_B_STACK_PHYSICAL, &mut erased)
-            .map_err(|error| anyhow!("failed to inspect KVM service reset: {:?}", error))?;
-        if erased != [0; 32]
-            || entry != SERVICE_VIRTUAL + 0x1000
-            || root
-                != PhysAddr::new(SERVICE_B_TABLE_PHYSICAL)
-                    .map_err(|_| anyhow!("invalid fixed KVM service root"))?
-        {
-            return Err(anyhow!(
-                "KVM service reprovision did not publish clean state"
-            ));
-        }
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after user call failed: {:?}", error))?;
         if exit
@@ -588,8 +556,113 @@ fn application_main() -> Result<()> {
                 state.page_table_root()
             ));
         }
+        if guest
+            .reprovision_isolated_service_at(0, &executable)
+            .is_ok()
+        {
+            return Err(anyhow!(
+                "KVM service reprovision accepted a different signed executable"
+            ));
+        }
+        let service = service_executable
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing verified service executable"))?;
+        for (slot, stack, expected_root) in [
+            (0, SERVICE_STACK_PHYSICAL, SERVICE_TABLE_PHYSICAL),
+            (1, SERVICE_B_STACK_PHYSICAL, SERVICE_B_TABLE_PHYSICAL),
+        ] {
+            VmBackend::write_guest(&mut guest, stack, &[0xa5; 32]).map_err(|error| {
+                anyhow!(
+                    "failed to contaminate stopped KVM service state: {:?}",
+                    error
+                )
+            })?;
+            let (entry, root) = guest
+                .reprovision_isolated_service_at(slot, service)
+                .map_err(|error| anyhow!("KVM service reprovision failed: {:?}", error))?;
+            let mut erased = [0xff; 32];
+            VmBackend::read_guest(&guest, stack, &mut erased)
+                .map_err(|error| anyhow!("failed to inspect KVM service reset: {:?}", error))?;
+            if erased != [0; 32]
+                || entry != SERVICE_VIRTUAL + 0x1000
+                || root
+                    != PhysAddr::new(expected_root)
+                        .map_err(|_| anyhow!("invalid fixed KVM service root"))?
+            {
+                return Err(anyhow!(
+                    "KVM service reprovision did not publish clean state"
+                ));
+            }
+        }
+        exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+            anyhow!(
+                "KVM execution starting restarted service failed: {:?}",
+                error
+            )
+        })?;
+        for stage in [0x31u32, 0x32, 0x34, 0x35, 0x36, 0x37, 0x33] {
+            if exit
+                != (VmExit::Io {
+                    port: SERVICE_PROBE_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!("KVM restart stage {:#x} failed: {:?}", stage, exit));
+            }
+            exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+                anyhow!("KVM execution during service restart failed: {:?}", error)
+            })?;
+        }
+        for stage in [1u32, 2, 3] {
+            if exit
+                != (VmExit::Io {
+                    port: SERVICE_CALL_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "restarted KVM service IPC stage {} failed: {:?}",
+                    stage,
+                    exit
+                ));
+            }
+            exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+                anyhow!(
+                    "KVM execution during restarted service IPC failed: {:?}",
+                    error
+                )
+            })?;
+        }
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_FRAME_PORT,
+                size: 4,
+                write: true,
+                value: 0x001b_2303,
+            })
+        {
+            return Err(anyhow!("restarted KVM service frame mismatch: {:?}", exit));
+        }
         exit = VmBackend::run(&mut guest, 0)
-            .map_err(|error| anyhow!("KVM execution after service proof failed: {:?}", error))?;
+            .map_err(|error| anyhow!("KVM execution after restarted frame failed: {:?}", error))?;
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 4,
+            })
+        {
+            return Err(anyhow!("restarted KVM service proof mismatch: {:?}", exit));
+        }
+        // The authenticated value-four marker is terminal proof that the
+        // rebuilt generation executed and was retired. Do not resume the
+        // deliberate CLI/HLT fail-stop loop merely to obtain another exit.
+        exit = VmExit::Halted;
     }
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {

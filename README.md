@@ -186,8 +186,13 @@ guarded-stack backing, rematerializes the verified PE, and only then republishes
 the instance. A different validly signed executable is rejected before
 publication changes. Live signed Windows WHP and nested-KVM runs exercise
 rejection, deliberate stack contamination, complete reset, and clean
-republication. This is a platform reset primitive; automatic policy-driven
-restart and execution of the replacement context are not yet claimed.
+republication. The signed service probe now connects that primitive to the
+kernel supervisor: both retired instances receive fresh service and task
+generations through exact `CONTROL` capabilities, receive new task-local IPC
+authority, and repeat the complete block/send/exit/fault path from rebuilt
+memory. Checked lifecycle markers expose each transition to the live WHP and
+KVM runners. This is an automatic restart proof for the fixed two-service test
+policy, not yet a general user-configurable restart daemon.
 Kernel task domains now contain a two-message, allocation-free inbox. Receiving
 from an empty inbox blocks only the current task and immediately selects a
 replacement; capability-authorized delivery enqueues in FIFO order and wakes

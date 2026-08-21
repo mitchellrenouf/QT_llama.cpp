@@ -766,11 +766,23 @@ safe for this operation because the exact image identity and mapping contract
 cannot change. Both signed live runners reject substitution with the valid
 kernel executable before publication changes, contaminate the second service
 stack, reset it, and verify its bytes, entry, and root. The 2026-08-21 release
-runs completed guest execution in 325 microseconds on WHP (`verify=1729us`,
-`prepare=3083us`, `total=7205us`) and 511 microseconds on nested KVM
-(`verify=4534us`, `prepare=1349us`, `total=9479us`). Automatic policy-driven
-restart and live entry into the newly created generation remain future work, so
-these results are not described as an automatic-restart proof.
+runs now connect reset to kernel-supervised restart. The receiver fault is
+retired through `ServiceSupervisor`, the host rebuilds both stopped instances,
+and exact kernel-held `CONTROL` capabilities authorize fresh service and task
+generations. New task-local endpoint authority is issued to the replacement
+sender, stale receiver/task tokens are not reused, and scheduler creation order
+preserves the receiver-first blocking invariant despite its retained
+round-robin cursor. Checked stages prove both fresh generations exist and the
+replacement receiver is selected. The rebuilt pair then repeats the complete
+block, send, clean sender exit, receiver wakeup, CPL3 breakpoint, and fault
+retirement chain. The 2026-08-21 release runs completed both generations in 744
+microseconds on WHP (`verify=1788us`, `prepare=3012us`, `total=7423us`) and 558
+microseconds on nested KVM (`verify=4111us`, `prepare=1420us`, `total=9623us`).
+This proves automatic restart for the fixed two-service test policy; a general
+policy/configuration service and restart-rate/backoff policy remain future work.
+As elsewhere, these host-visible markers are test evidence, not attestation
+against a compromised host; protecting guest memory from that host requires the
+confidential-computing boundary described in the threat model.
 
 Each `TaskRuntime` domain now owns a fixed two-message inbox in addition to its
 context and capability space. `receive_or_block_current` dequeues immediately

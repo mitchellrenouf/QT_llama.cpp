@@ -458,39 +458,117 @@ fn application_main() -> Result<()> {
             return Err(anyhow!("isolated WHP service proof mismatch: {:?}", exit));
         }
         if guest
-            .reprovision_isolated_service_at(1, &executable)
+            .reprovision_isolated_service_at(0, &executable)
             .is_ok()
         {
             return Err(anyhow!(
                 "WHP service reprovision accepted a different signed executable"
             ));
         }
-        let sentinel = [0xa5u8; 32];
-        VmBackend::write_guest(&mut guest, SERVICE_B_STACK_PHYSICAL, &sentinel)
-            .map_err(|error| anyhow!("failed to seed stopped WHP service state: {:?}", error))?;
-        let (entry, root) = guest
-            .reprovision_isolated_service_at(
-                1,
-                service_executable
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("missing verified service executable"))?,
-            )
-            .map_err(|error| anyhow!("WHP service reprovision failed: {:?}", error))?;
-        let mut erased = [0xffu8; 32];
-        VmBackend::read_guest(&guest, SERVICE_B_STACK_PHYSICAL, &mut erased)
-            .map_err(|error| anyhow!("failed to inspect WHP service reset: {:?}", error))?;
-        if erased != [0; 32]
-            || entry != SERVICE_VIRTUAL + 0x1000
-            || root
-                != PhysAddr::new(SERVICE_B_TABLE_PHYSICAL)
-                    .map_err(|_| anyhow!("invalid fixed WHP service root"))?
-        {
-            return Err(anyhow!(
-                "WHP service reprovision did not publish clean state"
-            ));
+        let service = service_executable
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing verified service executable"))?;
+        for (slot, stack, expected_root) in [
+            (0, SERVICE_STACK_PHYSICAL, SERVICE_TABLE_PHYSICAL),
+            (1, SERVICE_B_STACK_PHYSICAL, SERVICE_B_TABLE_PHYSICAL),
+        ] {
+            VmBackend::write_guest(&mut guest, stack, &[0xa5; 32]).map_err(|error| {
+                anyhow!(
+                    "failed to contaminate stopped WHP service state: {:?}",
+                    error
+                )
+            })?;
+            let (entry, root) = guest
+                .reprovision_isolated_service_at(slot, service)
+                .map_err(|error| anyhow!("WHP service reprovision failed: {:?}", error))?;
+            let mut erased = [0xff; 32];
+            VmBackend::read_guest(&guest, stack, &mut erased)
+                .map_err(|error| anyhow!("failed to inspect WHP service reset: {:?}", error))?;
+            if erased != [0; 32]
+                || entry != SERVICE_VIRTUAL + 0x1000
+                || root
+                    != PhysAddr::new(expected_root)
+                        .map_err(|_| anyhow!("invalid fixed WHP service root"))?
+            {
+                return Err(anyhow!(
+                    "WHP service reprovision did not publish clean state"
+                ));
+            }
         }
+        let mut exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+            anyhow!(
+                "WHP execution starting restarted service failed: {:?}",
+                error
+            )
+        })?;
+        for stage in [0x31u32, 0x32, 0x34, 0x35, 0x36, 0x37, 0x33] {
+            if exit
+                != (VmExit::Io {
+                    port: SERVICE_PROBE_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "WHP restart stage {:#x} mismatch: {:?}",
+                    stage,
+                    exit
+                ));
+            }
+            exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+                anyhow!("WHP execution during service restart failed: {:?}", error)
+            })?;
+        }
+        for stage in [1u32, 2, 3] {
+            if exit
+                != (VmExit::Io {
+                    port: SERVICE_CALL_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "restarted WHP service IPC stage {} mismatch: {:?}",
+                    stage,
+                    exit
+                ));
+            }
+            exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+                anyhow!(
+                    "WHP execution during restarted service IPC failed: {:?}",
+                    error
+                )
+            })?;
+        }
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_FRAME_PORT,
+                size: 4,
+                write: true,
+                value: 0x001b_2303,
+            })
+        {
+            return Err(anyhow!("restarted WHP service frame mismatch: {:?}", exit));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("WHP execution after restarted frame failed: {:?}", error))?;
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 4,
+            })
+        {
+            return Err(anyhow!("restarted WHP service proof mismatch: {:?}", exit));
+        }
+        // The authenticated value-four marker is terminal proof that the
+        // rebuilt generation executed and was retired. The kernel deliberately
+        // enters its CLI/HLT fail-stop loop immediately afterward.
         println!(
-            "verified independently signed service and clean reprovision under WHP: verify={}us prepare={}us execute={}us total={}us",
+            "verified independently signed service restart and re-entry under WHP: verify={}us prepare={}us execute={}us total={}us",
             verification_micros,
             preparation_micros,
             execution_started.elapsed().as_micros(),
