@@ -203,8 +203,15 @@ caches independently select only F16, Q8_0, or Q4_0 storage; quantized formats
 require 32-value head blocks and every cache length is derived exactly from
 capacity, KV heads, width, and format. Grid and block geometry are fixed from
 the same dimensions.
+Kernel ID 20 validates the bounded shared-memory F16 attention variant. Query
+stride and dimensions determine the least readable query span, while capacity,
+KV heads, and width determine both full cache ranges. Capacity must be a power
+of two, head grouping must divide exactly, signed cache positions cannot
+overflow, and output geometry is exact. The effective sliding-window key count
+must be at most 8192 and determines the only accepted dynamic shared-memory
+size; quantized cache formats cannot select this variant.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 9 schemas and the
+registry alone cannot make it executable. The remaining 8 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot

@@ -178,6 +178,11 @@ QKV post-processing binds head grouping, positions, normalization vectors, and
 the packed in-place QKV tensor to exact dimensions. Its K and V cache ranges
 independently permit only F16, Q8_0, or Q4_0 layouts, with checked capacity and
 format-specific byte calculations; signed position overflow is rejected.
+The shared-memory F16 attention schema independently derives the least query
+span, full cache ranges, output tensor, effective key count, and dynamic shared
+memory. It requires a power-of-two cache, grouped-query head divisibility, and
+the exact specialized launch conditions; quantized or oversized attention is
+kept on the still-fail-closed streaming path.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject
@@ -188,7 +193,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 9
+guest execution. Platform cache-coherence validation, the remaining 8
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML

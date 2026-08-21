@@ -1711,6 +1711,7 @@ impl Dispatch {
             17 => self.validate_vocab_topk_schema(false),
             18 => self.validate_vocab_topk_schema(true),
             19 => self.validate_qkv_postprocess_schema(),
+            20 => self.validate_attention_schema(false),
             27 => self.validate_embedding_q8_0_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
@@ -2239,6 +2240,90 @@ impl Dispatch {
         Ok(ValidatedKernelLaunch {
             dispatch: *self,
             element_count: qkv_elements,
+        })
+    }
+
+    fn validate_attention_schema(
+        &self,
+        streaming: bool,
+    ) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 4 || self.scalar_count != 11 || self.block != [128, 1, 1] {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let query = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let k_cache = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let v_cache = self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?;
+        let output = self.accesses[3].ok_or(GpuError::InvalidKernelSchema)?;
+        let cache_start = self.nonnegative_i32_scalar(0)?;
+        let batch = self.positive_i32_scalar(1)?;
+        let heads = self.positive_i32_scalar(2)?;
+        let kv_heads = self.positive_i32_scalar(3)?;
+        let head_dimension = self.positive_i32_scalar(4)?;
+        let query_stride = self.positive_i32_scalar(5)?;
+        self.positive_f32_scalar(6)?;
+        let window = self.nonnegative_i32_scalar(7)?;
+        let cache_capacity = self.positive_i32_scalar(8)?;
+        let k_format = self.nonnegative_i32_scalar(9)?;
+        let v_format = self.nonnegative_i32_scalar(10)?;
+        let end = cache_start
+            .checked_add(batch)
+            .filter(|value| *value <= i32::MAX as u32)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let query_width = heads
+            .checked_mul(head_dimension)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        if head_dimension % 2 != 0
+            || heads % kv_heads != 0
+            || query_stride < query_width
+            || !cache_capacity.is_power_of_two()
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let output_elements = batch
+            .checked_mul(query_width)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let query_elements = (batch - 1)
+            .checked_mul(query_stride)
+            .and_then(|value| value.checked_add(query_width))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let cache_elements = cache_capacity
+            .checked_mul(kv_heads)
+            .and_then(|value| value.checked_mul(head_dimension))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let cache_bytes = |format: u32| -> Result<u64, GpuError> {
+            match format {
+                0 => Ok(u64::from(cache_elements) * 2),
+                1 if head_dimension % 32 == 0 => Ok(u64::from(cache_capacity)
+                    * u64::from(kv_heads)
+                    * u64::from(head_dimension / 32)
+                    * 34),
+                2 if head_dimension % 32 == 0 => Ok(u64::from(cache_capacity)
+                    * u64::from(kv_heads)
+                    * u64::from(head_dimension / 32)
+                    * 18),
+                _ => Err(GpuError::InvalidKernelSchema),
+            }
+        };
+        let max_keys = if window > 0 { end.min(window) } else { end };
+        let specialized = max_keys <= 8192 && k_format == 0 && v_format == 0;
+        let expected_shared = if streaming { 0 } else { max_keys * 4 };
+        if streaming == specialized
+            || self.shared_memory != expected_shared
+            || !valid_f32_access(query, u64::from(query_elements) * 4, BufferMode::Read)
+            || k_cache.mode != BufferMode::Read
+            || !k_cache.offset.is_multiple_of(2)
+            || k_cache.length != cache_bytes(k_format)?
+            || v_cache.mode != BufferMode::Read
+            || !v_cache.offset.is_multiple_of(2)
+            || v_cache.length != cache_bytes(v_format)?
+            || !valid_f32_access(output, u64::from(output_elements) * 4, BufferMode::Write)
+            || self.grid != [heads, batch, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: output_elements,
         })
     }
 
@@ -3480,6 +3565,92 @@ mod tests {
             0,
             &accesses,
             &overflowing_position,
+        )
+        .unwrap();
+        assert_eq!(
+            invalid.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn executor_selects_only_bounded_shared_f16_attention() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let accesses = [
+            BufferAccess::new(id(0), 0, 3072, BufferMode::Read),
+            BufferAccess::new(id(1), 0, 2048, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 2048, BufferMode::Read),
+            BufferAccess::new(id(3), 0, 2048, BufferMode::Write),
+        ];
+        let scalars = [
+            ScalarArg::i32(4),
+            ScalarArg::i32(2),
+            ScalarArg::i32(4),
+            ScalarArg::i32(2),
+            ScalarArg::i32(64),
+            ScalarArg::i32(512),
+            ScalarArg::f32_bits(0.125_f32.to_bits()),
+            ScalarArg::i32(0),
+            ScalarArg::i32(8),
+            ScalarArg::i32(0),
+            ScalarArg::i32(0),
+        ];
+        let dispatch = Dispatch::new_with_scalars(
+            KernelId::new(20).unwrap(),
+            [4, 2, 1],
+            [128, 1, 1],
+            24,
+            &accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            dispatch.validate_executor_schema().unwrap().element_count(),
+            512
+        );
+
+        let wrong_shared = Dispatch::new_with_scalars(
+            KernelId::new(20).unwrap(),
+            [4, 2, 1],
+            [128, 1, 1],
+            20,
+            &accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_shared.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let mut quantized = scalars;
+        quantized[9] = ScalarArg::i32(1);
+        let wrong_variant = Dispatch::new_with_scalars(
+            KernelId::new(20).unwrap(),
+            [4, 2, 1],
+            [128, 1, 1],
+            24,
+            &accesses,
+            &quantized,
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_variant.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let mut overflowing = scalars;
+        overflowing[0] = ScalarArg::i32(i32::MAX);
+        let invalid = Dispatch::new_with_scalars(
+            KernelId::new(20).unwrap(),
+            [4, 2, 1],
+            [128, 1, 1],
+            24,
+            &accesses,
+            &overflowing,
         )
         .unwrap();
         assert_eq!(
