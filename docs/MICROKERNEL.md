@@ -358,7 +358,10 @@ after this normalization was enabled.
 The post-firmware path now enters the independent `mrml-kernel-pe.efi` image.
 Its entry parses the canonical handoff again and revalidates nonzero entropy,
 the ACPI pointer, the sorted memory map, and complete framebuffer MMIO
-containment before drawing. On Windows QEMU 11.1, a freshly generated one-use
+containment before drawing. It retains every emitted region in fixed bounded
+storage and constructs the same architecture-neutral `EarlyKernelContext` used
+by later initialization, so the standalone image does not bypass the common
+early-boot admission boundary. On Windows QEMU 11.1, a freshly generated one-use
 key signed the exact standalone image, the loader pinned that key digest, and a
 GOP capture showed its gold `RGB(255,200,87)` 96x12 marker over
 `RGB(11,59,90)`. The preceding loader stage was `RGB(32,64,128)`, so successful

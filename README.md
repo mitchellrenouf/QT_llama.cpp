@@ -87,7 +87,9 @@ in [`docs/MICROKERNEL.md`](docs/MICROKERNEL.md). It is not production-secure or
 ready for bare-metal deployment. The original x86-64 PE32+ kernel does now boot
 through the original UEFI loader under QEMU and directly under nested KVM. It
 validates the bounded handoff, installs its own GDT and 256-entry fail-stop IDT,
-uses a dedicated stack and guarded page tables, and renders a GOP framebuffer
+retains the bounded normalized regions in fixed storage, constructs the common
+validated early-kernel context, uses a dedicated stack and guarded page tables,
+and renders a GOP framebuffer
 marker. Before installing the guarded address space, the loader erases the
 entire page-rounded kernel allocation and all 64 KiB of the kernel stack, so no
 firmware-era tail or stack data enters the kernel mapping. A separately

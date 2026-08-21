@@ -7,8 +7,8 @@ use mrml_kernel::BootPolicy;
 use mrml_kernel::arch::x86_64::{InterruptGate, install_fail_stop_tables};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
-    BootHandoff, Color, FramebufferSurface, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
-    MAX_HANDOFF_REGIONS,
+    BootHandoff, Color, EarlyKernelContext, FramebufferSurface, HANDOFF_HEADER_BYTES,
+    HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind, MemoryRegion, PhysAddr,
 };
 
 #[cfg(not(feature = "fault-probe"))]
@@ -53,6 +53,12 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 
 /// Standalone PE32+ kernel entry. The loader calls this only after firmware
 /// services have exited and after authenticating both this image and handoff.
+///
+/// # Safety
+///
+/// `bytes` must address exactly `length` readable bytes that remain mapped for
+/// this non-returning call. The loader must already have installed the final
+/// W^X image mappings, a writable kernel stack, and a read-only handoff mapping.
 #[unsafe(export_name = "efi_main")]
 pub unsafe extern "efiapi" fn kernel_entry(bytes: *const u8, length: usize) -> usize {
     unsafe { install_descriptor_tables() };
@@ -76,10 +82,31 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         halt();
     }
     let encoded = unsafe { core::slice::from_raw_parts(bytes, length) };
-    let handoff = match BootHandoff::decode(encoded, |_| {}) {
+    let placeholder = match MemoryRegion::new(
+        match PhysAddr::new(0) {
+            Ok(value) => value,
+            Err(_) => halt(),
+        },
+        1,
+        MemoryKind::Reserved,
+    ) {
         Ok(value) => value,
         Err(_) => halt(),
     };
+    let mut regions = [placeholder; MAX_HANDOFF_REGIONS];
+    let mut region_count = 0usize;
+    let handoff = match BootHandoff::decode(encoded, |region| {
+        if region_count < regions.len() {
+            regions[region_count] = region;
+            region_count += 1;
+        }
+    }) {
+        Ok(value) => value,
+        Err(_) => halt(),
+    };
+    if region_count != handoff.region_count() {
+        halt();
+    }
     #[cfg(feature = "production-policy")]
     {
         let minimum_version = match embedded_minimum_version() {
@@ -94,6 +121,15 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         }
     }
     let framebuffer = handoff.framebuffer();
+    let _early = match EarlyKernelContext::new(
+        *handoff.evidence().entropy(),
+        handoff.acpi_root(),
+        framebuffer,
+        &regions[..region_count],
+    ) {
+        Ok(value) => value,
+        Err(_) => halt(),
+    };
     let framebuffer_bytes = unsafe {
         core::slice::from_raw_parts_mut(
             framebuffer.base().get() as *mut u8,
