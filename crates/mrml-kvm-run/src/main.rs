@@ -8,6 +8,10 @@ use mrml_error::{Result, anyhow};
 use mrml_kernel::{
     ArtifactKind, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot, VmBackend, VmExit,
 };
+#[cfg(any(test, target_os = "linux"))]
+use mrml_kernel::{
+    FramebufferInfo, MemoryKind, MemoryRegion, PhysAddr, PixelFormat, encode_handoff,
+};
 #[cfg(target_os = "linux")]
 use mrml_kvm::{KvmLaunchLayout, KvmSystem};
 use mrml_runtime::mrml_println as println;
@@ -53,7 +57,7 @@ fn application_main() -> Result<()> {
         executable.artifact().version(),
         entropy,
         *executable.artifact().digest(),
-    );
+    )?;
     let layout = KvmLaunchLayout::new(
         0x10_0000,
         32,
@@ -95,33 +99,43 @@ fn application_main() -> Result<()> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> [u8; 240] {
+fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Result<[u8; 240]> {
+    let framebuffer = FramebufferInfo::new(
+        FRAMEBUFFER,
+        0x1000,
+        16,
+        16,
+        16,
+        PixelFormat::BlueGreenRedReserved,
+    )
+    .map_err(|_| anyhow!("invalid fixed framebuffer description"))?;
+    let region = |address, pages, kind| {
+        let address = PhysAddr::new(address).map_err(|_| anyhow!("unaligned launch region"))?;
+        MemoryRegion::new(address, pages, kind).map_err(|_| anyhow!("invalid launch region"))
+    };
+    let regions = [
+        region(0x1000, 2, MemoryKind::Free)?,
+        region(0x3000, 1, MemoryKind::Kernel)?,
+        region(FRAMEBUFFER, 1, MemoryKind::Mmio)?,
+    ];
     let mut encoded = [0u8; 240];
-    encoded[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
-    encoded[16..20].copy_from_slice(&240u32.to_le_bytes());
-    encoded[20..22].copy_from_slice(&3u16.to_le_bytes());
-    // The verified bundle establishes secure loading. Hardware measurement and
-    // persistent rollback protection are not claimed by this host runner.
-    encoded[22..24].copy_from_slice(&1u16.to_le_bytes());
-    encoded[24..32].copy_from_slice(&version.to_le_bytes());
-    encoded[32..64].copy_from_slice(&entropy);
-    encoded[64..128].copy_from_slice(&measurement);
-    encoded[128..136].copy_from_slice(&0x9000u64.to_le_bytes());
-    encoded[136..144].copy_from_slice(&FRAMEBUFFER.to_le_bytes());
-    encoded[144..152].copy_from_slice(&0x1000u64.to_le_bytes());
-    encoded[152..156].copy_from_slice(&16u32.to_le_bytes());
-    encoded[156..160].copy_from_slice(&16u32.to_le_bytes());
-    encoded[160..164].copy_from_slice(&16u32.to_le_bytes());
-    encoded[164] = 1;
-    encoded[168..176].copy_from_slice(&0x1000u64.to_le_bytes());
-    encoded[176..184].copy_from_slice(&2u64.to_le_bytes());
-    encoded[192..200].copy_from_slice(&0x3000u64.to_le_bytes());
-    encoded[200..208].copy_from_slice(&1u64.to_le_bytes());
-    encoded[208] = 1;
-    encoded[216..224].copy_from_slice(&FRAMEBUFFER.to_le_bytes());
-    encoded[224..232].copy_from_slice(&1u64.to_le_bytes());
-    encoded[232] = 3;
-    encoded
+    let length = encode_handoff(
+        version,
+        entropy,
+        measurement,
+        true,
+        false,
+        false,
+        0x9000,
+        framebuffer,
+        &regions,
+        &mut encoded,
+    )
+    .map_err(|_| anyhow!("canonical boot handoff construction failed"))?;
+    if length != encoded.len() {
+        return Err(anyhow!("unexpected canonical boot handoff length"));
+    }
+    Ok(encoded)
 }
 
 mrml_runtime::mrml_entrypoint!(application_main);
@@ -135,7 +149,7 @@ mod tests {
     fn handoff_binds_verified_version_entropy_and_measurement() {
         let entropy = [0x35; 32];
         let measurement = [0xa7; 64];
-        let encoded = boot_handoff(19, entropy, measurement);
+        let encoded = boot_handoff(19, entropy, measurement).unwrap();
         let decoded = BootHandoff::decode(&encoded, |_| {}).unwrap();
         assert_eq!(decoded.evidence().image_version(), 19);
         assert_eq!(decoded.evidence().entropy(), &entropy);
