@@ -146,6 +146,27 @@ background; pixel `(0,8)` and the final framebuffer pixel remained
 solid-color stages. This is a statically linked early kernel entry, not yet a
 separately loaded and signed kernel image.
 
+### OS executable format
+
+PE32+ is the sole executable binary format for MRML on x86-64. The kernel, VM
+boot images, service images, and tool executables must be x86-64 PE32+ payloads
+inside their typed signed-artifact containers. Launch policies and CUDA bundles
+are data and must never be admitted as executable images. Future ARM64 and
+RISC-V ports retain PE32+ with their architecture-specific machine identifier,
+keeping one bounded loader and signing representation across UEFI, Hyper-V,
+KVM, and bare metal.
+
+The original allocation-free parser accepts at most 32 sections and requires
+an executable COFF image, the PE32+ optional header, NX compatibility,
+power-of-two file and section alignment, exact in-file raw ranges, bounded
+image ranges, nonoverlapping virtual and raw sections, and an entry point
+contained in an executable section. Any writable-and-executable section is
+rejected. The release signer validates these rules before consuming a one-time
+key, and runtime admission repeats validation only after the outer artifact
+signature succeeds. Relocation application, import resolution, page
+allocation, final per-section page permissions, and transfer to a separately
+loaded image remain pending.
+
 Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
 dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.
 `mrml-crypto` exposes a fixed-storage boot feature path while its runtime-backed
@@ -186,7 +207,7 @@ access to private keys:
 ```text
 cargo build --release -p mrml-sign
 mrml-sign keygen release.private release.public
-mrml-sign sign-bundle kernel 1 mrml-kernel.bin release.private mrml-kernel.signed
+mrml-sign sign-bundle kernel 1 mrml-kernel.exe release.private mrml-kernel.signed
 mrml-sign key-digest release.public
 ```
 

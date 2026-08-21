@@ -1,3 +1,4 @@
+use crate::{PeError, PeImage};
 use mrml_crypto::{LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES, Sha3_512, lamport_verify};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +44,27 @@ pub struct SignedArtifact<'a> {
     payload: &'a [u8],
     public_key: &'a [u8],
     signature: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutableArtifactError {
+    Signature(ArtifactError),
+    Format(PeError),
+    NonExecutableKind,
+}
+
+pub struct VerifiedExecutable<'a> {
+    artifact: VerifiedArtifact,
+    image: PeImage<'a>,
+}
+
+impl<'a> VerifiedExecutable<'a> {
+    pub const fn artifact(&self) -> &VerifiedArtifact {
+        &self.artifact
+    }
+    pub const fn image(&self) -> &PeImage<'a> {
+        &self.image
+    }
 }
 
 impl<'a> SignedArtifact<'a> {
@@ -113,6 +135,26 @@ impl<'a> SignedArtifact<'a> {
             return Err(ArtifactError::WrongArtifactKind);
         }
         root.verify(self.version, self.payload, self.public_key, self.signature)
+    }
+
+    /// Authenticates an OS executable before interpreting any PE-controlled
+    /// offsets. CUDA bundles and launch policies are data, never executables.
+    pub fn verify_executable(
+        &self,
+        root: &TrustRoot,
+        expected_kind: ArtifactKind,
+    ) -> Result<VerifiedExecutable<'a>, ExecutableArtifactError> {
+        if !matches!(
+            expected_kind,
+            ArtifactKind::Kernel | ArtifactKind::VmImage | ArtifactKind::ServiceImage
+        ) {
+            return Err(ExecutableArtifactError::NonExecutableKind);
+        }
+        let artifact = self
+            .verify(root, expected_kind)
+            .map_err(ExecutableArtifactError::Signature)?;
+        let image = PeImage::parse(self.payload).map_err(ExecutableArtifactError::Format)?;
+        Ok(VerifiedExecutable { artifact, image })
     }
 
     pub const fn payload(&self) -> &'a [u8] {

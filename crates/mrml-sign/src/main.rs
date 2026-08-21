@@ -7,7 +7,7 @@ use mrml_crypto::{
 };
 use mrml_error::{Result, anyhow};
 use mrml_kernel::{
-    ArtifactKind, ReleaseManifest, SIGNED_ARTIFACT_HEADER_BYTES, artifact_statement,
+    ArtifactKind, PeImage, ReleaseManifest, SIGNED_ARTIFACT_HEADER_BYTES, artifact_statement,
 };
 use mrml_runtime::{Text, Vector, mrml_println as println};
 
@@ -56,6 +56,12 @@ fn sign_bundle(
     let artifact = mrml_runtime::read_file_bounded(artifact_path, MAX_ARTIFACT)?;
     if artifact.is_empty() {
         return Err(anyhow!("artifact must not be empty"));
+    }
+    if matches!(
+        kind,
+        ArtifactKind::Kernel | ArtifactKind::VmImage | ArtifactKind::ServiceImage
+    ) {
+        PeImage::parse(&artifact).map_err(|_| anyhow!("OS executable must be valid MRML PE32+"))?;
     }
     let mut private = mrml_runtime::read_file_bounded(private_path, LAMPORT_PRIVATE_KEY_BYTES)?;
     if private.len() != LAMPORT_PRIVATE_KEY_BYTES {
