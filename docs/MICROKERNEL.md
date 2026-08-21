@@ -461,6 +461,16 @@ error also fails the instance because its register and device state cannot be
 assumed resumable. Concrete adapters remain responsible for translating native
 exit structures into this deliberately small representation.
 
+The first KVM adapter layer is implemented in the separate core-only
+`mrml-kvm` crate. It decodes the kernel-owned `kvm_run` mapping as bytes instead
+of creating references to its C union. I/O exits require one scalar transfer,
+validated direction and width, and an in-bounds data offset. MMIO accepts only
+1, 2, 4, or 8 byte accesses. MRML hypercalls use a dedicated number and require
+all unused KVM arguments to be zero. Memory-slot encodings are page-aligned,
+overflow checked, optionally read-only, and capped at 32 slots. Native file
+descriptor, ioctl, mmap, register setup, and interrupt-chip integration remain
+pending; this layer does not yet launch a KVM guest.
+
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector
 must be present in a 256-bit allowlist. Architectural exception vectors 0--31

@@ -1,0 +1,10 @@
+[package]
+name = "mrml-kvm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Strict allocation-free KVM ABI adapter for MRML"
+
+[dependencies]
+mrml-kernel = { path = "../mrml-kernel" }

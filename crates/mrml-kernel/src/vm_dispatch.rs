@@ -219,7 +219,7 @@ fn dispatch_inner<B: VmBackend, const C: usize, const M: usize, const I: usize>(
         VmExit::Io { .. } => Err(VmRunError::Policy(VmError::IoDenied)),
         VmExit::Interrupted => Ok(ExitDisposition::Resume),
         VmExit::Halted => Ok(ExitDisposition::Stopped),
-        VmExit::GuestMemoryFault { .. } | VmExit::Unknown { .. } => {
+        VmExit::GuestMemoryFault { .. } | VmExit::Mmio { .. } | VmExit::Unknown { .. } => {
             Err(VmRunError::Policy(VmError::UnhandledExit))
         }
     }

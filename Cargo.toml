@@ -23,6 +23,7 @@ members = [
     "crates/mrml-percent-encoding",
     "crates/mrml-windows",
     "crates/mrml-linux",
+    "crates/mrml-kvm",
     "crates/mrml-json",
     "crates/mrml-zim",
     "crates/mrml-zstd",

@@ -553,6 +553,12 @@ pub enum VmExit {
         write: bool,
         value: u32,
     },
+    Mmio {
+        guest_address: u64,
+        size: u8,
+        write: bool,
+        value: u64,
+    },
     Halted,
     Interrupted,
     Unknown {

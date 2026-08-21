@@ -80,6 +80,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-kvm"
+version = "0.4.0"
+dependencies = [
+ "mrml-kernel",
+]
+
+[[package]]
 name = "mrml-linux"
 version = "0.4.0"
 
