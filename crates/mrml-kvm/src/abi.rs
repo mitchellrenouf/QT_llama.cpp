@@ -28,6 +28,11 @@ pub enum KvmError {
     SystemCall,
     ApiVersion,
     InvalidRunSize(i32),
+    MemoryTableFull,
+    MemoryOverlap,
+    UnmappedMemory,
+    ReadOnlyMemory,
+    InvalidVcpu,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
