@@ -6,8 +6,10 @@ use mrml_crypto::{
     lamport_public_key, lamport_sign, lamport_verify,
 };
 use mrml_error::{Result, anyhow};
-use mrml_kernel::{ArtifactKind, ReleaseManifest, artifact_statement};
-use mrml_runtime::{Text, mrml_println as println};
+use mrml_kernel::{
+    ArtifactKind, ReleaseManifest, SIGNED_ARTIFACT_HEADER_BYTES, artifact_statement,
+};
+use mrml_runtime::{Text, Vector, mrml_println as println};
 
 const MAX_ARTIFACT: usize = 512 * 1024 * 1024;
 
@@ -24,12 +26,78 @@ fn application_main() -> Result<()> {
             &args[5],
             &args[6],
         ),
+        Some("sign-bundle") if args.len() == 7 => sign_bundle(
+            parse_kind(&args[2])?,
+            args[3]
+                .parse()
+                .map_err(|_| anyhow!("invalid artifact version"))?,
+            &args[4],
+            &args[5],
+            &args[6],
+        ),
         Some("key-digest") if args.len() == 3 => key_digest(&args[2]),
         Some("manifest") if args.len() == 10 => manifest(&args),
         _ => Err(anyhow!(
-            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign key-digest PUBLIC\n  mrml-sign manifest VERSION OUTPUT NEXT_ROOT KERNEL VM SERVICE CUDA POLICY"
+            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign sign-bundle KIND VERSION ARTIFACT PRIVATE OUTPUT\n  mrml-sign key-digest PUBLIC\n  mrml-sign manifest VERSION OUTPUT NEXT_ROOT KERNEL VM SERVICE CUDA POLICY"
         )),
     }
+}
+
+fn sign_bundle(
+    kind: ArtifactKind,
+    version: u64,
+    artifact_path: &str,
+    private_path: &str,
+    output_path: &str,
+) -> Result<()> {
+    if version == 0 || mrml_runtime::path_exists(output_path) {
+        return Err(anyhow!("invalid version or output already exists"));
+    }
+    let artifact = mrml_runtime::read_file_bounded(artifact_path, MAX_ARTIFACT)?;
+    if artifact.is_empty() {
+        return Err(anyhow!("artifact must not be empty"));
+    }
+    let mut private = mrml_runtime::read_file_bounded(private_path, LAMPORT_PRIVATE_KEY_BYTES)?;
+    if private.len() != LAMPORT_PRIVATE_KEY_BYTES {
+        return Err(anyhow!("invalid private-key length"));
+    }
+    let digest = Sha3_512::digest(&artifact);
+    let statement = artifact_statement(kind, version, artifact.len() as u64, digest);
+    let mut public = [0u8; LAMPORT_PUBLIC_KEY_BYTES];
+    let mut signature = [0u8; LAMPORT_SIGNATURE_BYTES];
+    lamport_public_key(&private, &mut public).map_err(|_| anyhow!("key derivation failed"))?;
+    lamport_sign(&private, &statement, &mut signature).map_err(|_| anyhow!("signing failed"))?;
+    for byte in private.iter_mut() {
+        *byte = 0;
+    }
+    lamport_verify(&public, &statement, &signature)
+        .map_err(|_| anyhow!("self-verification failed; bundle was not written"))?;
+
+    let length = SIGNED_ARTIFACT_HEADER_BYTES
+        .checked_add(LAMPORT_PUBLIC_KEY_BYTES)
+        .and_then(|value| value.checked_add(LAMPORT_SIGNATURE_BYTES))
+        .and_then(|value| value.checked_add(artifact.len()))
+        .ok_or_else(|| anyhow!("signed bundle length overflow"))?;
+    let mut bundle = Vector::with_capacity(length).map_err(|_| anyhow!("allocation failed"))?;
+    let mut header = [0u8; SIGNED_ARTIFACT_HEADER_BYTES];
+    header[..16].copy_from_slice(b"MRML-SIGNED-v1\0\0");
+    header[16] = kind as u8;
+    header[24..32].copy_from_slice(&version.to_le_bytes());
+    header[32..40].copy_from_slice(&(artifact.len() as u64).to_le_bytes());
+    header[40..104].copy_from_slice(&digest);
+    bundle
+        .try_extend_from_slice(&header)
+        .and_then(|_| bundle.try_extend_from_slice(&public))
+        .and_then(|_| bundle.try_extend_from_slice(&signature))
+        .and_then(|_| bundle.try_extend_from_slice(&artifact))
+        .map_err(|_| anyhow!("allocation failed"))?;
+    mrml_runtime::write_file(output_path, &bundle)?;
+    mrml_runtime::remove_file(private_path)?;
+    println!(
+        "wrote canonical signed {:?} version {} bundle; consumed one-time private key",
+        kind, version
+    );
+    Ok(())
 }
 
 fn manifest(args: &[Text]) -> Result<()> {

@@ -25,6 +25,105 @@ pub enum ArtifactError {
     UnauthenticatedBootstrapState,
     StateConflict,
     StateStorageFailure,
+    MalformedContainer,
+    WrongArtifactKind,
+}
+
+pub const SIGNED_ARTIFACT_HEADER_BYTES: usize = 112;
+const SIGNED_ARTIFACT_MAGIC: &[u8; 16] = b"MRML-SIGNED-v1\0\0";
+
+/// Allocation-free view of the canonical signed-artifact wire format.
+///
+/// The public key and signature have fixed lengths, and the payload consumes
+/// the exact remainder of the input. This prevents trailing-data and offset
+/// confusion between the build signer, firmware, and kernel.
+pub struct SignedArtifact<'a> {
+    kind: ArtifactKind,
+    version: u64,
+    payload: &'a [u8],
+    public_key: &'a [u8],
+    signature: &'a [u8],
+}
+
+impl<'a> SignedArtifact<'a> {
+    pub fn decode(encoded: &'a [u8]) -> Result<Self, ArtifactError> {
+        let fixed = SIGNED_ARTIFACT_HEADER_BYTES
+            .checked_add(LAMPORT_PUBLIC_KEY_BYTES)
+            .and_then(|length| length.checked_add(LAMPORT_SIGNATURE_BYTES))
+            .ok_or(ArtifactError::MalformedContainer)?;
+        if encoded.len() < fixed || &encoded[..16] != SIGNED_ARTIFACT_MAGIC {
+            return Err(ArtifactError::MalformedContainer);
+        }
+        let kind = match encoded[16] {
+            1 => ArtifactKind::Kernel,
+            2 => ArtifactKind::VmImage,
+            3 => ArtifactKind::ServiceImage,
+            4 => ArtifactKind::CudaKernelBundle,
+            5 => ArtifactKind::LaunchPolicy,
+            _ => return Err(ArtifactError::MalformedContainer),
+        };
+        if encoded[17..24].iter().any(|byte| *byte != 0) {
+            return Err(ArtifactError::MalformedContainer);
+        }
+        let version = u64::from_le_bytes(
+            encoded[24..32]
+                .try_into()
+                .map_err(|_| ArtifactError::MalformedContainer)?,
+        );
+        let payload_length = u64::from_le_bytes(
+            encoded[32..40]
+                .try_into()
+                .map_err(|_| ArtifactError::MalformedContainer)?,
+        );
+        let payload_length =
+            usize::try_from(payload_length).map_err(|_| ArtifactError::MalformedContainer)?;
+        let expected = fixed
+            .checked_add(payload_length)
+            .ok_or(ArtifactError::MalformedContainer)?;
+        if version == 0 || payload_length == 0 || encoded.len() != expected {
+            return Err(ArtifactError::MalformedContainer);
+        }
+        let declared_digest = &encoded[40..104];
+        if encoded[104..112].iter().any(|byte| *byte != 0) {
+            return Err(ArtifactError::MalformedContainer);
+        }
+        let key_start = SIGNED_ARTIFACT_HEADER_BYTES;
+        let signature_start = key_start + LAMPORT_PUBLIC_KEY_BYTES;
+        let payload_start = signature_start + LAMPORT_SIGNATURE_BYTES;
+        let payload = &encoded[payload_start..];
+        let digest = Sha3_512::digest(payload);
+        if declared_digest != digest {
+            return Err(ArtifactError::MalformedContainer);
+        }
+        Ok(Self {
+            kind,
+            version,
+            public_key: &encoded[key_start..signature_start],
+            signature: &encoded[signature_start..payload_start],
+            payload,
+        })
+    }
+
+    pub fn verify(
+        &self,
+        root: &TrustRoot,
+        expected_kind: ArtifactKind,
+    ) -> Result<VerifiedArtifact, ArtifactError> {
+        if self.kind != expected_kind || root.kind != expected_kind {
+            return Err(ArtifactError::WrongArtifactKind);
+        }
+        root.verify(self.version, self.payload, self.public_key, self.signature)
+    }
+
+    pub const fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+    pub const fn kind(&self) -> ArtifactKind {
+        self.kind
+    }
 }
 
 pub struct TrustRoot {
@@ -457,5 +556,57 @@ mod tests {
             Err(ArtifactError::StateConflict)
         );
         assert_eq!(store.state, encoded);
+    }
+
+    #[test]
+    fn signed_container_is_canonical_and_fail_closed() {
+        const PAYLOAD: &[u8] = b"position-independent kernel image";
+        const TOTAL: usize = SIGNED_ARTIFACT_HEADER_BYTES
+            + LAMPORT_PUBLIC_KEY_BYTES
+            + LAMPORT_SIGNATURE_BYTES
+            + PAYLOAD.len();
+        let mut private = [0u8; LAMPORT_PRIVATE_KEY_BYTES];
+        for (index, byte) in private.iter_mut().enumerate() {
+            *byte = (index as u64).wrapping_mul(41).wrapping_add(17) as u8;
+        }
+        let mut public = [0u8; LAMPORT_PUBLIC_KEY_BYTES];
+        let mut signature = [0u8; LAMPORT_SIGNATURE_BYTES];
+        lamport_public_key(&private, &mut public).unwrap();
+        let digest = Sha3_512::digest(PAYLOAD);
+        let statement = artifact_statement(ArtifactKind::Kernel, 9, PAYLOAD.len() as u64, digest);
+        lamport_sign(&private, &statement, &mut signature).unwrap();
+
+        let mut encoded = [0u8; TOTAL];
+        encoded[..16].copy_from_slice(SIGNED_ARTIFACT_MAGIC);
+        encoded[16] = ArtifactKind::Kernel as u8;
+        encoded[24..32].copy_from_slice(&9u64.to_le_bytes());
+        encoded[32..40].copy_from_slice(&(PAYLOAD.len() as u64).to_le_bytes());
+        encoded[40..104].copy_from_slice(&digest);
+        let key_end = SIGNED_ARTIFACT_HEADER_BYTES + LAMPORT_PUBLIC_KEY_BYTES;
+        let signature_end = key_end + LAMPORT_SIGNATURE_BYTES;
+        encoded[SIGNED_ARTIFACT_HEADER_BYTES..key_end].copy_from_slice(&public);
+        encoded[key_end..signature_end].copy_from_slice(&signature);
+        encoded[signature_end..].copy_from_slice(PAYLOAD);
+
+        let root = TrustRoot::new(ArtifactKind::Kernel, Sha3_512::digest(&public), 9);
+        let container = SignedArtifact::decode(&encoded).unwrap();
+        assert_eq!(container.payload(), PAYLOAD);
+        assert!(container.verify(&root, ArtifactKind::Kernel).is_ok());
+        assert_eq!(
+            container.verify(&root, ArtifactKind::VmImage).err(),
+            Some(ArtifactError::WrongArtifactKind)
+        );
+
+        let mut trailing = [0u8; TOTAL + 1];
+        trailing[..TOTAL].copy_from_slice(&encoded);
+        assert_eq!(
+            SignedArtifact::decode(&trailing).err(),
+            Some(ArtifactError::MalformedContainer)
+        );
+        encoded[signature_end] ^= 1;
+        assert_eq!(
+            SignedArtifact::decode(&encoded).err(),
+            Some(ArtifactError::MalformedContainer)
+        );
     }
 }

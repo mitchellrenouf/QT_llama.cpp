@@ -186,9 +186,18 @@ access to private keys:
 ```text
 cargo build --release -p mrml-sign
 mrml-sign keygen release.private release.public
-mrml-sign sign kernel 1 mrml-kernel.efi release.private mrml-kernel.sig
+mrml-sign sign-bundle kernel 1 mrml-kernel.bin release.private mrml-kernel.signed
 mrml-sign key-digest release.public
 ```
+
+`sign-bundle` emits the sole boot-artifact representation: a fixed 112-byte
+header, the 64 KiB public key, the 32 KiB signature, and the exact payload.
+The header binds kind, nonzero version, payload length, and SHA3-512 digest.
+The allocation-free decoder rejects unknown kinds, nonzero reserved bytes,
+integer overflow, empty payloads, truncation, trailing bytes, digest mismatch,
+wrong-type admission, rollback, unpinned keys, and invalid signatures. The
+signer self-verifies before writing and removes the one-time private key only
+after the completed bundle has been written successfully.
 
 After generating distinct artifact keys and a next-release root, create and
 sign the canonical 408-byte release manifest:
