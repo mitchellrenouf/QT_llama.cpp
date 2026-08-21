@@ -156,8 +156,10 @@ WHP launch path. The KVM path now verifies the kernel and service with separate
 one-time keys, materializes a fresh service root, retains only supervisor kernel
 PE mappings plus the service PE and guarded stack, switches CR3, and enters the
 service at CPL3. A separately built 2 KiB service PE raises its signed breakpoint
-and returns through the kernel IDT successfully. WHP parity and a useful service
-loop remain unfinished.
+and returns through the kernel IDT successfully. The Windows WHP path now uses
+the same artifact and mapping contract, disables its test-only breakpoint
+intercept for this partition, and completes the same guest-IDT proof. A useful
+service loop remains unfinished.
 Task-to-task IPC is now routed through those runtime domains. It rejects
 self-routing, requires the sender's exact endpoint capability, attenuates every
 transferred right, and transactionally revokes all receiver capabilities if

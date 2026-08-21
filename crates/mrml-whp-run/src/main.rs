@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
+#![cfg_attr(test, allow(dead_code))]
 
 #[cfg(target_os = "windows")]
 use mrml_crypto::{LAMPORT_PUBLIC_KEY_BYTES, Sha3_512};
@@ -28,6 +29,20 @@ const FRAMEBUFFER: u64 = 0x00a0_0000;
 const COMMAND_BASE: u64 = 0x00b0_0000;
 #[cfg(target_os = "windows")]
 const COMPLETION_BASE: u64 = 0x00b0_1000;
+#[cfg(target_os = "windows")]
+const SERVICE_FRAME_PORT: u16 = 0x4d59;
+#[cfg(target_os = "windows")]
+const SERVICE_PROBE_PORT: u16 = 0x4d58;
+#[cfg(target_os = "windows")]
+const SERVICE_PHYSICAL: u64 = 0x0060_0000;
+#[cfg(target_os = "windows")]
+const SERVICE_VIRTUAL: u64 = 0x0000_0001_4000_0000;
+#[cfg(target_os = "windows")]
+const SERVICE_STACK_PHYSICAL: u64 = 0x0080_0000;
+#[cfg(target_os = "windows")]
+const SERVICE_STACK_VIRTUAL: u64 = 0x0070_0000;
+#[cfg(target_os = "windows")]
+const SERVICE_TABLE_PHYSICAL: u64 = 0x00c0_0000;
 
 #[cfg(target_os = "windows")]
 fn application_main() -> Result<()> {
@@ -38,9 +53,10 @@ fn application_main() -> Result<()> {
         println!("wrote exact embedded CUDA PTX bundle to {}", arguments[2]);
         return Ok(());
     }
-    if arguments.len() != 7 {
+    let service_mode = arguments.len() == 8 && arguments[4] == "service-probe";
+    if arguments.len() != 7 && !service_mode {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -63,7 +79,55 @@ fn application_main() -> Result<()> {
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
-    let cuda_bundle = verify_cuda_bundle(&arguments[4], &arguments[5], &arguments[6])?;
+    let service_bundle = if service_mode {
+        Some(mrml_runtime::read_file_bounded(
+            &arguments[5],
+            SIGNED_ARTIFACT_OVERHEAD_BYTES + mrml_kernel::MAX_SERVICE_IMAGE_BYTES as usize,
+        )?)
+    } else {
+        None
+    };
+    let service_public = if service_mode {
+        let public = mrml_runtime::read_file_bounded(&arguments[6], LAMPORT_PUBLIC_KEY_BYTES)?;
+        if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
+            return Err(anyhow!("invalid service public-key length"));
+        }
+        Some(public)
+    } else {
+        None
+    };
+    let service_executable = match (&service_bundle, &service_public) {
+        (Some(bundle), Some(public)) => {
+            let minimum = arguments[7]
+                .parse::<u64>()
+                .ok()
+                .filter(|version| *version != 0)
+                .ok_or_else(|| anyhow!("service minimum version must be nonzero"))?;
+            let root = TrustRoot::new(
+                ArtifactKind::ServiceImage,
+                Sha3_512::digest(public),
+                minimum,
+            );
+            let signed = SignedArtifact::decode(bundle)
+                .map_err(|_| anyhow!("invalid signed service bundle"))?;
+            Some(
+                signed
+                    .verify_executable(&root, ArtifactKind::ServiceImage)
+                    .map_err(|_| anyhow!("service signature or PE policy rejected"))?,
+            )
+        }
+        (None, None) => None,
+        _ => return Err(anyhow!("incomplete service verification inputs")),
+    };
+    let cuda_bundle = if service_mode {
+        None
+    } else {
+        Some(verify_cuda_bundle(
+            &arguments[4],
+            &arguments[5],
+            &arguments[6],
+        )?)
+    };
     let verification_micros = verification_started.elapsed().as_micros();
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
@@ -91,9 +155,35 @@ fn application_main() -> Result<()> {
     let system = WhpSystem::open()
         .map_err(|error| anyhow!("Windows Hypervisor Platform is unavailable: {:?}", error))?;
     let preparation_started = Instant::now();
-    let mut guest = system
-        .prepare_kernel_gpu_guest(&executable, &handoff, layout, queue)
-        .map_err(|error| anyhow!("verified WHP kernel preparation failed: {:?}", error))?;
+    let mut guest = if service_mode {
+        system.prepare_isolated_service_kernel(&executable, &handoff, layout)
+    } else {
+        system.prepare_kernel_gpu_guest(&executable, &handoff, layout, queue)
+    }
+    .map_err(|error| anyhow!("verified WHP kernel preparation failed: {:?}", error))?;
+    if service_mode {
+        guest = guest
+            .attach_isolated_service(
+                &executable,
+                layout,
+                service_executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing verified service executable"))?,
+                SERVICE_PHYSICAL,
+                SERVICE_VIRTUAL,
+                SERVICE_STACK_PHYSICAL,
+                SERVICE_STACK_VIRTUAL,
+                2,
+                SERVICE_TABLE_PHYSICAL,
+                32,
+            )
+            .map_err(|error| anyhow!("isolated WHP service preparation failed: {:?}", error))?;
+        if guest.service_entry() != Some(0x0000_0001_4000_1000)
+            || guest.service_page_table_root() != PhysAddr::new(SERVICE_TABLE_PHYSICAL).ok()
+        {
+            return Err(anyhow!("isolated WHP service layout mismatch"));
+        }
+    }
     let preparation_micros = preparation_started.elapsed().as_micros();
     let execution_started = Instant::now();
     let exit = match VmBackend::run(&mut guest, 0) {
@@ -125,7 +215,47 @@ fn application_main() -> Result<()> {
             instruction
         ));
     }
-    service_gpu_benchmark(&mut guest, queue, entropy, &cuda_bundle, exit)?;
+    if service_mode {
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_FRAME_PORT,
+                size: 4,
+                write: true,
+                value: 0x001b_2303,
+            })
+        {
+            return Err(anyhow!("isolated WHP service frame mismatch: {:?}", exit));
+        }
+        let exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("WHP execution after service frame failed: {:?}", error))?;
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 3,
+            })
+        {
+            return Err(anyhow!("isolated WHP service proof mismatch: {:?}", exit));
+        }
+        println!(
+            "verified independently signed service under WHP: verify={}us prepare={}us execute={}us total={}us",
+            verification_micros,
+            preparation_micros,
+            execution_started.elapsed().as_micros(),
+            total_started.elapsed().as_micros()
+        );
+        return Ok(());
+    }
+    service_gpu_benchmark(
+        &mut guest,
+        queue,
+        entropy,
+        cuda_bundle
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing verified CUDA bundle"))?,
+        exit,
+    )?;
     let exit = VmBackend::run(&mut guest, 0)
         .map_err(|error| anyhow!("WHP execution after GPU completion failed: {:?}", error))?;
     if exit

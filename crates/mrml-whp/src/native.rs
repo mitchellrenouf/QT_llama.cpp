@@ -138,6 +138,13 @@ impl WhpSystem {
     }
 
     pub fn prepare_partition(&self) -> Result<PreparedWhpPartition<'_>, WhpError> {
+        self.prepare_partition_with_breakpoint_exit(true)
+    }
+
+    pub(crate) fn prepare_partition_with_breakpoint_exit(
+        &self,
+        intercept_breakpoint: bool,
+    ) -> Result<PreparedWhpPartition<'_>, WhpError> {
         if !self.hypervisor_present()? {
             return Err(WhpError::PlatformUnavailable);
         }
@@ -158,22 +165,24 @@ impl WhpSystem {
                 4,
             )
         })?;
-        check(unsafe {
-            (self.api.set_partition_property)(
-                partition.as_ptr(),
-                EXTENDED_VM_EXITS,
-                (&EXCEPTION_EXIT as *const u64).cast(),
-                8,
-            )
-        })?;
-        check(unsafe {
-            (self.api.set_partition_property)(
-                partition.as_ptr(),
-                EXCEPTION_EXIT_BITMAP,
-                (&BREAKPOINT_EXCEPTION as *const u64).cast(),
-                8,
-            )
-        })?;
+        if intercept_breakpoint {
+            check(unsafe {
+                (self.api.set_partition_property)(
+                    partition.as_ptr(),
+                    EXTENDED_VM_EXITS,
+                    (&EXCEPTION_EXIT as *const u64).cast(),
+                    8,
+                )
+            })?;
+            check(unsafe {
+                (self.api.set_partition_property)(
+                    partition.as_ptr(),
+                    EXCEPTION_EXIT_BITMAP,
+                    (&BREAKPOINT_EXCEPTION as *const u64).cast(),
+                    8,
+                )
+            })?;
+        }
         check(unsafe {
             (self.api.set_partition_property)(
                 partition.as_ptr(),

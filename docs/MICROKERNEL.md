@@ -683,7 +683,15 @@ kernel-only image data, a freshly signed kernel and independently signed 2 KiB
 service PE entered CPL3 and returned through vector 3 under nested KVM in 208
 microseconds (`verify=11987us`, `prepare=1149us`, `total=18464us`). The extra
 verification time includes two independent Lamport/SHA3 artifact checks. WHP
-parity, service syscalls, and persistent service scheduling remain unfinished.
+now has parity: `PreparedWhpGuest::attach_isolated_service` creates separate
+WHP GPA mappings, seals the service PE after relocation/materialization, and
+builds the same supervisor-kernel/user-service root. The service partition does
+not enable WHP's test-only breakpoint exit bitmap, so vector 3 reaches the guest
+IDT instead of stopping in the host. A signed Windows run completed in 216
+microseconds (`verify=1579us`, `prepare=2805us`, `total=6521us`). The runner
+stops at the explicit kernel proof because re-entering an interrupt-disabled
+HLT is not a portable WHP completion mechanism. Service syscalls and persistent
+service scheduling remain unfinished.
 
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel

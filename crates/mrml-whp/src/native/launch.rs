@@ -3,8 +3,8 @@ use mrml_kernel::arch::x86_64::{
     VirtAddr,
 };
 use mrml_kernel::{
-    BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr,
-    VerifiedExecutable, VmBackend, VmExit,
+    ArtifactKind, BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, MAX_PE_SECTIONS, PAGE_SIZE,
+    PeImage, PhysAddr, VerifiedExecutable, VmBackend, VmExit,
 };
 
 use crate::{GuestRange, MapPermissions, WhpError};
@@ -74,6 +74,8 @@ pub struct PreparedWhpGuest<'system> {
     partition: PreparedWhpPartition<'system>,
     entry: u64,
     root: PhysAddr,
+    service_entry: Option<u64>,
+    service_root: Option<PhysAddr>,
 }
 
 impl PreparedWhpGuest<'_> {
@@ -82,6 +84,12 @@ impl PreparedWhpGuest<'_> {
     }
     pub const fn page_table_root(&self) -> PhysAddr {
         self.root
+    }
+    pub const fn service_entry(&self) -> Option<u64> {
+        self.service_entry
+    }
+    pub const fn service_page_table_root(&self) -> Option<PhysAddr> {
+        self.service_root
     }
     pub fn run(&mut self) -> Result<VmExit, WhpError> {
         self.partition.run()
@@ -147,6 +155,115 @@ impl PreparedWhpGuest<'_> {
         )?)?;
         Ok(self)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_isolated_service(
+        mut self,
+        kernel: &VerifiedExecutable<'_>,
+        kernel_layout: WhpLaunchLayout,
+        service: &VerifiedExecutable<'_>,
+        service_physical: u64,
+        service_virtual: u64,
+        stack_physical: u64,
+        stack_virtual: u64,
+        stack_pages: u64,
+        table_physical: u64,
+        table_pages: u64,
+    ) -> Result<Self, WhpError> {
+        if self.service_root.is_some()
+            || kernel.artifact().kind() != ArtifactKind::Kernel
+            || service.artifact().kind() != ArtifactKind::ServiceImage
+            || stack_pages == 0
+            || table_pages < 4
+            || service_virtual == 0
+            || service_virtual >= 1 << 47
+            || stack_virtual < PAGE_SIZE
+            || stack_virtual >= 1 << 47
+            || [
+                service_physical,
+                service_virtual,
+                stack_physical,
+                stack_virtual,
+                table_physical,
+            ]
+            .iter()
+            .any(|address| !address.is_multiple_of(PAGE_SIZE))
+        {
+            return Err(WhpError::InvalidMapping);
+        }
+        let image_bytes = page_bytes(service.image().image_size() as u64)?;
+        let stack_bytes = stack_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(WhpError::MemoryOverflow)?;
+        let table_bytes = table_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(WhpError::MemoryOverflow)?;
+        validate_ranges(&[
+            (service_physical, image_bytes),
+            (stack_physical, stack_bytes),
+            (table_physical, table_bytes),
+        ])?;
+        validate_ranges(&[
+            (service_virtual, image_bytes),
+            (
+                stack_virtual - PAGE_SIZE,
+                stack_bytes
+                    .checked_add(PAGE_SIZE)
+                    .ok_or(WhpError::MemoryOverflow)?,
+            ),
+        ])?;
+        let service_mapping = self.partition.map_zeroed(range(
+            service_physical,
+            image_bytes,
+            MapPermissions::read_write(),
+        )?)?;
+        self.partition.map_zeroed(range(
+            stack_physical,
+            stack_bytes,
+            MapPermissions::read_write(),
+        )?)?;
+        self.partition.map_zeroed(range(
+            table_physical,
+            table_bytes,
+            MapPermissions::read_write(),
+        )?)?;
+        let image = service.image();
+        let destination = self
+            .partition
+            .mutable_guest(service_physical, image.image_size() as usize)?;
+        let service_entry = image
+            .materialize_at(destination, service_virtual)
+            .map_err(WhpError::Pe)?;
+        self.partition.seal_pe(service_mapping, image)?;
+
+        let store = WhpPageTableStore::new(&mut self.partition, table_physical, table_pages)?;
+        let mut tables =
+            PageTableBuilder::new(store).map_err(|_| WhpError::InvalidRegisterState)?;
+        map_pe(
+            &mut tables,
+            kernel.image(),
+            kernel_layout.image_physical,
+            kernel_layout.image_virtual,
+            false,
+        )?;
+        map_pe(&mut tables, image, service_physical, service_virtual, true)?;
+        tables
+            .map(
+                Mapping::new(
+                    VirtAddr::new(stack_virtual).map_err(|_| WhpError::InvalidMapping)?,
+                    PhysAddr::new(stack_physical).map_err(|_| WhpError::InvalidMapping)?,
+                    stack_pages,
+                    PagePermissions::USER_READ_WRITE,
+                )
+                .map_err(|_| WhpError::InvalidMapping)?,
+            )
+            .map_err(|_| WhpError::InvalidRegisterState)?;
+        let service_root = tables.root();
+        let _ = tables.into_store();
+        self.service_entry = Some(service_entry);
+        self.service_root = Some(service_root);
+        Ok(self)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,7 +326,18 @@ impl WhpSystem {
         handoff: &[u8],
         layout: WhpLaunchLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, false, None)
+        self.prepare_guest_inner(executable, handoff, layout, false, None, true)
+    }
+
+    /// Prepares a standalone kernel whose architectural exceptions are
+    /// delivered through its guest IDT instead of intercepted by WHP.
+    pub fn prepare_isolated_service_kernel<'system>(
+        &'system self,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: WhpLaunchLayout,
+    ) -> Result<PreparedWhpGuest<'system>, WhpError> {
+        self.prepare_guest_inner(executable, handoff, layout, false, None, false)
     }
 
     /// Prepares a signed guest with mediated GPU rings in its initial address
@@ -222,7 +350,7 @@ impl WhpSystem {
         layout: WhpLaunchLayout,
         queue: GpuSharedQueueLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, false, Some(queue))
+        self.prepare_guest_inner(executable, handoff, layout, false, Some(queue), true)
     }
 
     /// Prepares the standalone kernel with its authenticated framebuffer and
@@ -234,7 +362,7 @@ impl WhpSystem {
         layout: WhpLaunchLayout,
         queue: GpuSharedQueueLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, true, Some(queue))
+        self.prepare_guest_inner(executable, handoff, layout, true, Some(queue), true)
     }
 
     fn prepare_guest_inner<'system>(
@@ -244,6 +372,7 @@ impl WhpSystem {
         layout: WhpLaunchLayout,
         map_framebuffer: bool,
         queue: Option<GpuSharedQueueLayout>,
+        intercept_breakpoint: bool,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
         let decoded = BootHandoff::decode(handoff, |_| {}).map_err(WhpError::Handoff)?;
         let image_bytes = page_bytes(executable.image().image_size() as u64)?;
@@ -305,7 +434,7 @@ impl WhpSystem {
         }
         validate_ranges(&virtual_ranges[..virtual_count])?;
 
-        let mut partition = self.prepare_partition()?;
+        let mut partition = self.prepare_partition_with_breakpoint_exit(intercept_breakpoint)?;
         partition.map_zeroed(range(
             layout.table_physical,
             table_bytes,
@@ -384,6 +513,8 @@ impl WhpSystem {
             partition,
             entry,
             root,
+            service_entry: None,
+            service_root: None,
         })
     }
 }
@@ -808,6 +939,8 @@ mod tests {
             partition,
             entry: 0x20_0000,
             root: PhysAddr::new(0x10_0000).unwrap(),
+            service_entry: None,
+            service_root: None,
         };
         assert_eq!(VmBackend::run(&mut guest, 1), Err(WhpError::InvalidVcpu));
         assert_eq!(
