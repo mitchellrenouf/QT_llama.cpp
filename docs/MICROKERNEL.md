@@ -480,8 +480,13 @@ must be canonical, CR3 must be page-aligned, general registers begin cleared,
 RFLAGS bit 1 is set, and long mode enables paging, protected mode, PAE, NX, and
 supervisor write protection with explicit 64-bit code and data segments. The
 adapter can request KVM's in-kernel IRQ chip. Guest page-table construction and
-loading a verified PE image into this backend remain pending, so it does not
-yet launch a bootable KVM guest. The
+the backing store for it are now shared with the microkernel's page-table
+builder. A fixed guest-RAM arena returns only freshly zeroed frames and rejects
+reads or writes to unallocated tables, out-of-range entries, read-only RAM, and
+arena exhaustion. KVM therefore inherits the same hardware W^X, NX, user-bit,
+and duplicate-mapping checks as bare metal. Loading a verified PE image and its
+boot handoff into this backend remains pending, so it does not yet launch a
+bootable KVM guest. The
 current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
 the live capability probe records that as unavailable and no launch claim is
 made for this environment.

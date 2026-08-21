@@ -1,7 +1,8 @@
 use core::ffi::{c_char, c_int, c_ulong, c_void};
 use core::ptr::NonNull;
 use core::slice;
-use mrml_kernel::{VmBackend, VmExit, PAGE_SIZE};
+use mrml_kernel::arch::x86_64::{PageTableBuildError, PageTableBuilder, PageTableStore};
+use mrml_kernel::{PhysAddr, VmBackend, VmExit, PAGE_SIZE};
 
 use crate::{decode_run_page, KvmError, KvmMemoryRegion, KVM_API_VERSION};
 
@@ -540,6 +541,98 @@ impl<const N: usize> Default for KvmGuestMemory<N> {
     }
 }
 
+/// Page-table frame arena inside an existing writable guest-RAM region.
+/// Only frames returned by `allocate_zeroed` may subsequently be accessed.
+pub struct KvmPageTableStore<'a, const N: usize> {
+    memory: &'a mut KvmGuestMemory<N>,
+    start: u64,
+    next: u64,
+    end: u64,
+}
+
+impl<'a, const N: usize> KvmPageTableStore<'a, N> {
+    pub fn new(
+        memory: &'a mut KvmGuestMemory<N>,
+        guest_start: u64,
+        pages: u64,
+    ) -> Result<Self, KvmError> {
+        if pages == 0 || guest_start % PAGE_SIZE != 0 {
+            return Err(KvmError::UnalignedMemory);
+        }
+        let bytes = pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(KvmError::MemoryOverflow)?;
+        let bytes_usize = usize::try_from(bytes).map_err(|_| KvmError::MemoryOverflow)?;
+        let (region, _) = memory.locate(guest_start, bytes_usize)?;
+        if region.readonly {
+            return Err(KvmError::ReadOnlyMemory);
+        }
+        let end = guest_start
+            .checked_add(bytes)
+            .ok_or(KvmError::MemoryOverflow)?;
+        Ok(Self {
+            memory,
+            start: guest_start,
+            next: guest_start,
+            end,
+        })
+    }
+
+    fn allocated_entry(&self, table: PhysAddr, index: usize) -> Result<u64, PageTableBuildError> {
+        if index >= 512
+            || table.get() < self.start
+            || table.get() >= self.next
+            || table.get() % PAGE_SIZE != 0
+        {
+            return Err(PageTableBuildError::Storage);
+        }
+        table
+            .get()
+            .checked_add((index as u64) * 8)
+            .ok_or(PageTableBuildError::AddressOverflow)
+    }
+}
+
+impl<const N: usize> PageTableStore for KvmPageTableStore<'_, N> {
+    fn allocate_zeroed(&mut self) -> Result<PhysAddr, PageTableBuildError> {
+        let next = self
+            .next
+            .checked_add(PAGE_SIZE)
+            .ok_or(PageTableBuildError::AddressOverflow)?;
+        if next > self.end {
+            return Err(PageTableBuildError::Storage);
+        }
+        let frame = PhysAddr::new(self.next).map_err(|_| PageTableBuildError::Storage)?;
+        let zero = [0u8; PAGE_SIZE as usize];
+        self.memory
+            .write(self.next, &zero)
+            .map_err(|_| PageTableBuildError::Storage)?;
+        self.next = next;
+        Ok(frame)
+    }
+
+    fn read(&self, table: PhysAddr, index: usize) -> Result<u64, PageTableBuildError> {
+        let address = self.allocated_entry(table, index)?;
+        let mut encoded = [0u8; 8];
+        self.memory
+            .read(address, &mut encoded)
+            .map_err(|_| PageTableBuildError::Storage)?;
+        Ok(u64::from_le_bytes(encoded))
+    }
+
+    fn write(
+        &mut self,
+        table: PhysAddr,
+        index: usize,
+        value: u64,
+    ) -> Result<(), PageTableBuildError> {
+        let address = self.allocated_entry(table, index)?;
+        self.memory
+            .write(address, &value.to_le_bytes())
+            .map_err(|_| PageTableBuildError::Storage)
+    }
+}
+
 pub struct KvmBackend<const N: usize> {
     vcpu: KvmVcpu,
     memory: KvmGuestMemory<N>,
@@ -565,6 +658,15 @@ impl<const N: usize> KvmBackend<N> {
 
     pub fn guest_memory(&self) -> &KvmGuestMemory<N> {
         &self.memory
+    }
+
+    pub fn page_tables(
+        &mut self,
+        guest_start: u64,
+        pages: u64,
+    ) -> Result<PageTableBuilder<KvmPageTableStore<'_, N>>, KvmError> {
+        let store = KvmPageTableStore::new(&mut self.memory, guest_start, pages)?;
+        PageTableBuilder::new(store).map_err(|_| KvmError::InvalidRegisterState)
     }
 }
 
@@ -658,6 +760,28 @@ mod tests {
         assert_eq!(
             (code.present, code.long, code.system, code.default_operand),
             (1, 1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn guest_page_table_store_bounds_frames_and_builds_wx_entries() {
+        use mrml_kernel::arch::x86_64::{PagePermissions, VirtAddr};
+
+        let mut memory = KvmGuestMemory::<1>::new();
+        memory.allocate(0x10_0000, 0x8000, false).unwrap();
+        let store = KvmPageTableStore::new(&mut memory, 0x10_0000, 8).unwrap();
+        let mut tables = PageTableBuilder::new(store).unwrap();
+        tables
+            .map_page(
+                VirtAddr::new(0x20_0000).unwrap(),
+                PhysAddr::new(0x30_0000).unwrap(),
+                PagePermissions::KERNEL_READ_EXECUTE,
+            )
+            .unwrap();
+        assert_eq!(tables.root().get(), 0x10_0000);
+        assert_eq!(
+            tables.store().read(PhysAddr::new(0x10_7000).unwrap(), 0),
+            Err(PageTableBuildError::Storage)
         );
     }
 }
