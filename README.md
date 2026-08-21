@@ -153,6 +153,9 @@ rows/columns/batch scalars exactly match Q4_0 weight bytes, f32 input/output
 bytes, alignment, permissions, and fixed tiled launch geometry.
 Decode kernels 3 and 4 apply the same binding to Q4_0 and Q8_0 GEMV while
 enforcing their distinct 18-byte and 34-byte quantized blocks and launch tiles.
+SwiGLU and GeGLU reuse the exact three-f32-buffer elementwise proof. The f32
+embedding schema additionally proves that the signed nonnegative token is
+inside the table row count and that its dimension equals the exact output row.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject
@@ -163,7 +166,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 24
+guest execution. Platform cache-coherence validation, the remaining 21
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML
