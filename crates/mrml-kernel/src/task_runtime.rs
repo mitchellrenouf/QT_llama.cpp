@@ -2,7 +2,8 @@ use core::array;
 
 use crate::arch::x86_64::{TrapDisposition, UserContext};
 use crate::{
-    CapabilitySpace, KernelScheduleError, KernelScheduler, Priority, ScheduleOutcome, TaskId,
+    Capability, CapabilitySpace, Endpoint, IpcError, KernelScheduleError, KernelScheduler, Message,
+    Priority, Rights, ScheduleOutcome, TaskId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,6 +14,8 @@ pub enum TaskRuntimeError {
     NonRecoverableFault,
     Scheduler(KernelScheduleError),
     IntegrityFailure,
+    SameTaskIpc,
+    Ipc(IpcError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,11 +144,79 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
         })
     }
 
+    /// Transfers a message and attenuated capabilities between two distinct
+    /// task domains. Tentative receiver capabilities are revoked if endpoint
+    /// authorization fails, so an unsuccessful send cannot grant authority.
+    pub fn send_ipc(
+        &mut self,
+        sender: TaskId,
+        receiver: TaskId,
+        endpoint: &mut Endpoint,
+        endpoint_capability: Capability,
+        payload: &[u8],
+        requested: &[(Capability, Rights)],
+    ) -> Result<(u64, Message), TaskRuntimeError> {
+        if sender == receiver {
+            return Err(TaskRuntimeError::SameTaskIpc);
+        }
+        let sender_slot = self
+            .domains
+            .iter()
+            .position(|domain| domain.as_ref().is_some_and(|domain| domain.task == sender))
+            .ok_or(TaskRuntimeError::MissingTask)?;
+        let receiver_slot = self
+            .domains
+            .iter()
+            .position(|domain| {
+                domain
+                    .as_ref()
+                    .is_some_and(|domain| domain.task == receiver)
+            })
+            .ok_or(TaskRuntimeError::MissingTask)?;
+        let (source, destination) = two_domains_mut(&mut self.domains, sender_slot, receiver_slot)
+            .ok_or(TaskRuntimeError::IntegrityFailure)?;
+        let message = Message::transfer(
+            payload,
+            requested,
+            &source.capabilities,
+            &mut destination.capabilities,
+        )
+        .map_err(TaskRuntimeError::Ipc)?;
+        match endpoint.authorize_send(&source.capabilities, endpoint_capability, &message) {
+            Ok(sequence) => Ok((sequence, message)),
+            Err(error) => {
+                for capability in message.capabilities() {
+                    if destination.capabilities.revoke(capability).is_err() {
+                        return Err(TaskRuntimeError::IntegrityFailure);
+                    }
+                }
+                Err(TaskRuntimeError::Ipc(error))
+            }
+        }
+    }
+
     fn domain(&self, task: TaskId) -> Option<&TaskDomain<CAPS>> {
         self.domains
             .iter()
             .flatten()
             .find(|domain| domain.task == task)
+    }
+}
+
+fn two_domains_mut<const TASKS: usize, const CAPS: usize>(
+    domains: &mut [Option<TaskDomain<CAPS>>; TASKS],
+    first: usize,
+    second: usize,
+) -> Option<(&mut TaskDomain<CAPS>, &mut TaskDomain<CAPS>)> {
+    if first == second || first >= TASKS || second >= TASKS {
+        return None;
+    }
+    if first < second {
+        let (left, right) = domains.split_at_mut(second);
+        Some((left[first].as_mut()?, right[0].as_mut()?))
+    } else {
+        let (left, right) = domains.split_at_mut(first);
+        Some((right[0].as_mut()?, left[second].as_mut()?))
     }
 }
 
@@ -219,5 +290,72 @@ mod tests {
             Err(TaskRuntimeError::NonRecoverableFault)
         );
         assert!(runtime.context(task).is_ok());
+    }
+
+    #[test]
+    fn ipc_transfer_is_attenuated_and_authorization_failure_rolls_back() {
+        let mut runtime = TaskRuntime::<2, 3>::new(1_000, 1).unwrap();
+        let sender = runtime
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let receiver = runtime
+            .create(Priority::NORMAL, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        let endpoint_object = ObjectId(91);
+        let endpoint_capability = runtime
+            .capabilities_mut(sender)
+            .unwrap()
+            .insert(endpoint_object, Rights::SIGNAL)
+            .unwrap();
+        let delegated = runtime
+            .capabilities_mut(sender)
+            .unwrap()
+            .insert(ObjectId(7), Rights::READ.union(Rights::DELEGATE))
+            .unwrap();
+        let mut endpoint = Endpoint::new(endpoint_object);
+        let (sequence, message) = runtime
+            .send_ipc(
+                sender,
+                receiver,
+                &mut endpoint,
+                endpoint_capability,
+                b"read",
+                &[(delegated, Rights::READ)],
+            )
+            .unwrap();
+        assert_eq!(sequence, 1);
+        assert_eq!(message.payload(), b"read");
+        let received = message.capabilities().next().unwrap();
+        assert_eq!(
+            runtime
+                .capabilities_mut(receiver)
+                .unwrap()
+                .authorize(received, Rights::READ),
+            Ok(ObjectId(7))
+        );
+
+        let wrong_endpoint = runtime
+            .capabilities_mut(sender)
+            .unwrap()
+            .insert(ObjectId(92), Rights::SIGNAL)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .send_ipc(
+                    sender,
+                    receiver,
+                    &mut endpoint,
+                    wrong_endpoint,
+                    b"denied",
+                    &[(delegated, Rights::READ)],
+                )
+                .err(),
+            Some(TaskRuntimeError::Ipc(IpcError::Unauthorized))
+        );
+        // One original received capability plus two free slots proves the
+        // tentative denied transfer did not consume receiver authority space.
+        let receiver_space = runtime.capabilities_mut(receiver).unwrap();
+        assert!(receiver_space.insert(ObjectId(8), Rights::READ).is_ok());
+        assert!(receiver_space.insert(ObjectId(9), Rights::READ).is_ok());
     }
 }

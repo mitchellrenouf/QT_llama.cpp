@@ -622,6 +622,17 @@ microseconds (`verify=821us`, `prepare=1032us`, `total=6465us`). Both tasks stil
 share the deliberately permissive diagnostic PE mapping, so this proves live
 replacement mechanics but not cross-address-space service isolation.
 
+The runtime now owns cross-task IPC routing as well. `send_ipc` requires two
+distinct live generational task identities, derives only explicitly requested
+rights from the sender domain into the receiver domain, then authorizes the
+sender's exact SIGNAL capability against the endpoint object. If authorization
+fails after derivation, every tentative receiver capability is revoked before
+the error becomes visible; failure to perform that rollback is an integrity
+failure. Same-task routing is rejected so callers cannot use this interface to
+bypass a domain boundary. Windows and Linux pass 116 kernel tests, including
+attenuation and failed-authorization rollback. Live syscall entry and blocking
+endpoint queues remain unfinished.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.

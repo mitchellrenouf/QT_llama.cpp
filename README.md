@@ -146,6 +146,11 @@ validated context through CR3/`iretq`, and observes that replacement's distinct
 CPL3 breakpoint before reaching idle. This proves exception-path replacement
 restoration with a shared diagnostic address space; distinct service address
 spaces remain unfinished.
+Task-to-task IPC is now routed through those runtime domains. It rejects
+self-routing, requires the sender's exact endpoint capability, attenuates every
+transferred right, and transactionally revokes all receiver capabilities if
+endpoint authorization fails. This path is covered on Windows and Linux but is
+not yet invoked by a live user syscall.
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented. A signed nested-KVM probe now proves external vector 32 enters the
 booted kernel and advances that scheduler by exactly one tick. This currently
