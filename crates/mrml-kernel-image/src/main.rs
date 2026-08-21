@@ -6,10 +6,10 @@ use core::arch::{asm, global_asm};
 use mrml_kernel::BootPolicy;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::KernelScheduler;
-#[cfg(feature = "user-probe")]
-use mrml_kernel::TaskRuntime;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
+#[cfg(feature = "user-probe")]
+use mrml_kernel::arch::x86_64::install_user_call_gate;
 use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
     load_task_register, write_task_state_descriptor,
@@ -27,6 +27,8 @@ use mrml_kernel::{
     not(feature = "user-probe")
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
+#[cfg(feature = "user-probe")]
+use mrml_kernel::{Endpoint, ObjectId, Rights, SyscallRequest, TaskRuntime, UserCallFrame};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
 use mrml_kernel::{
     GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuGuestCommandPublisher, GpuQueueIdentity,
@@ -56,6 +58,8 @@ const TIMER_TICK_PORT: u16 = 0x4d55;
 const TIMER_VECTOR: u8 = 32;
 #[cfg(feature = "user-probe")]
 const USER_PROBE_PORT: u16 = 0x4d56;
+#[cfg(feature = "user-probe")]
+const USER_CALL_PROBE_PORT: u16 = 0x4d57;
 
 const GDT_ENTRIES: usize = 8;
 const TSS_SELECTOR: u16 = 0x08;
@@ -83,6 +87,8 @@ static mut DOUBLE_FAULT_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STA
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 #[cfg(feature = "user-probe")]
 static mut USER_RUNTIME: Option<TaskRuntime<2, 1>> = None;
+#[cfg(feature = "user-probe")]
+static mut USER_ENDPOINT: Option<Endpoint> = None;
 
 global_asm!(
     r#"
@@ -188,6 +194,7 @@ mrml_timer_interrupt:
 
     .global mrml_user_probe
 mrml_user_probe:
+    int 0x80
     ud2
 1:
     jmp 1b
@@ -197,6 +204,44 @@ mrml_user_replacement_probe:
     int3
 2:
     jmp 2b
+
+    .global mrml_user_call
+mrml_user_call:
+    cld
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
+    call mrml_user_call_dispatch
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+    ud2
 
     .section .rdata
     .balign 8
@@ -221,7 +266,66 @@ unsafe extern "C" {
     fn mrml_user_probe() -> !;
     #[cfg(feature = "user-probe")]
     fn mrml_user_replacement_probe() -> !;
+    #[cfg(feature = "user-probe")]
+    fn mrml_user_call() -> !;
     static mrml_exception_table: [u64; 32];
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
+    #[cfg(feature = "user-probe")]
+    unsafe {
+        let frame = match frame.as_mut() {
+            Some(frame) => frame,
+            None => halt(),
+        };
+        let request = match frame.request() {
+            Ok(request) => request,
+            Err(_) => halt(),
+        };
+        let (endpoint_capability, receiver) = match &request {
+            SyscallRequest::SendInline {
+                endpoint, receiver, ..
+            } => (*endpoint, *receiver),
+            SyscallRequest::Yield => halt(),
+        };
+        let payload = request.payload();
+        let runtime = match (*core::ptr::addr_of_mut!(USER_RUNTIME)).as_mut() {
+            Some(runtime) => runtime,
+            None => halt(),
+        };
+        let sender = match runtime.current() {
+            Some(sender) => sender,
+            None => halt(),
+        };
+        let endpoint = match (*core::ptr::addr_of_mut!(USER_ENDPOINT)).as_mut() {
+            Some(endpoint) => endpoint,
+            None => halt(),
+        };
+        let (sequence, message) = match runtime.send_ipc(
+            sender,
+            receiver,
+            endpoint,
+            endpoint_capability,
+            payload,
+            &[],
+        ) {
+            Ok(result) => result,
+            Err(_) => halt(),
+        };
+        if sequence != 1 || message.payload() != b"ping" {
+            halt();
+        }
+        frame.complete(sequence);
+        asm!(
+            "out dx, eax",
+            in("dx") USER_CALL_PROBE_PORT,
+            in("eax") sequence as u32,
+            options(nomem, nostack)
+        );
+    }
+    #[cfg(not(feature = "user-probe"))]
+    let _ = frame;
 }
 
 #[unsafe(no_mangle)]
@@ -416,12 +520,29 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             Ok(task) => task,
             Err(_) => halt(),
         };
-        if runtime
-            .create(Priority::NORMAL, replacement_context)
-            .is_err()
-        {
-            halt();
-        }
+        let replacement = match runtime.create(Priority::NORMAL, replacement_context) {
+            Ok(task) => task,
+            Err(_) => halt(),
+        };
+        let endpoint_object = ObjectId(0x81);
+        let endpoint_capability = match runtime.capabilities_mut(task).and_then(|space| {
+            space
+                .insert(endpoint_object, Rights::SIGNAL)
+                .map_err(|_| mrml_kernel::TaskRuntimeError::IntegrityFailure)
+        }) {
+            Ok(capability) => capability,
+            Err(_) => halt(),
+        };
+        let context = match runtime.context_mut(task) {
+            Ok(context) => context,
+            Err(_) => halt(),
+        };
+        context.rax = 1;
+        context.rdi = endpoint_capability.token();
+        context.rsi = replacement.token();
+        context.rdx = 4;
+        context.r10 = u64::from_le_bytes(*b"ping\0\0\0\0");
+        core::ptr::addr_of_mut!(USER_ENDPOINT).write(Some(Endpoint::new(endpoint_object)));
         if !matches!(
             runtime.start(),
             ScheduleOutcome::Switch { from: None, to } if to == task
@@ -657,6 +778,19 @@ unsafe fn install_descriptor_tables() {
         halt();
     }
     if unsafe { load_task_register(TSS_SELECTOR) }.is_err() {
+        halt();
+    }
+    #[cfg(feature = "user-probe")]
+    if unsafe {
+        install_user_call_gate(
+            core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
+            256,
+            mrml_user_call as *const () as usize as u64,
+            0x38,
+        )
+    }
+    .is_err()
+    {
         halt();
     }
     #[cfg(feature = "timer-probe")]

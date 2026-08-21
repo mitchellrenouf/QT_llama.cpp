@@ -94,6 +94,19 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
             .ok_or(TaskRuntimeError::MissingTask)
     }
 
+    pub fn context_mut(&mut self, task: TaskId) -> Result<&mut UserContext, TaskRuntimeError> {
+        self.domains
+            .iter_mut()
+            .flatten()
+            .find(|domain| domain.task == task)
+            .map(|domain| &mut domain.context)
+            .ok_or(TaskRuntimeError::MissingTask)
+    }
+
+    pub const fn current(&self) -> Option<TaskId> {
+        self.scheduler.current()
+    }
+
     pub fn capabilities_mut(
         &mut self,
         task: TaskId,

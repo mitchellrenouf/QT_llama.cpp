@@ -37,6 +37,8 @@ const TIMER_TICK_PORT: u16 = 0x4d55;
 const TIMER_VECTOR: u8 = 32;
 #[cfg(target_os = "linux")]
 const USER_PROBE_PORT: u16 = 0x4d56;
+#[cfg(target_os = "linux")]
+const USER_CALL_PROBE_PORT: u16 = 0x4d57;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg(any(test, target_os = "linux"))]
@@ -232,6 +234,21 @@ fn application_main() -> Result<()> {
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after timer proof failed: {:?}", error))?;
     } else if mode == LaunchMode::UserProbe {
+        if exit
+            != (VmExit::Io {
+                port: USER_CALL_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!(
+                "user probe did not complete capability IPC through vector 0x80: {:?}",
+                exit
+            ));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution after user call failed: {:?}", error))?;
         if exit
             != (VmExit::Io {
                 port: USER_PROBE_PORT,

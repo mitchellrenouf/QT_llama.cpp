@@ -1,7 +1,20 @@
+use crate::arch::x86_64::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use crate::{Capability, TaskId};
 
 pub const X86_USER_CALL_VECTOR: u8 = 0x80;
 pub const MAX_SYSCALL_INLINE_PAYLOAD: usize = 24;
+const USER_RETURN_FLAGS: u64 = 2
+    | (1 << 0)
+    | (1 << 2)
+    | (1 << 4)
+    | (1 << 6)
+    | (1 << 7)
+    | (1 << 8)
+    | (1 << 9)
+    | (1 << 10)
+    | (1 << 11)
+    | (1 << 18)
+    | (1 << 21);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallError {
@@ -10,6 +23,64 @@ pub enum SyscallError {
     InvalidCapability,
     InvalidTask,
     PayloadTooLarge,
+    InvalidPrivilege,
+    InvalidInstruction,
+    InvalidStack,
+    InvalidFlags,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct UserCallFrame {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rax: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+impl UserCallFrame {
+    pub fn request(&self) -> Result<SyscallRequest, SyscallError> {
+        if self.cs != u64::from(USER_CODE_SELECTOR) || self.ss != u64::from(USER_DATA_SELECTOR) {
+            return Err(SyscallError::InvalidPrivilege);
+        }
+        if !user_address(self.rip) {
+            return Err(SyscallError::InvalidInstruction);
+        }
+        if !user_address(self.rsp) {
+            return Err(SyscallError::InvalidStack);
+        }
+        if self.rflags & 2 == 0 || self.rflags & !USER_RETURN_FLAGS != 0 {
+            return Err(SyscallError::InvalidFlags);
+        }
+        SyscallRequest::decode(
+            self.rax, self.rdi, self.rsi, self.rdx, self.r10, self.r8, self.r9,
+        )
+    }
+
+    pub fn complete(&mut self, sequence: u64) {
+        self.rax = 0;
+        self.rdx = sequence;
+    }
+}
+
+const fn user_address(address: u64) -> bool {
+    address != 0 && address < 1 << 47
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,5 +202,47 @@ mod tests {
             SyscallRequest::decode(u64::MAX, 1, 2, 3, 4, 5, 6),
             Err(SyscallError::UnknownOperation)
         );
+    }
+
+    #[test]
+    fn hardware_call_frame_is_exact_and_rejects_forged_return_state() {
+        assert_eq!(core::mem::size_of::<UserCallFrame>(), 20 * 8);
+        assert_eq!(core::mem::offset_of!(UserCallFrame, r15), 0);
+        assert_eq!(core::mem::offset_of!(UserCallFrame, rax), 14 * 8);
+        assert_eq!(core::mem::offset_of!(UserCallFrame, rip), 15 * 8);
+        assert_eq!(core::mem::offset_of!(UserCallFrame, rsp), 18 * 8);
+        let mut frame = UserCallFrame {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rdi: 0,
+            rsi: 0,
+            rbp: 0,
+            rbx: 0,
+            rdx: 0,
+            rcx: 0,
+            rax: 0,
+            rip: 0x40_1000,
+            cs: u64::from(USER_CODE_SELECTOR),
+            rflags: 0x202,
+            rsp: 0x7000_0000,
+            ss: u64::from(USER_DATA_SELECTOR),
+        };
+        assert_eq!(frame.request(), Ok(SyscallRequest::Yield));
+        frame.cs = 0x38;
+        assert_eq!(frame.request(), Err(SyscallError::InvalidPrivilege));
+        frame.cs = u64::from(USER_CODE_SELECTOR);
+        frame.rip = 0xffff_8000_0000_0000;
+        assert_eq!(frame.request(), Err(SyscallError::InvalidInstruction));
+        frame.rip = 0x40_1000;
+        frame.rflags = 0;
+        assert_eq!(frame.request(), Err(SyscallError::InvalidFlags));
+        frame.rflags = 0x202 | (3 << 12);
+        assert_eq!(frame.request(), Err(SyscallError::InvalidFlags));
     }
 }

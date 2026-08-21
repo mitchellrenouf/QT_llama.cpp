@@ -156,7 +156,13 @@ defines a pointer-free register ABI. Yield requires every reserved register to
 be zero; inline send carries generational endpoint/task tokens and at most 24
 payload bytes by value in registers. Unknown operations, malformed tokens, and
 oversized payloads fail before any user address can be dereferenced. The call
-gate and decoder are tested but the live assembly dispatcher remains unfinished.
+gate now has a live assembly dispatcher. A signed nested-KVM run enters vector
+`0x80` from CPL3, validates the complete return frame and RFLAGS whitelist,
+authorizes a four-byte `ping` through the sender's endpoint capability, creates
+the receiver message, returns status and sequence through registers, restores
+all user registers, and executes `iretq`. The resumed task then faults and the
+existing recovery path restores its replacement. Blocking receive and a
+production service image remain unfinished.
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented. A signed nested-KVM probe now proves external vector 32 enters the
 booted kernel and advances that scheduler by exactly one tick. This currently

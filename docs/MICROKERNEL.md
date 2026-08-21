@@ -642,8 +642,17 @@ larger than 24, and three payload words in registers r10/r8/r9. Decoding zeros
 the unused payload tail and rejects unknown operations, generation-zero tokens,
 and oversized lengths without reading guest memory. Windows and Linux pass 120
 kernel tests, including exact gate privilege/vector placement and canonical ABI
-decoding. Assembly entry, runtime dispatch, response registers, and live CPL3
-execution remain unfinished.
+decoding. The live entry now preserves all fifteen registers in an exact
+160-byte `UserCallFrame`, validates the ring-three CS/SS, lower-half RIP/RSP,
+and a complete RFLAGS whitelist that excludes IOPL, NT, VM, and reserved bits.
+It dispatches inline send through `TaskRuntime::send_ipc`, returns status in RAX
+and sequence in RDX, restores the frame, and executes `IRETQ`. The signed KVM
+probe sends `ping` from task A to task B with sequence one, emits proof only
+after endpoint authorization and message construction, returns to CPL3, then
+continues through the existing `#UD` revocation and task-B breakpoint recovery.
+A fresh run completed the combined path in 192 microseconds (`verify=783us`,
+`prepare=1125us`, `total=6426us`). Blocking receive, wakeup, and production
+service-image entry remain unfinished.
 
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
