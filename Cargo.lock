@@ -88,6 +88,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-kvm-run"
+version = "0.4.0"
+dependencies = [
+ "mrml-crypto",
+ "mrml-error",
+ "mrml-kernel",
+ "mrml-kvm",
+ "mrml-runtime",
+]
+
+[[package]]
 name = "mrml-linux"
 version = "0.4.0"
 

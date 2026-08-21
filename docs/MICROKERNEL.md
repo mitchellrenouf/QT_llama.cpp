@@ -481,7 +481,8 @@ interrupt-chip creation are now implemented: vCPU entry and stack addresses
 must be canonical, CR3 must be page-aligned, general registers begin cleared,
 RFLAGS bit 1 is set, and long mode enables paging, protected mode, PAE, NX, and
 supervisor write protection with explicit 64-bit code and data segments. The
-adapter can request KVM's in-kernel IRQ chip. Guest page-table construction and
+bootstrap adapter deliberately omits KVM's in-kernel IRQ chip until interrupt
+delivery is configured. Guest page-table construction and
 the backing store for it are now shared with the microkernel's page-table
 builder. A fixed guest-RAM arena returns only freshly zeroed frames and rejects
 reads or writes to unallocated tables, out-of-range entries, read-only RAM, and
@@ -512,12 +513,27 @@ PE at a canonical supervisor high-half address, creates the VM, IRQ chip, vCPU,
 five memory slots, and hardware page tables, enters at the signed entry point,
 writes a known pixel into the handoff-authenticated framebuffer, executes
 `HLT`, and observes both `VmExit::Halted` and the pixel through a bounded guest
-copy. Kernel launch derives the identity-mapped, writable, NX framebuffer solely
+copy. Kernel launch derives the identity-mapped, supervisor-only, writable, NX framebuffer solely
 from the validated handoff and rejects overlap with every private launch region.
 This proves the complete signed artifact-to-native-KVM execution and framebuffer
-boundary. The real four-section, 8,704-byte standalone kernel PE also builds for
-`x86_64-unknown-uefi`; executing that exact build through a release-artifact
-host runner remains the next integration milestone.
+boundary. The core-only `mrml-kvm-run` host utility now verifies a release public
+root and signed kernel bundle, prepares that same bounded launch environment,
+and executes the real four-section, 8,704-byte standalone kernel PE at a
+canonical supervisor high-half address. Nested KVM reaches the kernel-owned
+framebuffer marker and reports its final halted state. Bootstrap launch omits an
+in-kernel IRQ chip so the current interrupt-disabled `HLT` is observable; adding
+an interrupt controller belongs with the timer and scheduler rather than this
+one-shot boot proof.
+
+The reproducible integration sequence is:
+
+```text
+cargo build --release -p mrml-kernel-image --bin mrml-kernel-pe --features kernel-image --target x86_64-unknown-uefi
+cargo build --release -p mrml-sign -p mrml-kvm-run
+mrml-sign keygen release.private release.public
+mrml-sign sign-bundle kernel 1 mrml-kernel-pe.efi release.private kernel.signed
+mrml-kvm-run kernel.signed release.public
+```
 
 The allocation-free `kvm_run` decoder validates the fixed x86 header before it
 reads the kernel-owned union: padding is zero, readiness and IF fields are

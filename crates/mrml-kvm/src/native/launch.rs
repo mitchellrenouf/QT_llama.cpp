@@ -159,7 +159,6 @@ impl KvmSystem {
         ])?;
 
         let mut backend = self.create_backend::<N>(vcpu_id)?;
-        backend.vm.create_irqchip()?;
         backend.map_memory(layout.table_physical, table_bytes as usize, false)?;
         backend.map_memory(layout.image_physical, image_bytes as usize, false)?;
         backend.map_memory(layout.handoff_physical, handoff_bytes as usize, false)?;
@@ -220,7 +219,7 @@ impl KvmSystem {
                         PhysAddr::new(framebuffer.base().get())
                             .map_err(|_| KvmError::InvalidMapping)?,
                         framebuffer_bytes / PAGE_SIZE,
-                        PagePermissions::KERNEL_READ_WRITE,
+                        PagePermissions::KERNEL_MMIO_READ_WRITE,
                     )
                     .map_err(|_| KvmError::InvalidMapping)?,
                 )

@@ -60,7 +60,10 @@ impl Mapping {
         let user_half = virtual_start.get() < 1u64 << 47 && virtual_last.get() < 1u64 << 47;
         let kernel_half = virtual_start.get() >= 0xffff_8000_0000_0000
             && virtual_last.get() >= 0xffff_8000_0000_0000;
-        if (permissions.user() && !user_half) || (!permissions.user() && !kernel_half) {
+        if (permissions.user() && !user_half)
+            || (!permissions.user() && !permissions.low_supervisor_mmio() && !kernel_half)
+            || (permissions.low_supervisor_mmio() && !user_half)
+        {
             return Err(AddressSpaceError::WrongPrivilegeHalf);
         }
         Ok(Self {
@@ -204,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn separates_user_and_kernel_halves() {
+    fn user_pages_are_confined_but_supervisor_mmio_may_be_low() {
         assert_eq!(
             Mapping::new(
                 VirtAddr::new(0xffff_8000_0000_0000).unwrap(),
@@ -214,12 +217,21 @@ mod tests {
             ),
             Err(AddressSpaceError::WrongPrivilegeHalf)
         );
-        assert_eq!(
+        assert!(
             Mapping::new(
                 VirtAddr::new(0x4000).unwrap(),
                 PhysAddr::new(0).unwrap(),
                 1,
-                PagePermissions::KERNEL_READ,
+                PagePermissions::KERNEL_MMIO_READ_WRITE,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            Mapping::new(
+                VirtAddr::new(0x5000).unwrap(),
+                PhysAddr::new(0x1000).unwrap(),
+                1,
+                PagePermissions::KERNEL_READ_WRITE,
             ),
             Err(AddressSpaceError::WrongPrivilegeHalf)
         );

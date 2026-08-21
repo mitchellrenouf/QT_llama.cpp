@@ -28,7 +28,6 @@ const KVM_CREATE_VM: c_ulong = 0xae01;
 const KVM_GET_VCPU_MMAP_SIZE: c_ulong = 0xae04;
 const KVM_CREATE_VCPU: c_ulong = 0xae41;
 const KVM_SET_USER_MEMORY_REGION: c_ulong = 0x4020_ae46;
-const KVM_CREATE_IRQCHIP: c_ulong = 0xae60;
 const KVM_RUN: c_ulong = 0xae80;
 const KVM_GET_SREGS: c_ulong = 0x8138_ae83;
 const KVM_SET_REGS: c_ulong = 0x4090_ae82;
@@ -75,10 +74,10 @@ impl KvmSystem {
             return Err(KvmError::SystemCall);
         }
         let file = OwnedFd(file);
-        if unsafe { ioctl(file.0, KVM_GET_API_VERSION) } != KVM_API_VERSION {
+        if unsafe { ioctl(file.0, KVM_GET_API_VERSION, 0 as c_ulong) } != KVM_API_VERSION {
             return Err(KvmError::ApiVersion);
         }
-        let run_bytes = unsafe { ioctl(file.0, KVM_GET_VCPU_MMAP_SIZE) };
+        let run_bytes = unsafe { ioctl(file.0, KVM_GET_VCPU_MMAP_SIZE, 0 as c_ulong) };
         if run_bytes < 0 {
             return Err(KvmError::SystemCall);
         }
@@ -123,13 +122,6 @@ pub(crate) struct KvmVm {
 }
 
 impl KvmVm {
-    pub(crate) fn create_irqchip(&self) -> Result<(), KvmError> {
-        if unsafe { ioctl(self.file.0, KVM_CREATE_IRQCHIP) } < 0 {
-            return Err(KvmError::SystemCall);
-        }
-        Ok(())
-    }
-
     pub(crate) fn register_memory(&self, region: KvmMemoryRegion) -> Result<(), KvmError> {
         let encoded = region.encode();
         if unsafe { ioctl(self.file.0, KVM_SET_USER_MEMORY_REGION, encoded.as_ptr()) } < 0 {
@@ -174,7 +166,7 @@ pub(crate) struct KvmVcpu {
 
 impl KvmVcpu {
     pub(crate) fn run(&mut self) -> Result<VmExit, KvmError> {
-        if unsafe { ioctl(self.file.0, KVM_RUN) } < 0 {
+        if unsafe { ioctl(self.file.0, KVM_RUN, 0 as c_ulong) } < 0 {
             return Err(KvmError::SystemCall);
         }
         let bytes = unsafe { slice::from_raw_parts(self.run.as_ptr(), self.run_bytes) };

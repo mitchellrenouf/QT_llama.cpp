@@ -51,6 +51,7 @@ impl PagePermissions {
     pub const KERNEL_READ: Self = Self(0);
     pub const KERNEL_READ_WRITE: Self = Self(1 << 0);
     pub const KERNEL_READ_EXECUTE: Self = Self(1 << 1);
+    pub const KERNEL_MMIO_READ_WRITE: Self = Self((1 << 0) | (1 << 3));
     pub const USER_READ: Self = Self(1 << 2);
     pub const USER_READ_WRITE: Self = Self((1 << 2) | (1 << 0));
     pub const USER_READ_EXECUTE: Self = Self((1 << 2) | (1 << 1));
@@ -65,6 +66,10 @@ impl PagePermissions {
 
     pub const fn user(self) -> bool {
         self.0 & (1 << 2) != 0
+    }
+
+    pub const fn low_supervisor_mmio(self) -> bool {
+        self.0 & (1 << 3) != 0
     }
 }
 
