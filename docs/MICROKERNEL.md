@@ -495,9 +495,16 @@ decoded and validated before guest memory changes, must occupy isolated
 page-aligned storage, and has its unused page tail zeroed before being mapped
 read-only and NX. This prevents a malformed record from partially replacing the
 previous launch state. Host attestation remains part of the VMM trust boundary;
-the handoff cannot make an untrusted host truthful. Completing the atomic
-launch transaction and executing it on a KVM-capable host remain pending, so
-this does not yet launch a bootable KVM guest. The
+the handoff cannot make an untrusted host truthful. A fail-closed launch
+transaction now composes these stages and publishes only `PreparedKvmGuest`:
+it validates physical and virtual ranges, creates the VM, vCPU, and IRQ chip,
+registers four disjoint memory slots, installs the signed image, immutable
+handoff, guarded stack, and page tables, then writes CR3 and entry registers
+last. The Microsoft x64 entry frame places the handoff pointer and length in
+RCX/RDX and reserves a zero return slot with the required stack alignment.
+Low-level construction and mutable backend extraction are not public. Executing
+this transaction on a KVM-capable host remains pending, so the current host has
+not demonstrated a bootable KVM guest. The
 current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
 the live capability probe records that as unavailable and no launch claim is
 made for this environment.

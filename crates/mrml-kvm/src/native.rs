@@ -12,6 +12,9 @@ use mrml_kernel::{
 
 use crate::{decode_run_page, KvmError, KvmMemoryRegion, KVM_API_VERSION};
 
+mod launch;
+pub use launch::{KvmLaunchLayout, PreparedKvmGuest};
+
 const O_RDWR: c_int = 2;
 const O_CLOEXEC: c_int = 0x80000;
 const PROT_READ: c_int = 1;
@@ -88,7 +91,7 @@ impl KvmSystem {
         })
     }
 
-    pub fn create_vm(&self) -> Result<KvmVm, KvmError> {
+    pub(crate) fn create_vm(&self) -> Result<KvmVm, KvmError> {
         let file = unsafe { ioctl(self.file.0, KVM_CREATE_VM, 0 as c_ulong) };
         if file < 0 {
             return Err(KvmError::SystemCall);
@@ -99,7 +102,10 @@ impl KvmSystem {
         })
     }
 
-    pub fn create_backend<const N: usize>(&self, vcpu_id: u32) -> Result<KvmBackend<N>, KvmError> {
+    pub(crate) fn create_backend<const N: usize>(
+        &self,
+        vcpu_id: u32,
+    ) -> Result<KvmBackend<N>, KvmError> {
         let vm = self.create_vm()?;
         let vcpu = vm.create_vcpu(vcpu_id)?;
         Ok(KvmBackend {
@@ -111,20 +117,20 @@ impl KvmSystem {
     }
 }
 
-pub struct KvmVm {
+pub(crate) struct KvmVm {
     file: OwnedFd,
     run_bytes: usize,
 }
 
 impl KvmVm {
-    pub fn create_irqchip(&self) -> Result<(), KvmError> {
+    pub(crate) fn create_irqchip(&self) -> Result<(), KvmError> {
         if unsafe { ioctl(self.file.0, KVM_CREATE_IRQCHIP) } < 0 {
             return Err(KvmError::SystemCall);
         }
         Ok(())
     }
 
-    pub fn register_memory(&self, region: KvmMemoryRegion) -> Result<(), KvmError> {
+    pub(crate) fn register_memory(&self, region: KvmMemoryRegion) -> Result<(), KvmError> {
         let encoded = region.encode();
         if unsafe { ioctl(self.file.0, KVM_SET_USER_MEMORY_REGION, encoded.as_ptr()) } < 0 {
             return Err(KvmError::SystemCall);
@@ -132,7 +138,7 @@ impl KvmVm {
         Ok(())
     }
 
-    pub fn create_vcpu(&self, id: u32) -> Result<KvmVcpu, KvmError> {
+    pub(crate) fn create_vcpu(&self, id: u32) -> Result<KvmVcpu, KvmError> {
         let file = unsafe { ioctl(self.file.0, KVM_CREATE_VCPU, id as c_ulong) };
         if file < 0 {
             return Err(KvmError::SystemCall);
@@ -160,14 +166,14 @@ impl KvmVm {
     }
 }
 
-pub struct KvmVcpu {
+pub(crate) struct KvmVcpu {
     file: OwnedFd,
     run: NonNull<u8>,
     run_bytes: usize,
 }
 
 impl KvmVcpu {
-    pub fn run(&mut self) -> Result<VmExit, KvmError> {
+    pub(crate) fn run(&mut self) -> Result<VmExit, KvmError> {
         if unsafe { ioctl(self.file.0, KVM_RUN) } < 0 {
             return Err(KvmError::SystemCall);
         }
@@ -175,15 +181,13 @@ impl KvmVcpu {
         decode_run_page(bytes)
     }
 
-    pub const fn run_mapping_bytes(&self) -> usize {
-        self.run_bytes
-    }
-
-    pub fn configure_long_mode(
+    pub(crate) fn configure_long_mode_entry(
         &mut self,
         entry: u64,
         stack: u64,
         cr3: u64,
+        argument0: u64,
+        argument1: u64,
     ) -> Result<(), KvmError> {
         if !canonical(entry) || !canonical(stack) || cr3 % PAGE_SIZE != 0 {
             return Err(KvmError::InvalidRegisterState);
@@ -206,7 +210,7 @@ impl KvmVcpu {
         if unsafe { ioctl(self.file.0, KVM_SET_SREGS, &special) } < 0 {
             return Err(KvmError::SystemCall);
         }
-        let registers = KvmRegisters::initial(entry, stack);
+        let registers = KvmRegisters::initial(entry, stack, argument0, argument1);
         if unsafe { ioctl(self.file.0, KVM_SET_REGS, &registers) } < 0 {
             return Err(KvmError::SystemCall);
         }
@@ -237,12 +241,12 @@ struct KvmRegisters {
 }
 
 impl KvmRegisters {
-    const fn initial(entry: u64, stack: u64) -> Self {
+    const fn initial(entry: u64, stack: u64, argument0: u64, argument1: u64) -> Self {
         Self {
             rax: 0,
             rbx: 0,
-            rcx: 0,
-            rdx: 0,
+            rcx: argument0,
+            rdx: argument1,
             rsi: 0,
             rdi: 0,
             rsp: stack,
@@ -840,7 +844,7 @@ impl<const N: usize> PageTableStore for KvmPageTableStore<'_, N> {
     }
 }
 
-pub struct KvmBackend<const N: usize> {
+pub(crate) struct KvmBackend<const N: usize> {
     vcpu: KvmVcpu,
     memory: KvmGuestMemory<N>,
     vm: KvmVm,
@@ -861,10 +865,6 @@ impl<const N: usize> KvmBackend<N> {
             return Err(error);
         }
         Ok(())
-    }
-
-    pub fn guest_memory(&self) -> &KvmGuestMemory<N> {
-        &self.memory
     }
 
     pub fn page_tables(
@@ -1014,10 +1014,11 @@ mod tests {
 
     #[test]
     fn initial_register_state_enables_hardened_long_mode() {
-        let registers = KvmRegisters::initial(0x20_0000, 0x40_0000);
+        let registers = KvmRegisters::initial(0x20_0000, 0x40_0000, 0x50_0000, 240);
         assert_eq!(registers.rip, 0x20_0000);
         assert_eq!(registers.rsp, 0x40_0000);
         assert_eq!(registers.rflags, 2);
+        assert_eq!((registers.rcx, registers.rdx), (0x50_0000, 240));
         assert!(canonical(0xffff_8000_0000_0000));
         assert!(!canonical(0x0001_0000_0000_0000));
         let code = KvmSegment::code64();
