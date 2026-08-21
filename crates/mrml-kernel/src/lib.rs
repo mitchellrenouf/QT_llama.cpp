@@ -6,6 +6,7 @@
 //! narrow types so their unsafe boundaries can be reviewed independently.
 
 pub mod arch;
+mod artifact;
 mod boot;
 mod capability;
 mod grant;
@@ -16,6 +17,7 @@ mod policy;
 mod scheduler;
 mod virtual_gpu;
 
+pub use artifact::{ArtifactError, ArtifactKind, TrustRoot, VerifiedArtifact, artifact_statement};
 pub use boot::{BootEvidence, BootPolicy, BootValidationError};
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};

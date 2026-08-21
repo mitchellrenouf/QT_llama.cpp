@@ -51,6 +51,11 @@ remain pending. Until those pieces exist and are audited, this is not a working
 shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a
 general `virtio-cuda` compatibility layer.
 
+The CUDA service must verify the exact embedded PTX bundle as a
+`CudaKernelBundle` artifact before module loading. Kernel IDs are enabled only
+after this verification token exists; a digest mismatch or missing signature
+leaves the virtual GPU unavailable and inference falls back to CPU.
+
 ## Portability and boot
 
 The first target is x86_64 UEFI. Firmware-specific boot code hands a normalized
@@ -66,6 +71,24 @@ source its 256-bit boot seed from the firmware RNG protocol or a documented
 architecture entropy source; the portable kernel rejects absent evidence but
 cannot independently prove firmware entropy quality. Development policy may
 relax firmware requirements but must not be accepted by production launchers.
+
+The native artifact chain uses an original SHA3-512 Lamport signature verifier.
+Production policy requires separately typed signatures for the microkernel, VM
+images, service images, launch policy, and embedded CUDA-kernel bundle. Each
+trust root pins the SHA3-512 digest of its public key and minimum artifact
+version. Signed statements bind artifact type, version, byte length, and content
+digest, preventing a CUDA signature from authorizing a VM image or an older
+image from satisfying rollback policy.
+
+Lamport keys are one-time keys: reuse for two different artifacts can reveal
+enough private material to permit forgery. MRML therefore requires an
+independent pinned key for every signed artifact/version. The current primitive
+is hash-based and designed to resist quantum preimage attacks, but it is not a
+NIST-standard ML-DSA implementation and has not received independent review.
+The large 64 KiB public keys and 32 KiB signatures are accepted for the small
+verified-boot set, not general network signing. Production-security claims
+remain prohibited until the signing workflow, key lifecycle, loaders, recovery
+path, and verifier receive external cryptographic and platform audits.
 
 Hyper-V and KVM are host backends, not code in the guest kernel. Both implement
 the same VMM contract for vCPU lifecycle, guest memory, interrupts, virtio-like

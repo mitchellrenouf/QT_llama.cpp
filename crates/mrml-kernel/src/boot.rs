@@ -5,6 +5,8 @@ pub enum BootValidationError {
     SecureBootRequired,
     MeasuredBootRequired,
     RollbackDetected,
+    MissingSignedArtifact,
+    DuplicateSignedArtifact,
 }
 
 /// Evidence normalized by the architecture-specific UEFI loader. The kernel
@@ -82,6 +84,29 @@ impl BootPolicy {
         }
         if evidence.image_version < self.minimum_image_version {
             return Err(BootValidationError::RollbackDetected);
+        }
+        Ok(())
+    }
+
+    pub fn validate_signed_chain(
+        self,
+        evidence: &BootEvidence,
+        artifacts: &[&crate::VerifiedArtifact],
+    ) -> Result<(), BootValidationError> {
+        self.validate(evidence)?;
+        let mut present = [false; 5];
+        for artifact in artifacts {
+            if artifact.version() < self.minimum_image_version {
+                return Err(BootValidationError::RollbackDetected);
+            }
+            let index = artifact.kind() as usize - 1;
+            if present[index] {
+                return Err(BootValidationError::DuplicateSignedArtifact);
+            }
+            present[index] = true;
+        }
+        if present.iter().any(|value| !value) {
+            return Err(BootValidationError::MissingSignedArtifact);
         }
         Ok(())
     }
