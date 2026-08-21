@@ -163,9 +163,16 @@ image ranges, nonoverlapping virtual and raw sections, and an entry point
 contained in an executable section. Any writable-and-executable section is
 rejected. The release signer validates these rules before consuming a one-time
 key, and runtime admission repeats validation only after the outer artifact
-signature succeeds. Relocation application, import resolution, page
-allocation, final per-section page permissions, and transfer to a separately
-loaded image remain pending.
+signature succeeds. The loader core can now materialize a validated image into
+an exact-size caller-owned buffer: it clears the entire image first, copies the
+bounded headers and section bytes to their RVAs, leaves virtual tails and gaps
+zeroed, and returns the checked preferred-base entry address. A separate load
+plan describes read-only NX headers and the final W^X permission of every
+section. Platform code must populate pages while NX is active and install the
+final permissions only after copying completes. Image size is capped at 512
+MiB to bound memory consumption. Relocation application, page allocation,
+page-table installation, and transfer to a separately loaded image remain
+pending; imports are not part of the standalone MRML ABI.
 
 Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
 dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.

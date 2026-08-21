@@ -8,6 +8,7 @@ const SECTION_EXECUTE: u32 = 0x2000_0000;
 const SECTION_READ: u32 = 0x4000_0000;
 const SECTION_WRITE: u32 = 0x8000_0000;
 pub const MAX_PE_SECTIONS: usize = 32;
+pub const MAX_PE_IMAGE_BYTES: u32 = 512 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PeError {
@@ -24,6 +25,34 @@ pub enum PeError {
     OverlappingSections,
     WritableExecutableSection,
     EntryPointNotExecutable,
+    InvalidDestination,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeLoadRegion {
+    virtual_address: u32,
+    pages: u32,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+}
+
+impl PeLoadRegion {
+    pub const fn virtual_address(self) -> u32 {
+        self.virtual_address
+    }
+    pub const fn pages(self) -> u32 {
+        self.pages
+    }
+    pub const fn readable(self) -> bool {
+        self.readable
+    }
+    pub const fn writable(self) -> bool {
+        self.writable
+    }
+    pub const fn executable(self) -> bool {
+        self.executable
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +156,8 @@ impl<'a> PeImage<'a> {
         }
         if entry_rva == 0
             || image_size == 0
+            || image_size > MAX_PE_IMAGE_BYTES
+            || encoded.len() > MAX_PE_IMAGE_BYTES as usize
             || image_size % section_alignment != 0
             || headers_size > image_size
             || image_base % 65_536 != 0
@@ -198,6 +229,58 @@ impl<'a> PeImage<'a> {
     }
     pub const fn section_count(&self) -> usize {
         self.section_count
+    }
+    pub const fn load_region_count(&self) -> usize {
+        self.section_count + 1
+    }
+    /// Returns the final mapping plan. Region zero covers PE headers and is
+    /// always read-only and non-executable; each later region mirrors one
+    /// validated section. The caller must populate memory under NX mappings,
+    /// then atomically replace them with these permissions.
+    pub fn load_region(&self, index: usize) -> Result<PeLoadRegion, PeError> {
+        if index == 0 {
+            return Ok(PeLoadRegion {
+                virtual_address: 0,
+                pages: pages_for(self.headers_size)?,
+                readable: true,
+                writable: false,
+                executable: false,
+            });
+        }
+        let section = self.section(index.checked_sub(1).ok_or(PeError::InvalidSection)?)?;
+        Ok(PeLoadRegion {
+            virtual_address: section.virtual_address,
+            pages: pages_for(section.virtual_size)?,
+            readable: section.readable(),
+            writable: section.writable(),
+            executable: section.executable(),
+        })
+    }
+    /// Materializes the preferred-base image without allocation. The buffer
+    /// must be exactly `SizeOfImage`; exact sizing prevents stale adjacent
+    /// bytes from accidentally becoming part of the executable measurement.
+    pub fn materialize(&self, destination: &mut [u8]) -> Result<u64, PeError> {
+        if destination.len() != self.image_size as usize {
+            return Err(PeError::InvalidDestination);
+        }
+        destination.fill(0);
+        let headers = self.headers_size as usize;
+        destination[..headers].copy_from_slice(&self.encoded[..headers]);
+        for index in 0..self.section_count {
+            let section = self.section(index)?;
+            let source = self.section_data(section)?;
+            let start = section.virtual_address as usize;
+            let end = start
+                .checked_add(source.len())
+                .ok_or(PeError::InvalidDestination)?;
+            destination
+                .get_mut(start..end)
+                .ok_or(PeError::InvalidDestination)?
+                .copy_from_slice(source);
+        }
+        self.image_base
+            .checked_add(self.entry_rva as u64)
+            .ok_or(PeError::InvalidImageSize)
     }
     pub fn section(&self, index: usize) -> Result<PeSection, PeError> {
         if index >= self.section_count {
@@ -271,6 +354,13 @@ fn file_end(section: PeSection) -> Result<u32, PeError> {
     section
         .file_offset
         .checked_add(section.file_size)
+        .ok_or(PeError::InvalidSection)
+}
+fn pages_for(bytes: u32) -> Result<u32, PeError> {
+    bytes
+        .checked_add(4095)
+        .map(|value| value / 4096)
+        .filter(|pages| *pages != 0)
         .ok_or(PeError::InvalidSection)
 }
 const fn overlaps(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> bool {
@@ -379,6 +469,32 @@ mod tests {
         assert_eq!(
             PeImage::parse(&outside).err(),
             Some(PeError::InvalidSection)
+        );
+    }
+
+    #[test]
+    fn materializes_zero_filled_image_and_wx_plan() {
+        let encoded = valid_pe();
+        let image = PeImage::parse(&encoded).unwrap();
+        let mut loaded = [0xa5; 0x2000];
+        let entry = image.materialize(&mut loaded).unwrap();
+        assert_eq!(entry, 0x0000_0001_4000_1000);
+        assert_eq!(&loaded[..0x200], &encoded[..0x200]);
+        assert_eq!(&loaded[0x1000..0x1200], &encoded[0x200..0x400]);
+        assert!(loaded[0x1200..].iter().all(|byte| *byte == 0));
+        let headers = image.load_region(0).unwrap();
+        assert_eq!(
+            (headers.pages(), headers.writable(), headers.executable()),
+            (1, false, false)
+        );
+        let code = image.load_region(1).unwrap();
+        assert_eq!(
+            (code.pages(), code.writable(), code.executable()),
+            (1, false, true)
+        );
+        assert_eq!(
+            image.materialize(&mut loaded[..4096]),
+            Err(PeError::InvalidDestination)
         );
     }
 }
