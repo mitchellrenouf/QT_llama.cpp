@@ -17,7 +17,10 @@ mod policy;
 mod scheduler;
 mod virtual_gpu;
 
-pub use artifact::{ArtifactError, ArtifactKind, TrustRoot, VerifiedArtifact, artifact_statement};
+pub use artifact::{
+    ArtifactError, ArtifactKind, BootstrapState, RELEASE_MANIFEST_BYTES, ReleaseManifest,
+    TrustRoot, VerifiedArtifact, VerifiedRelease, artifact_statement,
+};
 pub use boot::{BootEvidence, BootPolicy, BootValidationError};
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};

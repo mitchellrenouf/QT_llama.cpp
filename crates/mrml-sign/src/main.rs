@@ -6,7 +6,7 @@ use mrml_crypto::{
     lamport_public_key, lamport_sign, lamport_verify,
 };
 use mrml_error::{Result, anyhow};
-use mrml_kernel::{ArtifactKind, artifact_statement};
+use mrml_kernel::{ArtifactKind, ReleaseManifest, artifact_statement};
 use mrml_runtime::{Text, mrml_println as println};
 
 const MAX_ARTIFACT: usize = 512 * 1024 * 1024;
@@ -25,9 +25,56 @@ fn application_main() -> Result<()> {
             &args[6],
         ),
         Some("key-digest") if args.len() == 3 => key_digest(&args[2]),
+        Some("manifest") if args.len() == 10 => manifest(&args),
         _ => Err(anyhow!(
-            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign key-digest PUBLIC"
+            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign key-digest PUBLIC\n  mrml-sign manifest VERSION OUTPUT NEXT_ROOT KERNEL VM SERVICE CUDA POLICY"
         )),
+    }
+}
+
+fn manifest(args: &[Text]) -> Result<()> {
+    let version = args[2]
+        .parse()
+        .map_err(|_| anyhow!("invalid release version"))?;
+    if mrml_runtime::path_exists(&args[3]) {
+        return Err(anyhow!("refusing to overwrite release manifest"));
+    }
+    let next = parse_digest(&args[4])?;
+    let roots = [
+        parse_digest(&args[5])?,
+        parse_digest(&args[6])?,
+        parse_digest(&args[7])?,
+        parse_digest(&args[8])?,
+        parse_digest(&args[9])?,
+    ];
+    let encoded = ReleaseManifest::new(version, next, roots)
+        .map_err(|_| anyhow!("invalid release manifest"))?
+        .encode();
+    mrml_runtime::write_file(&args[3], &encoded)?;
+    println!("wrote canonical release {} manifest", version);
+    Ok(())
+}
+
+fn parse_digest(value: &str) -> Result<[u8; 64]> {
+    if value.len() != 128 {
+        return Err(anyhow!(
+            "trust-root digest must contain 128 hexadecimal characters"
+        ));
+    }
+    let bytes = value.as_bytes();
+    let mut digest = [0u8; 64];
+    for index in 0..64 {
+        digest[index] = (hex(bytes[index * 2])? << 4) | hex(bytes[index * 2 + 1])?;
+    }
+    Ok(digest)
+}
+
+fn hex(value: u8) -> Result<u8> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(anyhow!("invalid hexadecimal trust-root digest")),
     }
 }
 

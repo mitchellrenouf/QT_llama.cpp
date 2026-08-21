@@ -103,6 +103,20 @@ mrml-sign sign kernel 1 mrml-kernel.efi release.private mrml-kernel.sig
 mrml-sign key-digest release.public
 ```
 
+After generating distinct artifact keys and a next-release root, create and
+sign the canonical 408-byte release manifest:
+
+```text
+mrml-sign manifest 1 release.manifest NEXT_ROOT KERNEL VM SERVICE CUDA POLICY
+mrml-sign sign policy 1 release.manifest genesis.private release.manifest.sig
+```
+
+Each digest argument is the 128-character SHA3-512 public-key digest printed by
+`key-digest`. The kernel now decodes this exact representation, verifies it
+against the current root, exposes typed artifact trust roots, advances the next
+root, and raises the minimum acceptable release. Replaying the old manifest is
+rejected after state advancement.
+
 The signer refuses to overwrite keys or signatures, self-verifies before
 writing a signature, and then consumes and removes the private-key file. Any
 external backup of that one-time key must also be destroyed and must never sign
