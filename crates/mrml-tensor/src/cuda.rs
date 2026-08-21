@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use mrml_kernel::{
     BufferAccess, BufferId, GpuHostBackend, MAX_DISPATCH_BUFFERS, MAX_DISPATCH_SCALARS,
     MAX_GPU_CONTROL_BYTES, PreparedGpuDispatch, ValidatedExpertSelection, ValidatedKernelLaunch,
+    VirtualGpuSession,
 };
 use mrml_runtime::{OnceCell, OrderedMap, Shared, SpinMutex, Text, Vector};
 
@@ -1530,6 +1531,7 @@ struct MediatedCudaBinding {
     generation: u32,
     address: u64,
     bytes: u64,
+    owned: bool,
 }
 
 impl MediatedCudaBinding {
@@ -1594,7 +1596,44 @@ impl<const N: usize> MediatedCudaBackend<N> {
             generation: id.generation(),
             address,
             bytes,
+            owned: false,
         });
+        Ok(())
+    }
+
+    fn allocate_owned(&mut self, id: BufferId, bytes: u64) -> Result<(), MediatedCudaError> {
+        let bytes_usize = usize::try_from(bytes).map_err(|_| MediatedCudaError::RangeOverflow)?;
+        let mut pointer = ptr::null_mut();
+        let status = unsafe {
+            cudaSetDevice(self.device_id);
+            cudaMalloc(&mut pointer, bytes_usize)
+        };
+        if status != 0 || pointer.is_null() {
+            return Err(MediatedCudaError::Driver(status));
+        }
+        if let Err(error) = unsafe { self.bind_device_range(id, pointer as usize as u64, bytes) } {
+            unsafe { cudaFree(pointer) };
+            return Err(error);
+        }
+        self.bindings[id.slot() as usize].as_mut().unwrap().owned = true;
+        Ok(())
+    }
+
+    fn free_owned(&mut self, id: BufferId) -> Result<(), MediatedCudaError> {
+        let binding = self
+            .bindings
+            .get(id.slot() as usize)
+            .and_then(|entry| *entry)
+            .filter(|binding| binding.generation == id.generation() && binding.owned)
+            .ok_or(MediatedCudaError::InvalidBinding)?;
+        let status = unsafe {
+            cudaSetDevice(self.device_id);
+            cudaFree(binding.address as usize as *mut c_void)
+        };
+        if status != 0 {
+            return Err(MediatedCudaError::Driver(status));
+        }
+        self.bindings[id.slot() as usize] = None;
         Ok(())
     }
 
@@ -1603,7 +1642,7 @@ impl<const N: usize> MediatedCudaBackend<N> {
             .bindings
             .get_mut(id.slot() as usize)
             .ok_or(MediatedCudaError::InvalidBinding)?;
-        if slot.is_none_or(|binding| binding.generation != id.generation()) {
+        if slot.is_none_or(|binding| binding.generation != id.generation() || binding.owned) {
             return Err(MediatedCudaError::InvalidBinding);
         }
         *slot = None;
@@ -1653,6 +1692,63 @@ impl<const N: usize> MediatedCudaBackend<N> {
         } else {
             Err(MediatedCudaError::Driver(status))
         }
+    }
+}
+
+impl<const N: usize> Drop for MediatedCudaBackend<N> {
+    fn drop(&mut self) {
+        unsafe { cudaSetDevice(self.device_id) };
+        for binding in self.bindings.iter_mut() {
+            if let Some(allocation) = binding.take()
+                && allocation.owned
+            {
+                let _ = unsafe { cudaFree(allocation.address as usize as *mut c_void) };
+            }
+        }
+    }
+}
+
+/// Transactionally synchronized guest quota and owned CUDA allocation state.
+pub struct MediatedCudaService<const N: usize> {
+    session: VirtualGpuSession<N>,
+    backend: MediatedCudaBackend<N>,
+}
+
+impl<const N: usize> MediatedCudaService<N> {
+    pub fn new(quota: u64, device_id: i32, stream: CudaStream) -> Self {
+        Self {
+            session: VirtualGpuSession::new(quota),
+            backend: MediatedCudaBackend::new(device_id, stream),
+        }
+    }
+
+    pub fn allocate(&mut self, bytes: u64) -> Result<BufferId, MediatedCudaError> {
+        let id = self
+            .session
+            .allocate(bytes)
+            .map_err(|_| MediatedCudaError::InvalidBinding)?;
+        if let Err(error) = self.backend.allocate_owned(id, bytes) {
+            let _ = self.session.free(id);
+            return Err(error);
+        }
+        Ok(id)
+    }
+
+    pub fn free(&mut self, id: BufferId) -> Result<u64, MediatedCudaError> {
+        self.backend.free_owned(id)?;
+        self.session
+            .free(id)
+            .map_err(|_| MediatedCudaError::InvalidBinding)
+    }
+
+    pub const fn session(&self) -> &VirtualGpuSession<N> {
+        &self.session
+    }
+    pub const fn backend(&self) -> &MediatedCudaBackend<N> {
+        &self.backend
+    }
+    pub fn backend_mut(&mut self) -> &mut MediatedCudaBackend<N> {
+        &mut self.backend
     }
 }
 
@@ -3072,6 +3168,31 @@ mod tests {
         assert_eq!(arena.used_bytes(), 768);
         assert_eq!(arena.capacity_bytes(), 4096);
         Ok(())
+    }
+
+    #[test]
+    fn mediated_service_synchronizes_quota_and_owned_cuda_allocations() {
+        let _serial = CUDA_TEST_LOCK.lock();
+        if !CudaDevice::is_available() {
+            return;
+        }
+        let mut service = MediatedCudaService::<2>::new(128, 0, ptr::null_mut());
+        let first = service.allocate(64).unwrap();
+        assert_eq!(service.session().allocated_bytes(), 64);
+        assert!(
+            service
+                .backend()
+                .resolve(BufferAccess::new(
+                    first,
+                    0,
+                    64,
+                    mrml_kernel::BufferMode::Read,
+                ))
+                .is_ok()
+        );
+        assert_eq!(service.free(first), Ok(64));
+        assert_eq!(service.session().allocated_bytes(), 0);
+        assert_eq!(service.free(first), Err(MediatedCudaError::InvalidBinding));
     }
 
     #[test]

@@ -250,6 +250,11 @@ rereads bounded MoE proof bytes, and constructs driver arguments only from
 resolved addresses and typed scalar bits. The validated kernel ID selects the
 build-embedded symbol and all geometry comes from the validated dispatch. Raw
 binding is unsafe with explicit lifetime and non-aliasing obligations.
+`MediatedCudaService` couples this table to `VirtualGpuSession` quotas. Allocate
+first reserves a generational handle and rolls it back if CUDA allocation or
+binding fails. Free releases only the matching service-owned CUDA allocation
+before returning quota; raw external bindings cannot enter that path. Dropping
+the backend best-effort releases all remaining owned allocations.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
 registry alone cannot make it executable. Contextual batch integration of the 5 MoE schemas and the
 actual CUDA launch adapter are pending.

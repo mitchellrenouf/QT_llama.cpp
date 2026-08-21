@@ -219,6 +219,11 @@ controls from device memory, and lowers resolved addresses plus typed scalar
 bits to the exact embedded ID-to-symbol entry with validated launch geometry.
 Unsafe raw binding requires retained allocation ownership; device addresses
 never enter the guest protocol.
+`MediatedCudaService` synchronizes virtual quota allocation with owned CUDA
+memory transactionally: CUDA allocation failure rolls back the guest handle,
+free requires the matching owned generation before releasing quota, externally
+owned raw bindings cannot be freed through the owned path, and drop releases
+any remaining owned allocations.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject
