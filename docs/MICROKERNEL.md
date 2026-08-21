@@ -742,6 +742,20 @@ on nested KVM. One authenticated service
 artifact supplies both instances; task identities, address spaces, physical
 copies, stacks, and table arenas remain separate.
 
+`ServiceSupervisor` now binds each service object to exactly one live
+generational task identity. The signed exit syscall must resolve the current
+task through this table before `TaskRuntime` removes its context and capability
+space. Clean exit records `Exited`; checked user-fault retirement records
+`Faulted`. Restart accepts neither state without exact `CONTROL` authority for
+the recorded object and a newly supplied validated `UserContext`. It creates a
+new task first, then advances the service generation and publishes the
+replacement, so allocation failure leaves the stopped record unchanged and a
+stale service ID never regains control. Windows and Linux tests cover wrong
+object authority, clean and fault retirement, successful restart, and stale-ID
+rejection. The current signed probe exercises supervised clean exit. A platform
+manager that erases/rebuilds writable service pages before issuing the fresh
+context is still required for a signed automatic-restart claim.
+
 Each `TaskRuntime` domain now owns a fixed two-message inbox in addition to its
 context and capability space. `receive_or_block_current` dequeues immediately
 or marks only the empty receiver blocked and selects a replacement.
@@ -1336,8 +1350,8 @@ slot. Windows and Linux tests exercise selector, flag, address, CR3, duplicate,
 revocation, and stale-generation rejection. GDT user descriptors, TSS/RSP0,
 assembly restore, CR3 switching, live ring-three entry, cross-root timer
 preemption, and guarded privilege stacks are exercised by signed KVM and WHP
-probes. Allocating one independent arena per additional CPU and production
-service lifecycle remain pending.
+probes. Allocating one independent arena per additional CPU and platform-backed
+service page erasure/reprovisioning before restart remain pending.
 
 ## Milestones
 

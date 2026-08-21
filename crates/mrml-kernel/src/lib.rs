@@ -19,6 +19,7 @@ mod pe;
 mod platform;
 mod policy;
 mod scheduler;
+mod service_lifecycle;
 mod syscall;
 mod task_runtime;
 mod virtual_gpu;
@@ -61,6 +62,9 @@ pub use policy::{
 pub use scheduler::{
     KernelScheduleError, KernelScheduler, Priority, ScheduleOutcome, Scheduler, SchedulerError,
     TaskId, TaskState,
+};
+pub use service_lifecycle::{
+    ServiceError, ServiceFault, ServiceId, ServiceRetirement, ServiceState, ServiceSupervisor,
 };
 pub use syscall::{
     MAX_SYSCALL_INLINE_PAYLOAD, SyscallError, SyscallRequest, UserCallFrame, X86_USER_CALL_VECTOR,

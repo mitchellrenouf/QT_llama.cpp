@@ -171,6 +171,15 @@ removes B's complete context/capability domain before selecting A, dequeues
 the message into A's saved registers and restores A's post-`INT 0x80` context
 under A's root. Fresh signed runs completed this chain in 301 microseconds on
 WHP and 404 microseconds on nested KVM.
+Service task ownership is now recorded by a fixed-capacity generational
+supervisor. The signed clean-exit path resolves the current task through that
+owner before revocation. A stopped or faulted instance can be restarted only
+with exact `CONTROL` authority for its service object and a freshly supplied
+validated context; restart advances the service generation, so old management
+handles cannot control the replacement. Tests on Windows and Linux cover wrong
+object authority, clean exit, fault retirement, restart, and stale identity
+rejection. Rebuilding and erasing a service's writable physical pages before
+supplying that fresh context remains the platform lifecycle manager's next gate.
 Kernel task domains now contain a two-message, allocation-free inbox. Receiving
 from an empty inbox blocks only the current task and immediately selects a
 replacement; capability-authorized delivery enqueues in FIFO order and wakes
@@ -238,8 +247,9 @@ termination policy under nested KVM. That proof temporarily maps the entire
 diagnostic PE in the lower half with user permissions and is therefore not an
 acceptable service isolation design. Separate signed user mappings and
 distinct CR3 roots are now exercised by both the service IPC and timer probes.
-Independent arenas for additional CPUs and supervised restart policy remain
-unfinished. Clean user-requested service exit and domain revocation are now
+Independent arenas for additional CPUs and platform-backed writable-memory
+reprovisioning on supervised restart remain unfinished. Clean user-requested
+service exit, generational ownership, and domain revocation are now
 part of the signed two-root IPC proof. The live
 probe now uses the reusable context transition that writes its validated CR3,
 sanitizes DS/ES/FS/GS, restores all fifteen general registers, and constructs

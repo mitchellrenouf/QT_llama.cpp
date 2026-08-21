@@ -14,6 +14,7 @@ impl Rights {
     pub const MAP: Self = Self(1 << 3);
     pub const SIGNAL: Self = Self(1 << 4);
     pub const DELEGATE: Self = Self(1 << 5);
+    pub const CONTROL: Self = Self(1 << 6);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)

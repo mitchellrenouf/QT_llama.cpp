@@ -6,6 +6,8 @@ use core::arch::{asm, global_asm};
 use mrml_kernel::BootPolicy;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::KernelScheduler;
+#[cfg(feature = "service-probe")]
+use mrml_kernel::ServiceSupervisor;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::SyscallRequest;
 #[cfg(any(
@@ -159,6 +161,8 @@ static mut USER_ENDPOINT: Option<Endpoint> = None;
 static mut SERVICE_RUNTIME: Option<TaskRuntime<2, 1>> = None;
 #[cfg(feature = "service-probe")]
 static mut SERVICE_ENDPOINT: Option<Endpoint> = None;
+#[cfg(feature = "service-probe")]
+static mut SERVICE_SUPERVISOR: Option<ServiceSupervisor<2>> = None;
 
 global_asm!(
     r#"
@@ -499,7 +503,10 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
                 _ => halt(),
             },
             SyscallRequest::Exit => {
-                let terminated = runtime.terminate_current().unwrap_or_else(|_| halt());
+                let supervisor = (*core::ptr::addr_of_mut!(SERVICE_SUPERVISOR))
+                    .as_mut()
+                    .unwrap_or_else(|| halt());
+                let terminated = supervisor.exit_current(runtime).unwrap_or_else(|_| halt());
                 if terminated.task != current || runtime.context(current).is_ok() {
                     halt();
                 }
@@ -816,6 +823,13 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         let sender = runtime
             .create(Priority::NORMAL, context_b)
             .unwrap_or_else(|_| halt());
+        let mut supervisor = ServiceSupervisor::<2>::new();
+        supervisor
+            .register(ObjectId(0xa0), receiver)
+            .unwrap_or_else(|_| halt());
+        supervisor
+            .register(ObjectId(0xa1), sender)
+            .unwrap_or_else(|_| halt());
         let endpoint_object = ObjectId(0x91);
         let capability = runtime
             .capabilities_mut(sender)
@@ -833,6 +847,7 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             halt();
         }
         core::ptr::addr_of_mut!(SERVICE_ENDPOINT).write(Some(Endpoint::new(endpoint_object)));
+        core::ptr::addr_of_mut!(SERVICE_SUPERVISOR).write(Some(supervisor));
         let runtime_pointer = core::ptr::addr_of_mut!(SERVICE_RUNTIME);
         runtime_pointer.write(Some(runtime));
         let context = (*runtime_pointer)
