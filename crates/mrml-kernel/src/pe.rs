@@ -9,6 +9,7 @@ const SECTION_READ: u32 = 0x4000_0000;
 const SECTION_WRITE: u32 = 0x8000_0000;
 pub const MAX_PE_SECTIONS: usize = 32;
 pub const MAX_PE_IMAGE_BYTES: u32 = 512 * 1024 * 1024;
+pub const MAX_PE_RELOCATIONS: usize = 65_536;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PeError {
@@ -26,6 +27,10 @@ pub enum PeError {
     WritableExecutableSection,
     EntryPointNotExecutable,
     InvalidDestination,
+    UnsupportedImports,
+    InvalidRelocations,
+    RelocationsRequired,
+    RelocationOverflow,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +101,8 @@ pub struct PeImage<'a> {
     headers_size: u32,
     section_table: usize,
     section_count: usize,
+    relocation_rva: u32,
+    relocation_size: u32,
 }
 
 impl<'a> PeImage<'a> {
@@ -143,6 +150,14 @@ impl<'a> PeImage<'a> {
         let file_alignment = read_u32(encoded, optional + 36)?;
         let image_size = read_u32(encoded, optional + 56)?;
         let headers_size = read_u32(encoded, optional + 60)?;
+        let directory_count = read_u32(encoded, optional + 108)?;
+        let (import_rva, import_size) =
+            directory(encoded, optional, optional_size, directory_count, 1)?;
+        if import_rva != 0 || import_size != 0 {
+            return Err(PeError::UnsupportedImports);
+        }
+        let (relocation_rva, relocation_size) =
+            directory(encoded, optional, optional_size, directory_count, 5)?;
         if section_alignment < 4096
             || !section_alignment.is_power_of_two()
             || !(512..=65_536).contains(&file_alignment)
@@ -173,6 +188,8 @@ impl<'a> PeImage<'a> {
             headers_size,
             section_table,
             section_count,
+            relocation_rva,
+            relocation_size,
         };
         let mut entry_is_executable = false;
         for left_index in 0..section_count {
@@ -212,6 +229,7 @@ impl<'a> PeImage<'a> {
         if !entry_is_executable {
             return Err(PeError::EntryPointNotExecutable);
         }
+        image.validate_relocations()?;
         Ok(image)
     }
 
@@ -260,8 +278,17 @@ impl<'a> PeImage<'a> {
     /// must be exactly `SizeOfImage`; exact sizing prevents stale adjacent
     /// bytes from accidentally becoming part of the executable measurement.
     pub fn materialize(&self, destination: &mut [u8]) -> Result<u64, PeError> {
+        self.materialize_at(destination, self.image_base)
+    }
+    pub fn materialize_at(&self, destination: &mut [u8], load_base: u64) -> Result<u64, PeError> {
         if destination.len() != self.image_size as usize {
             return Err(PeError::InvalidDestination);
+        }
+        if load_base % 65_536 != 0 || load_base.checked_add(self.image_size as u64).is_none() {
+            return Err(PeError::InvalidDestination);
+        }
+        if load_base != self.image_base && self.relocation_size == 0 {
+            return Err(PeError::RelocationsRequired);
         }
         destination.fill(0);
         let headers = self.headers_size as usize;
@@ -278,9 +305,67 @@ impl<'a> PeImage<'a> {
                 .ok_or(PeError::InvalidDestination)?
                 .copy_from_slice(source);
         }
-        self.image_base
+        if load_base != self.image_base {
+            self.apply_relocations(destination, load_base)?;
+        }
+        load_base
             .checked_add(self.entry_rva as u64)
             .ok_or(PeError::InvalidImageSize)
+    }
+
+    fn validate_relocations(&self) -> Result<(), PeError> {
+        if (self.relocation_rva == 0) != (self.relocation_size == 0) {
+            return Err(PeError::InvalidRelocations);
+        }
+        if self.relocation_size == 0 {
+            return Ok(());
+        }
+        let bytes = self.rva_file_data(self.relocation_rva, self.relocation_size)?;
+        walk_relocations(bytes, self.image_size, |_, _| Ok(()))
+    }
+    fn apply_relocations(&self, destination: &mut [u8], load_base: u64) -> Result<(), PeError> {
+        let bytes = self.rva_file_data(self.relocation_rva, self.relocation_size)?;
+        let preferred = self.image_base;
+        walk_relocations(bytes, self.image_size, |target, kind| {
+            if kind == 0 {
+                return Ok(());
+            }
+            let at = target as usize;
+            let value = u64::from_le_bytes(
+                destination[at..at + 8]
+                    .try_into()
+                    .map_err(|_| PeError::InvalidRelocations)?,
+            );
+            let relocated = if load_base >= preferred {
+                value.checked_add(load_base - preferred)
+            } else {
+                value.checked_sub(preferred - load_base)
+            }
+            .ok_or(PeError::RelocationOverflow)?;
+            destination[at..at + 8].copy_from_slice(&relocated.to_le_bytes());
+            Ok(())
+        })
+    }
+    fn rva_file_data(&self, rva: u32, size: u32) -> Result<&'a [u8], PeError> {
+        let end = rva.checked_add(size).ok_or(PeError::InvalidRelocations)?;
+        for index in 0..self.section_count {
+            let section = self.section(index)?;
+            let raw_end = section
+                .virtual_address
+                .checked_add(section.file_size)
+                .ok_or(PeError::InvalidRelocations)?;
+            if rva >= section.virtual_address && end <= raw_end {
+                let offset = section
+                    .file_offset
+                    .checked_add(rva - section.virtual_address)
+                    .ok_or(PeError::InvalidRelocations)? as usize;
+                return self
+                    .encoded
+                    .get(offset..offset + size as usize)
+                    .ok_or(PeError::InvalidRelocations);
+            }
+        }
+        Err(PeError::InvalidRelocations)
     }
     pub fn section(&self, index: usize) -> Result<PeSection, PeError> {
         if index >= self.section_count {
@@ -363,6 +448,64 @@ fn pages_for(bytes: u32) -> Result<u32, PeError> {
         .filter(|pages| *pages != 0)
         .ok_or(PeError::InvalidSection)
 }
+fn directory(
+    bytes: &[u8],
+    optional: usize,
+    optional_size: usize,
+    count: u32,
+    index: usize,
+) -> Result<(u32, u32), PeError> {
+    if count as usize <= index {
+        return Ok((0, 0));
+    }
+    let at = 112usize
+        .checked_add(index.checked_mul(8).ok_or(PeError::InvalidOptionalHeader)?)
+        .ok_or(PeError::InvalidOptionalHeader)?;
+    if at + 8 > optional_size {
+        return Err(PeError::InvalidOptionalHeader);
+    }
+    Ok((
+        read_u32(bytes, optional + at)?,
+        read_u32(bytes, optional + at + 4)?,
+    ))
+}
+fn walk_relocations(
+    mut bytes: &[u8],
+    image_size: u32,
+    mut visit: impl FnMut(u32, u16) -> Result<(), PeError>,
+) -> Result<(), PeError> {
+    let mut count = 0usize;
+    while !bytes.is_empty() {
+        if bytes.len() < 8 {
+            return Err(PeError::InvalidRelocations);
+        }
+        let page = read_u32(bytes, 0)?;
+        let block_size = read_u32(bytes, 4)? as usize;
+        if block_size < 8 || block_size > bytes.len() || block_size % 2 != 0 || page % 4096 != 0 {
+            return Err(PeError::InvalidRelocations);
+        }
+        for entry in bytes[8..block_size].chunks_exact(2) {
+            count = count.checked_add(1).ok_or(PeError::InvalidRelocations)?;
+            if count > MAX_PE_RELOCATIONS {
+                return Err(PeError::InvalidRelocations);
+            }
+            let encoded = u16::from_le_bytes([entry[0], entry[1]]);
+            let kind = encoded >> 12;
+            if kind != 0 && kind != 10 {
+                return Err(PeError::InvalidRelocations);
+            }
+            let target = page
+                .checked_add((encoded & 0x0fff) as u32)
+                .ok_or(PeError::InvalidRelocations)?;
+            if kind == 10 && target.checked_add(8).is_none_or(|end| end > image_size) {
+                return Err(PeError::InvalidRelocations);
+            }
+            visit(target, kind)?;
+        }
+        bytes = &bytes[block_size..];
+    }
+    Ok(())
+}
 const fn overlaps(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> bool {
     a_start < b_end && b_start < a_end
 }
@@ -424,6 +567,30 @@ mod tests {
         pe[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
         pe[section + 36..section + 40]
             .copy_from_slice(&(SECTION_READ | SECTION_EXECUTE).to_le_bytes());
+        pe
+    }
+
+    fn relocatable_pe() -> [u8; 1536] {
+        let mut pe = [0u8; 1536];
+        pe[..1024].copy_from_slice(&valid_pe());
+        pe[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        let optional = 0x98;
+        pe[optional + 56..optional + 60].copy_from_slice(&0x3000u32.to_le_bytes());
+        pe[optional + 108..optional + 112].copy_from_slice(&6u32.to_le_bytes());
+        let directory = optional + 112 + 5 * 8;
+        pe[directory..directory + 4].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[directory + 4..directory + 8].copy_from_slice(&12u32.to_le_bytes());
+        let section = optional + 240 + 40;
+        pe[section..section + 6].copy_from_slice(b".reloc");
+        pe[section + 8..section + 12].copy_from_slice(&12u32.to_le_bytes());
+        pe[section + 12..section + 16].copy_from_slice(&0x2000u32.to_le_bytes());
+        pe[section + 16..section + 20].copy_from_slice(&0x200u32.to_le_bytes());
+        pe[section + 20..section + 24].copy_from_slice(&0x400u32.to_le_bytes());
+        pe[section + 36..section + 40].copy_from_slice(&SECTION_READ.to_le_bytes());
+        pe[0x200..0x208].copy_from_slice(&0x0000_0001_4000_1234u64.to_le_bytes());
+        pe[0x400..0x404].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[0x404..0x408].copy_from_slice(&12u32.to_le_bytes());
+        pe[0x408..0x40a].copy_from_slice(&0xa000u16.to_le_bytes());
         pe
     }
 
@@ -495,6 +662,27 @@ mod tests {
         assert_eq!(
             image.materialize(&mut loaded[..4096]),
             Err(PeError::InvalidDestination)
+        );
+    }
+
+    #[test]
+    fn applies_only_bounded_dir64_relocations() {
+        let encoded = relocatable_pe();
+        let image = PeImage::parse(&encoded).unwrap();
+        let mut loaded = [0u8; 0x3000];
+        assert_eq!(
+            image.materialize_at(&mut loaded, 0x0000_0001_4001_0000),
+            Ok(0x0000_0001_4001_1000)
+        );
+        assert_eq!(
+            u64::from_le_bytes(loaded[0x1000..0x1008].try_into().unwrap()),
+            0x0000_0001_4001_1234
+        );
+        let fixed_encoded = valid_pe();
+        let fixed = PeImage::parse(&fixed_encoded).unwrap();
+        assert_eq!(
+            fixed.materialize_at(&mut loaded[..0x2000], 0x0000_0001_4001_0000),
+            Err(PeError::RelocationsRequired)
         );
     }
 }

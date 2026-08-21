@@ -42,7 +42,10 @@ pub use ipc::{
 pub use memory::{
     FrameAllocator, MemoryError, MemoryKind, MemoryMap, MemoryRegion, PAGE_SIZE, PhysAddr,
 };
-pub use pe::{MAX_PE_IMAGE_BYTES, MAX_PE_SECTIONS, PeError, PeImage, PeLoadRegion, PeSection};
+pub use pe::{
+    MAX_PE_IMAGE_BYTES, MAX_PE_RELOCATIONS, MAX_PE_SECTIONS, PeError, PeImage, PeLoadRegion,
+    PeSection,
+};
 pub use platform::{Architecture, Hypervisor, IsolationClass, VmRole};
 pub use policy::{
     DeviceAddress, DeviceGrant, HostDevice, IommuTopology, MAX_VM_NAME, PolicyError, SystemPolicy,

@@ -170,9 +170,13 @@ zeroed, and returns the checked preferred-base entry address. A separate load
 plan describes read-only NX headers and the final W^X permission of every
 section. Platform code must populate pages while NX is active and install the
 final permissions only after copying completes. Image size is capped at 512
-MiB to bound memory consumption. Relocation application, page allocation,
-page-table installation, and transfer to a separately loaded image remain
-pending; imports are not part of the standalone MRML ABI.
+MiB to bound memory consumption. Optional PE base relocation tables are fully
+validated before loading, capped at 65,536 entries, and accept only padding and
+x86-64 `DIR64` relocations; malformed blocks, unsupported relocation types,
+out-of-image targets, arithmetic overflow, and rebasing a fixed image fail
+closed. PE imports are rejected because they are not part of the standalone
+MRML ABI. Page allocation, page-table installation, and transfer to a
+separately loaded image remain pending.
 
 Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
 dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.
