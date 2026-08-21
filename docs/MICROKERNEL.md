@@ -523,9 +523,9 @@ The kernel applies the same validation again when decoding the authenticated
 handoff.
 
 The standalone kernel immediately installs an image-owned GDT preserving the
-transition selectors and a complete image-owned IDT whose gates all target a
-non-returning interrupt-disabled halt stub. Interrupts remain disabled; this is
-deterministic fail-stop handling, not yet recoverable fault dispatch. A signed
+transition selectors and a complete image-owned IDT. Architectural exceptions
+enter vector-specific stubs; unassigned external vectors retain a non-returning
+interrupt-disabled fallback. A signed
 `fault-probe` build executed `UD2` under QEMU and stopped with `HLT=1` at the
 kernel handler while retaining the loader-created CR3 and kernel GDT/IDT bases.
 Descriptor construction now lives in the reusable x86_64 architecture module
@@ -533,26 +533,23 @@ rather than being duplicated in the PE image. It validates canonical handler
 addresses and table ranges, a ring-zero GDT selector that names an existing
 entry, the exact 256-gate IDT size, 16-bit descriptor limits, IST indices, and
 gate privilege before writing memory or executing `LGDT` or `LIDT`.
-The architecture module now also defines the exact 176-byte trap-frame contract
-for the forthcoming assembly entry stubs. Its fail-closed dispatcher validates
+The architecture module also defines the exact 176-byte trap-frame contract
+used by the assembly entry stubs. Its fail-closed dispatcher validates
 the exception vector, privilege transition, canonical RIP and user RSP, fixed
 RFLAGS bits, and whether that vector architecturally carries an error code.
 Validated ordinary user exceptions terminate only the current task; NMI,
 double fault, machine check, every kernel exception, and every malformed frame
 halt the kernel. Page faults additionally require a canonical captured CR2.
-This policy is tested on Windows and Linux, but the standalone image still uses
-fail-stop disposition until task revocation and the context switcher are
-connected; recoverable user-task execution is not yet claimed. The image now
-does install 32 distinct original assembly stubs. They normalize vectors with
+The image installs 32 distinct original assembly stubs. They normalize vectors with
 and without CPU error codes, preserve every general register, clear DF, and
 enter the Rust dispatcher through an explicit SysV64 boundary. IDT construction
 validates every handler before modifying the live table, exposes only breakpoint
 and overflow gates to ring three, and retains the fail-stop fallback for vectors
 32--255. A signed nested-KVM `fault-probe` build executed `UD2`, emitted the
 dispatcher's exact vector-6 proof through diagnostic port `0x4d53`, resumed,
-and halted cleanly in 156 microseconds. This proves the new IDT gate, assembly
-normalization, and checked Rust dispatch path execute in the booted kernel; it
-does not yet prove task recovery.
+and halted cleanly in 156 microseconds. Later signed CPL3 probes prove the same
+path revokes a faulted task domain and restores a replacement through
+`CR3`/`iretq` rather than merely failing the kernel.
 
 The image-owned GDT now also contains ring-three code and data descriptors and
 an exact 104-byte x86-64 task-state segment. Initialization validates canonical,
@@ -563,9 +560,9 @@ uses IST1, so a double fault does not depend on the interrupted stack. Windows
 and Linux unit tests verify the packed offsets and descriptor encoding. A fresh
 signed nested-KVM `fault-probe` reached its expected vector-6 halt after `LTR`
 in 157 microseconds (`verify=694us`, `prepare=1156us`, `total=4830us`). The
-current 16 KiB entry and double-fault stacks are page-aligned static bring-up
-storage but do not yet have unmapped guard pages; they must be replaced with
-guarded per-CPU allocations before user execution or production claims.
+entry and double-fault stacks now come from the fixed launcher-owned 64 KiB
+arena. They are separate four-page supervisor mappings with an absent guard
+below each; the kernel image contains no static fallback privilege stack.
 
 External vector installation is now a separate validated operation restricted
 to vectors 32--254 and performed only while interrupts are disabled. The
@@ -1330,9 +1327,10 @@ replacement, lookup, and revocation use the complete generational `TaskId`, so
 a context belonging to a terminated task cannot attach to a reused scheduler
 slot. Windows and Linux tests exercise selector, flag, address, CR3, duplicate,
 revocation, and stale-generation rejection. GDT user descriptors, TSS/RSP0,
-assembly restore, CR3 switching, live ring-three entry, and cross-root timer
-preemption are exercised by signed KVM and WHP probes. Guarded per-CPU
-privilege stacks and production service lifecycle remain pending.
+assembly restore, CR3 switching, live ring-three entry, cross-root timer
+preemption, and guarded privilege stacks are exercised by signed KVM and WHP
+probes. Allocating one independent arena per additional CPU and production
+service lifecycle remain pending.
 
 ## Milestones
 
