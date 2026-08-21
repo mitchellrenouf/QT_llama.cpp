@@ -1184,6 +1184,21 @@ pub struct PreparedGpuBatch<const N: usize> {
     count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuSubmitError<E> {
+    Rejected,
+    Uncertain(E),
+}
+
+/// Narrow service boundary for lowering one already validated batch. `false`
+/// means the service definitely rejected it before any GPU-visible action;
+/// `Err` means acceptance is uncertain and requires watchdog/reset recovery.
+pub trait GpuBatchExecutor<const N: usize> {
+    type Error;
+
+    fn submit(&mut self, batch: &PreparedGpuBatch<N>) -> Result<bool, Self::Error>;
+}
+
 impl<const N: usize> PreparedGpuBatch<N> {
     fn new() -> Self {
         Self {
@@ -1401,6 +1416,24 @@ impl<const N: usize> DispatchTable<N> {
     }
 }
 
+pub fn submit_gpu_batch<E, const WATCHDOG: usize, const BATCH: usize>(
+    executor: &mut E,
+    watchdog: &mut DispatchTable<WATCHDOG>,
+    batch: &PreparedGpuBatch<BATCH>,
+) -> Result<(), GpuSubmitError<E::Error>>
+where
+    E: GpuBatchExecutor<BATCH>,
+{
+    match executor.submit(batch) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            watchdog.cancel_batch(batch);
+            Err(GpuSubmitError::Rejected)
+        }
+        Err(error) => Err(GpuSubmitError::Uncertain(error)),
+    }
+}
+
 impl Dispatch {
     pub const WIRE_LENGTH: usize = 48 + MAX_DISPATCH_BUFFERS * 32;
 
@@ -1576,6 +1609,16 @@ fn read_u64(input: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockExecutor(Result<bool, u8>);
+
+    impl<const N: usize> GpuBatchExecutor<N> for MockExecutor {
+        type Error = u8;
+
+        fn submit(&mut self, _: &PreparedGpuBatch<N>) -> Result<bool, Self::Error> {
+            self.0
+        }
+    }
 
     #[test]
     fn quotas_ranges_and_stale_buffer_ids_are_enforced() {
@@ -1962,6 +2005,48 @@ mod tests {
         watchdog.cancel_batch(&prepared);
         for entry in prepared.entries() {
             assert!(!watchdog.contains(entry.dispatch_id()));
+        }
+
+        let mut rejected_watchdog = DispatchTable::<2>::new();
+        let rejected_batch = rejected_watchdog.begin_batch(&batch, 100, 200).unwrap();
+        assert_eq!(
+            submit_gpu_batch(
+                &mut MockExecutor(Ok(false)),
+                &mut rejected_watchdog,
+                &rejected_batch
+            ),
+            Err(GpuSubmitError::Rejected)
+        );
+        for entry in rejected_batch.entries() {
+            assert!(!rejected_watchdog.contains(entry.dispatch_id()));
+        }
+
+        let mut uncertain_watchdog = DispatchTable::<2>::new();
+        let uncertain_batch = uncertain_watchdog.begin_batch(&batch, 100, 200).unwrap();
+        assert_eq!(
+            submit_gpu_batch(
+                &mut MockExecutor(Err(7)),
+                &mut uncertain_watchdog,
+                &uncertain_batch
+            ),
+            Err(GpuSubmitError::Uncertain(7))
+        );
+        for entry in uncertain_batch.entries() {
+            assert!(uncertain_watchdog.contains(entry.dispatch_id()));
+        }
+
+        let mut accepted_watchdog = DispatchTable::<2>::new();
+        let accepted_batch = accepted_watchdog.begin_batch(&batch, 100, 200).unwrap();
+        assert!(
+            submit_gpu_batch(
+                &mut MockExecutor(Ok(true)),
+                &mut accepted_watchdog,
+                &accepted_batch
+            )
+            .is_ok()
+        );
+        for entry in accepted_batch.entries() {
+            assert!(accepted_watchdog.contains(entry.dispatch_id()));
         }
 
         session.free(buffer).unwrap();

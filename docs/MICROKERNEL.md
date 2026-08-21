@@ -98,6 +98,11 @@ transactionally. Each request receives a generational `DispatchId`; capacity,
 deadline, or duplicate failures cancel every ID minted by that attempt. A
 service rejection can likewise cancel all still-live prepared entries, while
 already completed identities remain invalid and are never revived.
+The executor handoff is explicitly three-way. Accepted graphs retain watchdog
+state; a definite rejection before GPU-visible action cancels the prepared
+batch; an uncertain service error retains every identity for deadline expiry
+and reset. Treating uncertainty as rejection would permit late GPU completions
+to collide with reused state and is prohibited by the interface.
 The KVM adapter now consumes the common layout and registers two dedicated
 memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining

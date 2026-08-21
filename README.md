@@ -132,7 +132,9 @@ for control descriptors. Batches have an exact-length pointer-free `MRGB`
 encoding containing up to 32 ordered canonical dispatches and are fully
 resource-revalidated after decoding. Whole batches are admitted to the
 watchdog transactionally: every dispatch receives a generational identity or
-all partial admissions are invalidated before service handoff. Also implemented are the dispatch watchdog and
+all partial admissions are invalidated before service handoff. The executor
+contract distinguishes acceptance, definite pre-accept rejection, and
+uncertain failure; uncertain work remains tracked until timeout/reset. Also implemented are the dispatch watchdog and
 adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
