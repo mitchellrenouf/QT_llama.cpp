@@ -10,7 +10,7 @@ mod trap;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
 pub use context::{
     ContextError, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_INITIAL_RFLAGS, UserContext,
-    UserContextTable, enter_user_context,
+    UserContextTable, enter_user_context, enter_user_context_on_stack,
 };
 pub use descriptors::{
     AlignedTaskState, DescriptorError, InterruptGate, TaskStateSegment, install_exception_tables,

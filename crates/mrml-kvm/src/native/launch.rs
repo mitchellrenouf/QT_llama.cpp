@@ -1,7 +1,7 @@
 use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, VirtAddr};
 use mrml_kernel::{
-    BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, PAGE_SIZE, PhysAddr, VerifiedExecutable,
-    VmBackend, VmExit,
+    ArtifactKind, BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, PAGE_SIZE, PhysAddr,
+    VerifiedExecutable, VmBackend, VmExit,
 };
 
 use super::{KvmBackend, KvmError, KvmSystem, KvmVcpuSnapshot, map_loaded_handoff, map_loaded_pe};
@@ -69,6 +69,8 @@ pub struct PreparedKvmGuest<const N: usize> {
     backend: KvmBackend<N>,
     entry: u64,
     root: PhysAddr,
+    service_entry: Option<u64>,
+    service_root: Option<PhysAddr>,
 }
 
 impl<const N: usize> PreparedKvmGuest<N> {
@@ -77,6 +79,12 @@ impl<const N: usize> PreparedKvmGuest<N> {
     }
     pub const fn page_table_root(&self) -> PhysAddr {
         self.root
+    }
+    pub const fn service_entry(&self) -> Option<u64> {
+        self.service_entry
+    }
+    pub const fn service_page_table_root(&self) -> Option<PhysAddr> {
+        self.service_root
     }
     pub fn snapshot(&self) -> Result<KvmVcpuSnapshot, KvmError> {
         self.backend.snapshot()
@@ -129,6 +137,103 @@ impl<const N: usize> PreparedKvmGuest<N> {
             .map_memory(layout.command_base(), bytes, false)?;
         self.backend
             .map_memory(layout.completion_base(), bytes, true)?;
+        Ok(self)
+    }
+
+    /// Adds one separately authenticated service image and constructs a fresh
+    /// root containing supervisor-only kernel PE mappings plus only that
+    /// service's user PE and guarded stack mapping.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_isolated_service(
+        mut self,
+        kernel: &VerifiedExecutable<'_>,
+        kernel_layout: KvmLaunchLayout,
+        service: &VerifiedExecutable<'_>,
+        service_physical: u64,
+        service_virtual: u64,
+        stack_physical: u64,
+        stack_virtual: u64,
+        stack_pages: u64,
+        table_physical: u64,
+        table_pages: u64,
+    ) -> Result<Self, KvmError> {
+        if self.service_root.is_some()
+            || kernel.artifact().kind() != ArtifactKind::Kernel
+            || service.artifact().kind() != ArtifactKind::ServiceImage
+            || stack_pages == 0
+            || table_pages < 4
+            || service_virtual == 0
+            || service_virtual >= 1 << 47
+            || stack_virtual < PAGE_SIZE
+            || stack_virtual >= 1 << 47
+            || [
+                service_physical,
+                stack_physical,
+                table_physical,
+                service_virtual,
+                stack_virtual,
+            ]
+            .iter()
+            .any(|address| !address.is_multiple_of(PAGE_SIZE))
+        {
+            return Err(KvmError::InvalidMapping);
+        }
+        let image_bytes = page_bytes(service.image().image_size() as u64)?;
+        let stack_bytes = stack_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(KvmError::MemoryOverflow)?;
+        let table_bytes = table_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(KvmError::MemoryOverflow)?;
+        validate_ranges(&[
+            (service_physical, image_bytes),
+            (stack_physical, stack_bytes),
+            (table_physical, table_bytes),
+        ])?;
+        validate_ranges(&[
+            (service_virtual, image_bytes),
+            (
+                stack_virtual - PAGE_SIZE,
+                stack_bytes
+                    .checked_add(PAGE_SIZE)
+                    .ok_or(KvmError::MemoryOverflow)?,
+            ),
+        ])?;
+        self.backend
+            .map_memory(service_physical, image_bytes as usize, false)?;
+        self.backend
+            .map_memory(stack_physical, stack_bytes as usize, false)?;
+        self.backend
+            .map_memory(table_physical, table_bytes as usize, false)?;
+        let loaded_service = self.backend.memory.load_verified_executable(
+            service,
+            service_physical,
+            service_virtual,
+        )?;
+        let loaded_kernel = super::KvmLoadedImage {
+            entry: self.entry,
+            virtual_base: kernel_layout.image_virtual,
+            physical_base: kernel_layout.image_physical,
+            image_bytes: kernel.image().image_size(),
+        };
+        let mut tables = self.backend.page_tables(table_physical, table_pages)?;
+        map_loaded_pe(&mut tables, kernel, loaded_kernel, false)?;
+        map_loaded_pe(&mut tables, service, loaded_service, true)?;
+        tables
+            .map(
+                Mapping::new(
+                    VirtAddr::new(stack_virtual).map_err(|_| KvmError::InvalidMapping)?,
+                    PhysAddr::new(stack_physical).map_err(|_| KvmError::InvalidMapping)?,
+                    stack_pages,
+                    PagePermissions::USER_READ_WRITE,
+                )
+                .map_err(|_| KvmError::InvalidMapping)?,
+            )
+            .map_err(|_| KvmError::PageTable)?;
+        let root = tables.root();
+        let _ = tables.into_store();
+        self.service_entry = Some(loaded_service.entry());
+        self.service_root = Some(root);
         Ok(self)
     }
 }
@@ -381,6 +486,8 @@ impl KvmSystem {
             backend,
             entry: loaded_image.entry(),
             root,
+            service_entry: None,
+            service_root: None,
         })
     }
 }

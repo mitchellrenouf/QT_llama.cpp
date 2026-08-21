@@ -665,7 +665,25 @@ page is absent, and can materialize the plan only through a fresh
 physical aliases, overlap with the guard, overflow, and a non-service artifact
 fail closed. Windows now passes 122 kernel tests. Live loading of separately
 signed service bytes and switching between independently materialized roots is
-still required.
+now implemented in the KVM integration path. `PreparedKvmGuest` maps service
+image, stack, and table arenas into separate KVM slots, maps the kernel PE
+supervisor-only into a fresh root, maps the authenticated service PE user-only
+at its signed preferred base, leaves the lower stack guard absent, and exposes
+the root and entry only after all mappings succeed. The diagnostic kernel uses
+root `0xc00000`, service entry `0x140001000`, and a two-page stack ending at
+`0x702000`.
+
+The first isolated run exposed an important CR3 transition invariant: both the
+saved context and the stack used to build the `IRETQ` frame must remain mapped
+after CR3 changes. Mapping the old boot stack would have broadened every service
+root, so the architecture now provides `enter_user_context_on_stack`, which
+moves first to the kernel-only per-CPU transition stack shared by both roots and
+then performs the existing CR3/register transition. With the context stored in
+kernel-only image data, a freshly signed kernel and independently signed 2 KiB
+service PE entered CPL3 and returned through vector 3 under nested KVM in 208
+microseconds (`verify=11987us`, `prepare=1149us`, `total=18464us`). The extra
+verification time includes two independent Lamport/SHA3 artifact checks. WHP
+parity, service syscalls, and persistent service scheduling remain unfinished.
 
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel

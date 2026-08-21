@@ -6,6 +6,7 @@ use core::arch::{asm, global_asm};
 use mrml_kernel::BootPolicy;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::KernelScheduler;
+use mrml_kernel::UserCallFrame;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
 #[cfg(feature = "user-probe")]
@@ -14,8 +15,12 @@ use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
     load_task_register, write_task_state_descriptor,
 };
+#[cfg(any(feature = "user-probe", feature = "service-probe"))]
+use mrml_kernel::arch::x86_64::{TrapDisposition, UserContext};
 #[cfg(feature = "user-probe")]
-use mrml_kernel::arch::x86_64::{TrapDisposition, UserContext, enter_user_context};
+use mrml_kernel::arch::x86_64::enter_user_context;
+#[cfg(feature = "service-probe")]
+use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -24,11 +29,12 @@ use mrml_kernel::{
 #[cfg(all(
     not(feature = "fault-probe"),
     not(feature = "timer-probe"),
-    not(feature = "user-probe")
+    not(feature = "user-probe"),
+    not(feature = "service-probe")
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
 #[cfg(feature = "user-probe")]
-use mrml_kernel::{Endpoint, ObjectId, Rights, SyscallRequest, TaskRuntime, UserCallFrame};
+use mrml_kernel::{Endpoint, ObjectId, Rights, SyscallRequest, TaskRuntime};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
 use mrml_kernel::{
     GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuGuestCommandPublisher, GpuQueueIdentity,
@@ -60,6 +66,16 @@ const TIMER_VECTOR: u8 = 32;
 const USER_PROBE_PORT: u16 = 0x4d56;
 #[cfg(feature = "user-probe")]
 const USER_CALL_PROBE_PORT: u16 = 0x4d57;
+#[cfg(feature = "service-probe")]
+const SERVICE_PROBE_PORT: u16 = 0x4d58;
+#[cfg(feature = "service-probe")]
+const SERVICE_FRAME_PORT: u16 = 0x4d59;
+#[cfg(feature = "service-probe")]
+const SERVICE_ROOT: u64 = 0x00c0_0000;
+#[cfg(feature = "service-probe")]
+const SERVICE_ENTRY: u64 = 0x0000_0001_4000_1000;
+#[cfg(feature = "service-probe")]
+const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 
 const GDT_ENTRIES: usize = 8;
 const TSS_SELECTOR: u16 = 0x08;
@@ -89,6 +105,8 @@ static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 static mut USER_RUNTIME: Option<TaskRuntime<2, 1>> = None;
 #[cfg(feature = "user-probe")]
 static mut USER_ENDPOINT: Option<Endpoint> = None;
+#[cfg(feature = "service-probe")]
+static mut SERVICE_CONTEXT: Option<UserContext> = None;
 
 global_asm!(
     r#"
@@ -371,6 +389,18 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
     } else {
         None
     };
+    #[cfg(feature = "service-probe")]
+    unsafe {
+        let proof = normalized.vector as u32
+            | ((normalized.cs as u32 & 0xff) << 8)
+            | ((normalized.ss as u32 & 0xff) << 16);
+        asm!(
+            "out dx, eax",
+            in("dx") SERVICE_FRAME_PORT,
+            in("eax") proof,
+            options(nomem, nostack)
+        );
+    }
     let _disposition = match normalized.disposition(fault_address) {
         Ok(disposition) => disposition,
         Err(_) => halt(),
@@ -411,6 +441,22 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
             asm!(
                 "out dx, eax",
                 in("dx") USER_PROBE_PORT,
+                in("eax") 3u32,
+                options(nomem, nostack)
+            )
+        };
+    }
+    #[cfg(feature = "service-probe")]
+    if _disposition
+        == (TrapDisposition::TerminateUser {
+            vector: 3,
+            address: None,
+        })
+    {
+        unsafe {
+            asm!(
+                "out dx, eax",
+                in("dx") SERVICE_PROBE_PORT,
                 in("eax") 3u32,
                 options(nomem, nostack)
             )
@@ -483,6 +529,24 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     };
     if region_count != handoff.region_count() {
         halt();
+    }
+    #[cfg(feature = "service-probe")]
+    unsafe {
+        let root = match PhysAddr::new(SERVICE_ROOT) {
+            Ok(root) => root,
+            Err(_) => halt(),
+        };
+        let context = match UserContext::new(root, SERVICE_ENTRY, SERVICE_STACK_TOP) {
+            Ok(context) => context,
+            Err(_) => halt(),
+        };
+        let context_pointer = core::ptr::addr_of_mut!(SERVICE_CONTEXT);
+        context_pointer.write(Some(context));
+        let context = match (*context_pointer).as_ref() {
+            Some(context) => context as *const UserContext,
+            None => halt(),
+        };
+        enter_service_probe_context(&*context);
     }
     #[cfg(feature = "user-probe")]
     unsafe {
@@ -582,7 +646,11 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             options(nomem, nostack)
         );
     }
-    #[cfg(all(not(feature = "timer-probe"), not(feature = "user-probe")))]
+    #[cfg(all(
+        not(feature = "timer-probe"),
+        not(feature = "user-probe"),
+        not(feature = "service-probe")
+    ))]
     {
         #[cfg(feature = "production-policy")]
         {
@@ -671,6 +739,13 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
 #[cfg(feature = "user-probe")]
 unsafe fn enter_user_probe_context(context: &UserContext) {
     unsafe { enter_user_context(context) }
+}
+
+#[cfg(feature = "service-probe")]
+unsafe fn enter_service_probe_context(context: &UserContext) {
+    let transition_stack =
+        core::ptr::addr_of!(KERNEL_ENTRY_STACK) as u64 + PRIVILEGE_STACK_BYTES as u64;
+    unsafe { enter_user_context_on_stack(context, transition_stack) }
 }
 
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]

@@ -1,0 +1,12 @@
+[package]
+name = "mrml-service-image"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mrml-service-pe"
+path = "src/main.rs"
+test = false
+bench = false

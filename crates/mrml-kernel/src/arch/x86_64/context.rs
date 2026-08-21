@@ -1,6 +1,6 @@
 use super::{TrapFrame, VirtAddr};
 use crate::{PAGE_SIZE, PhysAddr, TaskId};
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
 
 global_asm!(
     r#"
@@ -37,11 +37,17 @@ mrml_x86_enter_user:
     mov rdx, qword ptr [rdx + 96]
     iretq
     ud2
+
+    .global mrml_x86_enter_user_on_stack
+mrml_x86_enter_user_on_stack:
+    mov rsp, rsi
+    jmp mrml_x86_enter_user
     "#
 );
 
 unsafe extern "sysv64" {
     fn mrml_x86_enter_user(context: *const u64) -> !;
+    fn mrml_x86_enter_user_on_stack(context: *const u64, stack: u64) -> !;
 }
 
 pub const USER_DATA_SELECTOR: u16 = 0x1b;
@@ -178,6 +184,37 @@ impl UserContext {
 /// disabled until `IRETQ` applies the context's validated flags.
 pub unsafe fn enter_user_context(context: &UserContext) -> ! {
     unsafe { mrml_x86_enter_user((context as *const UserContext).cast::<u64>()) }
+}
+
+/// Moves to a kernel-only transition stack shared by the old and new roots
+/// before installing CR3 and restoring the user context.
+///
+/// # Safety
+///
+/// `transition_stack` must be a nonzero canonical, 16-byte-aligned stack top
+/// mapped writable/supervisor in both address spaces. The remaining safety
+/// requirements of [`enter_user_context`] also apply.
+pub unsafe fn enter_user_context_on_stack(context: &UserContext, transition_stack: u64) -> ! {
+    if transition_stack == 0
+        || !transition_stack.is_multiple_of(16)
+        || ((transition_stack << 16) as i64 >> 16) as u64 != transition_stack
+    {
+        unsafe {
+            asm!(
+                "cli",
+                "2:",
+                "hlt",
+                "jmp 2b",
+                options(noreturn, nomem, nostack)
+            )
+        }
+    }
+    unsafe {
+        mrml_x86_enter_user_on_stack(
+            (context as *const UserContext).cast::<u64>(),
+            transition_stack,
+        )
+    }
 }
 
 pub struct UserContextTable<const TASKS: usize> {

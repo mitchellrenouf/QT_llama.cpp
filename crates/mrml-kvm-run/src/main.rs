@@ -39,6 +39,20 @@ const TIMER_VECTOR: u8 = 32;
 const USER_PROBE_PORT: u16 = 0x4d56;
 #[cfg(target_os = "linux")]
 const USER_CALL_PROBE_PORT: u16 = 0x4d57;
+#[cfg(target_os = "linux")]
+const SERVICE_PROBE_PORT: u16 = 0x4d58;
+#[cfg(target_os = "linux")]
+const SERVICE_FRAME_PORT: u16 = 0x4d59;
+#[cfg(target_os = "linux")]
+const SERVICE_PHYSICAL: u64 = 0x0060_0000;
+#[cfg(target_os = "linux")]
+const SERVICE_VIRTUAL: u64 = 0x0000_0001_4000_0000;
+#[cfg(target_os = "linux")]
+const SERVICE_STACK_PHYSICAL: u64 = 0x0080_0000;
+#[cfg(target_os = "linux")]
+const SERVICE_STACK_VIRTUAL: u64 = 0x0070_0000;
+#[cfg(target_os = "linux")]
+const SERVICE_TABLE_PHYSICAL: u64 = 0x00c0_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg(any(test, target_os = "linux"))]
@@ -47,6 +61,7 @@ enum LaunchMode {
     FaultProbe,
     TimerProbe,
     UserProbe,
+    ServiceProbe,
     GpuBenchmark,
 }
 
@@ -58,9 +73,10 @@ impl LaunchMode {
             "fault-probe" => Ok(Self::FaultProbe),
             "timer-probe" => Ok(Self::TimerProbe),
             "user-probe" => Ok(Self::UserProbe),
+            "service-probe" => Ok(Self::ServiceProbe),
             "gpu-benchmark" => Ok(Self::GpuBenchmark),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, user-probe, or gpu-benchmark"
+                "mode must be boot, fault-probe, timer-probe, user-probe, service-probe, or gpu-benchmark"
             )),
         }
     }
@@ -87,9 +103,10 @@ fn application_main() -> Result<()> {
         .filter(|version| *version != 0)
         .ok_or_else(|| anyhow!("minimum version must be a nonzero integer"))?;
     let mode = LaunchMode::parse(&arguments[4])?;
-    if (mode == LaunchMode::GpuBenchmark) != (arguments.len() == 8) {
+    if matches!(mode, LaunchMode::GpuBenchmark | LaunchMode::ServiceProbe) != (arguments.len() == 8)
+    {
         return Err(anyhow!(
-            "gpu-benchmark requires exactly one signed CUDA bundle, public key, and minimum version"
+            "gpu-benchmark and service-probe require exactly one matching signed artifact, public key, and minimum version"
         ));
     }
     let bundle = mrml_runtime::read_file_bounded(&arguments[1], MAX_KERNEL_BUNDLE)?;
@@ -107,6 +124,46 @@ fn application_main() -> Result<()> {
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
+    let service_bundle = if mode == LaunchMode::ServiceProbe {
+        Some(mrml_runtime::read_file_bounded(
+            &arguments[5],
+            SIGNED_ARTIFACT_OVERHEAD_BYTES + mrml_kernel::MAX_SERVICE_IMAGE_BYTES as usize,
+        )?)
+    } else {
+        None
+    };
+    let service_public = if mode == LaunchMode::ServiceProbe {
+        let public = mrml_runtime::read_file_bounded(&arguments[6], LAMPORT_PUBLIC_KEY_BYTES)?;
+        if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
+            return Err(anyhow!("invalid service public-key length"));
+        }
+        Some(public)
+    } else {
+        None
+    };
+    let service_executable = match (&service_bundle, &service_public) {
+        (Some(bundle), Some(public)) => {
+            let minimum = arguments[7]
+                .parse::<u64>()
+                .ok()
+                .filter(|version| *version != 0)
+                .ok_or_else(|| anyhow!("service minimum version must be nonzero"))?;
+            let root = TrustRoot::new(
+                ArtifactKind::ServiceImage,
+                Sha3_512::digest(public),
+                minimum,
+            );
+            let signed = SignedArtifact::decode(bundle)
+                .map_err(|_| anyhow!("invalid signed service bundle"))?;
+            Some(
+                signed
+                    .verify_executable(&root, ArtifactKind::ServiceImage)
+                    .map_err(|_| anyhow!("service signature or PE policy rejected"))?,
+            )
+        }
+        (None, None) => None,
+        _ => return Err(anyhow!("incomplete service verification inputs")),
+    };
     let cuda_bundle = if mode == LaunchMode::GpuBenchmark {
         Some(verify_cuda_bundle(
             &arguments[5],
@@ -155,11 +212,36 @@ fn application_main() -> Result<()> {
         .map_err(|_| anyhow!("invalid fixed GPU queue layout"))?;
     let mut guest = match mode {
         LaunchMode::GpuBenchmark => {
-            system.prepare_kernel_gpu_guest::<7>(0, &executable, &handoff, layout, queue_layout)
+            system.prepare_kernel_gpu_guest::<10>(0, &executable, &handoff, layout, queue_layout)
         }
-        _ => system.prepare_kernel_guest::<7>(0, &executable, &handoff, layout),
+        _ => system.prepare_kernel_guest::<10>(0, &executable, &handoff, layout),
     }
     .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
+    if mode == LaunchMode::ServiceProbe {
+        guest = guest
+            .attach_isolated_service(
+                &executable,
+                layout,
+                service_executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing verified service executable"))?,
+                SERVICE_PHYSICAL,
+                SERVICE_VIRTUAL,
+                SERVICE_STACK_PHYSICAL,
+                SERVICE_STACK_VIRTUAL,
+                2,
+                SERVICE_TABLE_PHYSICAL,
+                32,
+            )
+            .map_err(|error| anyhow!("isolated service preparation failed: {:?}", error))?;
+        if guest.service_entry() != Some(0x0000_0001_4000_1000)
+            || guest.service_page_table_root() != PhysAddr::new(SERVICE_TABLE_PHYSICAL).ok()
+        {
+            return Err(anyhow!(
+                "isolated service layout did not match the signed probe ABI"
+            ));
+        }
+    }
     let preparation_micros = preparation_started.elapsed().as_micros();
     let execution_started = Instant::now();
     let mut exit = VmBackend::run(&mut guest, 0)
@@ -264,6 +346,49 @@ fn application_main() -> Result<()> {
         }
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after user proof failed: {:?}", error))?;
+    } else if mode == LaunchMode::ServiceProbe {
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_FRAME_PORT,
+                size: 4,
+                write: true,
+                value: 0x001b_2303,
+            })
+        {
+            return Err(anyhow!(
+                "isolated service produced a malformed privilege frame: {:?}",
+                exit
+            ));
+        }
+        exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+            anyhow!(
+                "KVM execution after service frame proof failed: {:?}",
+                error
+            )
+        })?;
+        if exit
+            != (VmExit::Io {
+                port: SERVICE_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 3,
+            })
+        {
+            let state = guest
+                .snapshot()
+                .map_err(|error| anyhow!("service failure snapshot failed: {:?}", error))?;
+            return Err(anyhow!(
+                "isolated signed service did not return through its CPL3 breakpoint: {:?}, rip={:#x} cs={:#x} rsp={:#x} cr2={:#x} cr3={:#x}",
+                exit,
+                state.instruction_pointer(),
+                state.code_selector(),
+                state.stack_pointer(),
+                state.fault_address(),
+                state.page_table_root()
+            ));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution after service proof failed: {:?}", error))?;
     }
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
@@ -334,6 +459,11 @@ fn application_main() -> Result<()> {
         LaunchMode::UserProbe if marker != [0; 4] => {
             return Err(anyhow!("user probe unexpectedly modified the framebuffer"));
         }
+        LaunchMode::ServiceProbe if marker != [0; 4] => {
+            return Err(anyhow!(
+                "service probe unexpectedly modified the framebuffer"
+            ));
+        }
         LaunchMode::GpuBenchmark if marker != [0x78, 0xe0, 0x46, 0] => {
             return Err(anyhow!(
                 "kernel did not authenticate the GPU benchmark completion"
@@ -382,8 +512,8 @@ fn handoff_entropy(handoff: &[u8]) -> Result<[u8; 32]> {
 }
 
 #[cfg(target_os = "linux")]
-fn service_gpu_benchmark(
-    guest: &mut mrml_kvm::PreparedKvmGuest<7>,
+fn service_gpu_benchmark<const N: usize>(
+    guest: &mut mrml_kvm::PreparedKvmGuest<N>,
     layout: GpuSharedQueueLayout,
     entropy: [u8; 32],
     cuda_bundle: &VerifiedGpuKernelBundle,
@@ -587,6 +717,10 @@ mod tests {
         assert_eq!(
             LaunchMode::parse("user-probe").unwrap(),
             LaunchMode::UserProbe
+        );
+        assert_eq!(
+            LaunchMode::parse("service-probe").unwrap(),
+            LaunchMode::ServiceProbe
         );
         assert!(LaunchMode::parse("diagnostic").is_err());
         assert_eq!(

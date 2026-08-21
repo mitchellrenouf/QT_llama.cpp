@@ -152,7 +152,12 @@ explicit supervisor-only higher-half kernel mappings, user PE sections with
 their final W^X permissions, one user RW/NX stack, and an absent lower guard
 page, then materializes those mappings into a newly allocated page-table root.
 The signed service bytes still need to be supplied and exercised by the live
-KVM/WHP launch paths.
+WHP launch path. The KVM path now verifies the kernel and service with separate
+one-time keys, materializes a fresh service root, retains only supervisor kernel
+PE mappings plus the service PE and guarded stack, switches CR3, and enters the
+service at CPL3. A separately built 2 KiB service PE raises its signed breakpoint
+and returns through the kernel IDT successfully. WHP parity and a useful service
+loop remain unfinished.
 Task-to-task IPC is now routed through those runtime domains. It rejects
 self-routing, requires the sender's exact endpoint capability, attenuates every
 transferred right, and transactionally revokes all receiver capabilities if
