@@ -175,6 +175,12 @@ rotation, corruption, conflict, and replay paths have unit tests. Actual TPM NV
 and UEFI variable backends remain pending and no rollback-resistance claim is
 made until one is implemented and tested on physical hardware.
 
+Boot admission also requires a coherent signed artifact set: exactly one
+kernel, VM image, service image, CUDA kernel bundle, and launch policy from the
+same release as the firmware evidence. The verified kernel content digest must
+equal the measured-boot kernel digest. Individually valid artifacts from
+different releases therefore cannot be spliced into an accepted boot chain.
+
 Each milestone requires Windows gnullvm and Arch Linux builds/tests, parser and
 capability fuzz-style adversarial vectors, unsafe/FFI review, boot tests under
 both hypervisors where applicable, and before/after latency and throughput

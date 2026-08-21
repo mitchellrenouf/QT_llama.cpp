@@ -7,6 +7,8 @@ pub enum BootValidationError {
     RollbackDetected,
     MissingSignedArtifact,
     DuplicateSignedArtifact,
+    MixedArtifactRelease,
+    KernelMeasurementMismatch,
 }
 
 /// Evidence normalized by the architecture-specific UEFI loader. The kernel
@@ -99,11 +101,19 @@ impl BootPolicy {
             if artifact.version() < self.minimum_image_version {
                 return Err(BootValidationError::RollbackDetected);
             }
+            if artifact.version() != evidence.image_version {
+                return Err(BootValidationError::MixedArtifactRelease);
+            }
             let index = artifact.kind() as usize - 1;
             if present[index] {
                 return Err(BootValidationError::DuplicateSignedArtifact);
             }
             present[index] = true;
+            if artifact.kind() == crate::ArtifactKind::Kernel
+                && artifact.digest() != evidence.image_measurement()
+            {
+                return Err(BootValidationError::KernelMeasurementMismatch);
+            }
         }
         if present.iter().any(|value| !value) {
             return Err(BootValidationError::MissingSignedArtifact);
@@ -115,6 +125,11 @@ impl BootPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ArtifactKind, TrustRoot, artifact_statement};
+    use mrml_crypto::{
+        LAMPORT_PRIVATE_KEY_BYTES, LAMPORT_PUBLIC_KEY_BYTES, LAMPORT_SIGNATURE_BYTES, Sha3_512,
+        lamport_public_key, lamport_sign,
+    };
 
     fn evidence(version: u64, secure: bool, measured: bool) -> BootEvidence {
         BootEvidence::new([1; 32], [2; 64], version, secure, measured).unwrap()
@@ -148,5 +163,86 @@ mod tests {
             Err(BootValidationError::RollbackDetected)
         );
         assert_eq!(policy.validate(&evidence(7, true, true)), Ok(()));
+    }
+
+    fn signed_artifact(
+        kind: ArtifactKind,
+        version: u64,
+        content: &[u8],
+        private: &[u8; LAMPORT_PRIVATE_KEY_BYTES],
+        public: &[u8; LAMPORT_PUBLIC_KEY_BYTES],
+    ) -> crate::VerifiedArtifact {
+        let mut signature = [0u8; LAMPORT_SIGNATURE_BYTES];
+        let statement = artifact_statement(
+            kind,
+            version,
+            content.len() as u64,
+            Sha3_512::digest(content),
+        );
+        lamport_sign(private, &statement, &mut signature).unwrap();
+        TrustRoot::new(kind, Sha3_512::digest(public), version)
+            .verify(version, content, public, &signature)
+            .unwrap()
+    }
+
+    #[test]
+    fn signed_chain_requires_one_measured_coherent_release() {
+        let mut private = [0u8; LAMPORT_PRIVATE_KEY_BYTES];
+        for (index, byte) in private.iter_mut().enumerate() {
+            *byte = (index as u64).wrapping_mul(41).wrapping_add(17) as u8;
+        }
+        let mut public = [0u8; LAMPORT_PUBLIC_KEY_BYTES];
+        lamport_public_key(&private, &mut public).unwrap();
+        let kernel = b"kernel release eight";
+        let artifacts = [
+            signed_artifact(ArtifactKind::Kernel, 8, kernel, &private, &public),
+            signed_artifact(ArtifactKind::VmImage, 8, b"vm", &private, &public),
+            signed_artifact(ArtifactKind::ServiceImage, 8, b"service", &private, &public),
+            signed_artifact(
+                ArtifactKind::CudaKernelBundle,
+                8,
+                b"cuda",
+                &private,
+                &public,
+            ),
+            signed_artifact(ArtifactKind::LaunchPolicy, 8, b"policy", &private, &public),
+        ];
+        let references = [
+            &artifacts[0],
+            &artifacts[1],
+            &artifacts[2],
+            &artifacts[3],
+            &artifacts[4],
+        ];
+        let valid = BootEvidence::new([1; 32], Sha3_512::digest(kernel), 8, true, true).unwrap();
+        assert_eq!(
+            BootPolicy::production(8).validate_signed_chain(&valid, &references),
+            Ok(())
+        );
+
+        let wrong_measurement = BootEvidence::new([1; 32], [9; 64], 8, true, true).unwrap();
+        assert_eq!(
+            BootPolicy::production(8).validate_signed_chain(&wrong_measurement, &references),
+            Err(BootValidationError::KernelMeasurementMismatch)
+        );
+
+        let wrong_release =
+            BootEvidence::new([1; 32], Sha3_512::digest(kernel), 9, true, true).unwrap();
+        assert_eq!(
+            BootPolicy::production(8).validate_signed_chain(&wrong_release, &references),
+            Err(BootValidationError::MixedArtifactRelease)
+        );
+
+        let duplicate = [
+            &artifacts[0],
+            &artifacts[0],
+            &artifacts[2],
+            &artifacts[3],
+            &artifacts[4],
+        ];
+        assert_eq!(
+            BootPolicy::production(8).validate_signed_chain(&valid, &duplicate),
+            Err(BootValidationError::DuplicateSignedArtifact)
+        );
     }
 }
