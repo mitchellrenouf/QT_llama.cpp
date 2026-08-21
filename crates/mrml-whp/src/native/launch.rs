@@ -3,8 +3,8 @@ use mrml_kernel::arch::x86_64::{
     VirtAddr,
 };
 use mrml_kernel::{
-    BootHandoff, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr, VerifiedExecutable, VmBackend,
-    VmExit,
+    BootHandoff, GpuSharedQueueLayout, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr,
+    VerifiedExecutable, VmBackend, VmExit,
 };
 
 use crate::{GuestRange, MapPermissions, WhpError};
@@ -91,6 +91,31 @@ impl PreparedWhpGuest<'_> {
     }
     pub fn inject_interrupt(&mut self, vector: u8) -> Result<(), WhpError> {
         self.partition.inject_interrupt(vector)
+    }
+
+    /// Attaches the common mediated-GPU queue layout using separate WHP GPA
+    /// ranges. Command memory is guest-writable and completion memory is
+    /// guest-read-only. Consuming `self` prevents use of a partially attached
+    /// partition if the second platform mapping fails.
+    pub fn attach_gpu_queue_memory(
+        mut self,
+        layout: GpuSharedQueueLayout,
+    ) -> Result<Self, WhpError> {
+        let bytes = layout
+            .pages_per_ring()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(WhpError::MemoryOverflow)?;
+        self.partition.map_zeroed(range(
+            layout.command_base(),
+            bytes,
+            MapPermissions::read_write(),
+        )?)?;
+        self.partition.map_zeroed(range(
+            layout.completion_base(),
+            bytes,
+            MapPermissions::read_only(),
+        )?)?;
+        Ok(self)
     }
 }
 
@@ -671,12 +696,20 @@ mod tests {
             true,
         )
         .unwrap();
+        let queue_layout = GpuSharedQueueLayout::new(0x50_0000, 0x50_2000, 64).unwrap();
         let mut guest = system
             .prepare_guest(&executable, &valid_handoff(), layout)
+            .unwrap()
+            .attach_gpu_queue_memory(queue_layout)
             .unwrap();
         assert_eq!(guest.entry(), 0x20_1000);
         assert_eq!(
             VmBackend::write_guest(&mut guest, 0x20_1000, &[0xf4]),
+            Err(WhpError::ReadOnlyMemory)
+        );
+        VmBackend::write_guest(&mut guest, queue_layout.command_base(), &[1]).unwrap();
+        assert_eq!(
+            VmBackend::write_guest(&mut guest, queue_layout.completion_base(), &[1]),
             Err(WhpError::ReadOnlyMemory)
         );
         assert_eq!(

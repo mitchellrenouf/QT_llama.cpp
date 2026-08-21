@@ -79,8 +79,10 @@ memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining
 host-service writable. A nested-KVM regression attaches both rings to the
 signed high-half kernel guest, verifies directional writes, and still reaches
-the authenticated framebuffer marker. Hyper-V shared-page attachment and
-platform cache-coherence validation, host CUDA executor,
+the authenticated framebuffer marker. The WHP adapter applies the same common
+layout through independent GPA mappings; a live Windows Hyper-V regression
+verifies command writes, completion write denial, and continued execution of a
+verified PE guest. Platform cache-coherence validation, host CUDA executor,
 kernel-specific argument schemas, operation-graph batching, completion queue,
 IOMMU plumbing, the platform-specific device-reset callback, and end-to-end
 inference benchmarks remain pending. Until those pieces exist and are audited, this is not a working
