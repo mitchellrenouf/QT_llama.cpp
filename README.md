@@ -135,7 +135,8 @@ self-contained Rust MinGW component, and the Rust CUDA PTX target:
 winget install Rustlang.Rustup
 rustup toolchain install nightly-x86_64-pc-windows-gnullvm --profile minimal `
   --component rust-src --component rustfmt --component clippy `
-  --component rust-mingw --target nvptx64-nvidia-cuda
+  --component rust-mingw --target nvptx64-nvidia-cuda `
+  --target x86_64-unknown-uefi
 rustup default nightly-x86_64-pc-windows-gnullvm
 
 rustc -vV
@@ -152,6 +153,7 @@ the GNU/LLVM target.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup toolchain install nightly --component rust-src,rustfmt,clippy
 rustup target add nvptx64-nvidia-cuda --toolchain nightly
+rustup target add x86_64-unknown-uefi --toolchain nightly
 ```
 
 CUDA builds require only a compatible NVIDIA display driver plus the Rust
@@ -187,6 +189,7 @@ space, network use, and VRAM before accepting a download.
 | `mrml-cli` | `mrml-cli` | Interactive and one-shot terminal frontend |
 | `mrml-machine` | `mrml-machine` | Stable JSONL automation and benchmark frontend |
 | `mrml-server` | `mrml-server` | OpenAI-compatible HTTPS/SSE server |
+| `mrml-uefi` | `mrml-loader.efi` | Minimal original x86_64 UEFI boot stage |
 | `mrml-trainer` | `mrml-trainer` | Wikipedia ZIM training and GGUF export |
 | `mrml-agent` | — | Agent orchestration, configuration, rules, and model resolution |
 | `mrml-model` | — | Application-facing model and streaming adapter |

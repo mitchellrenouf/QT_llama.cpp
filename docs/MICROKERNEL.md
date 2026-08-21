@@ -92,8 +92,26 @@ entropy, kernel measurement, ACPI root, a required GOP framebuffer, and at most 
 regions. The parser does not allocate or dereference firmware pointers and
 rejects unknown flags or region kinds, nonzero reserved bytes, noncanonical
 lengths, unaligned or overflowing regions, and overlap before emitting data to
-caller-owned early-boot storage. A UEFI executable that obtains these values,
-exits boot services, and transfers control to the kernel remains pending.
+caller-owned early-boot storage. Completing and transferring this handoff to a
+separate verified kernel image remains pending.
+
+`mrml-loader.efi` is now a repository-owned PE/COFF UEFI application with raw
+ABI definitions rather than a firmware crate dependency. It locates required
+GOP and RNG protocols, rejects unsupported modes and zero entropy, obtains a
+bounded memory map, retries the map-key-sensitive `ExitBootServices` transition,
+and retains only copied framebuffer values afterward. The framebuffer changes
+from blue before the transition to green after successful exit, providing a
+visible bring-up signal without serial hardware. Build it with:
+
+```text
+cargo build --release -p mrml-uefi --bin mrml-loader --features uefi-image --target x86_64-unknown-uefi
+```
+
+This is the first executable boot stage, not yet a complete kernel loader: it
+does not load and verify a separate kernel image, normalize the firmware map
+into the kernel handoff, locate ACPI, measure the loaded image, or transfer to a
+kernel entry point. Those security-critical steps remain required before MRML
+can be described as booting its microkernel.
 
 GOP is the primary early console because contemporary physical machines cannot
 be assumed to expose a usable serial port. Only the standard 32-bit RGB-reserved

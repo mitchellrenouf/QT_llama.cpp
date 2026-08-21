@@ -1,0 +1,21 @@
+[package]
+name = "mrml-uefi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+uefi-image = []
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "mrml-loader"
+path = "src/main.rs"
+test = false
+bench = false
+required-features = ["uefi-image"]
+
+[dependencies]

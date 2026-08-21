@@ -10,3 +10,6 @@ rustflags = ["-C", "panic=abort", "-C", "target-feature=+crt-static"]
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "panic=abort"]
+
+[target.x86_64-unknown-uefi]
+rustflags = ["-C", "panic=abort"]
