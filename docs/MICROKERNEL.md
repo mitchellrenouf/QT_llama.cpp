@@ -155,7 +155,18 @@ EDK2 used only as an interoperability oracle successfully read the required
 file and still reached the post-ExitBootServices marker: pixel `(0,0)` was
 `RGB(242,242,242)` and pixel `(0,8)` was `RGB(22,97,58)`. This checkpoint proves
 filesystem interoperability; the test file was a placeholder and was not
-admitted as a signed kernel. Signature enforcement is the next boundary.
+admitted as a signed kernel.
+
+The loader now fails closed unless its own build embeds an exact SHA3-512
+kernel public-key digest and nonzero minimum version through
+`MRML_KERNEL_ROOT_DIGEST_HEX` and `MRML_KERNEL_MIN_VERSION`. These values become
+part of the loader binary that conventional UEFI Secure Boot will eventually
+authenticate; no private key enters the build. After reading, the loader
+authenticates the complete typed Lamport container before interpreting any PE
+offset. A disposable QEMU key accepted its matching version-1 fixture and
+reached the kernel marker. A second independently valid version-1 fixture from
+an unpinned key stopped at the blue verification-failure stage
+`RGB(0,0,128)`. The one-time private files were consumed by the signer.
 
 ### OS executable format
 

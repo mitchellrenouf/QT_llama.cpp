@@ -539,6 +539,42 @@ pub const fn status_is_error(status: Status) -> bool {
     status >> (usize::BITS - 1) != 0
 }
 
+pub fn parse_root_digest(encoded: &[u8]) -> Option<[u8; 64]> {
+    if encoded.len() != 128 {
+        return None;
+    }
+    let mut output = [0u8; 64];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = hex(encoded[index * 2])?
+            .checked_mul(16)?
+            .checked_add(hex(encoded[index * 2 + 1])?)?;
+    }
+    (!output.iter().all(|byte| *byte == 0)).then_some(output)
+}
+
+pub fn parse_nonzero_version(encoded: &[u8]) -> Option<u64> {
+    if encoded.is_empty() || encoded.len() > 20 {
+        return None;
+    }
+    let mut value = 0u64;
+    for byte in encoded {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
+    }
+    (value != 0).then_some(value)
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,9 +589,28 @@ mod tests {
         assert_eq!(core::mem::offset_of!(BootServices, exit_boot_services), 232);
         assert_eq!(core::mem::offset_of!(BootServices, locate_protocol), 320);
         assert_eq!(core::mem::offset_of!(SystemTable, boot_services), 96);
-        assert_eq!(core::mem::offset_of!(LoadedImageProtocol, device_handle), 24);
+        assert_eq!(
+            core::mem::offset_of!(LoadedImageProtocol, device_handle),
+            24
+        );
         assert_eq!(core::mem::offset_of!(FileProtocol, read), 32);
         assert_eq!(core::mem::offset_of!(FileProtocol, get_info), 64);
+    }
+
+    #[test]
+    fn embedded_policy_text_is_exact_and_nonzero() {
+        let mut digest = [b'0'; 128];
+        digest[127] = b'f';
+        assert_eq!(parse_root_digest(&digest).unwrap()[63], 15);
+        assert!(parse_root_digest(&digest[..127]).is_none());
+        digest[0] = b'g';
+        assert!(parse_root_digest(&digest).is_none());
+        assert_eq!(
+            parse_nonzero_version(b"18446744073709551615"),
+            Some(u64::MAX)
+        );
+        assert!(parse_nonzero_version(b"0").is_none());
+        assert!(parse_nonzero_version(b"18446744073709551616").is_none());
     }
 
     #[test]

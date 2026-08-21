@@ -3,8 +3,8 @@
 
 use core::cell::UnsafeCell;
 use mrml_kernel::{
-    EarlyKernelContext, FramebufferInfo, MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion,
-    PhysAddr, PixelFormat, SIGNED_ARTIFACT_OVERHEAD_BYTES,
+    ArtifactKind, EarlyKernelContext, FramebufferInfo, MAX_KERNEL_IMAGE_BYTES, MemoryKind,
+    MemoryRegion, PhysAddr, PixelFormat, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
 };
 use mrml_uefi::*;
 
@@ -102,6 +102,22 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     {
         return Err(LOAD_ERROR);
     }
+    let kernel_bytes = unsafe {
+        core::slice::from_raw_parts(kernel_file.address as *const u8, kernel_file.length)
+    };
+    let root_digest = embedded_kernel_root().ok_or(LOAD_ERROR)?;
+    let minimum_version = embedded_minimum_version().ok_or(LOAD_ERROR)?;
+    let signed = SignedArtifact::decode(kernel_bytes).map_err(|_| LOAD_ERROR)?;
+    let verified = signed
+        .verify_executable(
+            &TrustRoot::new(ArtifactKind::Kernel, root_digest, minimum_version),
+            ArtifactKind::Kernel,
+        )
+        .map_err(|_| LOAD_ERROR)?;
+    if verified.image().image_size() == 0 {
+        return Err(LOAD_ERROR);
+    }
+    paint(framebuffer, [0x00, 0x60, 0x20]);
 
     paint(framebuffer, [0x14, 0x21, 0x35]);
 
@@ -126,6 +142,14 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     }
     enter_kernel(entropy, acpi_root, framebuffer, &regions[..region_count])?;
     halt()
+}
+
+fn embedded_kernel_root() -> Option<[u8; 64]> {
+    parse_root_digest(option_env!("MRML_KERNEL_ROOT_DIGEST_HEX")?.as_bytes())
+}
+
+fn embedded_minimum_version() -> Option<u64> {
+    parse_nonzero_version(option_env!("MRML_KERNEL_MIN_VERSION")?.as_bytes())
 }
 
 struct LoadedFile {
