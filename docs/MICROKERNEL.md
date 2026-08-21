@@ -475,8 +475,13 @@ anonymous guest RAM, rejects overlapping GPA regions and cross-region copies,
 enforces read-only host writes, registers slots transactionally, validates its
 single vCPU identity, implements the common `VmBackend` copy/run methods, and
 injects validated vectors through `KVM_INTERRUPT`. Register setup and
-interrupt-chip creation remain pending, so this layer does not yet launch a
-bootable KVM guest. The
+interrupt-chip creation are now implemented: vCPU entry and stack addresses
+must be canonical, CR3 must be page-aligned, general registers begin cleared,
+RFLAGS bit 1 is set, and long mode enables paging, protected mode, PAE, NX, and
+supervisor write protection with explicit 64-bit code and data segments. The
+adapter can request KVM's in-kernel IRQ chip. Guest page-table construction and
+loading a verified PE image into this backend remain pending, so it does not
+yet launch a bootable KVM guest. The
 current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
 the live capability probe records that as unavailable and no launch claim is
 made for this environment.

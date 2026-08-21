@@ -18,7 +18,11 @@ const KVM_CREATE_VM: c_ulong = 0xae01;
 const KVM_GET_VCPU_MMAP_SIZE: c_ulong = 0xae04;
 const KVM_CREATE_VCPU: c_ulong = 0xae41;
 const KVM_SET_USER_MEMORY_REGION: c_ulong = 0x4020_ae46;
+const KVM_CREATE_IRQCHIP: c_ulong = 0xae60;
 const KVM_RUN: c_ulong = 0xae80;
+const KVM_GET_SREGS: c_ulong = 0x8138_ae83;
+const KVM_SET_REGS: c_ulong = 0x4090_ae82;
+const KVM_SET_SREGS: c_ulong = 0x4138_ae84;
 const KVM_INTERRUPT: c_ulong = 0x4004_ae86;
 const MIN_RUN_BYTES: usize = 88;
 const MAX_RUN_BYTES: usize = 1024 * 1024;
@@ -106,6 +110,13 @@ pub struct KvmVm {
 }
 
 impl KvmVm {
+    pub fn create_irqchip(&self) -> Result<(), KvmError> {
+        if unsafe { ioctl(self.file.0, KVM_CREATE_IRQCHIP) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(())
+    }
+
     pub fn register_memory(&self, region: KvmMemoryRegion) -> Result<(), KvmError> {
         let encoded = region.encode();
         if unsafe { ioctl(self.file.0, KVM_SET_USER_MEMORY_REGION, encoded.as_ptr()) } < 0 {
@@ -160,6 +171,227 @@ impl KvmVcpu {
     pub const fn run_mapping_bytes(&self) -> usize {
         self.run_bytes
     }
+
+    pub fn configure_long_mode(
+        &mut self,
+        entry: u64,
+        stack: u64,
+        cr3: u64,
+    ) -> Result<(), KvmError> {
+        if !canonical(entry) || !canonical(stack) || cr3 % PAGE_SIZE != 0 {
+            return Err(KvmError::InvalidRegisterState);
+        }
+        let mut special = KvmSpecialRegisters::zeroed();
+        if unsafe { ioctl(self.file.0, KVM_GET_SREGS, &mut special) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        special.cs = KvmSegment::code64();
+        let data = KvmSegment::data64();
+        special.ds = data;
+        special.es = data;
+        special.fs = data;
+        special.gs = data;
+        special.ss = data;
+        special.cr0 |= (1 << 0) | (1 << 5) | (1 << 16) | (1 << 31);
+        special.cr3 = cr3;
+        special.cr4 |= 1 << 5;
+        special.efer |= (1 << 8) | (1 << 10) | (1 << 11);
+        if unsafe { ioctl(self.file.0, KVM_SET_SREGS, &special) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        let registers = KvmRegisters::initial(entry, stack);
+        if unsafe { ioctl(self.file.0, KVM_SET_REGS, &registers) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(())
+    }
+}
+
+#[repr(C)]
+struct KvmRegisters {
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    rsp: u64,
+    rbp: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rip: u64,
+    rflags: u64,
+}
+
+impl KvmRegisters {
+    const fn initial(entry: u64, stack: u64) -> Self {
+        Self {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rsp: stack,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rip: entry,
+            rflags: 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct KvmSegment {
+    base: u64,
+    limit: u32,
+    selector: u16,
+    kind: u8,
+    present: u8,
+    dpl: u8,
+    default_operand: u8,
+    system: u8,
+    long: u8,
+    granularity: u8,
+    available: u8,
+    unusable: u8,
+    padding: u8,
+}
+
+impl KvmSegment {
+    const fn code64() -> Self {
+        Self {
+            base: 0,
+            limit: u32::MAX,
+            selector: 8,
+            kind: 11,
+            present: 1,
+            dpl: 0,
+            default_operand: 0,
+            system: 1,
+            long: 1,
+            granularity: 1,
+            available: 0,
+            unusable: 0,
+            padding: 0,
+        }
+    }
+    const fn data64() -> Self {
+        Self {
+            base: 0,
+            limit: u32::MAX,
+            selector: 16,
+            kind: 3,
+            present: 1,
+            dpl: 0,
+            default_operand: 1,
+            system: 1,
+            long: 0,
+            granularity: 1,
+            available: 0,
+            unusable: 0,
+            padding: 0,
+        }
+    }
+    const fn zeroed() -> Self {
+        Self {
+            base: 0,
+            limit: 0,
+            selector: 0,
+            kind: 0,
+            present: 0,
+            dpl: 0,
+            default_operand: 0,
+            system: 0,
+            long: 0,
+            granularity: 0,
+            available: 0,
+            unusable: 0,
+            padding: 0,
+        }
+    }
+}
+
+#[repr(C)]
+struct KvmDescriptorTable {
+    base: u64,
+    limit: u16,
+    padding: [u16; 3],
+}
+
+impl KvmDescriptorTable {
+    const fn zeroed() -> Self {
+        Self {
+            base: 0,
+            limit: 0,
+            padding: [0; 3],
+        }
+    }
+}
+
+#[repr(C)]
+struct KvmSpecialRegisters {
+    cs: KvmSegment,
+    ds: KvmSegment,
+    es: KvmSegment,
+    fs: KvmSegment,
+    gs: KvmSegment,
+    ss: KvmSegment,
+    tr: KvmSegment,
+    ldt: KvmSegment,
+    gdt: KvmDescriptorTable,
+    idt: KvmDescriptorTable,
+    cr0: u64,
+    cr2: u64,
+    cr3: u64,
+    cr4: u64,
+    cr8: u64,
+    efer: u64,
+    apic_base: u64,
+    interrupt_bitmap: [u64; 4],
+}
+
+impl KvmSpecialRegisters {
+    const fn zeroed() -> Self {
+        Self {
+            cs: KvmSegment::zeroed(),
+            ds: KvmSegment::zeroed(),
+            es: KvmSegment::zeroed(),
+            fs: KvmSegment::zeroed(),
+            gs: KvmSegment::zeroed(),
+            ss: KvmSegment::zeroed(),
+            tr: KvmSegment::zeroed(),
+            ldt: KvmSegment::zeroed(),
+            gdt: KvmDescriptorTable::zeroed(),
+            idt: KvmDescriptorTable::zeroed(),
+            cr0: 0,
+            cr2: 0,
+            cr3: 0,
+            cr4: 0,
+            cr8: 0,
+            efer: 0,
+            apic_base: 0,
+            interrupt_bitmap: [0; 4],
+        }
+    }
+}
+
+const fn canonical(address: u64) -> bool {
+    ((address << 16) as i64 >> 16) as u64 == address
 }
 
 impl Drop for KvmVcpu {
@@ -377,6 +609,12 @@ mod tests {
         assert_eq!(KVM_SET_USER_MEMORY_REGION, 0x4020_ae46);
         assert_eq!(KVM_CREATE_VCPU, 0xae41);
         assert_eq!(KVM_RUN, 0xae80);
+        assert_eq!(KVM_GET_SREGS, 0x8138_ae83);
+        assert_eq!(KVM_SET_REGS, 0x4090_ae82);
+        assert_eq!(KVM_SET_SREGS, 0x4138_ae84);
+        assert_eq!(core::mem::size_of::<KvmRegisters>(), 144);
+        assert_eq!(core::mem::size_of::<KvmSegment>(), 24);
+        assert_eq!(core::mem::size_of::<KvmSpecialRegisters>(), 312);
     }
 
     #[test]
@@ -406,5 +644,20 @@ mod tests {
         );
         memory.allocate(0x4000, 0x1000, true).unwrap();
         assert_eq!(memory.write(0x4000, &[1]), Err(KvmError::ReadOnlyMemory));
+    }
+
+    #[test]
+    fn initial_register_state_enables_hardened_long_mode() {
+        let registers = KvmRegisters::initial(0x20_0000, 0x40_0000);
+        assert_eq!(registers.rip, 0x20_0000);
+        assert_eq!(registers.rsp, 0x40_0000);
+        assert_eq!(registers.rflags, 2);
+        assert!(canonical(0xffff_8000_0000_0000));
+        assert!(!canonical(0x0001_0000_0000_0000));
+        let code = KvmSegment::code64();
+        assert_eq!(
+            (code.present, code.long, code.system, code.default_operand),
+            (1, 1, 1, 0)
+        );
     }
 }

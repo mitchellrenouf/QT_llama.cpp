@@ -33,6 +33,7 @@ pub enum KvmError {
     UnmappedMemory,
     ReadOnlyMemory,
     InvalidVcpu,
+    InvalidRegisterState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
