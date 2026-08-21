@@ -1,9 +1,11 @@
 use crate::{PAGE_SIZE, PhysAddr};
 
 mod address_space;
+mod descriptors;
 mod page_table;
 mod pe_mapping;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
+pub use descriptors::{DescriptorError, InterruptGate, install_fail_stop_tables};
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
 

@@ -4,6 +4,7 @@
 use core::arch::{asm, global_asm};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
+use mrml_kernel::arch::x86_64::{InterruptGate, install_fail_stop_tables};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, Color, FramebufferSurface, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
@@ -12,48 +13,6 @@ use mrml_kernel::{
 
 #[cfg(not(feature = "fault-probe"))]
 const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
-
-#[repr(C, packed)]
-struct DescriptorPointer {
-    limit: u16,
-    base: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct InterruptGate {
-    low: u16,
-    selector: u16,
-    ist: u8,
-    attributes: u8,
-    middle: u16,
-    high: u32,
-    reserved: u32,
-}
-
-impl InterruptGate {
-    const MISSING: Self = Self {
-        low: 0,
-        selector: 0,
-        ist: 0,
-        attributes: 0,
-        middle: 0,
-        high: 0,
-        reserved: 0,
-    };
-
-    fn fail_stop(address: u64) -> Self {
-        Self {
-            low: address as u16,
-            selector: 0x38,
-            ist: 0,
-            attributes: 0x8e,
-            middle: (address >> 16) as u16,
-            high: (address >> 32) as u32,
-            reserved: 0,
-        }
-    }
-}
 
 static GDT: [u64; 8] = [
     0,
@@ -186,25 +145,19 @@ fn embedded_minimum_version() -> Option<u64> {
 
 unsafe fn install_descriptor_tables() {
     let handler = mrml_exception_fail_stop as *const () as usize as u64;
-    let idt_pointer = core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>();
-    for index in 0..256 {
-        unsafe {
-            idt_pointer
-                .add(index)
-                .write(InterruptGate::fail_stop(handler))
-        };
+    if unsafe {
+        install_fail_stop_tables(
+            core::ptr::addr_of!(GDT).cast::<u64>(),
+            GDT.len(),
+            core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
+            256,
+            handler,
+            0x38,
+        )
     }
-    let gdtr = DescriptorPointer {
-        limit: (core::mem::size_of_val(&GDT) - 1) as u16,
-        base: core::ptr::addr_of!(GDT) as u64,
-    };
-    let idtr = DescriptorPointer {
-        limit: (core::mem::size_of::<InterruptGate>() * 256 - 1) as u16,
-        base: core::ptr::addr_of!(IDT) as u64,
-    };
-    unsafe {
-        asm!("lgdt [{}]", in(reg) &gdtr, options(readonly, nostack, preserves_flags));
-        asm!("lidt [{}]", in(reg) &idtr, options(readonly, nostack, preserves_flags));
+    .is_err()
+    {
+        halt();
     }
 }
 

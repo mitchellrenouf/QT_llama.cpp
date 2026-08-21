@@ -191,6 +191,13 @@ non-returning interrupt-disabled halt stub. Interrupts remain disabled; this is
 deterministic fail-stop handling, not yet recoverable fault dispatch. A signed
 `fault-probe` build executed `UD2` under QEMU and stopped with `HLT=1` at the
 kernel handler while retaining the loader-created CR3 and kernel GDT/IDT bases.
+Descriptor construction now lives in the reusable x86_64 architecture module
+rather than being duplicated in the PE image. It validates canonical handler
+and table ranges, a ring-zero GDT selector that names an existing entry, the
+exact 256-gate IDT size, and 16-bit descriptor limits before writing memory or
+executing `LGDT` or `LIDT`. Unit tests check the exact 16-byte gate encoding and
+prove malformed pointers, sizes, handlers, and selectors fail before privileged
+instructions. The kernel image treats any installation error as a fail-stop.
 
 Before materialization, the loader can now use the packed, raw
 `EFI_TCG2_PROTOCOL` ABI to hash the already authenticated kernel PE into PCR 11
