@@ -183,6 +183,11 @@ span, full cache ranges, output tensor, effective key count, and dynamic shared
 memory. It requires a power-of-two cache, grouped-query head divisibility, and
 the exact specialized launch conditions; quantized or oversized attention is
 kept on the still-fail-closed streaming path.
+The streaming attention schema accepts independently selected F16, Q8_0, and
+Q4_0 caches with their exact layouts and no dynamic shared memory. Variant
+selection is exclusive: a dispatch eligible for bounded shared F16 attention
+cannot be relabeled as streaming. The mediated interface currently keeps the
+streaming subset power-of-two and even-width for conservative cache indexing.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject
@@ -193,7 +198,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 8
+guest execution. Platform cache-coherence validation, the remaining 7
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML

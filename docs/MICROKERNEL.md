@@ -210,8 +210,14 @@ of two, head grouping must divide exactly, signed cache positions cannot
 overflow, and output geometry is exact. The effective sliding-window key count
 must be at most 8192 and determines the only accepted dynamic shared-memory
 size; quantized cache formats cannot select this variant.
+Kernel ID 21 reuses the checked attention dimensions for the zero-shared-memory
+streaming variant and admits F16, Q8_0, or Q4_0 K and V cache layouts
+independently. Quantized widths must use complete 32-value blocks. Variant
+selection is exclusive, so a dispatch eligible for ID 20 cannot be relabeled
+as ID 21. The mediated subset conservatively retains power-of-two cache
+capacity and even head width.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 8 schemas and the
+registry alone cannot make it executable. The remaining 7 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot

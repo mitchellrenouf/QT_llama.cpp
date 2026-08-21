@@ -1712,6 +1712,7 @@ impl Dispatch {
             18 => self.validate_vocab_topk_schema(true),
             19 => self.validate_qkv_postprocess_schema(),
             20 => self.validate_attention_schema(false),
+            21 => self.validate_attention_schema(true),
             27 => self.validate_embedding_q8_0_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
@@ -3655,6 +3656,46 @@ mod tests {
         .unwrap();
         assert_eq!(
             invalid.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let quantized_accesses = [
+            accesses[0],
+            BufferAccess::new(id(1), 0, 1088, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 576, BufferMode::Read),
+            accesses[3],
+        ];
+        let mut quantized_formats = scalars;
+        quantized_formats[9] = ScalarArg::i32(1);
+        quantized_formats[10] = ScalarArg::i32(2);
+        let streaming = Dispatch::new_with_scalars(
+            KernelId::new(21).unwrap(),
+            [4, 2, 1],
+            [128, 1, 1],
+            0,
+            &quantized_accesses,
+            &quantized_formats,
+        )
+        .unwrap();
+        assert_eq!(
+            streaming
+                .validate_executor_schema()
+                .unwrap()
+                .element_count(),
+            512
+        );
+
+        let wrong_streaming_variant = Dispatch::new_with_scalars(
+            KernelId::new(21).unwrap(),
+            [4, 2, 1],
+            [128, 1, 1],
+            0,
+            &accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_streaming_variant.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
     }
