@@ -9,6 +9,7 @@ license.workspace = true
 kernel-image = []
 fault-probe = ["kernel-image"]
 timer-probe = ["kernel-image"]
+preemption-probe = ["kernel-image"]
 user-probe = ["kernel-image"]
 service-probe = ["kernel-image"]
 production-policy = ["kernel-image"]

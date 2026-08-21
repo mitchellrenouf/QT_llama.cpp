@@ -40,6 +40,8 @@ const TIMER_READY_PORT: u16 = 0x4d54;
 #[cfg(target_os = "windows")]
 const TIMER_TICK_PORT: u16 = 0x4d55;
 #[cfg(target_os = "windows")]
+const PREEMPTION_PROBE_PORT: u16 = 0x4d5b;
+#[cfg(target_os = "windows")]
 const SERVICE_PHYSICAL: u64 = 0x0060_0000;
 #[cfg(target_os = "windows")]
 const SERVICE_VIRTUAL: u64 = 0x0000_0001_4000_0000;
@@ -67,9 +69,10 @@ fn application_main() -> Result<()> {
     }
     let service_mode = arguments.len() == 8 && arguments[4] == "service-probe";
     let timer_mode = arguments.len() == 5 && arguments[4] == "timer-probe";
-    if arguments.len() != 7 && !service_mode && !timer_mode {
+    let preemption_mode = arguments.len() == 5 && arguments[4] == "preemption-probe";
+    if arguments.len() != 7 && !service_mode && !timer_mode && !preemption_mode {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -132,7 +135,7 @@ fn application_main() -> Result<()> {
         (None, None) => None,
         _ => return Err(anyhow!("incomplete service verification inputs")),
     };
-    let cuda_bundle = if service_mode || timer_mode {
+    let cuda_bundle = if service_mode || timer_mode || preemption_mode {
         None
     } else {
         Some(verify_cuda_bundle(
@@ -150,17 +153,26 @@ fn application_main() -> Result<()> {
         entropy,
         *executable.artifact().digest(),
     )?;
+    let (image_virtual, handoff_virtual, stack_virtual) = if preemption_mode {
+        (0x0040_0000, 0x0200_0000, 0x0300_0000)
+    } else {
+        (
+            0xffff_8001_4000_0000,
+            0xffff_8001_5000_0000,
+            0xffff_8001_6000_0000,
+        )
+    };
     let layout = WhpLaunchLayout::new(
         0x10_0000,
         32,
         0x20_0000,
-        0xffff_8001_4000_0000,
+        image_virtual,
         0x30_0000,
-        0xffff_8001_5000_0000,
+        handoff_virtual,
         0x40_0000,
-        0xffff_8001_6000_0000,
+        stack_virtual,
         8,
-        false,
+        preemption_mode,
     )
     .map_err(|_| anyhow!("invalid fixed WHP launch layout"))?;
     let queue = GpuSharedQueueLayout::new(COMMAND_BASE, COMPLETION_BASE, 1)
@@ -168,11 +180,14 @@ fn application_main() -> Result<()> {
     let system = WhpSystem::open()
         .map_err(|error| anyhow!("Windows Hypervisor Platform is unavailable: {:?}", error))?;
     let preparation_started = Instant::now();
-    let mut guest = match (service_mode, timer_mode) {
-        (true, false) => system.prepare_isolated_service_kernel(&executable, &handoff, layout),
-        (false, true) => system.prepare_timer_kernel(&executable, &handoff, layout),
-        (false, false) => system.prepare_kernel_gpu_guest(&executable, &handoff, layout, queue),
-        (true, true) => return Err(anyhow!("launch mode is ambiguous")),
+    let mut guest = if service_mode {
+        system.prepare_isolated_service_kernel(&executable, &handoff, layout)
+    } else if timer_mode {
+        system.prepare_timer_kernel(&executable, &handoff, layout)
+    } else if preemption_mode {
+        system.prepare_preemption_kernel(&executable, &handoff, layout)
+    } else {
+        system.prepare_kernel_gpu_guest(&executable, &handoff, layout, queue)
     }
     .map_err(|error| anyhow!("verified WHP kernel preparation failed: {:?}", error))?;
     if service_mode {
@@ -290,6 +305,48 @@ fn application_main() -> Result<()> {
         }
         println!(
             "verified local-APIC scheduler tick under WHP: verify={}us prepare={}us execute={}us total={}us",
+            verification_micros,
+            preparation_micros,
+            execution_started.elapsed().as_micros(),
+            total_started.elapsed().as_micros()
+        );
+        return Ok(());
+    }
+    if preemption_mode {
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!(
+                "WHP preemption probe did not initialize: {:?}",
+                exit
+            ));
+        }
+        let expected = [0x2320u32, 1, 2, 3, 4, 5, 6];
+        for stage in expected {
+            let exit = VmBackend::run(&mut guest, 0)
+                .map_err(|error| anyhow!("WHP preemption stage failed: {:?}", error))?;
+            if exit
+                != (VmExit::Io {
+                    port: PREEMPTION_PROBE_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "WHP preemption stage {:#x} mismatch: {:?}",
+                    stage,
+                    exit
+                ));
+            }
+        }
+        println!(
+            "verified CPL3 timer preemption under WHP: verify={}us prepare={}us execute={}us total={}us",
             verification_micros,
             preparation_micros,
             execution_started.elapsed().as_micros(),

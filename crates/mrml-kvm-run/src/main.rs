@@ -34,6 +34,8 @@ const TIMER_READY_PORT: u16 = 0x4d54;
 #[cfg(target_os = "linux")]
 const TIMER_TICK_PORT: u16 = 0x4d55;
 #[cfg(target_os = "linux")]
+const PREEMPTION_PROBE_PORT: u16 = 0x4d5b;
+#[cfg(target_os = "linux")]
 const USER_PROBE_PORT: u16 = 0x4d56;
 #[cfg(target_os = "linux")]
 const USER_CALL_PROBE_PORT: u16 = 0x4d57;
@@ -66,6 +68,7 @@ enum LaunchMode {
     Boot,
     FaultProbe,
     TimerProbe,
+    PreemptionProbe,
     UserProbe,
     ServiceProbe,
     GpuBenchmark,
@@ -78,11 +81,12 @@ impl LaunchMode {
             "boot" => Ok(Self::Boot),
             "fault-probe" => Ok(Self::FaultProbe),
             "timer-probe" => Ok(Self::TimerProbe),
+            "preemption-probe" => Ok(Self::PreemptionProbe),
             "user-probe" => Ok(Self::UserProbe),
             "service-probe" => Ok(Self::ServiceProbe),
             "gpu-benchmark" => Ok(Self::GpuBenchmark),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, user-probe, service-probe, or gpu-benchmark"
+                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, or gpu-benchmark"
             )),
         }
     }
@@ -188,7 +192,7 @@ fn application_main() -> Result<()> {
         entropy,
         *executable.artifact().digest(),
     )?;
-    let user_probe = mode == LaunchMode::UserProbe;
+    let user_probe = matches!(mode, LaunchMode::UserProbe | LaunchMode::PreemptionProbe);
     let (image_virtual, handoff_virtual, stack_virtual) = if user_probe {
         (0x0040_0000, 0x0200_0000, 0x0300_0000)
     } else {
@@ -220,7 +224,7 @@ fn application_main() -> Result<()> {
         LaunchMode::GpuBenchmark => {
             system.prepare_kernel_gpu_guest::<13>(0, &executable, &handoff, layout, queue_layout)
         }
-        LaunchMode::TimerProbe => {
+        LaunchMode::TimerProbe | LaunchMode::PreemptionProbe => {
             system.prepare_timer_kernel_guest::<13>(0, &executable, &handoff, layout)
         }
         _ => system.prepare_kernel_guest::<13>(0, &executable, &handoff, layout),
@@ -302,6 +306,57 @@ fn application_main() -> Result<()> {
         }
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after exception probe failed: {:?}", error))?;
+    } else if mode == LaunchMode::PreemptionProbe {
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!("preemption probe did not enter CPL3: {:?}", exit));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM timer frame capture failed: {:?}", error))?;
+        if exit
+            != (VmExit::Io {
+                port: PREEMPTION_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 0x2320,
+            })
+        {
+            return Err(anyhow!("timer frame was not vector 32 at CPL3: {:?}", exit));
+        }
+        println!("validated CPL3 timer frame");
+        for stage in 1u32..=6 {
+            exit = VmBackend::run(&mut guest, 0)
+                .map_err(|error| anyhow!("KVM preemption stage {} failed: {:?}", stage, error))?;
+            if exit
+                != (VmExit::Io {
+                    port: PREEMPTION_PROBE_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                let state = guest
+                    .snapshot()
+                    .map_err(|error| anyhow!("preemption failure snapshot failed: {:?}", error))?;
+                return Err(anyhow!(
+                    "timer preemption stage {} mismatch: {:?}, rip={:#x} rsp={:#x} cr2={:#x} cr3={:#x}",
+                    stage,
+                    exit,
+                    state.instruction_pointer(),
+                    state.stack_pointer(),
+                    state.fault_address(),
+                    state.page_table_root()
+                ));
+            }
+            println!("validated preemption stage {}", stage);
+        }
+        exit = VmExit::Halted;
     } else if mode == LaunchMode::TimerProbe {
         if exit
             != (VmExit::Io {

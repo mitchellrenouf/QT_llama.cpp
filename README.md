@@ -205,8 +205,15 @@ microseconds (`verify=744us`, `prepare=10296us`, `total=15834us`) under nested
 KVM. The corresponding live WHP timer proof is also complete: the freshly
 signed identical kernel reached the scheduler
 tick under WHP in 8,232 microseconds (`verify=758us`, `prepare=2971us`,
-`total=13998us`). Multi-task timer preemption remains unfinished. Validated
-generational ring-three context
+`total=13998us`). A separate signed `preemption-probe` now enters task A at
+CPL3, receives vector 32 with `CS=0x23`, reconstructs and binds A's complete
+interrupted context to its current CR3, advances the scheduler quantum, selects
+task B, acknowledges EOI, and restores B through `iretq`. B's checked CPL3
+breakpoint proves execution without granting user I/O rights. The finalized
+artifact completed in 2,073 microseconds on nested KVM and 8,315 microseconds
+on WHP. This diagnostic deliberately shares one user-visible PE/root between A
+and B; timer preemption across the distinct service roots remains unfinished.
+Validated generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A

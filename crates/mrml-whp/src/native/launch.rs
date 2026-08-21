@@ -434,6 +434,26 @@ impl WhpSystem {
         )
     }
 
+    /// Prepares the timer kernel with guest-IDT delivery for CPL3 proof traps.
+    pub fn prepare_preemption_kernel<'system>(
+        &'system self,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: WhpLaunchLayout,
+    ) -> Result<PreparedWhpGuest<'system>, WhpError> {
+        self.prepare_guest_inner(
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: true,
+                gpu_queue: None,
+                intercept_breakpoint: false,
+            },
+        )
+    }
+
     /// Prepares a signed guest with mediated GPU rings in its initial address
     /// space. Command memory is writable/NX and completion memory is
     /// read-only/NX to the guest.

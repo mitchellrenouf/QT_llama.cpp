@@ -578,7 +578,15 @@ execution in 1,856 microseconds (`verify=744us`, `prepare=10296us`,
 and the same supervisor-only page-table policy;
 the freshly signed identical kernel reached its tick in 8,232 microseconds
 (`verify=758us`, `prepare=2971us`, `total=13998us`). A live timer-driven switch
-between two isolated user contexts remains incomplete.
+now also runs in the signed `preemption-probe`: vector 32 arrives from task A
+with `CS=0x23`; the kernel reconstructs A's complete context, rejects any CR3
+that differs from A's bound address space, commits the quantum switch, selects
+B, acknowledges EOI, and restores B through the common `iretq` transition. B
+raises a checked CPL3 breakpoint rather than using forbidden port I/O. The
+final artifact completed in 2,073 microseconds on nested KVM and 8,315
+microseconds on WHP. This remains a
+diagnostic shared-root mapping; timer switching across the two independently
+materialized service roots is the next isolation gate.
 
 The `user-probe` diagnostic now gives the context and TSS work a live privilege-
 transition proof. Its signed PE is relocated into a bounded lower-half layout;
@@ -1297,8 +1305,9 @@ a stale handle. Windows and Linux tests cover preemption, idle wakeup, task
 termination, stale identities, and invalid timer policies. A separate release
 microbenchmark now measures tick accounting. Validated x2APIC/xAPIC timer
 programming and acknowledgement primitives now execute in the signed KVM guest;
-the same primitives also execute in the signed WHP guest. Timer-driven
-restoration of a second isolated user context remains the next integration gate.
+the same primitives also execute in the signed WHP guest. Timer-driven context
+capture and restoration now execute on both, while switching across distinct
+service CR3 roots remains the next integration gate.
 
 The x86_64 architecture layer now defines a fixed user-context record and a
 generational task-to-context table. New contexts require a nonzero page-aligned

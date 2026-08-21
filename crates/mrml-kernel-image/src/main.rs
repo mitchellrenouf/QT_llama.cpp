@@ -8,12 +8,30 @@ use mrml_kernel::BootPolicy;
 use mrml_kernel::KernelScheduler;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::SyscallRequest;
+#[cfg(any(
+    feature = "user-probe",
+    feature = "service-probe",
+    feature = "preemption-probe"
+))]
+use mrml_kernel::TaskRuntime;
 use mrml_kernel::UserCallFrame;
-#[cfg(feature = "user-probe")]
+#[cfg(any(
+    feature = "user-probe",
+    feature = "service-probe",
+    feature = "preemption-probe"
+))]
+use mrml_kernel::arch::x86_64::TrapDisposition;
+#[cfg(any(
+    feature = "user-probe",
+    feature = "service-probe",
+    feature = "preemption-probe"
+))]
+use mrml_kernel::arch::x86_64::UserContext;
+#[cfg(any(feature = "user-probe", feature = "preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context;
 #[cfg(feature = "service-probe")]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
-#[cfg(feature = "timer-probe")]
+#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::arch::x86_64::install_user_call_gate;
@@ -21,10 +39,8 @@ use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
     load_task_register, write_task_state_descriptor,
 };
-#[cfg(feature = "timer-probe")]
+#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
 use mrml_kernel::arch::x86_64::{LocalApicTimer, TimerDivide};
-#[cfg(any(feature = "user-probe", feature = "service-probe"))]
-use mrml_kernel::arch::x86_64::{TrapDisposition, UserContext};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -33,12 +49,13 @@ use mrml_kernel::{
 #[cfg(all(
     not(feature = "fault-probe"),
     not(feature = "timer-probe"),
+    not(feature = "preemption-probe"),
     not(feature = "user-probe"),
     not(feature = "service-probe")
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
-use mrml_kernel::{Endpoint, ObjectId, Rights, TaskRuntime};
+use mrml_kernel::{Endpoint, ObjectId, Rights};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
 use mrml_kernel::{
     GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuGuestCommandPublisher, GpuQueueIdentity,
@@ -47,6 +64,7 @@ use mrml_kernel::{
 };
 #[cfg(any(
     feature = "timer-probe",
+    feature = "preemption-probe",
     feature = "user-probe",
     feature = "service-probe"
 ))]
@@ -64,11 +82,11 @@ const GPU_BENCHMARK_ELEMENTS: u32 = 1 << 22;
 const GPU_BENCHMARK_ITERATIONS: u32 = 1_000;
 #[cfg(feature = "fault-probe")]
 const EXCEPTION_PROBE_PORT: u16 = 0x4d53;
-#[cfg(feature = "timer-probe")]
+#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
 const TIMER_READY_PORT: u16 = 0x4d54;
 #[cfg(feature = "timer-probe")]
 const TIMER_TICK_PORT: u16 = 0x4d55;
-#[cfg(feature = "timer-probe")]
+#[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
 const TIMER_VECTOR: u8 = 32;
 #[cfg(feature = "user-probe")]
 const USER_PROBE_PORT: u16 = 0x4d56;
@@ -115,6 +133,8 @@ static mut KERNEL_ENTRY_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STA
 static mut DOUBLE_FAULT_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_BYTES]);
 #[cfg(feature = "timer-probe")]
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
+#[cfg(feature = "preemption-probe")]
+static mut PREEMPTION_RUNTIME: Option<TaskRuntime<2, 0>> = None;
 #[cfg(feature = "user-probe")]
 static mut USER_RUNTIME: Option<TaskRuntime<2, 1>> = None;
 #[cfg(feature = "user-probe")]
@@ -207,6 +227,8 @@ mrml_exception_common:
     .global mrml_timer_interrupt
 mrml_timer_interrupt:
     cld
+    push 0
+    push 32
     push rax
     push rcx
     push rdx
@@ -222,6 +244,7 @@ mrml_timer_interrupt:
     push r13
     push r14
     push r15
+    mov rdi, rsp
     and rsp, -16
     call mrml_timer_dispatch
     ud2
@@ -238,6 +261,19 @@ mrml_user_replacement_probe:
     int3
 2:
     jmp 2b
+
+    .global mrml_preemption_spin
+mrml_preemption_spin:
+1:
+    pause
+    jmp 1b
+
+    .global mrml_preemption_replacement
+mrml_preemption_replacement:
+    int3
+3:
+    pause
+    jmp 3b
 
     .global mrml_user_call
 mrml_user_call:
@@ -294,8 +330,12 @@ mrml_exception_table:
 
 unsafe extern "C" {
     fn mrml_exception_fail_stop() -> !;
-    #[cfg(feature = "timer-probe")]
+    #[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
     fn mrml_timer_interrupt() -> !;
+    #[cfg(feature = "preemption-probe")]
+    fn mrml_preemption_spin() -> !;
+    #[cfg(feature = "preemption-probe")]
+    fn mrml_preemption_replacement() -> !;
     #[cfg(feature = "user-probe")]
     fn mrml_user_probe() -> !;
     #[cfg(feature = "user-probe")]
@@ -445,7 +485,9 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "sysv64" fn mrml_timer_dispatch() -> ! {
+unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -> ! {
+    #[cfg(feature = "timer-probe")]
+    let _ = frame;
     #[cfg(feature = "timer-probe")]
     unsafe {
         let scheduler = match (*core::ptr::addr_of_mut!(TIMER_SCHEDULER)).as_mut() {
@@ -463,7 +505,50 @@ unsafe extern "sysv64" fn mrml_timer_dispatch() -> ! {
             options(nomem, nostack)
         );
     }
-    halt()
+    #[cfg(feature = "preemption-probe")]
+    unsafe {
+        let frame = frame.as_ref().unwrap_or_else(|| halt());
+        let normalized = frame.normalize(0, 0);
+        asm!(
+            "out dx, eax",
+            in("dx") 0x4d5bu16,
+            in("eax") ((normalized.cs as u32 & 0xff) << 8) | normalized.vector as u32,
+            options(nomem, nostack)
+        );
+        if normalized.vector != u64::from(TIMER_VECTOR) || normalized.cs & 3 != 3 {
+            halt();
+        }
+        asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 1u32, options(nomem, nostack));
+        let page_table: u64;
+        asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags));
+        let interrupted = UserContext::from_trap(
+            PhysAddr::new(page_table).unwrap_or_else(|_| halt()),
+            &normalized,
+        )
+        .unwrap_or_else(|_| halt());
+        asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 2u32, options(nomem, nostack));
+        let runtime_pointer = core::ptr::addr_of_mut!(PREEMPTION_RUNTIME);
+        let runtime = (*runtime_pointer).as_mut().unwrap_or_else(|| halt());
+        let next = match runtime.preempt_current(interrupted) {
+            Ok(ScheduleOutcome::Switch { to, .. }) => to,
+            _ => halt(),
+        };
+        asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 3u32, options(nomem, nostack));
+        let context = runtime
+            .context(next)
+            .map(|context| context as *const UserContext)
+            .unwrap_or_else(|_| halt());
+        asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 4u32, options(nomem, nostack));
+        LocalApicTimer::acknowledge();
+        asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 5u32, options(nomem, nostack));
+        enter_user_context(&*context)
+    }
+    #[cfg(not(feature = "preemption-probe"))]
+    {
+        #[cfg(not(feature = "timer-probe"))]
+        let _ = frame;
+        halt()
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -504,6 +589,29 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
         Ok(disposition) => disposition,
         Err(_) => halt(),
     };
+    #[cfg(feature = "preemption-probe")]
+    unsafe {
+        let proof = if matches!(
+            _disposition,
+            TrapDisposition::TerminateUser {
+                vector: 3,
+                address: None
+            }
+        ) {
+            6
+        } else {
+            0x8000 | normalized.vector as u32
+        };
+        asm!(
+            "out dx, eax",
+            in("dx") 0x4d5bu16,
+            in("eax") proof,
+            options(nomem, nostack)
+        );
+        if proof == 6 {
+            halt();
+        }
+    }
     #[cfg(feature = "fault-probe")]
     unsafe {
         asm!(
@@ -753,6 +861,64 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         };
         enter_user_probe_context(&*context_pointer);
     }
+    #[cfg(feature = "preemption-probe")]
+    unsafe {
+        asm!("cli", options(nomem, nostack));
+        let user_stack: u64;
+        let page_table: u64;
+        asm!("mov {}, rsp", out(reg) user_stack, options(nomem, nostack, preserves_flags));
+        asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags));
+        let root = PhysAddr::new(page_table).unwrap_or_else(|_| halt());
+        let first_context = UserContext::new(
+            root,
+            mrml_preemption_spin as *const () as usize as u64,
+            user_stack & !0xf,
+        )
+        .unwrap_or_else(|_| halt());
+        let second_context = UserContext::new(
+            root,
+            mrml_preemption_replacement as *const () as usize as u64,
+            (user_stack & !0xf)
+                .checked_sub(4096)
+                .unwrap_or_else(|| halt()),
+        )
+        .unwrap_or_else(|_| halt());
+        let mut runtime = TaskRuntime::<2, 0>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let first = runtime
+            .create(Priority::NORMAL, first_context)
+            .unwrap_or_else(|_| halt());
+        runtime
+            .create(Priority::NORMAL, second_context)
+            .unwrap_or_else(|_| halt());
+        if !matches!(runtime.start(), ScheduleOutcome::Switch { from: None, to } if to == first) {
+            halt();
+        }
+        core::ptr::addr_of_mut!(PREEMPTION_RUNTIME).write(Some(runtime));
+        LocalApicTimer::periodic(TIMER_VECTOR, 100_000, TimerDivide::By16)
+            .and_then(|timer| timer.enable())
+            .unwrap_or_else(|_| halt());
+        let mut previous = LocalApicTimer::current_count();
+        loop {
+            let current = LocalApicTimer::current_count();
+            if current > previous {
+                break;
+            }
+            previous = current;
+            core::hint::spin_loop();
+        }
+        asm!(
+            "out dx, eax",
+            in("dx") TIMER_READY_PORT,
+            in("eax") 1u32,
+            options(nomem, nostack)
+        );
+        let context = (*core::ptr::addr_of!(PREEMPTION_RUNTIME))
+            .as_ref()
+            .and_then(|runtime| runtime.context(first).ok())
+            .map(|context| context as *const UserContext)
+            .unwrap_or_else(|| halt());
+        enter_user_context(&*context)
+    }
     #[cfg(feature = "timer-probe")]
     unsafe {
         let mut scheduler = match KernelScheduler::<1>::new(1_000, 1) {
@@ -796,6 +962,7 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     }
     #[cfg(all(
         not(feature = "timer-probe"),
+        not(feature = "preemption-probe"),
         not(feature = "user-probe"),
         not(feature = "service-probe")
     ))]
@@ -1025,7 +1192,7 @@ unsafe fn install_descriptor_tables() {
     {
         halt();
     }
-    #[cfg(feature = "timer-probe")]
+    #[cfg(any(feature = "timer-probe", feature = "preemption-probe"))]
     if unsafe {
         install_external_interrupt_gate(
             core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
