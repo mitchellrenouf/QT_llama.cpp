@@ -261,9 +261,11 @@ queue. Successful allocation/free commands now produce a distinct `MRGR`
 response authenticated under its own HMAC domain, session, and monotonic
 sequence. Response-ring and sequence capacity are checked before command
 consumption, so resource state cannot change without publication capacity.
-Platform cache-coherence validation, rejected-resource response publication,
-CUDA graph lowering, IOMMU plumbing, and end-to-end performance measurements
-are still pending. Consequently MRML
+Backend allocation/free failures emit authenticated rejection frames carrying
+only the original request identity; backend details remain host-local and
+transactional backends leave resource state unchanged. Platform cache-coherence
+validation, CUDA graph lowering, IOMMU plumbing, and end-to-end performance
+measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
 to approach it for long-running LLM inference by avoiding copies, per-kernel VM
 exits, and repeated context setup; arbitrary CUDA applications are out of scope.

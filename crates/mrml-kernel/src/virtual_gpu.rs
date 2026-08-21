@@ -1261,6 +1261,7 @@ pub enum GpuResourceOutcome {
 pub enum GpuResourceResponse {
     Allocated { request_id: u64, buffer: BufferId },
     Freed { request_id: u64, bytes: u64 },
+    Rejected { request_id: u64 },
 }
 
 impl GpuResourceResponse {
@@ -1278,7 +1279,9 @@ impl GpuResourceResponse {
 
     pub const fn request_id(self) -> u64 {
         match self {
-            Self::Allocated { request_id, .. } | Self::Freed { request_id, .. } => request_id,
+            Self::Allocated { request_id, .. }
+            | Self::Freed { request_id, .. }
+            | Self::Rejected { request_id } => request_id,
         }
     }
 }
@@ -1315,6 +1318,7 @@ impl GpuResourceResponseSender {
         output[5] = match response {
             GpuResourceResponse::Allocated { .. } => 1,
             GpuResourceResponse::Freed { .. } => 2,
+            GpuResourceResponse::Rejected { .. } => 3,
         };
         output[8..16].copy_from_slice(&self.session.to_le_bytes());
         output[16..24].copy_from_slice(&sequence.to_le_bytes());
@@ -1322,6 +1326,7 @@ impl GpuResourceResponseSender {
         let value = match response {
             GpuResourceResponse::Allocated { buffer, .. } => buffer.token(),
             GpuResourceResponse::Freed { bytes, .. } => bytes,
+            GpuResourceResponse::Rejected { .. } => 0,
         };
         output[32..40].copy_from_slice(&value.to_le_bytes());
         let tag = resource_response_tag(&self.key, &output[..GPU_QUEUE_AUTHENTICATED_BYTES]);
@@ -1375,18 +1380,19 @@ impl GpuResourceResponseReceiver {
         }
         let request_id = read_u64(input, 24);
         let value = read_u64(input, 32);
-        if request_id == 0 || value == 0 {
+        if request_id == 0 {
             return Err(GpuError::MalformedCommand);
         }
         let response = match input[5] {
-            1 => GpuResourceResponse::Allocated {
+            1 if value != 0 => GpuResourceResponse::Allocated {
                 request_id,
                 buffer: BufferId::from_token(value)?,
             },
-            2 => GpuResourceResponse::Freed {
+            2 if value != 0 => GpuResourceResponse::Freed {
                 request_id,
                 bytes: value,
             },
+            3 if value == 0 => GpuResourceResponse::Rejected { request_id },
             _ => return Err(GpuError::MalformedCommand),
         };
         self.next_sequence = self
@@ -1400,7 +1406,7 @@ impl GpuResourceResponseReceiver {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GpuCommandServiceError<E> {
     Protocol(GpuError),
-    Backend(E),
+    Backend { request_id: u64, error: E },
 }
 
 /// Consumes, authenticates, and executes exactly one kernel-owned resource
@@ -1421,11 +1427,11 @@ pub fn process_gpu_resource_command<B: GpuResourceBackend, const RING: usize>(
         ResourceCommand::Allocate { bytes } => backend
             .allocate(bytes)
             .map(|buffer| GpuResourceOutcome::Allocated { request_id, buffer })
-            .map_err(GpuCommandServiceError::Backend),
+            .map_err(|error| GpuCommandServiceError::Backend { request_id, error }),
         ResourceCommand::Free { buffer } => backend
             .free(buffer)
             .map(|bytes| GpuResourceOutcome::Freed { request_id, bytes })
-            .map_err(GpuCommandServiceError::Backend),
+            .map_err(|error| GpuCommandServiceError::Backend { request_id, error }),
         ResourceCommand::SubmitBatch { control } => Ok(GpuResourceOutcome::SubmitBatch {
             request_id,
             control,
@@ -1453,7 +1459,23 @@ pub fn process_gpu_resource_command_with_response<
     response_sender
         .ensure_capacity()
         .map_err(GpuCommandServiceError::Protocol)?;
-    let outcome = process_gpu_resource_command(commands, receiver, backend)?;
+    let outcome = match process_gpu_resource_command(commands, receiver, backend) {
+        Ok(outcome) => outcome,
+        Err(GpuCommandServiceError::Backend { request_id, error }) => {
+            let mut encoded = [[0; GPU_QUEUE_MESSAGE_BYTES]; 1];
+            response_sender
+                .encode(
+                    GpuResourceResponse::Rejected { request_id },
+                    &mut encoded[0],
+                )
+                .map_err(GpuCommandServiceError::Protocol)?;
+            responses
+                .enqueue_batch(&encoded, 1)
+                .map_err(GpuCommandServiceError::Protocol)?;
+            return Err(GpuCommandServiceError::Backend { request_id, error });
+        }
+        Err(error) => return Err(error),
+    };
     if let Ok(response) = GpuResourceResponse::from_outcome(outcome) {
         let mut encoded = [[0; GPU_QUEUE_MESSAGE_BYTES]; 1];
         response_sender
@@ -5525,8 +5547,33 @@ mod tests {
                 buffer,
             })
         );
+
         sender
-            .encode(82, ResourceCommand::Free { buffer }, &mut wire)
+            .encode(82, ResourceCommand::Allocate { bytes: 1 }, &mut wire)
+            .unwrap();
+        ring.enqueue(&wire).unwrap();
+        assert_eq!(
+            process_gpu_resource_command_with_response(
+                &mut ring,
+                &mut receiver,
+                &mut session,
+                &mut response_sender,
+                &mut response_ring,
+            ),
+            Err(GpuCommandServiceError::Backend {
+                request_id: 82,
+                error: GpuError::QuotaExceeded,
+            })
+        );
+        response_ring.dequeue(&mut response_wire).unwrap();
+        assert_eq!(
+            response_receiver.decode(&response_wire),
+            Ok(GpuResourceResponse::Rejected { request_id: 82 })
+        );
+        assert_eq!(session.allocated_bytes(), 4096);
+
+        sender
+            .encode(83, ResourceCommand::Free { buffer }, &mut wire)
             .unwrap();
         ring.enqueue(&wire).unwrap();
         assert_eq!(
@@ -5538,7 +5585,7 @@ mod tests {
                 &mut response_ring,
             ),
             Ok(GpuResourceOutcome::Freed {
-                request_id: 82,
+                request_id: 83,
                 bytes: 4096,
             })
         );
@@ -5546,7 +5593,7 @@ mod tests {
         assert_eq!(
             response_receiver.decode(&response_wire),
             Ok(GpuResourceResponse::Freed {
-                request_id: 82,
+                request_id: 83,
                 bytes: 4096,
             })
         );
@@ -5556,7 +5603,7 @@ mod tests {
             generation: 1,
         };
         sender
-            .encode(83, ResourceCommand::SubmitBatch { control }, &mut wire)
+            .encode(84, ResourceCommand::SubmitBatch { control }, &mut wire)
             .unwrap();
         ring.enqueue(&wire).unwrap();
         assert_eq!(
@@ -5568,7 +5615,7 @@ mod tests {
                 &mut response_ring,
             ),
             Ok(GpuResourceOutcome::SubmitBatch {
-                request_id: 83,
+                request_id: 84,
                 control,
             })
         );
