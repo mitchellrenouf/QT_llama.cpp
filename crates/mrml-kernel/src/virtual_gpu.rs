@@ -1,4 +1,7 @@
-use core::array;
+use core::{
+    array,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use mrml_crypto::hmac_sha256;
 
 pub const MAX_DISPATCH_BUFFERS: usize = 16;
@@ -245,6 +248,77 @@ impl<const N: usize> GpuRingProducer<N> {
 /// copy the indicated immutable slot, authenticate it, then release `ticket`.
 pub struct GpuRingConsumer<const N: usize> {
     consumed: u64,
+}
+
+/// Cache-line-separated indices suitable for a coherently mapped shared page.
+/// The producer writes slot bytes before `publish`; the consumer calls
+/// `published` before reading them. The reverse ordering protects slot reuse.
+/// Platform code must provide naturally aligned, cache-coherent shared memory.
+#[repr(C, align(64))]
+pub struct GpuSharedRingIndices {
+    published: AtomicU64,
+    _published_padding: [u8; 56],
+    consumed: AtomicU64,
+    _consumed_padding: [u8; 56],
+}
+
+impl GpuSharedRingIndices {
+    pub const fn new() -> Self {
+        Self {
+            published: AtomicU64::new(0),
+            _published_padding: [0; 56],
+            consumed: AtomicU64::new(0),
+            _consumed_padding: [0; 56],
+        }
+    }
+
+    pub fn published(&self) -> u64 {
+        self.published.load(Ordering::Acquire)
+    }
+
+    pub fn consumed(&self) -> u64 {
+        self.consumed.load(Ordering::Acquire)
+    }
+
+    /// Release-publishes a filled slot only if the shared counter still has
+    /// the producer's expected value. Any external mutation fails closed.
+    pub fn publish(&self, previous: u64, ticket: GpuRingTicket) -> Result<(), GpuError> {
+        if ticket.position != previous.checked_add(1).ok_or(GpuError::SequenceExhausted)? {
+            return Err(GpuError::InvalidReservation);
+        }
+        self.published
+            .compare_exchange(
+                previous,
+                ticket.position,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| GpuError::InvalidQueueState)
+    }
+
+    /// Release-publishes completion only in exact FIFO order. This makes all
+    /// preceding slot reads happen before the producer may observe reuse.
+    pub fn consume(&self, previous: u64, ticket: GpuRingTicket) -> Result<(), GpuError> {
+        if ticket.position != previous.checked_add(1).ok_or(GpuError::SequenceExhausted)? {
+            return Err(GpuError::InvalidReservation);
+        }
+        self.consumed
+            .compare_exchange(
+                previous,
+                ticket.position,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| GpuError::InvalidQueueState)
+    }
+}
+
+impl Default for GpuSharedRingIndices {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<const N: usize> GpuRingConsumer<N> {
@@ -1035,6 +1109,35 @@ mod tests {
         assert_eq!(consumer.acquire(2), Err(GpuError::InvalidQueueState));
         assert_eq!(consumer.acquire(6), Err(GpuError::InvalidQueueState));
         assert_eq!(producer.reserve(4), Err(GpuError::InvalidQueueState));
+    }
+
+    #[test]
+    fn shared_indices_publish_and_consume_only_in_exact_order() {
+        assert_eq!(core::mem::align_of::<GpuSharedRingIndices>(), 64);
+        assert_eq!(core::mem::size_of::<GpuSharedRingIndices>(), 128);
+        let indices = GpuSharedRingIndices::new();
+        let first = GpuRingTicket {
+            position: 1,
+            slot: 0,
+        };
+        let second = GpuRingTicket {
+            position: 2,
+            slot: 1,
+        };
+        assert_eq!(
+            indices.publish(0, second),
+            Err(GpuError::InvalidReservation)
+        );
+        assert!(indices.publish(0, first).is_ok());
+        assert_eq!(indices.published(), 1);
+        assert_eq!(indices.publish(0, first), Err(GpuError::InvalidQueueState));
+        assert_eq!(
+            indices.consume(0, second),
+            Err(GpuError::InvalidReservation)
+        );
+        assert!(indices.consume(0, first).is_ok());
+        assert_eq!(indices.consumed(), 1);
+        assert_eq!(indices.consume(0, first), Err(GpuError::InvalidQueueState));
     }
 
     #[test]
