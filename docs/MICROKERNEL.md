@@ -165,6 +165,16 @@ only and contribute no source code to MRML.
 
 ## Verification gates
 
+Verified release state has a canonical 88-byte encoding containing the current
+root digest and minimum accepted release. The kernel advances it only through
+an authenticated monotonic-store compare-and-store operation, so concurrent or
+stale updates fail instead of overwriting newer trust state. A conforming
+platform backend must use TPM NV or an equivalent authenticated, power-loss
+atomic facility; a normal host file is not a conforming backend. The encoding,
+rotation, corruption, conflict, and replay paths have unit tests. Actual TPM NV
+and UEFI variable backends remain pending and no rollback-resistance claim is
+made until one is implemented and tested on physical hardware.
+
 Each milestone requires Windows gnullvm and Arch Linux builds/tests, parser and
 capability fuzz-style adversarial vectors, unsafe/FFI review, boot tests under
 both hypervisors where applicable, and before/after latency and throughput

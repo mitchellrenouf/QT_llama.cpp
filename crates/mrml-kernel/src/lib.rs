@@ -18,8 +18,9 @@ mod scheduler;
 mod virtual_gpu;
 
 pub use artifact::{
-    ArtifactError, ArtifactKind, BootstrapState, RELEASE_MANIFEST_BYTES, ReleaseManifest,
-    TrustRoot, VerifiedArtifact, VerifiedRelease, artifact_statement,
+    ArtifactError, ArtifactKind, BOOTSTRAP_STATE_BYTES, BootstrapState, MonotonicStateStore,
+    RELEASE_MANIFEST_BYTES, ReleaseManifest, TrustRoot, VerifiedArtifact, VerifiedRelease,
+    artifact_statement,
 };
 pub use boot::{BootEvidence, BootPolicy, BootValidationError};
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};

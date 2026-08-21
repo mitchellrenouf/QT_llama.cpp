@@ -21,6 +21,10 @@ pub enum ArtifactError {
     MissingTrustRoot,
     ReusedTrustRoot,
     VersionExhausted,
+    MalformedBootstrapState,
+    UnauthenticatedBootstrapState,
+    StateConflict,
+    StateStorageFailure,
 }
 
 pub struct TrustRoot {
@@ -173,6 +177,24 @@ pub struct BootstrapState {
     minimum_release: u64,
 }
 
+pub const BOOTSTRAP_STATE_BYTES: usize = 88;
+
+/// Backend contract for TPM NV or an equivalently authenticated monotonic
+/// store. Implementations must authenticate reads and make compare-and-store
+/// atomic across power loss; ordinary files do not satisfy this contract.
+pub trait MonotonicStateStore {
+    fn load_authenticated(
+        &self,
+        output: &mut [u8; BOOTSTRAP_STATE_BYTES],
+    ) -> Result<(), ArtifactError>;
+
+    fn compare_and_store(
+        &mut self,
+        expected_minimum_release: u64,
+        replacement: &[u8; BOOTSTRAP_STATE_BYTES],
+    ) -> Result<(), ArtifactError>;
+}
+
 impl BootstrapState {
     pub const fn genesis(current_root_digest: [u8; 64], minimum_release: u64) -> Self {
         Self {
@@ -213,6 +235,46 @@ impl BootstrapState {
     pub const fn minimum_release(&self) -> u64 {
         self.minimum_release
     }
+
+    pub fn encode(self) -> [u8; BOOTSTRAP_STATE_BYTES] {
+        let mut output = [0u8; BOOTSTRAP_STATE_BYTES];
+        output[..16].copy_from_slice(b"MRML-BOOTSTATE1\0");
+        output[16..24].copy_from_slice(&self.minimum_release.to_le_bytes());
+        output[24..88].copy_from_slice(&self.current_root_digest);
+        output
+    }
+
+    pub fn decode_authenticated(input: &[u8]) -> Result<Self, ArtifactError> {
+        if input.len() != BOOTSTRAP_STATE_BYTES
+            || &input[..16] != b"MRML-BOOTSTATE1\0"
+            || input[24..88].iter().all(|byte| *byte == 0)
+        {
+            return Err(ArtifactError::MalformedBootstrapState);
+        }
+        let minimum_release = u64::from_le_bytes(input[16..24].try_into().unwrap());
+        if minimum_release == 0 {
+            return Err(ArtifactError::MalformedBootstrapState);
+        }
+        Ok(Self {
+            current_root_digest: input[24..88].try_into().unwrap(),
+            minimum_release,
+        })
+    }
+
+    pub fn verify_and_commit<S: MonotonicStateStore>(
+        store: &mut S,
+        encoded_manifest: &[u8],
+        root_public_key: &[u8],
+        signature: &[u8],
+    ) -> Result<VerifiedRelease, ArtifactError> {
+        let mut encoded_state = [0u8; BOOTSTRAP_STATE_BYTES];
+        store.load_authenticated(&mut encoded_state)?;
+        let current = Self::decode_authenticated(&encoded_state)?;
+        let (release, next) =
+            current.verify_release(encoded_manifest, root_public_key, signature)?;
+        store.compare_and_store(current.minimum_release, &next.encode())?;
+        Ok(release)
+    }
 }
 
 pub struct VerifiedRelease {
@@ -244,6 +306,34 @@ fn constant_time_equal(left: &[u8; 64], right: &[u8; 64]) -> bool {
 mod tests {
     use super::*;
     use mrml_crypto::{LAMPORT_PRIVATE_KEY_BYTES, lamport_public_key, lamport_sign};
+
+    struct TestStateStore {
+        state: [u8; BOOTSTRAP_STATE_BYTES],
+        force_conflict: bool,
+    }
+
+    impl MonotonicStateStore for TestStateStore {
+        fn load_authenticated(
+            &self,
+            output: &mut [u8; BOOTSTRAP_STATE_BYTES],
+        ) -> Result<(), ArtifactError> {
+            output.copy_from_slice(&self.state);
+            Ok(())
+        }
+
+        fn compare_and_store(
+            &mut self,
+            expected_minimum_release: u64,
+            replacement: &[u8; BOOTSTRAP_STATE_BYTES],
+        ) -> Result<(), ArtifactError> {
+            let current = BootstrapState::decode_authenticated(&self.state)?;
+            if self.force_conflict || current.minimum_release() != expected_minimum_release {
+                return Err(ArtifactError::StateConflict);
+            }
+            self.state.copy_from_slice(replacement);
+            Ok(())
+        }
+    }
 
     #[test]
     fn trust_root_binds_kind_version_length_key_and_content() {
@@ -314,5 +404,58 @@ mod tests {
             next.verify_release(&manifest, &public, &signature).err(),
             Some(ArtifactError::RollbackDetected)
         );
+
+        let mut store = TestStateStore {
+            state: BootstrapState::genesis(Sha3_512::digest(&public), 7).encode(),
+            force_conflict: false,
+        };
+        let committed =
+            BootstrapState::verify_and_commit(&mut store, &manifest, &public, &signature).unwrap();
+        assert_eq!(committed.release(), 7);
+        assert_eq!(
+            BootstrapState::decode_authenticated(&store.state)
+                .unwrap()
+                .minimum_release(),
+            8
+        );
+        assert_eq!(
+            BootstrapState::verify_and_commit(&mut store, &manifest, &public, &signature).err(),
+            Some(ArtifactError::RollbackDetected)
+        );
+    }
+
+    #[test]
+    fn bootstrap_state_rejects_corruption_and_atomic_conflicts() {
+        let root = [7; 64];
+        let encoded = BootstrapState::genesis(root, 3).encode();
+        assert_eq!(
+            BootstrapState::decode_authenticated(&encoded)
+                .unwrap()
+                .minimum_release(),
+            3
+        );
+
+        let mut corrupt = encoded;
+        corrupt[0] ^= 1;
+        assert_eq!(
+            BootstrapState::decode_authenticated(&corrupt).err(),
+            Some(ArtifactError::MalformedBootstrapState)
+        );
+        let mut zero_version = encoded;
+        zero_version[16..24].fill(0);
+        assert_eq!(
+            BootstrapState::decode_authenticated(&zero_version).err(),
+            Some(ArtifactError::MalformedBootstrapState)
+        );
+
+        let mut store = TestStateStore {
+            state: encoded,
+            force_conflict: true,
+        };
+        assert_eq!(
+            store.compare_and_store(3, &BootstrapState::genesis([8; 64], 4).encode()),
+            Err(ArtifactError::StateConflict)
+        );
+        assert_eq!(store.state, encoded);
     }
 }
