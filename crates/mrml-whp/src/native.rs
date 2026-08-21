@@ -23,8 +23,11 @@ type DeleteVirtualProcessor = unsafe extern "system" fn(Handle, u32) -> Hresult;
 type RunVirtualProcessor = unsafe extern "system" fn(Handle, u32, *mut c_void, u32) -> Hresult;
 type SetVirtualProcessorRegisters =
     unsafe extern "system" fn(Handle, u32, *const u32, u32, *const RegisterValue) -> Hresult;
+type RequestInterrupt = unsafe extern "system" fn(Handle, *const InterruptControl, u32) -> Hresult;
 
 const PROCESSOR_COUNT: u32 = 0x1fff;
+const LOCAL_APIC_EMULATION_MODE: u32 = 0x1005;
+const XAPIC_EMULATION: u32 = 1;
 const CAPABILITY_HYPERVISOR_PRESENT: u32 = 0;
 const MEM_COMMIT_RESERVE: u32 = 0x3000;
 const MEM_RELEASE: u32 = 0x8000;
@@ -84,6 +87,7 @@ struct Api {
     delete_vp: DeleteVirtualProcessor,
     run_vp: RunVirtualProcessor,
     set_registers: SetVirtualProcessorRegisters,
+    request_interrupt: RequestInterrupt,
 }
 
 pub struct WhpSystem {
@@ -111,6 +115,7 @@ impl WhpSystem {
                 delete_vp: resolve(module, b"WHvDeleteVirtualProcessor\0")?,
                 run_vp: resolve(module, b"WHvRunVirtualProcessor\0")?,
                 set_registers: resolve(module, b"WHvSetVirtualProcessorRegisters\0")?,
+                request_interrupt: resolve(module, b"WHvRequestInterrupt\0")?,
             }
         };
         Ok(Self {
@@ -137,6 +142,14 @@ impl WhpSystem {
                 partition.as_ptr(),
                 PROCESSOR_COUNT,
                 (&processor_count as *const u32).cast(),
+                4,
+            )
+        })?;
+        check(unsafe {
+            (self.api.set_partition_property)(
+                partition.as_ptr(),
+                LOCAL_APIC_EMULATION_MODE,
+                (&XAPIC_EMULATION as *const u32).cast(),
                 4,
             )
         })?;
@@ -335,6 +348,24 @@ impl PreparedWhpPartition<'_> {
         decode_exit_context(&context)
     }
 
+    pub(crate) fn inject_interrupt(&mut self, vector: u8) -> Result<(), WhpError> {
+        if vector < 32 || vector == u8::MAX {
+            return Err(WhpError::InvalidInterrupt);
+        }
+        let control = InterruptControl {
+            options: 0,
+            destination: 0,
+            vector: u32::from(vector),
+        };
+        check(unsafe {
+            (self.api.request_interrupt)(
+                self.partition.as_ptr(),
+                &control,
+                core::mem::size_of::<InterruptControl>() as u32,
+            )
+        })
+    }
+
     pub fn configure_long_mode(
         &mut self,
         entry: u64,
@@ -428,6 +459,13 @@ struct RegisterValue {
     high: u64,
 }
 
+#[repr(C)]
+struct InterruptControl {
+    options: u64,
+    destination: u32,
+    vector: u32,
+}
+
 impl RegisterValue {
     const fn zero() -> Self {
         Self { low: 0, high: 0 }
@@ -505,6 +543,7 @@ mod tests {
         let code = RegisterValue::segment(8, 0xa09b);
         assert_eq!(code.low, 0);
         assert_eq!(code.high, 0xa09b_0008_000f_ffff);
+        assert_eq!(core::mem::size_of::<InterruptControl>(), 16);
     }
 
     #[test]
@@ -532,6 +571,14 @@ mod tests {
             let mut value = [0u8; 1];
             partition.read_guest(0x10_0000, &mut value).unwrap();
             assert_eq!(value, [0x5a]);
+            assert_eq!(
+                partition.inject_interrupt(31),
+                Err(WhpError::InvalidInterrupt)
+            );
+            assert_eq!(
+                partition.inject_interrupt(255),
+                Err(WhpError::InvalidInterrupt)
+            );
         }
     }
 }

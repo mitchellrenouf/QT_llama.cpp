@@ -88,6 +88,9 @@ impl PreparedWhpGuest<'_> {
     pub fn read_guest(&self, address: u64, output: &mut [u8]) -> Result<(), WhpError> {
         self.partition.read_guest(address, output)
     }
+    pub fn inject_interrupt(&mut self, vector: u8) -> Result<(), WhpError> {
+        self.partition.inject_interrupt(vector)
+    }
 }
 
 impl WhpSystem {

@@ -539,8 +539,11 @@ tables, maps the handoff read-only and NX, writes a guarded ABI stack, and
 programs CR3 and entry state last. Only `PreparedWhpGuest` is published after
 all stages succeed. A live Windows test now creates and deletes an actual WHP
 partition, vCPU, and guest mapping when the host reports Hyper-V present.
-Interrupt injection and a successful signed guest execution remain pending, so
-this milestone does not claim Hyper-V bootability.
+The partition enables WHP's xAPIC emulation before setup, and prepared guests
+can request fixed, edge-triggered, physical-destination interrupts through the
+documented 16-byte control record. Architectural vectors 0--31 and vector 255
+are rejected before the host call. A successful signed guest execution remains
+pending, so this milestone does not claim Hyper-V bootability.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector
