@@ -44,8 +44,13 @@ MRML kernels embedded in the same measured build. Requests contain checked
 buffer ranges and bounded grid, block, and shared-memory values. They contain no
 host pointers, arbitrary PTX, CUDA ioctls, firmware operations, or device MMIO.
 
-The resource/session validator is implemented. The authenticated queue wire
-format, Hyper-V transport, host CUDA executor, kernel-specific argument schemas,
+The resource/session validator and authenticated queue wire format are
+implemented. Each fixed-size command is bound to a nonzero session and strict
+sequence and carries an HMAC tag under a per-session key; tampering, replay,
+cross-session substitution, noncanonical encoding, and zero keys are rejected
+before resource state changes. HMAC-SHA-256 provides 128-bit generic quantum
+collision security and is used only for ephemeral queue authentication, not
+artifact signing. The Hyper-V transport, host CUDA executor, kernel-specific argument schemas,
 copy staging, cancellation, watchdog reset, and end-to-end inference benchmarks
 remain pending. Until those pieces exist and are audited, this is not a working
 shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a

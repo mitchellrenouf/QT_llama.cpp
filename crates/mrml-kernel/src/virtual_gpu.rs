@@ -1,4 +1,5 @@
 use core::array;
+use mrml_crypto::hmac_sha256;
 
 pub const MAX_DISPATCH_BUFFERS: usize = 16;
 const MAX_BLOCK_THREADS: u64 = 1024;
@@ -19,6 +20,126 @@ pub enum GpuError {
     MalformedCommand,
     CommandBufferTooSmall,
     UnsupportedCommand,
+    InvalidQueueKey,
+    AuthenticationFailed,
+    WrongSession,
+    Replay,
+    SequenceExhausted,
+}
+
+pub const GPU_QUEUE_MESSAGE_BYTES: usize = 80;
+const GPU_QUEUE_AUTHENTICATED_BYTES: usize = 48;
+
+/// Authenticated producer state for an untrusted shared-memory transport.
+/// The transport may copy or modify bytes but cannot mint accepted commands
+/// without the per-session key held by the guest and isolated GPU service.
+pub struct GpuQueueSender {
+    session: u64,
+    next_sequence: u64,
+    key: [u8; 32],
+}
+
+impl GpuQueueSender {
+    pub fn new(session: u64, key: [u8; 32]) -> Result<Self, GpuError> {
+        validate_queue_identity(session, &key)?;
+        Ok(Self {
+            session,
+            next_sequence: 1,
+            key,
+        })
+    }
+
+    pub fn encode(
+        &mut self,
+        request_id: u64,
+        command: ResourceCommand,
+        output: &mut [u8],
+    ) -> Result<(), GpuError> {
+        let output = output
+            .get_mut(..GPU_QUEUE_MESSAGE_BYTES)
+            .ok_or(GpuError::CommandBufferTooSmall)?;
+        let sequence = self.next_sequence;
+        let next = sequence.checked_add(1).ok_or(GpuError::SequenceExhausted)?;
+        output.fill(0);
+        output[..4].copy_from_slice(b"MRGQ");
+        output[4] = 1;
+        output[8..16].copy_from_slice(&self.session.to_le_bytes());
+        output[16..24].copy_from_slice(&sequence.to_le_bytes());
+        command.encode(request_id, &mut output[24..48])?;
+        let tag = queue_tag(&self.key, &output[..GPU_QUEUE_AUTHENTICATED_BYTES]);
+        output[48..].copy_from_slice(&tag);
+        self.next_sequence = next;
+        Ok(())
+    }
+}
+
+/// Authenticated consumer state. Sequence advances only after the tag,
+/// session, canonical command, and exact expected sequence all validate.
+pub struct GpuQueueReceiver {
+    session: u64,
+    next_sequence: u64,
+    key: [u8; 32],
+}
+
+impl GpuQueueReceiver {
+    pub fn new(session: u64, key: [u8; 32]) -> Result<Self, GpuError> {
+        validate_queue_identity(session, &key)?;
+        Ok(Self {
+            session,
+            next_sequence: 1,
+            key,
+        })
+    }
+
+    pub fn decode(&mut self, input: &[u8]) -> Result<(u64, ResourceCommand), GpuError> {
+        if input.len() != GPU_QUEUE_MESSAGE_BYTES
+            || &input[..4] != b"MRGQ"
+            || input[4] != 1
+            || input[5..8].iter().any(|byte| *byte != 0)
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let expected_tag = queue_tag(&self.key, &input[..GPU_QUEUE_AUTHENTICATED_BYTES]);
+        if !constant_time_equal(&expected_tag, &input[48..80]) {
+            return Err(GpuError::AuthenticationFailed);
+        }
+        let session = u64::from_le_bytes(input[8..16].try_into().unwrap());
+        if session != self.session {
+            return Err(GpuError::WrongSession);
+        }
+        let sequence = u64::from_le_bytes(input[16..24].try_into().unwrap());
+        if sequence != self.next_sequence {
+            return Err(GpuError::Replay);
+        }
+        let decoded = ResourceCommand::decode(&input[24..48])?;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(GpuError::SequenceExhausted)?;
+        Ok(decoded)
+    }
+}
+
+fn validate_queue_identity(session: u64, key: &[u8; 32]) -> Result<(), GpuError> {
+    if session == 0 || key.iter().all(|byte| *byte == 0) {
+        return Err(GpuError::InvalidQueueKey);
+    }
+    Ok(())
+}
+
+fn queue_tag(key: &[u8; 32], authenticated: &[u8]) -> [u8; 32] {
+    hmac_sha256(key, &[b"MRML-VGPU-QUEUE-v1\0", authenticated])
+}
+
+fn constant_time_equal(expected: &[u8; 32], candidate: &[u8]) -> bool {
+    if candidate.len() != expected.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for index in 0..expected.len() {
+        difference |= expected[index] ^ candidate[index];
+    }
+    difference == 0
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -395,5 +516,33 @@ mod tests {
             ResourceCommand::decode(&wire),
             Err(GpuError::MalformedCommand)
         );
+    }
+
+    #[test]
+    fn authenticated_queue_rejects_tampering_replay_and_cross_session_use() {
+        let key = [7; 32];
+        let command = ResourceCommand::Allocate { bytes: 4096 };
+        let mut sender = GpuQueueSender::new(11, key).unwrap();
+        let mut receiver = GpuQueueReceiver::new(11, key).unwrap();
+        let mut wire = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+        sender.encode(9, command, &mut wire).unwrap();
+
+        let mut tampered = wire;
+        tampered[47] ^= 1;
+        assert_eq!(
+            receiver.decode(&tampered),
+            Err(GpuError::AuthenticationFailed)
+        );
+        assert_eq!(receiver.decode(&wire), Ok((9, command)));
+        assert_eq!(receiver.decode(&wire), Err(GpuError::Replay));
+
+        let mut other = GpuQueueReceiver::new(12, key).unwrap();
+        assert_eq!(other.decode(&wire), Err(GpuError::WrongSession));
+        let mut wrong_key = GpuQueueReceiver::new(11, [8; 32]).unwrap();
+        assert_eq!(wrong_key.decode(&wire), Err(GpuError::AuthenticationFailed));
+        assert!(matches!(
+            GpuQueueSender::new(11, [0; 32]),
+            Err(GpuError::InvalidQueueKey)
+        ));
     }
 }
