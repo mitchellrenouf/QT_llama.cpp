@@ -1708,6 +1708,8 @@ impl Dispatch {
             12 => self.validate_rms_norm_f32_schema(),
             13 => self.validate_router_logits_schema(),
             14 => self.validate_router_top8_schema(),
+            17 => self.validate_vocab_topk_schema(false),
+            18 => self.validate_vocab_topk_schema(true),
             27 => self.validate_embedding_q8_0_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
@@ -2233,6 +2235,56 @@ impl Dispatch {
         Ok(ValidatedKernelLaunch {
             dispatch: *self,
             element_count: top_elements,
+        })
+    }
+
+    fn validate_vocab_topk_schema(&self, generic: bool) -> Result<ValidatedKernelLaunch, GpuError> {
+        let expected_block = if generic { 1 } else { 256 };
+        if self.access_count != 5
+            || self.scalar_count != 5
+            || self.shared_memory != 0
+            || self.block != [expected_block, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let logits = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let valid = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let recent = self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?;
+        let scores = self.accesses[3].ok_or(GpuError::InvalidKernelSchema)?;
+        let ids = self.accesses[4].ok_or(GpuError::InvalidKernelSchema)?;
+        let vocabulary = self.positive_i32_scalar(0)?;
+        let recent_count = self.nonnegative_i32_scalar(1)?;
+        self.nonnegative_i32_scalar(2)?;
+        let k = self.positive_i32_scalar(3)?;
+        let partitions = self.positive_i32_scalar(4)?;
+        if partitions > vocabulary {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let max_partition = vocabulary.div_ceil(partitions);
+        if k > max_partition || generic == (max_partition <= 2048) {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let output_elements = k
+            .checked_mul(partitions)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let output_bytes = u64::from(output_elements) * 4;
+        if !valid_f32_access(logits, u64::from(vocabulary) * 4, BufferMode::Read)
+            || valid.mode != BufferMode::Read
+            || valid.length != u64::from(vocabulary)
+            || recent.mode != BufferMode::Read
+            || !recent.offset.is_multiple_of(4)
+            || recent.length != u64::from(recent_count) * 4
+            || !valid_f32_access(scores, output_bytes, BufferMode::Write)
+            || ids.mode != BufferMode::Write
+            || !ids.offset.is_multiple_of(4)
+            || ids.length != output_bytes
+            || self.grid != [partitions, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: output_elements,
         })
     }
 
@@ -3196,6 +3248,78 @@ mod tests {
         .unwrap();
         assert_eq!(
             bad_ids.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn executor_selects_only_the_bounded_vocab_topk_variant() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let make_accesses = |vocabulary: u64| {
+            [
+                BufferAccess::new(id(0), 0, vocabulary * 4, BufferMode::Read),
+                BufferAccess::new(id(1), 0, vocabulary, BufferMode::Read),
+                BufferAccess::new(id(2), 0, 16, BufferMode::Read),
+                BufferAccess::new(id(3), 0, 64, BufferMode::Write),
+                BufferAccess::new(id(4), 0, 64, BufferMode::Write),
+            ]
+        };
+        let specialized_scalars = [
+            ScalarArg::i32(4096),
+            ScalarArg::i32(4),
+            ScalarArg::i32(7),
+            ScalarArg::i32(8),
+            ScalarArg::i32(2),
+        ];
+        let specialized = Dispatch::new_with_scalars(
+            KernelId::new(17).unwrap(),
+            [2, 1, 1],
+            [256, 1, 1],
+            0,
+            &make_accesses(4096),
+            &specialized_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            specialized
+                .validate_executor_schema()
+                .unwrap()
+                .element_count(),
+            16
+        );
+
+        let generic_scalars = [
+            ScalarArg::i32(4097),
+            specialized_scalars[1],
+            specialized_scalars[2],
+            specialized_scalars[3],
+            specialized_scalars[4],
+        ];
+        let generic = Dispatch::new_with_scalars(
+            KernelId::new(18).unwrap(),
+            [2, 1, 1],
+            [1, 1, 1],
+            0,
+            &make_accesses(4097),
+            &generic_scalars,
+        )
+        .unwrap();
+        assert!(generic.validate_executor_schema().is_ok());
+
+        let wrong_variant = Dispatch::new_with_scalars(
+            KernelId::new(17).unwrap(),
+            [2, 1, 1],
+            [256, 1, 1],
+            0,
+            &make_accesses(4097),
+            &generic_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_variant.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
     }

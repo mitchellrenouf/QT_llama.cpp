@@ -165,6 +165,9 @@ Fused QKV GEMM and GEMV bind three separately sized Q4_0 matrices to one shared
 column width and one packed Q/K/V output, with distinct batch and launch tiling.
 Fused GeGLU GEMM and GEMV similarly require exact gate and up Q4_0 matrices,
 shared dimensions, f32 input/output tensors, and decode/prefill launch tiling.
+Vocabulary top-k binds logits, validity bytes, recent-token history, candidate
+scores/IDs, and partition scalars, and selects the specialized or generic
+kernel exclusively from the proven maximum partition size.
 RMS normalization represents an absent optional weight structurally rather
 than with a guest pointer, binds dimensions to exact tensor lengths, and
 requires epsilon to be a finite positive f32.
@@ -181,7 +184,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 12
+guest execution. Platform cache-coherence validation, the remaining 10
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML

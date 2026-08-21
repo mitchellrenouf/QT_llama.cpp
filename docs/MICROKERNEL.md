@@ -189,8 +189,14 @@ Kernel IDs 5 and 6 validate fused Q4_0 GeGLU GEMM and GEMV. Gate and up weights
 must each exactly match the same positive row/column dimensions, while checked
 batch products determine the f32 input and output ranges. Their prefill and
 decode variants retain distinct row tiles, token tiles, and block widths.
+Kernel IDs 17 and 18 validate vocabulary top-k. Exact logits, validity mask,
+recent i32 history, writable f32 scores, and writable i32 IDs are bound to
+vocabulary, recent count, generated count, k, and partition count. Empty
+partitions and k beyond a partition are rejected. The 256-thread specialized
+kernel is accepted only when the maximum partition is at most 2048; larger
+partitions must use the single-thread generic kernel.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 12 schemas and the
+registry alone cannot make it executable. The remaining 10 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
