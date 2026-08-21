@@ -88,7 +88,10 @@ ready for bare-metal deployment. The original x86-64 PE32+ kernel does now boot
 through the original UEFI loader under QEMU and directly under nested KVM. It
 validates the bounded handoff, installs its own GDT and 256-entry fail-stop IDT,
 uses a dedicated stack and guarded page tables, and renders a GOP framebuffer
-marker. Recoverable exception dispatch, timers, scheduling from the standalone
+marker. Before installing the guarded address space, the loader erases the
+entire page-rounded kernel allocation and all 64 KiB of the kernel stack, so no
+firmware-era tail or stack data enters the kernel mapping. Recoverable
+exception dispatch, timers, scheduling from the standalone
 image, service VMs, and bare-metal validation remain unfinished.
 
 ### Secure mediated CUDA design

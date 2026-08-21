@@ -386,15 +386,16 @@ reached the kernel marker. A second independently valid version-1 fixture from
 an unpinned key stopped at the blue verification-failure stage
 `RGB(0,0,128)`. The one-time private files were consumed by the signer.
 
-The admitted PE is copied into zeroed UEFI LoaderCode pages and only bounded
-DIR64 relocations are applied. Each nonzero relocation must originally point
+The admitted PE is copied into fully erased UEFI LoaderCode pages, including
+the padding after `SizeOfImage` in its final mapped page, and only bounded DIR64
+relocations are applied. Each nonzero relocation must originally point
 inside the preferred image and is converted to the corresponding checked RVA
 at the actual 4 KiB-aligned load address. The entry must be inside a validated
 executable, non-writable section, and the loader-owned CR3 enforces those final
 section permissions in hardware.
 
 The x86-64 transition now allocates a new zeroed four-level page-table tree and
-a dedicated 64 KiB kernel stack before leaving firmware. It identity-maps only
+a dedicated, fully erased 64 KiB kernel stack before leaving firmware. It identity-maps only
 the authenticated PE regions with their final read-only, writable/NX, or
 read-only/executable permissions; the stack and GOP aperture writable/NX; the
 canonical handoff read-only; and one page-aligned read-only/executable assembly
@@ -541,16 +542,19 @@ validated before loading, capped at 65,536 entries, and accept only padding and
 x86-64 `DIR64` relocations; malformed blocks, unsupported relocation types,
 out-of-image targets, arithmetic overflow, and rebasing a fixed image fail
 closed. PE imports are rejected because they are not part of the standalone
-MRML ABI. Page-table installation and transfer to a separately loaded image
-remain pending.
+MRML ABI. The UEFI loader materializes the separately built kernel into
+LoaderCode pages, builds final W^X page tables, exits boot services, switches
+CR3 and stack in a page-aligned trampoline, and transfers to the validated
+entry without return.
 
 The early frame allocator now reserves aligned physically contiguous runs
 without crossing normalized firmware regions. PE admission can consume that
 allocator to produce a fixed-capacity physical load plan containing one run for
 the read-only NX headers and one run per section. Alignment padding and partial
 allocations are never recycled during boot, preventing stale-frame aliasing;
-failure is therefore fatal rather than rolled back. Physical table storage,
-installation, and the final control transfer remain pending.
+failure is therefore fatal rather than rolled back. This generic physical-plan
+path remains available for non-UEFI loaders; the active UEFI loader uses its
+firmware page allocator directly.
 
 The x86-64 address-space layer now converts that physical plan into final user
 or kernel mappings with permissions derived from the validated PE sections.
@@ -567,9 +571,11 @@ storage trait. It allocates only zeroed table frames, validates every existing
 intermediate entry, propagates user accessibility through all parent levels,
 rejects huge-page collisions and duplicate leaves, and reuses the same NX/W^X
 leaf constructor tested by the address-space policy. The builder returns its
-root physical frame but does not write CR3 itself. A real UEFI physical-memory
-backend, boot-time table population from the complete PE plan, TLB transition,
-and final control transfer remain pending.
+root physical frame without performing privileged state changes. The UEFI
+adapter supplies a real firmware page store, maps the PE, stack, handoff, GOP
+aperture, and transition trampoline, then the assembly transition enables NX
+and write protection, writes CR3, installs the erased stack, and jumps to the
+authenticated entry.
 
 Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
 dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.

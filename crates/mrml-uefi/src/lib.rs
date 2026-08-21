@@ -291,6 +291,12 @@ pub enum AcpiError {
 /// Locates ACPI 2.0 preferentially, falling back to ACPI 1.0. The returned
 /// physical pointer is admitted only after the complete applicable RSDP
 /// checksum validates.
+///
+/// # Safety
+///
+/// `system.configuration_table` and each selected `vendor_table` must remain
+/// firmware-owned, readable, and valid for their declared lengths throughout
+/// this call. The caller must invoke it before those UEFI mappings are revoked.
 pub unsafe fn find_acpi_root(system: &SystemTable) -> Result<u64, AcpiError> {
     if system.table_entry_count > 1024 {
         return Err(AcpiError::TooManyConfigurationTables);
@@ -410,10 +416,10 @@ pub fn normalize_memory_map(
     if descriptor_size < core::mem::size_of::<MemoryDescriptor>() {
         return Err(NormalizeError::BadDescriptorSize);
     }
-    if bytes.len() % descriptor_size != 0 {
+    if !bytes.len().is_multiple_of(descriptor_size) {
         return Err(NormalizeError::Truncated);
     }
-    if framebuffer_base % PAGE_SIZE != 0 || framebuffer_bytes == 0 {
+    if !framebuffer_base.is_multiple_of(PAGE_SIZE) || framebuffer_bytes == 0 {
         return Err(NormalizeError::FramebufferConflict);
     }
     let framebuffer_end_unaligned = framebuffer_base

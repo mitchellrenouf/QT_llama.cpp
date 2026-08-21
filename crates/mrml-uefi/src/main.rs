@@ -4,14 +4,15 @@
 use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use mrml_kernel::{
+    ArtifactKind, FramebufferInfo, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS,
+    MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PeImage, PhysAddr, PixelFormat,
+    SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
     arch::x86_64::{
         PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore, VirtAddr,
     },
-    encode_handoff, ArtifactKind, FramebufferInfo, MemoryKind, MemoryRegion, PeImage, PhysAddr,
-    PixelFormat, SignedArtifact, TrustRoot, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
-    MAX_HANDOFF_REGIONS, MAX_KERNEL_IMAGE_BYTES, SIGNED_ARTIFACT_OVERHEAD_BYTES,
+    encode_handoff,
 };
-use mrml_uefi::tpm::{enforce_version, NvCounterError, TpmTransport};
+use mrml_uefi::tpm::{NvCounterError, TpmTransport, enforce_version};
 use mrml_uefi::*;
 
 const MAP_BYTES: usize = 64 * 1024;
@@ -253,13 +254,17 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         .checked_add(4095)
         .map(|value| value / 4096)
         .ok_or(LOAD_ERROR)?;
+    let image_allocation_bytes = image_pages.checked_mul(4096).ok_or(LOAD_ERROR)?;
     let mut image_address = 0u64;
     check(unsafe { (services.allocate_pages)(0, 1, image_pages, &mut image_address) })?;
     if image_address == 0 || image_address % 4096 != 0 {
         return Err(LOAD_ERROR);
     }
-    let image_destination =
-        unsafe { core::slice::from_raw_parts_mut(image_address as *mut u8, image_size) };
+    let image_allocation = unsafe {
+        core::slice::from_raw_parts_mut(image_address as *mut u8, image_allocation_bytes)
+    };
+    image_allocation.fill(0);
+    let image_destination = &mut image_allocation[..image_size];
     let kernel_entry = verified
         .image()
         .materialize_at(image_destination, image_address)
@@ -649,6 +654,8 @@ fn prepare_transition(
     if stack_base == 0 || stack_base % 4096 != 0 || stack_end % 16 != 0 {
         return Err(LOAD_ERROR);
     }
+    let stack_bytes = usize::try_from(stack_bytes).map_err(|_| LOAD_ERROR)?;
+    unsafe { core::ptr::write_bytes(stack_base as *mut u8, 0, stack_bytes) };
     unsafe { *(stack_top as *mut u64) = 0 };
 
     let store = FirmwarePageTables {
