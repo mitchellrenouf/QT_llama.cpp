@@ -222,6 +222,12 @@ one checked dimension/batch product and one block per token. Kernel ID 16 binds
 the residual and dense inputs, read/write MoE accumulator, three normalization
 vectors, and final output to the same geometry; its layer scale must be a typed
 finite f32. Both require fixed 512-thread blocks and no dynamic shared memory.
+`ValidatedExpertSelection` supplies the missing data-dependent-index boundary
+for MoE kernels. It validates exact little-endian i32 ID and f32 weight ranges,
+rejects negative, out-of-range, duplicate, non-finite, or zero-mass selections,
+and caps active experts at 32. A domain-separated SHA3-512 digest binds both
+buffers and their expert/active/batch dimensions; the GPU service must verify
+the bytes again immediately before launch to close mutation after validation.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
 registry alone cannot make it executable. The remaining 5 schemas and the
 actual CUDA launch adapter are pending.

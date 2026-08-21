@@ -9,6 +9,7 @@ pub const MAX_DISPATCH_BUFFERS: usize = 16;
 pub const MAX_DISPATCH_SCALARS: usize = 16;
 pub const MAX_BATCH_DISPATCHES: usize = 32;
 pub const MAX_GPU_CONTROL_BYTES: usize = 64 * 1024;
+pub const MAX_ACTIVE_EXPERTS: u32 = 32;
 const MAX_BLOCK_THREADS: u64 = 1024;
 const MAX_SHARED_MEMORY: u32 = 96 * 1024;
 
@@ -51,6 +52,8 @@ pub enum GpuError {
     ControlBufferTooLarge,
     InvalidControlBuffer,
     ControlBufferChanged,
+    InvalidExpertSelection,
+    ExpertSelectionChanged,
     UntrustedKernelBundle,
     UnsupportedKernelSchema,
     InvalidKernelSchema,
@@ -895,6 +898,158 @@ impl<const N: usize> Default for ControlBufferTable<N> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Immutable proof that data-dependent MoE indices were range checked before
+/// a host kernel may use them. The service must call `verify` immediately
+/// before launch, closing mutation after admission without trusting guest
+/// memory or copying an unbounded control structure into the kernel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedExpertSelection {
+    ids: BufferAccess,
+    weights: BufferAccess,
+    experts: u32,
+    active: u32,
+    batch: u32,
+    digest: [u8; 64],
+}
+
+impl ValidatedExpertSelection {
+    pub fn admit(
+        ids: BufferAccess,
+        id_bytes: &[u8],
+        weights: BufferAccess,
+        weight_bytes: &[u8],
+        experts: u32,
+        active: u32,
+        batch: u32,
+    ) -> Result<Self, GpuError> {
+        validate_expert_selection(ids, id_bytes, weights, weight_bytes, experts, active, batch)?;
+        Ok(Self {
+            ids,
+            weights,
+            experts,
+            active,
+            batch,
+            digest: expert_selection_digest(id_bytes, weight_bytes, experts, active, batch),
+        })
+    }
+
+    pub fn verify(&self, id_bytes: &[u8], weight_bytes: &[u8]) -> Result<(), GpuError> {
+        let candidate = expert_selection_digest(
+            id_bytes,
+            weight_bytes,
+            self.experts,
+            self.active,
+            self.batch,
+        );
+        let mut difference = 0u8;
+        for (expected, candidate) in self.digest.iter().zip(candidate) {
+            difference |= *expected ^ candidate;
+        }
+        if difference != 0 {
+            return Err(GpuError::ExpertSelectionChanged);
+        }
+        Ok(())
+    }
+
+    pub const fn ids(&self) -> BufferAccess {
+        self.ids
+    }
+    pub const fn weights(&self) -> BufferAccess {
+        self.weights
+    }
+    pub const fn experts(&self) -> u32 {
+        self.experts
+    }
+    pub const fn active(&self) -> u32 {
+        self.active
+    }
+    pub const fn batch(&self) -> u32 {
+        self.batch
+    }
+}
+
+fn validate_expert_selection(
+    ids: BufferAccess,
+    id_bytes: &[u8],
+    weights: BufferAccess,
+    weight_bytes: &[u8],
+    experts: u32,
+    active: u32,
+    batch: u32,
+) -> Result<(), GpuError> {
+    let elements = active
+        .checked_mul(batch)
+        .filter(|_| experts > 0 && active > 0 && active <= experts && active <= MAX_ACTIVE_EXPERTS)
+        .ok_or(GpuError::InvalidExpertSelection)?;
+    let bytes = usize::try_from(elements)
+        .ok()
+        .and_then(|value| value.checked_mul(4))
+        .ok_or(GpuError::InvalidExpertSelection)?;
+    if ids.mode != BufferMode::Read
+        || weights.mode != BufferMode::Read
+        || !ids.offset.is_multiple_of(4)
+        || !weights.offset.is_multiple_of(4)
+        || ids.length != bytes as u64
+        || weights.length != bytes as u64
+        || id_bytes.len() != bytes
+        || weight_bytes.len() != bytes
+    {
+        return Err(GpuError::InvalidExpertSelection);
+    }
+    for token in 0..batch as usize {
+        let base = token * active as usize;
+        let mut total = 0.0_f32;
+        for slot in 0..active as usize {
+            let index = base + slot;
+            let offset = index * 4;
+            let expert = i32::from_le_bytes(id_bytes[offset..offset + 4].try_into().unwrap());
+            let weight = f32::from_bits(u32::from_le_bytes(
+                weight_bytes[offset..offset + 4].try_into().unwrap(),
+            ));
+            if expert < 0
+                || expert as u32 >= experts
+                || !weight.is_finite()
+                || !(0.0..=1.0).contains(&weight)
+            {
+                return Err(GpuError::InvalidExpertSelection);
+            }
+            for prior in 0..slot {
+                let prior_offset = (base + prior) * 4;
+                let prior_expert = i32::from_le_bytes(
+                    id_bytes[prior_offset..prior_offset + 4].try_into().unwrap(),
+                );
+                if expert == prior_expert {
+                    return Err(GpuError::InvalidExpertSelection);
+                }
+            }
+            total += weight;
+        }
+        if !total.is_finite() || total <= 0.0 {
+            return Err(GpuError::InvalidExpertSelection);
+        }
+    }
+    Ok(())
+}
+
+fn expert_selection_digest(
+    ids: &[u8],
+    weights: &[u8],
+    experts: u32,
+    active: u32,
+    batch: u32,
+) -> [u8; 64] {
+    let mut hash = Sha3_512::new();
+    hash.update(b"MRML-MOE-SELECTION-v1\0");
+    hash.update(&experts.to_le_bytes());
+    hash.update(&active.to_le_bytes());
+    hash.update(&batch.to_le_bytes());
+    hash.update(&(ids.len() as u64).to_le_bytes());
+    hash.update(ids);
+    hash.update(&(weights.len() as u64).to_le_bytes());
+    hash.update(weights);
+    hash.finalize()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3992,6 +4147,70 @@ mod tests {
         let replacement = controls.seal(bytes).unwrap();
         assert_ne!(replacement, id);
         assert_eq!(controls.release(id), Err(GpuError::InvalidControlBuffer));
+    }
+
+    #[test]
+    fn expert_selection_is_range_checked_unique_and_mutation_bound() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let ids_access = BufferAccess::new(id(0), 0, 16, BufferMode::Read);
+        let weights_access = BufferAccess::new(id(1), 0, 16, BufferMode::Read);
+        let mut ids = [0u8; 16];
+        for (index, value) in [0_i32, 2, 1, 3].into_iter().enumerate() {
+            ids[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut weights = [0u8; 16];
+        for (index, value) in [0.6_f32, 0.4, 0.75, 0.25].into_iter().enumerate() {
+            weights[index * 4..index * 4 + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+        let proof =
+            ValidatedExpertSelection::admit(ids_access, &ids, weights_access, &weights, 4, 2, 2)
+                .unwrap();
+        assert_eq!(proof.experts(), 4);
+        assert_eq!(proof.active(), 2);
+        assert_eq!(proof.batch(), 2);
+        assert_eq!(proof.ids(), ids_access);
+        assert_eq!(proof.weights(), weights_access);
+        assert!(proof.verify(&ids, &weights).is_ok());
+
+        let mut changed = ids;
+        changed[0] = 1;
+        assert_eq!(
+            proof.verify(&changed, &weights),
+            Err(GpuError::ExpertSelectionChanged)
+        );
+
+        let mut out_of_range = ids;
+        out_of_range[..4].copy_from_slice(&4_i32.to_le_bytes());
+        assert_eq!(
+            ValidatedExpertSelection::admit(
+                ids_access,
+                &out_of_range,
+                weights_access,
+                &weights,
+                4,
+                2,
+                2,
+            ),
+            Err(GpuError::InvalidExpertSelection)
+        );
+
+        let mut duplicate = ids;
+        duplicate[4..8].copy_from_slice(&0_i32.to_le_bytes());
+        assert_eq!(
+            ValidatedExpertSelection::admit(
+                ids_access,
+                &duplicate,
+                weights_access,
+                &weights,
+                4,
+                2,
+                2,
+            ),
+            Err(GpuError::InvalidExpertSelection)
+        );
     }
 
     #[test]

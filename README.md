@@ -193,6 +193,12 @@ four separate outputs to the same checked dimension and batch. FFN completion
 requires the MoE accumulator to be read/write, keeps the dense branch
 read-only, validates three normalization vectors and the output, and rejects a
 non-finite layer scale.
+MoE expert selections now have a bounded sealed proof type. It validates exact
+i32 ID and f32 weight ranges, rejects negative/out-of-range or duplicate IDs,
+limits active experts to 32, requires finite weights in `[0, 1]` with positive
+per-token mass, and binds the checked bytes and dimensions with domain-separated
+SHA3-512. The service must reverify that digest immediately before a
+data-dependent launch, detecting mutation after admission.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject
