@@ -153,6 +153,10 @@ rows/columns/batch scalars exactly match Q4_0 weight bytes, f32 input/output
 bytes, alignment, permissions, and fixed tiled launch geometry.
 Decode kernels 3 and 4 apply the same binding to Q4_0 and Q8_0 GEMV while
 enforcing their distinct 18-byte and 34-byte quantized blocks and launch tiles.
+The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
+only by combining watchdog-bound identities, the verified embedded-bundle
+token, and successful ABI validation of every dispatch; mixed batches reject
+atomically before service submission.
 Also implemented are the dispatch watchdog and
 adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,

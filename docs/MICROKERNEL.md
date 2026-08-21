@@ -109,6 +109,11 @@ state; a definite rejection before GPU-visible action cancels the prepared
 batch; an uncertain service error retains every identity for deadline expiry
 and reset. Treating uncertainty as rejection would permit late GPU completions
 to collide with reused state and is prohibited by the interface.
+Raw prepared batches are no longer executor-visible. The executor accepts only
+`ValidatedGpuBatch`, which owns the same watchdog identities plus a validated
+launch proof for every entry. Only `VerifiedGpuKernelBundle::validate_batch`
+can construct it, and one untrusted bundle, unsupported kernel schema, or ABI
+mismatch rejects the whole conversion without GPU-visible effects.
 The KVM adapter now consumes the common layout and registers two dedicated
 memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining

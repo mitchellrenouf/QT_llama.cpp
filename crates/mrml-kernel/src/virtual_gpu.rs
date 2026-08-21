@@ -1291,6 +1291,7 @@ impl PreparedGpuDispatch {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct PreparedGpuBatch<const N: usize> {
     entries: [Option<PreparedGpuDispatch>; N],
     count: usize,
@@ -1308,7 +1309,7 @@ pub enum GpuSubmitError<E> {
 pub trait GpuBatchExecutor<const N: usize> {
     type Error;
 
-    fn submit(&mut self, batch: &PreparedGpuBatch<N>) -> Result<bool, Self::Error>;
+    fn submit(&mut self, batch: &ValidatedGpuBatch<N>) -> Result<bool, Self::Error>;
 }
 
 impl<const N: usize> PreparedGpuBatch<N> {
@@ -1329,6 +1330,63 @@ impl<const N: usize> PreparedGpuBatch<N> {
 
     pub const fn is_empty(&self) -> bool {
         self.count == 0
+    }
+}
+
+/// Executor-visible batch whose signed kernel bundle and every kernel-specific
+/// ABI have been validated. The inner prepared identities remain bound to the
+/// watchdog entries minted before this proof was constructed.
+pub struct ValidatedGpuBatch<const N: usize> {
+    prepared: PreparedGpuBatch<N>,
+    launches: [Option<ValidatedKernelLaunch>; N],
+}
+
+impl<const N: usize> ValidatedGpuBatch<N> {
+    pub const fn prepared(&self) -> &PreparedGpuBatch<N> {
+        &self.prepared
+    }
+
+    pub fn entries(
+        &self,
+    ) -> impl Iterator<Item = (PreparedGpuDispatch, ValidatedKernelLaunch)> + '_ {
+        self.prepared.entries().zip(
+            self.launches[..self.prepared.count]
+                .iter()
+                .flatten()
+                .copied(),
+        )
+    }
+
+    pub const fn len(&self) -> usize {
+        self.prepared.count
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.prepared.count == 0
+    }
+}
+
+impl VerifiedGpuKernelBundle {
+    /// Convert watchdog-bound work into the only batch type accepted by the
+    /// executor. Validation is all-or-nothing and has no GPU-visible effects.
+    pub fn validate_batch<const N: usize>(
+        &self,
+        prepared: &PreparedGpuBatch<N>,
+    ) -> Result<ValidatedGpuBatch<N>, GpuError> {
+        if prepared.is_empty() {
+            return Err(GpuError::EmptyBatch);
+        }
+        let mut launches = [None; N];
+        for (index, entry) in prepared.entries().enumerate() {
+            if !self.permits(entry.dispatch.kernel) {
+                return Err(GpuError::UntrustedKernelBundle);
+            }
+            launches[index] = Some(entry.dispatch.validate_executor_schema()?);
+        }
+        Ok(ValidatedGpuBatch {
+            prepared: *prepared,
+            launches,
+        })
     }
 }
 
@@ -1531,7 +1589,7 @@ impl<const N: usize> DispatchTable<N> {
 pub fn submit_gpu_batch<E, const WATCHDOG: usize, const BATCH: usize>(
     executor: &mut E,
     watchdog: &mut DispatchTable<WATCHDOG>,
-    batch: &PreparedGpuBatch<BATCH>,
+    batch: &ValidatedGpuBatch<BATCH>,
 ) -> Result<(), GpuSubmitError<E::Error>>
 where
     E: GpuBatchExecutor<BATCH>,
@@ -1539,7 +1597,7 @@ where
     match executor.submit(batch) {
         Ok(true) => Ok(()),
         Ok(false) => {
-            watchdog.cancel_batch(batch);
+            watchdog.cancel_batch(batch.prepared());
             Err(GpuSubmitError::Rejected)
         }
         Err(error) => Err(GpuSubmitError::Uncertain(error)),
@@ -1960,7 +2018,7 @@ mod tests {
     impl<const N: usize> GpuBatchExecutor<N> for MockExecutor {
         type Error = u8;
 
-        fn submit(&mut self, _: &PreparedGpuBatch<N>) -> Result<bool, Self::Error> {
+        fn submit(&mut self, _: &ValidatedGpuBatch<N>) -> Result<bool, Self::Error> {
             self.0
         }
     }
@@ -2078,6 +2136,25 @@ mod tests {
         .unwrap();
         assert_eq!(
             unsupported.validate_executor_schema(),
+            Err(GpuError::UnsupportedKernelSchema)
+        );
+        let prepared = PreparedGpuBatch {
+            entries: [Some(PreparedGpuDispatch {
+                request_id: 9,
+                dispatch_id: DispatchId {
+                    slot: 0,
+                    generation: 1,
+                },
+                dispatch: unsupported,
+            })],
+            count: 1,
+        };
+        let bundle = VerifiedGpuKernelBundle {
+            version: 1,
+            digest: [3; 64],
+        };
+        assert_eq!(
+            bundle.validate_batch(&prepared).map(|_| ()),
             Err(GpuError::UnsupportedKernelSchema)
         );
     }
@@ -2536,11 +2613,15 @@ mod tests {
         let mut session = VirtualGpuSession::<2>::new(4096);
         let buffer = session.allocate(4096).unwrap();
         let dispatch = Dispatch::new(
-            KernelId::new(0).unwrap(),
-            [1, 1, 1],
-            [32, 1, 1],
+            KernelId::new(7).unwrap(),
+            [4, 1, 1],
+            [256, 1, 1],
             0,
-            &[BufferAccess::new(buffer, 0, 4096, BufferMode::Read)],
+            &[
+                BufferAccess::new(buffer, 0, 4096, BufferMode::Read),
+                BufferAccess::new(buffer, 0, 4096, BufferMode::Read),
+                BufferAccess::new(buffer, 0, 4096, BufferMode::Write),
+            ],
         )
         .unwrap();
         let mut batch = GpuDispatchBatch::<2>::new().unwrap();
@@ -2604,11 +2685,18 @@ mod tests {
 
         let mut rejected_watchdog = DispatchTable::<2>::new();
         let rejected_batch = rejected_watchdog.begin_batch(&batch, 100, 200).unwrap();
+        let bundle = VerifiedGpuKernelBundle {
+            version: 1,
+            digest: [7; 64],
+        };
+        let validated_rejected = bundle.validate_batch(&rejected_batch).unwrap();
+        assert_eq!(validated_rejected.len(), 2);
+        assert_eq!(validated_rejected.entries().count(), 2);
         assert_eq!(
             submit_gpu_batch(
                 &mut MockExecutor(Ok(false)),
                 &mut rejected_watchdog,
-                &rejected_batch
+                &validated_rejected
             ),
             Err(GpuSubmitError::Rejected)
         );
@@ -2618,11 +2706,12 @@ mod tests {
 
         let mut uncertain_watchdog = DispatchTable::<2>::new();
         let uncertain_batch = uncertain_watchdog.begin_batch(&batch, 100, 200).unwrap();
+        let validated_uncertain = bundle.validate_batch(&uncertain_batch).unwrap();
         assert_eq!(
             submit_gpu_batch(
                 &mut MockExecutor(Err(7)),
                 &mut uncertain_watchdog,
-                &uncertain_batch
+                &validated_uncertain
             ),
             Err(GpuSubmitError::Uncertain(7))
         );
@@ -2632,11 +2721,12 @@ mod tests {
 
         let mut accepted_watchdog = DispatchTable::<2>::new();
         let accepted_batch = accepted_watchdog.begin_batch(&batch, 100, 200).unwrap();
+        let validated_accepted = bundle.validate_batch(&accepted_batch).unwrap();
         assert!(
             submit_gpu_batch(
                 &mut MockExecutor(Ok(true)),
                 &mut accepted_watchdog,
-                &accepted_batch
+                &validated_accepted
             )
             .is_ok()
         );
