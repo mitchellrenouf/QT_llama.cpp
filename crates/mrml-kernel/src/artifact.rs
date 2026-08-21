@@ -44,6 +44,8 @@ pub enum ArtifactError {
 }
 
 pub const SIGNED_ARTIFACT_HEADER_BYTES: usize = 112;
+pub const SIGNED_ARTIFACT_OVERHEAD_BYTES: usize =
+    SIGNED_ARTIFACT_HEADER_BYTES + LAMPORT_PUBLIC_KEY_BYTES + LAMPORT_SIGNATURE_BYTES;
 const SIGNED_ARTIFACT_MAGIC: &[u8; 16] = b"MRML-SIGNED-v1\0\0";
 
 /// Allocation-free view of the canonical signed-artifact wire format.

@@ -7,6 +7,7 @@ pub type Handle = *mut c_void;
 pub const SUCCESS: Status = 0;
 pub const BUFFER_TOO_SMALL: Status = (1usize << (usize::BITS - 1)) | 5;
 pub const LOAD_ERROR: Status = (1usize << (usize::BITS - 1)) | 1;
+pub const NOT_FOUND: Status = (1usize << (usize::BITS - 1)) | 14;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -28,6 +29,24 @@ pub const RNG_GUID: Guid = Guid {
     data2: 0xeade,
     data3: 0x433d,
     data4: [0x86, 0x2e, 0xc0, 0x1c, 0xdc, 0x29, 0x1f, 0x44],
+};
+pub const LOADED_IMAGE_GUID: Guid = Guid {
+    data1: 0x5b1b_31a1,
+    data2: 0x9562,
+    data3: 0x11d2,
+    data4: [0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+};
+pub const SIMPLE_FILE_SYSTEM_GUID: Guid = Guid {
+    data1: 0x964e_5b22,
+    data2: 0x6459,
+    data3: 0x11d2,
+    data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+};
+pub const FILE_INFO_GUID: Guid = Guid {
+    data1: 0x0957_6e92,
+    data2: 0x6d3f,
+    data3: 0x11d2,
+    data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
 pub const ACPI_20_TABLE_GUID: Guid = Guid {
     data1: 0x8868_e871,
@@ -77,13 +96,16 @@ pub type GetMemoryMap = unsafe extern "efiapi" fn(
 pub type ExitBootServices = unsafe extern "efiapi" fn(Handle, usize) -> Status;
 pub type LocateProtocol =
     unsafe extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> Status;
+pub type HandleProtocol =
+    unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void) -> Status;
+pub type AllocatePages = unsafe extern "efiapi" fn(u32, u32, usize, *mut u64) -> Status;
 
 #[repr(C)]
 pub struct BootServices {
     pub header: TableHeader,
     pub raise_tpl: usize,
     pub restore_tpl: usize,
-    pub allocate_pages: usize,
+    pub allocate_pages: AllocatePages,
     pub free_pages: usize,
     pub get_memory_map: GetMemoryMap,
     pub allocate_pool: usize,
@@ -97,7 +119,7 @@ pub struct BootServices {
     pub install_protocol_interface: usize,
     pub reinstall_protocol_interface: usize,
     pub uninstall_protocol_interface: usize,
-    pub handle_protocol: usize,
+    pub handle_protocol: HandleProtocol,
     pub reserved: usize,
     pub register_protocol_notify: usize,
     pub locate_handle: usize,
@@ -119,6 +141,56 @@ pub struct BootServices {
     pub protocols_per_handle: usize,
     pub locate_handle_buffer: usize,
     pub locate_protocol: LocateProtocol,
+}
+
+#[repr(C)]
+pub struct LoadedImageProtocol {
+    pub revision: u32,
+    pub parent_handle: Handle,
+    pub system_table: *mut SystemTable,
+    pub device_handle: Handle,
+    pub file_path: *mut c_void,
+    pub reserved: *mut c_void,
+    pub load_options_size: u32,
+    pub load_options: *mut c_void,
+    pub image_base: *mut c_void,
+    pub image_size: u64,
+    pub image_code_type: u32,
+    pub image_data_type: u32,
+    pub unload: usize,
+}
+
+pub type OpenVolume =
+    unsafe extern "efiapi" fn(*mut SimpleFileSystemProtocol, *mut *mut FileProtocol) -> Status;
+#[repr(C)]
+pub struct SimpleFileSystemProtocol {
+    pub revision: u64,
+    pub open_volume: OpenVolume,
+}
+pub type FileOpen = unsafe extern "efiapi" fn(
+    *mut FileProtocol,
+    *mut *mut FileProtocol,
+    *const u16,
+    u64,
+    u64,
+) -> Status;
+pub type FileClose = unsafe extern "efiapi" fn(*mut FileProtocol) -> Status;
+pub type FileRead = unsafe extern "efiapi" fn(*mut FileProtocol, *mut usize, *mut c_void) -> Status;
+pub type FileGetInfo =
+    unsafe extern "efiapi" fn(*mut FileProtocol, *const Guid, *mut usize, *mut c_void) -> Status;
+#[repr(C)]
+pub struct FileProtocol {
+    pub revision: u64,
+    pub open: FileOpen,
+    pub close: FileClose,
+    pub delete: usize,
+    pub read: FileRead,
+    pub write: usize,
+    pub get_position: usize,
+    pub set_position: usize,
+    pub get_info: FileGetInfo,
+    pub set_info: usize,
+    pub flush: usize,
 }
 
 #[repr(C)]
@@ -476,9 +548,14 @@ mod tests {
         assert_eq!(core::mem::size_of::<TableHeader>(), 24);
         assert_eq!(core::mem::size_of::<MemoryDescriptor>(), 40);
         assert_eq!(core::mem::offset_of!(BootServices, get_memory_map), 56);
+        assert_eq!(core::mem::offset_of!(BootServices, allocate_pages), 40);
+        assert_eq!(core::mem::offset_of!(BootServices, handle_protocol), 152);
         assert_eq!(core::mem::offset_of!(BootServices, exit_boot_services), 232);
         assert_eq!(core::mem::offset_of!(BootServices, locate_protocol), 320);
         assert_eq!(core::mem::offset_of!(SystemTable, boot_services), 96);
+        assert_eq!(core::mem::offset_of!(LoadedImageProtocol, device_handle), 24);
+        assert_eq!(core::mem::offset_of!(FileProtocol, read), 32);
+        assert_eq!(core::mem::offset_of!(FileProtocol, get_info), 64);
     }
 
     #[test]

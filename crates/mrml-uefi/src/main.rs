@@ -3,7 +3,8 @@
 
 use core::cell::UnsafeCell;
 use mrml_kernel::{
-    EarlyKernelContext, FramebufferInfo, MemoryKind, MemoryRegion, PhysAddr, PixelFormat,
+    EarlyKernelContext, FramebufferInfo, MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion,
+    PhysAddr, PixelFormat, SIGNED_ARTIFACT_OVERHEAD_BYTES,
 };
 use mrml_uefi::*;
 
@@ -17,6 +18,13 @@ unsafe impl Sync for RegionBuffer {}
 static REGIONS: RegionBuffer = RegionBuffer(UnsafeCell::new(
     [NormalizedRegion::EMPTY; MAX_NORMALIZED_REGIONS],
 ));
+const FILE_INFO_BYTES: usize = 1024;
+struct FileInfoBuffer(UnsafeCell<[u8; FILE_INFO_BYTES]>);
+unsafe impl Sync for FileInfoBuffer {}
+static FILE_INFO: FileInfoBuffer = FileInfoBuffer(UnsafeCell::new([0; FILE_INFO_BYTES]));
+const KERNEL_PATH: &[u16] = &[
+    92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 75, 69, 82, 78, 69, 76, 46, 83, 73, 71, 78, 69, 68, 0,
+];
 
 #[derive(Clone, Copy)]
 struct Framebuffer {
@@ -72,6 +80,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         stride: info.pixels_per_scan_line,
         format: info.pixel_format,
     };
+    paint(framebuffer, [0x80, 0x00, 0x00]);
 
     let mut rng_pointer = core::ptr::null_mut();
     check(unsafe {
@@ -81,6 +90,16 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     let mut entropy = [0u8; 32];
     check(unsafe { (rng.get_rng)(rng, core::ptr::null(), entropy.len(), entropy.as_mut_ptr()) })?;
     if entropy.iter().all(|byte| *byte == 0) {
+        return Err(LOAD_ERROR);
+    }
+    paint(framebuffer, [0x80, 0x40, 0x00]);
+
+    let kernel_file = unsafe { load_kernel_file(image, services, framebuffer) }?;
+    if kernel_file
+        .address
+        .checked_add(kernel_file.length as u64)
+        .is_none()
+    {
         return Err(LOAD_ERROR);
     }
 
@@ -107,6 +126,111 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     }
     enter_kernel(entropy, acpi_root, framebuffer, &regions[..region_count])?;
     halt()
+}
+
+struct LoadedFile {
+    address: u64,
+    length: usize,
+}
+
+unsafe fn load_kernel_file(
+    image: Handle,
+    services: &BootServices,
+    framebuffer: Framebuffer,
+) -> Result<LoadedFile, Status> {
+    let mut loaded_pointer = core::ptr::null_mut();
+    check(unsafe { (services.handle_protocol)(image, &LOADED_IMAGE_GUID, &mut loaded_pointer) })?;
+    let loaded =
+        unsafe { (loaded_pointer as *mut LoadedImageProtocol).as_ref() }.ok_or(LOAD_ERROR)?;
+    paint(framebuffer, [0x80, 0x80, 0x00]);
+    if loaded.device_handle.is_null() {
+        return Err(LOAD_ERROR);
+    }
+    paint(framebuffer, [0x40, 0x80, 0x00]);
+    let mut filesystem_pointer = core::ptr::null_mut();
+    check(unsafe {
+        (services.handle_protocol)(
+            loaded.device_handle,
+            &SIMPLE_FILE_SYSTEM_GUID,
+            &mut filesystem_pointer,
+        )
+    })?;
+    let filesystem = unsafe { (filesystem_pointer as *mut SimpleFileSystemProtocol).as_mut() }
+        .ok_or(LOAD_ERROR)?;
+    paint(framebuffer, [0x80, 0x00, 0x80]);
+    let mut root = core::ptr::null_mut();
+    check(unsafe { (filesystem.open_volume)(filesystem, &mut root) })?;
+    let root = unsafe { root.as_mut() }.ok_or(LOAD_ERROR)?;
+    paint(framebuffer, [0x00, 0x80, 0x80]);
+    let mut file_pointer = core::ptr::null_mut();
+    let open_status = unsafe { (root.open)(root, &mut file_pointer, KERNEL_PATH.as_ptr(), 1, 0) };
+    let _ = unsafe { (root.close)(root) };
+    check(open_status)?;
+    paint(framebuffer, [0x00, 0x00, 0x80]);
+    let file = unsafe { file_pointer.as_mut() }.ok_or(LOAD_ERROR)?;
+    let result = unsafe { read_file_pages(file, services) };
+    let close_status = unsafe { (file.close)(file) };
+    let loaded = result?;
+    check(close_status)?;
+    Ok(loaded)
+}
+
+unsafe fn read_file_pages(
+    file: &mut FileProtocol,
+    services: &BootServices,
+) -> Result<LoadedFile, Status> {
+    let mut info_size = 0usize;
+    let status =
+        unsafe { (file.get_info)(file, &FILE_INFO_GUID, &mut info_size, core::ptr::null_mut()) };
+    if status != BUFFER_TOO_SMALL || !(80..=FILE_INFO_BYTES).contains(&info_size) {
+        return Err(LOAD_ERROR);
+    }
+    let info = unsafe { &mut *FILE_INFO.0.get() };
+    check(unsafe {
+        (file.get_info)(
+            file,
+            &FILE_INFO_GUID,
+            &mut info_size,
+            info.as_mut_ptr().cast(),
+        )
+    })?;
+    if info_size < 80 {
+        return Err(LOAD_ERROR);
+    }
+    let file_length_u64 = u64::from_le_bytes(info[8..16].try_into().map_err(|_| LOAD_ERROR)?);
+    let maximum = MAX_KERNEL_IMAGE_BYTES as usize + SIGNED_ARTIFACT_OVERHEAD_BYTES;
+    let file_length = usize::try_from(file_length_u64).map_err(|_| LOAD_ERROR)?;
+    if file_length == 0 || file_length > maximum {
+        return Err(LOAD_ERROR);
+    }
+    let pages = file_length
+        .checked_add(4095)
+        .map(|bytes| bytes / 4096)
+        .ok_or(LOAD_ERROR)?;
+    let mut address = 0u64;
+    check(unsafe { (services.allocate_pages)(0, 2, pages, &mut address) })?;
+    if address == 0 || address % 4096 != 0 {
+        return Err(LOAD_ERROR);
+    }
+    let mut total = 0usize;
+    while total < file_length {
+        let mut amount = file_length - total;
+        check(unsafe { (file.read)(file, &mut amount, (address as *mut u8).add(total).cast()) })?;
+        if amount == 0 || amount > file_length - total {
+            return Err(LOAD_ERROR);
+        }
+        total += amount;
+    }
+    let mut extra = 0u8;
+    let mut extra_size = 1usize;
+    check(unsafe { (file.read)(file, &mut extra_size, (&mut extra as *mut u8).cast()) })?;
+    if extra_size != 0 {
+        return Err(LOAD_ERROR);
+    }
+    Ok(LoadedFile {
+        address,
+        length: file_length,
+    })
 }
 
 fn enter_kernel(

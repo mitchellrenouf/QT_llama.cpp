@@ -146,6 +146,17 @@ background; pixel `(0,8)` and the final framebuffer pixel remained
 solid-color stages. This is a statically linked early kernel entry, not yet a
 separately loaded and signed kernel image.
 
+The loader now resolves its own boot device through the raw UEFI Loaded Image
+and Simple File System protocols and requires
+`\EFI\MRML\KERNEL.SIGNED`. It opens the file read-only, accepts bounded file
+metadata, allocates loader pages, handles short reads, and rejects empty,
+oversized, truncated, or concurrently grown inputs. QEMU 11.1 with its bundled
+EDK2 used only as an interoperability oracle successfully read the required
+file and still reached the post-ExitBootServices marker: pixel `(0,0)` was
+`RGB(242,242,242)` and pixel `(0,8)` was `RGB(22,97,58)`. This checkpoint proves
+filesystem interoperability; the test file was a placeholder and was not
+admitted as a signed kernel. Signature enforcement is the next boundary.
+
 ### OS executable format
 
 PE32+ is the sole executable binary format for MRML on x86-64. The kernel, VM
