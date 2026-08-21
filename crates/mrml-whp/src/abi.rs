@@ -123,7 +123,8 @@ pub fn decode_exit_context(input: &[u8]) -> Result<VmExit, WhpError> {
     }
     match u32_at(input, 0)? {
         EXIT_HALT => Ok(VmExit::Halted),
-        EXIT_CANCELED | EXIT_INTERRUPT_WINDOW => Ok(VmExit::Interrupted),
+        EXIT_CANCELED => decode_canceled(input),
+        EXIT_INTERRUPT_WINDOW => decode_interrupt_window(input),
         EXIT_MEMORY_ACCESS => decode_memory(input),
         EXIT_IO_PORT_ACCESS => decode_io(input),
         EXIT_EXCEPTION => decode_exception(input),
@@ -139,14 +140,41 @@ pub fn decode_exit_context(input: &[u8]) -> Result<VmExit, WhpError> {
 
 fn decode_exception(input: &[u8]) -> Result<VmExit, WhpError> {
     validate_vp_context(input)?;
+    validate_instruction_context(input)?;
     let info = u32_at(input, 68)?;
     if info & !3 != 0 {
         return Err(WhpError::MalformedExit);
     }
     let exception = *input.get(72).ok_or(WhpError::TruncatedExit)?;
+    if exception >= 32
+        || input
+            .get(73..76)
+            .ok_or(WhpError::TruncatedExit)?
+            .iter()
+            .any(|byte| *byte != 0)
+        || info & 1 == 0 && u32_at(input, 76)? != 0
+    {
+        return Err(WhpError::MalformedExit);
+    }
     Ok(VmExit::Unknown {
         reason: (EXIT_EXCEPTION as u64) << 32 | exception as u64,
     })
+}
+
+fn decode_canceled(input: &[u8]) -> Result<VmExit, WhpError> {
+    validate_vp_context(input)?;
+    if u32_at(input, 48)? != 0 {
+        return Err(WhpError::MalformedExit);
+    }
+    Ok(VmExit::Interrupted)
+}
+
+fn decode_interrupt_window(input: &[u8]) -> Result<VmExit, WhpError> {
+    validate_vp_context(input)?;
+    if !matches!(u32_at(input, 48)?, 0 | 2 | 3) {
+        return Err(WhpError::MalformedExit);
+    }
+    Ok(VmExit::Interrupted)
 }
 
 fn decode_memory(input: &[u8]) -> Result<VmExit, WhpError> {
@@ -290,12 +318,19 @@ mod tests {
     }
 
     #[test]
-    fn halt_and_cancel_have_no_union_dependency() {
-        let mut bytes = [0u8; 8];
+    fn halt_is_context_free_and_control_exits_validate_their_reason() {
+        let mut bytes = [0u8; 52];
         bytes[..4].copy_from_slice(&EXIT_HALT.to_ne_bytes());
-        assert_eq!(decode_exit_context(&bytes), Ok(VmExit::Halted));
+        assert_eq!(decode_exit_context(&bytes[..8]), Ok(VmExit::Halted));
         bytes[..4].copy_from_slice(&EXIT_CANCELED.to_ne_bytes());
         assert_eq!(decode_exit_context(&bytes), Ok(VmExit::Interrupted));
+        bytes[48..52].copy_from_slice(&1u32.to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[..4].copy_from_slice(&EXIT_INTERRUPT_WINDOW.to_ne_bytes());
+        bytes[48..52].copy_from_slice(&2u32.to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Ok(VmExit::Interrupted));
+        bytes[48..52].copy_from_slice(&1u32.to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
     }
 
     #[test]
@@ -326,6 +361,15 @@ mod tests {
             })
         );
         bytes[68..72].copy_from_slice(&4u32.to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[68..72].fill(0);
+        bytes[72] = 32;
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[72] = 14;
+        bytes[73] = 1;
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[73] = 0;
+        bytes[76..80].copy_from_slice(&1u32.to_ne_bytes());
         assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
     }
 

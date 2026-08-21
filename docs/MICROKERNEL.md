@@ -578,6 +578,11 @@ to remain zero. A claimed valid GVA must be canonical. Port-I/O forwarding is
 limited to scalar 1-, 2-, or 4-byte operations; string and REP forms fail closed
 because the backend-neutral exit type does not carry their RCX/RSI/RDI state,
 and scalar RAX data is masked to the declared width before policy sees it.
+Exception exits accept only architectural vectors 0--31, validate their
+captured instruction and reserved fields, and reject an error code unless WHP
+marks it valid. Host-cancellation exits accept only the defined user-cancel
+reason, while interrupt-window exits accept only interrupt, NMI, or exception
+delivery types. Undefined control reasons never become a generic interruption.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector
