@@ -1511,11 +1511,16 @@ impl<const N: usize> PreparedGpuBatch<N> {
 pub struct ValidatedGpuBatch<const N: usize> {
     prepared: PreparedGpuBatch<N>,
     launches: [Option<ValidatedKernelLaunch>; N],
+    moe_selections: [Option<ValidatedExpertSelection>; N],
 }
 
 impl<const N: usize> ValidatedGpuBatch<N> {
     pub const fn prepared(&self) -> &PreparedGpuBatch<N> {
         &self.prepared
+    }
+
+    pub fn moe_selection(&self, index: usize) -> Option<&ValidatedExpertSelection> {
+        self.moe_selections.get(index).and_then(Option::as_ref)
     }
 
     pub fn entries(
@@ -1558,6 +1563,45 @@ impl VerifiedGpuKernelBundle {
         Ok(ValidatedGpuBatch {
             prepared: *prepared,
             launches,
+            moe_selections: [None; N],
+        })
+    }
+
+    /// Admit a mixed ordinary/MoE batch without erasing data-dependent index
+    /// provenance. Every MoE entry must match one supplied sealed selection.
+    pub fn validate_batch_with_expert_selections<const N: usize>(
+        &self,
+        prepared: &PreparedGpuBatch<N>,
+        selections: &[ValidatedExpertSelection],
+    ) -> Result<ValidatedGpuBatch<N>, GpuError> {
+        if prepared.is_empty() {
+            return Err(GpuError::EmptyBatch);
+        }
+        let mut launches = [None; N];
+        let mut moe_selections = [None; N];
+        for (index, entry) in prepared.entries().enumerate() {
+            if !self.permits(entry.dispatch.kernel) {
+                return Err(GpuError::UntrustedKernelBundle);
+            }
+            if (22..=26).contains(&entry.dispatch.kernel.get()) {
+                let mut matched = None;
+                for selection in selections {
+                    if let Ok(proven) = entry.dispatch.validate_moe_executor_schema(selection) {
+                        matched = Some(proven);
+                        break;
+                    }
+                }
+                let proven = matched.ok_or(GpuError::InvalidExpertSelection)?;
+                launches[index] = Some(*proven.launch());
+                moe_selections[index] = Some(*proven.selection());
+            } else {
+                launches[index] = Some(entry.dispatch.validate_executor_schema()?);
+            }
+        }
+        Ok(ValidatedGpuBatch {
+            prepared: *prepared,
+            launches,
+            moe_selections,
         })
     }
 }
@@ -4457,6 +4501,36 @@ mod tests {
         let proven = gate.validate_moe_executor_schema(&selection).unwrap();
         assert_eq!(proven.launch().element_count(), 128);
         assert_eq!(proven.selection(), &selection);
+        let prepared = PreparedGpuBatch {
+            entries: [Some(PreparedGpuDispatch {
+                request_id: 1,
+                dispatch_id: DispatchId {
+                    slot: 0,
+                    generation: 1,
+                },
+                dispatch: gate,
+            })],
+            count: 1,
+        };
+        let bundle = VerifiedGpuKernelBundle {
+            version: 1,
+            digest: [7; 64],
+        };
+        assert_eq!(
+            bundle.validate_batch(&prepared).map(|_| ()),
+            Err(GpuError::UnsupportedKernelSchema)
+        );
+        let validated = bundle
+            .validate_batch_with_expert_selections(&prepared, &[selection])
+            .unwrap();
+        assert_eq!(validated.moe_selection(0), Some(&selection));
+        assert_eq!(validated.entries().next().unwrap().1.element_count(), 128);
+        assert_eq!(
+            bundle
+                .validate_batch_with_expert_selections(&prepared, &[])
+                .map(|_| ()),
+            Err(GpuError::InvalidExpertSelection)
+        );
 
         let down_accesses = [
             BufferAccess::new(id(5), 0, 2304, BufferMode::Read),

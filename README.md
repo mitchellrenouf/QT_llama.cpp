@@ -204,6 +204,10 @@ distinct `ValidatedMoeKernelLaunch`. Generic batched, single-token combined,
 and fixed Gemma 4 26B variants exclusively bind exact Q4 storage, activation
 tensors, scales, outputs, and geometry. Shape-only validation still rejects
 IDs 22–26, preventing callers from discarding expert provenance.
+Mixed validated batches now carry a per-entry optional expert proof. Ordinary
+batch admission still fails closed on MoE IDs, while contextual admission
+matches each MoE dispatch to a supplied sealed selection and preserves that
+selection alongside the launch for service-side reverification.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject

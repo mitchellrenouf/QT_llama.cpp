@@ -234,6 +234,11 @@ single-token combined down, and fixed Gemma 4 26B variants bind exact Q4_0
 matrices, selection buffers, scales, tensors, and geometry. Variant selection
 is exclusive, and `ValidatedMoeKernelLaunch` retains the proof for immediate
 service-side reverification.
+`validate_batch_with_expert_selections` integrates these launches into mixed
+batches atomically. It searches only supplied sealed proofs, rejects any MoE
+entry without an exact buffer/dimension match, and stores the matched proof at
+the same batch index. The ordinary batch admission path continues to reject
+MoE IDs, so contextual provenance cannot be omitted accidentally.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
 registry alone cannot make it executable. Contextual batch integration of the 5 MoE schemas and the
 actual CUDA launch adapter are pending.
