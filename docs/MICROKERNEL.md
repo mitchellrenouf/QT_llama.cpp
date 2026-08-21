@@ -87,8 +87,12 @@ generational `ControlBufferId`, never device `BufferId`. Admission caps shared
 control bytes at 64 KiB and records their length and SHA3-512 digest; every use
 rehashes before parsing, release erases the privileged digest, and stale IDs do
 not revalidate. The authenticated resource queue has a canonical `SubmitBatch`
-variant carrying only this typed ID. Canonical batch serialization and the
-service-side executor remain pending.
+variant carrying only this typed ID. Canonical batch serialization is
+implemented as
+an exact-length `MRGB` header followed by one to 32 existing canonical dispatch
+records. It contains no pointers or offsets, preserves order and independent
+request IDs, rejects trailing/truncated/reserved encodings, and revalidates all
+session resources while decoding. The service-side executor remains pending.
 The KVM adapter now consumes the common layout and registers two dedicated
 memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining

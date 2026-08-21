@@ -1177,6 +1177,8 @@ pub struct GpuDispatchBatch<const N: usize> {
 }
 
 impl<const N: usize> GpuDispatchBatch<N> {
+    pub const WIRE_HEADER_BYTES: usize = 16;
+
     pub const fn new() -> Result<Self, GpuError> {
         if N == 0 || N > MAX_BATCH_DISPATCHES {
             return Err(GpuError::InvalidBatchCapacity);
@@ -1233,6 +1235,79 @@ impl<const N: usize> GpuDispatchBatch<N> {
         } else {
             Ok(())
         }
+    }
+
+    pub fn encoded_len(&self) -> Result<usize, GpuError> {
+        self.validate_ready()?;
+        Self::WIRE_HEADER_BYTES
+            .checked_add(
+                self.count
+                    .checked_mul(Dispatch::WIRE_LENGTH)
+                    .ok_or(GpuError::RangeOverflow)?,
+            )
+            .ok_or(GpuError::RangeOverflow)
+    }
+
+    /// Canonical exact-length batch representation for a sealed control
+    /// buffer. Each member retains its independent request ID and canonical
+    /// dispatch encoding; there are no offsets, pointers, or unused entries.
+    pub fn encode(&self, batch_id: u64, output: &mut [u8]) -> Result<usize, GpuError> {
+        if batch_id == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        let length = self.encoded_len()?;
+        let output = output
+            .get_mut(..length)
+            .ok_or(GpuError::CommandBufferTooSmall)?;
+        output.fill(0);
+        output[..4].copy_from_slice(b"MRGB");
+        output[4] = 1;
+        output[6..8].copy_from_slice(&(self.count as u16).to_le_bytes());
+        output[8..16].copy_from_slice(&batch_id.to_le_bytes());
+        for (index, entry) in self.entries().enumerate() {
+            let start = Self::WIRE_HEADER_BYTES + index * Dispatch::WIRE_LENGTH;
+            entry.dispatch.encode(
+                entry.request_id,
+                &mut output[start..start + Dispatch::WIRE_LENGTH],
+            )?;
+        }
+        Ok(length)
+    }
+
+    pub fn decode<const BUFFERS: usize>(
+        input: &[u8],
+        session: &VirtualGpuSession<BUFFERS>,
+    ) -> Result<(u64, Self), GpuError> {
+        if input.len() < Self::WIRE_HEADER_BYTES
+            || &input[..4] != b"MRGB"
+            || input[4] != 1
+            || input[5] != 0
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let count = u16::from_le_bytes(input[6..8].try_into().unwrap()) as usize;
+        let batch_id = read_u64(input, 8);
+        if count == 0 || count > N || count > MAX_BATCH_DISPATCHES || batch_id == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        let expected = Self::WIRE_HEADER_BYTES
+            .checked_add(
+                count
+                    .checked_mul(Dispatch::WIRE_LENGTH)
+                    .ok_or(GpuError::RangeOverflow)?,
+            )
+            .ok_or(GpuError::RangeOverflow)?;
+        if input.len() != expected {
+            return Err(GpuError::MalformedCommand);
+        }
+        let mut batch = Self::new()?;
+        for index in 0..count {
+            let start = Self::WIRE_HEADER_BYTES + index * Dispatch::WIRE_LENGTH;
+            let (request_id, dispatch) =
+                Dispatch::decode(&input[start..start + Dispatch::WIRE_LENGTH])?;
+            batch.push(request_id, dispatch, session)?;
+        }
+        Ok((batch_id, batch))
     }
 }
 
@@ -1754,6 +1829,31 @@ mod tests {
         assert_eq!(entries.next().map(BatchedDispatch::request_id), Some(10));
         assert_eq!(entries.next().map(BatchedDispatch::request_id), Some(11));
         assert_eq!(entries.next(), None);
+
+        let mut wire = [0u8; GpuDispatchBatch::<2>::WIRE_HEADER_BYTES + 2 * Dispatch::WIRE_LENGTH];
+        let length = batch.encode(77, &mut wire).unwrap();
+        assert_eq!(length, wire.len());
+        let (batch_id, decoded) = GpuDispatchBatch::<2>::decode(&wire, &session).unwrap();
+        assert_eq!(batch_id, 77);
+        assert_eq!(decoded.len(), 2);
+        let mut decoded_entries = decoded.entries();
+        assert_eq!(decoded_entries.next().unwrap().request_id(), 10);
+        assert_eq!(decoded_entries.next().unwrap().request_id(), 11);
+        assert_eq!(decoded_entries.next(), None);
+        assert_eq!(
+            GpuDispatchBatch::<2>::decode(&wire[..wire.len() - 1], &session).map(|_| ()),
+            Err(GpuError::MalformedCommand)
+        );
+        let mut noncanonical = wire;
+        noncanonical[5] = 1;
+        assert_eq!(
+            GpuDispatchBatch::<2>::decode(&noncanonical, &session).map(|_| ()),
+            Err(GpuError::MalformedCommand)
+        );
+
+        let mut controls = ControlBufferTable::<1>::new();
+        let control = controls.seal(&wire).unwrap();
+        assert!(controls.verify(control, &wire).is_ok());
 
         session.free(buffer).unwrap();
         let mut stale_batch = GpuDispatchBatch::<1>::new().unwrap();
