@@ -558,9 +558,19 @@ processor activated long mode. The cached segment limit is now
 `0xffff_ffff`. A live regression guest builds hardware page tables, enters
 x86-64 mode, executes an `INT3`, and returns the expected breakpoint vector
 through WHP. Breakpoint exits are explicitly enabled in partition policy and
-decoded with reserved-bit validation. This demonstrates native long-mode guest
-execution, but a complete signed MRML PE image has not yet reached its entry
-point, so end-to-end Hyper-V bootability remains pending.
+decoded with reserved-bit validation. The native launch path now records the
+temporary writable image allocation, materializes the verified PE, removes the
+temporary GPA view, and installs one second-level mapping per validated PE load
+region. Headers become read-only, code becomes read/execute, data may become
+read/write, and writable/executable sections are rejected. If any replacement
+mapping fails, the already-installed fragments are removed and the original
+non-executable writable mapping is restored so cleanup remains deterministic.
+A live Windows regression constructs a complete Lamport-signed VM artifact,
+verifies its trust root and statement, loads its PE32+ image, proves its code
+page is immutable after sealing, enters long mode at the signed entry point,
+executes `INT3`, and observes the expected breakpoint vector. This demonstrates
+the complete verified-artifact-to-native-execution boundary on Hyper-V;
+end-to-end UEFI-to-kernel boot remains a separate pending integration gate.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector

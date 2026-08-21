@@ -33,7 +33,7 @@ pub enum WhpError {
     Handoff(HandoffError),
     TruncatedExit,
     MalformedExit,
-    UnsupportedExit,
+    UnsupportedExit(u32),
     PlatformUnavailable,
     MissingPlatformFunction,
     SystemCall(i32),
@@ -124,13 +124,13 @@ pub fn decode_exit_context(input: &[u8]) -> Result<VmExit, WhpError> {
         EXIT_MEMORY_ACCESS => decode_memory(input),
         EXIT_IO_PORT_ACCESS => decode_io(input),
         EXIT_EXCEPTION => decode_exception(input),
-        EXIT_UNRECOVERABLE_EXCEPTION
+        reason @ (EXIT_UNRECOVERABLE_EXCEPTION
         | EXIT_INVALID_VP_REGISTER
         | EXIT_UNSUPPORTED_FEATURE
         | EXIT_APIC_EOI
         | EXIT_MSR_ACCESS
-        | EXIT_CPUID => Err(WhpError::UnsupportedExit),
-        _ => Err(WhpError::UnsupportedExit),
+        | EXIT_CPUID) => Err(WhpError::UnsupportedExit(reason)),
+        reason => Err(WhpError::UnsupportedExit(reason)),
     }
 }
 
@@ -252,6 +252,11 @@ mod tests {
         bytes[..4].copy_from_slice(&EXIT_IO_PORT_ACCESS.to_ne_bytes());
         bytes[68..72].copy_from_slice(&(3u32 << 1).to_ne_bytes());
         assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[..4].copy_from_slice(&0xdead_beefu32.to_ne_bytes());
+        assert_eq!(
+            decode_exit_context(&bytes),
+            Err(WhpError::UnsupportedExit(0xdead_beef))
+        );
     }
 
     #[test]

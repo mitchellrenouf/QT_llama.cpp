@@ -2,9 +2,9 @@ use core::ffi::{c_char, c_void};
 use core::ptr::NonNull;
 use core::slice;
 
-use mrml_kernel::VmExit;
+use mrml_kernel::{MAX_PE_SECTIONS, PAGE_SIZE, PeImage, VmExit};
 
-use crate::{GuestRange, WHP_EXIT_CONTEXT_BYTES, WhpError, decode_exit_context};
+use crate::{GuestRange, MapPermissions, WHP_EXIT_CONTEXT_BYTES, WhpError, decode_exit_context};
 
 mod launch;
 pub use launch::{PreparedWhpGuest, WhpLaunchLayout};
@@ -39,6 +39,7 @@ const MEM_COMMIT_RESERVE: u32 = 0x3000;
 const MEM_RELEASE: u32 = 0x8000;
 const PAGE_READWRITE: u32 = 4;
 const MAX_MAPPINGS: usize = 32;
+const MAX_SUBMAPPINGS: usize = MAX_PE_SECTIONS + 1;
 const REG_RCX: u32 = 1;
 const REG_RDX: u32 = 2;
 const REG_RSP: u32 = 4;
@@ -262,7 +263,13 @@ impl PreparedWhpPartition<'_> {
                 contents.len(),
             );
         }
-        let mapping = OwnedMapping { address, range };
+        let mut subranges = [const { None }; MAX_SUBMAPPINGS];
+        subranges[0] = Some(range);
+        let mapping = OwnedMapping {
+            address,
+            range,
+            subranges,
+        };
         check(unsafe {
             (self.api.map_gpa_range)(
                 self.partition.as_ptr(),
@@ -274,6 +281,91 @@ impl PreparedWhpPartition<'_> {
         })?;
         self.mappings[slot] = Some(mapping);
         Ok(slot)
+    }
+
+    /// Replaces the temporary writable GPA view with the PE parser's final
+    /// per-region permissions. The vCPU does not exist in a running state while
+    /// this transition occurs, so no guest can observe the unmapped interval.
+    pub(crate) fn seal_pe(&mut self, id: usize, image: &PeImage<'_>) -> Result<(), WhpError> {
+        let mapping = self
+            .mappings
+            .get_mut(id)
+            .and_then(Option::as_mut)
+            .ok_or(WhpError::UnmappedMemory)?;
+        if image.load_region_count() > MAX_SUBMAPPINGS
+            || image.image_size() as u64 != mapping.range.size()
+        {
+            return Err(WhpError::InvalidMapping);
+        }
+        let mut final_ranges = [const { None }; MAX_SUBMAPPINGS];
+        for (index, slot) in final_ranges[..image.load_region_count()]
+            .iter_mut()
+            .enumerate()
+        {
+            let region = image.load_region(index).map_err(WhpError::Pe)?;
+            let permissions = match (region.writable(), region.executable()) {
+                (false, false) => MapPermissions::read_only(),
+                (false, true) => MapPermissions::read_execute(),
+                (true, false) => MapPermissions::read_write(),
+                (true, true) => return Err(WhpError::InvalidPermissions),
+            };
+            let start = mapping
+                .range
+                .guest_address()
+                .checked_add(region.virtual_address() as u64)
+                .ok_or(WhpError::MemoryOverflow)?;
+            let bytes = (region.pages() as u64)
+                .checked_mul(PAGE_SIZE)
+                .ok_or(WhpError::MemoryOverflow)?;
+            *slot = Some(GuestRange::new(start, bytes, permissions)?);
+        }
+
+        check(unsafe {
+            (self.api.unmap_gpa_range)(
+                self.partition.as_ptr(),
+                mapping.range.guest_address(),
+                mapping.range.size(),
+            )
+        })?;
+        for range in final_ranges.iter().flatten() {
+            let offset = usize::try_from(range.guest_address() - mapping.range.guest_address())
+                .map_err(|_| WhpError::MemoryOverflow)?;
+            let result = check(unsafe {
+                (self.api.map_gpa_range)(
+                    self.partition.as_ptr(),
+                    mapping.address.as_ptr().cast::<u8>().add(offset).cast(),
+                    range.guest_address(),
+                    range.size(),
+                    range.permissions().bits(),
+                )
+            });
+            if let Err(error) = result {
+                for installed in final_ranges.iter().flatten() {
+                    if installed.guest_address() == range.guest_address() {
+                        break;
+                    }
+                    let _ = unsafe {
+                        (self.api.unmap_gpa_range)(
+                            self.partition.as_ptr(),
+                            installed.guest_address(),
+                            installed.size(),
+                        )
+                    };
+                }
+                let _ = unsafe {
+                    (self.api.map_gpa_range)(
+                        self.partition.as_ptr(),
+                        mapping.address.as_ptr(),
+                        mapping.range.guest_address(),
+                        mapping.range.size(),
+                        mapping.range.permissions().bits(),
+                    )
+                };
+                return Err(error);
+            }
+        }
+        mapping.subranges = final_ranges;
+        Ok(())
     }
 
     pub fn read_mapping(
@@ -317,7 +409,7 @@ impl PreparedWhpPartition<'_> {
 
     pub(crate) fn write_guest(&mut self, address: u64, input: &[u8]) -> Result<(), WhpError> {
         let (mapping, offset) = self.locate(address, input.len())?;
-        if mapping.range.permissions().bits() & 2 == 0 {
+        if !mapping.writable(address, input.len()) {
             return Err(WhpError::ReadOnlyMemory);
         }
         unsafe {
@@ -336,7 +428,7 @@ impl PreparedWhpPartition<'_> {
         bytes: usize,
     ) -> Result<&mut [u8], WhpError> {
         let (mapping, offset) = self.locate(address, bytes)?;
-        if mapping.range.permissions().bits() & 2 == 0 {
+        if !mapping.writable(address, bytes) {
             return Err(WhpError::ReadOnlyMemory);
         }
         Ok(unsafe {
@@ -478,13 +570,15 @@ impl Drop for PreparedWhpPartition<'_> {
     fn drop(&mut self) {
         for mapping in &mut self.mappings {
             if let Some(value) = mapping.take() {
-                let _ = unsafe {
-                    (self.api.unmap_gpa_range)(
-                        self.partition.as_ptr(),
-                        value.range.guest_address(),
-                        value.range.size(),
-                    )
-                };
+                for range in value.subranges.iter().flatten() {
+                    let _ = unsafe {
+                        (self.api.unmap_gpa_range)(
+                            self.partition.as_ptr(),
+                            range.guest_address(),
+                            range.size(),
+                        )
+                    };
+                }
                 drop(value);
             }
         }
@@ -510,6 +604,20 @@ impl Drop for PartitionGuard {
 struct OwnedMapping {
     address: NonNull<c_void>,
     range: GuestRange,
+    subranges: [Option<GuestRange>; MAX_SUBMAPPINGS],
+}
+
+impl OwnedMapping {
+    fn writable(&self, address: u64, bytes: usize) -> bool {
+        let Some(end) = address.checked_add(bytes as u64) else {
+            return false;
+        };
+        self.subranges.iter().flatten().any(|range| {
+            address >= range.guest_address()
+                && end <= range.guest_address() + range.size()
+                && range.permissions().bits() & 2 != 0
+        })
+    }
 }
 
 #[repr(C, align(16))]
