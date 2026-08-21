@@ -1700,6 +1700,7 @@ impl Dispatch {
             4 => self.validate_quantized_gemv_schema(34, 8, 128),
             7 | 9 | 10 => self.validate_three_f32_elementwise_schema(),
             8 => self.validate_embedding_f32_schema(),
+            11 => self.validate_rope_f32_schema(),
             12 => self.validate_rms_norm_f32_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
@@ -1948,6 +1949,46 @@ impl Dispatch {
             dispatch: *self,
             element_count: elements,
         })
+    }
+
+    fn validate_rope_f32_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 1 || self.scalar_count != 5 || self.shared_memory != 0 {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let vector = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let _position = self.nonnegative_i32_scalar(0)?;
+        let head_dimension = self.positive_i32_scalar(1)?;
+        let head_count = self.positive_i32_scalar(2)?;
+        self.positive_f32_scalar(3)?;
+        self.positive_f32_scalar(4)?;
+        let elements = head_dimension
+            .checked_mul(head_count)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let bytes = u64::from(elements)
+            .checked_mul(4)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        if head_dimension % 2 != 0
+            || vector.mode != BufferMode::ReadWrite
+            || vector.offset % 4 != 0
+            || vector.length != bytes
+            || self.grid != [head_count, 1, 1]
+            || self.block != [head_dimension / 2, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: elements,
+        })
+    }
+
+    fn positive_f32_scalar(&self, index: usize) -> Result<f32, GpuError> {
+        let scalar = self.scalars[index].ok_or(GpuError::InvalidKernelSchema)?;
+        let value = f32::from_bits(scalar.bits);
+        if scalar.kind != ScalarKind::F32 || !value.is_finite() || value <= 0.0 {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(value)
     }
 
     /// Canonical fixed-size dispatch representation. Unused access slots and
@@ -2547,6 +2588,81 @@ mod tests {
         .unwrap();
         assert_eq!(
             short_weight.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn executor_binds_rope_shape_position_and_frequencies() {
+        let vector = BufferAccess::new(
+            BufferId {
+                slot: 0,
+                generation: 1,
+            },
+            0,
+            8192,
+            BufferMode::ReadWrite,
+        );
+        let scalars = [
+            ScalarArg::i32(0),
+            ScalarArg::i32(128),
+            ScalarArg::i32(16),
+            ScalarArg::f32_bits(10_000.0f32.to_bits()),
+            ScalarArg::f32_bits(1.0f32.to_bits()),
+        ];
+        let dispatch = Dispatch::new_with_scalars(
+            KernelId::new(11).unwrap(),
+            [16, 1, 1],
+            [64, 1, 1],
+            0,
+            &[vector],
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            dispatch.validate_executor_schema().unwrap().element_count(),
+            2048
+        );
+
+        let odd_dimension = [
+            scalars[0],
+            ScalarArg::i32(127),
+            scalars[2],
+            scalars[3],
+            scalars[4],
+        ];
+        let odd_dimension = Dispatch::new_with_scalars(
+            KernelId::new(11).unwrap(),
+            [16, 1, 1],
+            [63, 1, 1],
+            0,
+            &[vector],
+            &odd_dimension,
+        )
+        .unwrap();
+        assert_eq!(
+            odd_dimension.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let invalid_frequency = [
+            scalars[0],
+            scalars[1],
+            scalars[2],
+            ScalarArg::f32_bits(f32::INFINITY.to_bits()),
+            scalars[4],
+        ];
+        let invalid_frequency = Dispatch::new_with_scalars(
+            KernelId::new(11).unwrap(),
+            [16, 1, 1],
+            [64, 1, 1],
+            0,
+            &[vector],
+            &invalid_frequency,
+        )
+        .unwrap();
+        assert_eq!(
+            invalid_frequency.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
     }

@@ -166,8 +166,13 @@ nullable pointer: two accesses mean input/output and three mean
 input/weight/output. Dimension and batch must exactly determine tensor and
 weight bytes, while epsilon must be a typed, finite, positive f32. Grid,
 alignment, permissions, and absence of dynamic shared memory are also fixed.
+Kernel ID 11 validates in-place f32 RoPE. Position is a nonnegative signed
+integer; head dimension is positive and even; head count is positive; frequency
+base and scale are finite positive f32 values. Their product determines the
+exact read/write buffer length, while head count and half-head width determine
+the only accepted grid and block geometry.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 20 schemas and the
+registry alone cannot make it executable. The remaining 19 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
