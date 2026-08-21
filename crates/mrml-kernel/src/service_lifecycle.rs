@@ -33,8 +33,49 @@ pub enum ServiceError {
     TaskMismatch,
     StillRunning,
     GenerationExhausted,
+    InvalidRestartPolicy,
+    RestartLimit,
+    RestartBackoff { eligible_at: u64 },
+    TimeExhausted,
     Unauthorized(CapabilityError),
     Runtime(TaskRuntimeError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RestartPolicy {
+    maximum_restarts: u32,
+    base_backoff_ticks: u64,
+    maximum_backoff_ticks: u64,
+}
+
+impl RestartPolicy {
+    pub const ONCE_IMMEDIATE: Self = Self {
+        maximum_restarts: 1,
+        base_backoff_ticks: 0,
+        maximum_backoff_ticks: 0,
+    };
+
+    pub const fn new(
+        maximum_restarts: u32,
+        base_backoff_ticks: u64,
+        maximum_backoff_ticks: u64,
+    ) -> Result<Self, ServiceError> {
+        if maximum_restarts == 0 || maximum_backoff_ticks < base_backoff_ticks {
+            return Err(ServiceError::InvalidRestartPolicy);
+        }
+        Ok(Self {
+            maximum_restarts,
+            base_backoff_ticks,
+            maximum_backoff_ticks,
+        })
+    }
+
+    fn delay(self, completed_restarts: u32) -> u64 {
+        let shift = completed_restarts.min(63);
+        self.base_backoff_ticks
+            .saturating_mul(1u64 << shift)
+            .min(self.maximum_backoff_ticks)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +98,9 @@ struct ServiceSlot {
     task: Option<TaskId>,
     state: ServiceState,
     occupied: bool,
+    restart_policy: RestartPolicy,
+    completed_restarts: u32,
+    next_restart_tick: u64,
 }
 
 impl ServiceSlot {
@@ -66,6 +110,9 @@ impl ServiceSlot {
         task: None,
         state: ServiceState::Exited,
         occupied: false,
+        restart_policy: RestartPolicy::ONCE_IMMEDIATE,
+        completed_restarts: 0,
+        next_restart_tick: 0,
     };
 }
 
@@ -85,6 +132,15 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
     }
 
     pub fn register(&mut self, object: ObjectId, task: TaskId) -> Result<ServiceId, ServiceError> {
+        self.register_with_policy(object, task, RestartPolicy::ONCE_IMMEDIATE)
+    }
+
+    pub fn register_with_policy(
+        &mut self,
+        object: ObjectId,
+        task: TaskId,
+        restart_policy: RestartPolicy,
+    ) -> Result<ServiceId, ServiceError> {
         if object.0 == 0 {
             return Err(ServiceError::InvalidObject);
         }
@@ -98,6 +154,9 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
         entry.task = Some(task);
         entry.state = ServiceState::Running;
         entry.occupied = true;
+        entry.restart_policy = restart_policy;
+        entry.completed_restarts = 0;
+        entry.next_restart_tick = 0;
         Ok(ServiceId {
             slot: slot as u32,
             generation: entry.generation,
@@ -116,6 +175,14 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
         &mut self,
         runtime: &mut TaskRuntime<TASKS, CAPS>,
     ) -> Result<ServiceRetirement, ServiceError> {
+        self.exit_current_at(runtime, 0)
+    }
+
+    pub fn exit_current_at<const TASKS: usize, const CAPS: usize>(
+        &mut self,
+        runtime: &mut TaskRuntime<TASKS, CAPS>,
+        now: u64,
+    ) -> Result<ServiceRetirement, ServiceError> {
         let current = runtime
             .current()
             .ok_or(ServiceError::Runtime(TaskRuntimeError::NoCurrentTask))?;
@@ -128,6 +195,7 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
         }
         self.slots[slot].task = None;
         self.slots[slot].state = ServiceState::Exited;
+        self.arm_restart(slot, now)?;
         Ok(ServiceRetirement {
             service,
             task,
@@ -139,6 +207,15 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
         &mut self,
         runtime: &mut TaskRuntime<TASKS, CAPS>,
         disposition: TrapDisposition,
+    ) -> Result<ServiceFault, ServiceError> {
+        self.fault_current_at(runtime, disposition, 0)
+    }
+
+    pub fn fault_current_at<const TASKS: usize, const CAPS: usize>(
+        &mut self,
+        runtime: &mut TaskRuntime<TASKS, CAPS>,
+        disposition: TrapDisposition,
+        now: u64,
     ) -> Result<ServiceFault, ServiceError> {
         let current = runtime
             .current()
@@ -153,6 +230,7 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
         }
         self.slots[slot].task = None;
         self.slots[slot].state = ServiceState::Faulted;
+        self.arm_restart(slot, now)?;
         Ok(ServiceFault {
             service,
             retirement,
@@ -168,6 +246,28 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
         priority: Priority,
         fresh_context: UserContext,
     ) -> Result<ServiceId, ServiceError> {
+        self.restart_at(
+            service,
+            management,
+            control,
+            runtime,
+            priority,
+            fresh_context,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restart_at<const TASKS: usize, const CAPS: usize, const MANAGEMENT_CAPS: usize>(
+        &mut self,
+        service: ServiceId,
+        management: &CapabilitySpace<MANAGEMENT_CAPS>,
+        control: Capability,
+        runtime: &mut TaskRuntime<TASKS, CAPS>,
+        priority: Priority,
+        fresh_context: UserContext,
+        now: u64,
+    ) -> Result<ServiceId, ServiceError> {
         let slot = service.slot as usize;
         let entry = self.slot(service)?;
         if entry.state == ServiceState::Running || entry.task.is_some() {
@@ -181,6 +281,14 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
                 CapabilityError::PermissionDenied,
             ));
         }
+        if entry.completed_restarts >= entry.restart_policy.maximum_restarts {
+            return Err(ServiceError::RestartLimit);
+        }
+        if now < entry.next_restart_tick {
+            return Err(ServiceError::RestartBackoff {
+                eligible_at: entry.next_restart_tick,
+            });
+        }
         let generation = entry
             .generation
             .checked_add(1)
@@ -192,10 +300,24 @@ impl<const SERVICES: usize> ServiceSupervisor<SERVICES> {
         self.slots[slot].generation = generation;
         self.slots[slot].task = Some(task);
         self.slots[slot].state = ServiceState::Running;
+        self.slots[slot].completed_restarts += 1;
         Ok(ServiceId {
             slot: slot as u32,
             generation,
         })
+    }
+
+    fn arm_restart(&mut self, slot: usize, now: u64) -> Result<(), ServiceError> {
+        if self.slots[slot].completed_restarts >= self.slots[slot].restart_policy.maximum_restarts {
+            self.slots[slot].next_restart_tick = u64::MAX;
+            return Ok(());
+        }
+        let delay = self.slots[slot]
+            .restart_policy
+            .delay(self.slots[slot].completed_restarts);
+        self.slots[slot].next_restart_tick =
+            now.checked_add(delay).ok_or(ServiceError::TimeExhausted)?;
+        Ok(())
     }
 
     fn slot(&self, service: ServiceId) -> Result<&ServiceSlot, ServiceError> {
@@ -304,5 +426,143 @@ mod tests {
             .unwrap();
         assert_eq!(fault.service, service);
         assert_eq!(supervisor.state(service), Ok(ServiceState::Faulted));
+    }
+
+    #[test]
+    fn restart_policy_enforces_authority_backoff_and_budget() {
+        assert_eq!(
+            RestartPolicy::new(0, 1, 1),
+            Err(ServiceError::InvalidRestartPolicy)
+        );
+        assert_eq!(
+            RestartPolicy::new(1, 2, 1),
+            Err(ServiceError::InvalidRestartPolicy)
+        );
+        assert_eq!(
+            RestartPolicy::new(2, u64::MAX - 1, u64::MAX)
+                .unwrap()
+                .delay(1),
+            u64::MAX
+        );
+        let object = ObjectId(0x61);
+        let policy = RestartPolicy::new(2, 10, 15).unwrap();
+        let mut runtime = TaskRuntime::<1, 0>::new(1_000, 1).unwrap();
+        let task = runtime
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        runtime.start();
+        let mut supervisor = ServiceSupervisor::<1>::new();
+        let first = supervisor
+            .register_with_policy(object, task, policy)
+            .unwrap();
+        supervisor.exit_current_at(&mut runtime, 100).unwrap();
+
+        let mut management = CapabilitySpace::<2>::new();
+        let wrong = management.insert(ObjectId(0x62), Rights::CONTROL).unwrap();
+        let control = management.insert(object, Rights::CONTROL).unwrap();
+        assert_eq!(
+            supervisor.restart_at(
+                first,
+                &management,
+                wrong,
+                &mut runtime,
+                Priority::NORMAL,
+                context(0x30_0000, 0x50_0000),
+                101,
+            ),
+            Err(ServiceError::Unauthorized(
+                CapabilityError::PermissionDenied
+            ))
+        );
+        assert_eq!(
+            supervisor.restart_at(
+                first,
+                &management,
+                control,
+                &mut runtime,
+                Priority::NORMAL,
+                context(0x30_0000, 0x50_0000),
+                109,
+            ),
+            Err(ServiceError::RestartBackoff { eligible_at: 110 })
+        );
+        let second = supervisor
+            .restart_at(
+                first,
+                &management,
+                control,
+                &mut runtime,
+                Priority::NORMAL,
+                context(0x30_0000, 0x50_0000),
+                110,
+            )
+            .unwrap();
+        assert!(matches!(runtime.start(), ScheduleOutcome::Switch { .. }));
+        supervisor
+            .fault_current_at(
+                &mut runtime,
+                TrapDisposition::TerminateUser {
+                    vector: 6,
+                    address: None,
+                },
+                200,
+            )
+            .unwrap();
+        assert_eq!(
+            supervisor.restart_at(
+                second,
+                &management,
+                control,
+                &mut runtime,
+                Priority::NORMAL,
+                context(0x40_0000, 0x60_0000),
+                214,
+            ),
+            Err(ServiceError::RestartBackoff { eligible_at: 215 })
+        );
+        let third = supervisor
+            .restart_at(
+                second,
+                &management,
+                control,
+                &mut runtime,
+                Priority::NORMAL,
+                context(0x40_0000, 0x60_0000),
+                215,
+            )
+            .unwrap();
+        assert!(matches!(runtime.start(), ScheduleOutcome::Switch { .. }));
+        supervisor.exit_current_at(&mut runtime, 300).unwrap();
+        assert_eq!(
+            supervisor.restart_at(
+                third,
+                &management,
+                control,
+                &mut runtime,
+                Priority::NORMAL,
+                context(0x50_0000, 0x70_0000),
+                u64::MAX,
+            ),
+            Err(ServiceError::RestartLimit)
+        );
+    }
+
+    #[test]
+    fn retirement_time_overflow_fails_after_revocation() {
+        let mut runtime = TaskRuntime::<1, 0>::new(1_000, 1).unwrap();
+        let task = runtime
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        runtime.start();
+        let mut supervisor = ServiceSupervisor::<1>::new();
+        supervisor
+            .register_with_policy(ObjectId(7), task, RestartPolicy::new(1, 10, 10).unwrap())
+            .unwrap();
+        assert_eq!(
+            supervisor.exit_current_at(&mut runtime, u64::MAX - 5),
+            Err(ServiceError::TimeExhausted)
+        );
+        assert_eq!(runtime.context(task), Err(TaskRuntimeError::MissingTask));
+        assert_eq!(runtime.current(), None);
     }
 }

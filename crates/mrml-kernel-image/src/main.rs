@@ -58,7 +58,9 @@ use mrml_kernel::{
     MemoryRegion, PhysAddr,
 };
 #[cfg(feature = "service-probe")]
-use mrml_kernel::{Capability, CapabilitySpace, ServiceId, ServiceSupervisor};
+use mrml_kernel::{
+    Capability, CapabilitySpace, RestartPolicy, ServiceError, ServiceId, ServiceSupervisor,
+};
 #[cfg(all(
     not(feature = "fault-probe"),
     not(feature = "timer-probe"),
@@ -739,6 +741,7 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
                 halt();
             }
             if core::ptr::addr_of!(SERVICE_RESTARTED).read() {
+                verify_restart_budget_exhausted(runtime, supervisor);
                 asm!(
                     "out dx, eax",
                     in("dx") SERVICE_PROBE_PORT,
@@ -855,10 +858,10 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             .unwrap_or_else(|_| halt());
         let mut supervisor = ServiceSupervisor::<2>::new();
         let service_a = supervisor
-            .register(ObjectId(0xa0), receiver)
+            .register_with_policy(ObjectId(0xa0), receiver, RestartPolicy::ONCE_IMMEDIATE)
             .unwrap_or_else(|_| halt());
         let service_b = supervisor
-            .register(ObjectId(0xa1), sender)
+            .register_with_policy(ObjectId(0xa1), sender, RestartPolicy::ONCE_IMMEDIATE)
             .unwrap_or_else(|_| halt());
         let mut management = CapabilitySpace::<2>::new();
         let control_a = management
@@ -1326,6 +1329,37 @@ unsafe fn service_restart_stage(stage: u32) {
             in("eax") stage,
             options(nomem, nostack)
         )
+    }
+}
+
+#[cfg(feature = "service-probe")]
+unsafe fn verify_restart_budget_exhausted(
+    runtime: &mut TaskRuntime<2, 1>,
+    supervisor: &mut ServiceSupervisor<2>,
+) {
+    let management = unsafe {
+        (*core::ptr::addr_of!(SERVICE_MANAGEMENT))
+            .as_ref()
+            .unwrap_or_else(|| halt())
+    };
+    let controls = unsafe { (*core::ptr::addr_of!(SERVICE_CONTROLS)).unwrap_or_else(|| halt()) };
+    let services = unsafe { (*core::ptr::addr_of!(SERVICE_IDS)).unwrap_or_else(|| halt()) };
+    let context = UserContext::new(
+        PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
+        SERVICE_ENTRY,
+        SERVICE_STACK_TOP,
+    )
+    .unwrap_or_else(|_| halt());
+    if supervisor.restart(
+        services[0],
+        management,
+        controls[0],
+        runtime,
+        Priority::NORMAL,
+        context,
+    ) != Err(ServiceError::RestartLimit)
+    {
+        halt();
     }
 }
 

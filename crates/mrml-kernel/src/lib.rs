@@ -64,7 +64,8 @@ pub use scheduler::{
     TaskId, TaskState,
 };
 pub use service_lifecycle::{
-    ServiceError, ServiceFault, ServiceId, ServiceRetirement, ServiceState, ServiceSupervisor,
+    RestartPolicy, ServiceError, ServiceFault, ServiceId, ServiceRetirement, ServiceState,
+    ServiceSupervisor,
 };
 pub use syscall::{
     MAX_SYSCALL_INLINE_PAYLOAD, SyscallError, SyscallRequest, UserCallFrame, X86_USER_CALL_VECTOR,

@@ -775,11 +775,22 @@ preserves the receiver-first blocking invariant despite its retained
 round-robin cursor. Checked stages prove both fresh generations exist and the
 replacement receiver is selected. The rebuilt pair then repeats the complete
 block, send, clean sender exit, receiver wakeup, CPL3 breakpoint, and fault
-retirement chain. The 2026-08-21 release runs completed both generations in 744
-microseconds on WHP (`verify=1788us`, `prepare=3012us`, `total=7423us`) and 558
-microseconds on nested KVM (`verify=4111us`, `prepare=1420us`, `total=9623us`).
-This proves automatic restart for the fixed two-service test policy; a general
-policy/configuration service and restart-rate/backoff policy remain future work.
+retirement chain. The final bounded-policy artifact completed both generations
+in 375 microseconds on WHP (`verify=1749us`, `prepare=3020us`, `total=6998us`)
+and 587 microseconds on nested KVM (`verify=4376us`, `prepare=1576us`,
+`total=9927us`).
+Every registration now binds a validated restart policy containing a nonzero
+maximum restart count, base delay, and maximum delay. Retirement computes the
+next eligible scheduler tick with checked arithmetic; delay doubles after each
+completed restart and saturates at the configured maximum. Exact `CONTROL`
+authorization precedes budget/timing disclosure, an early attempt neither
+allocates a task nor advances a generation, and exhausting the count is
+permanent for that service record. Time overflow occurs only after the retiring
+domain has been revoked and fails closed. Windows and Linux tests cover invalid
+policies, unauthorized probes, early retry, saturation, exhaustion, and time
+overflow. The signed two-service policy permits one immediate restart and its
+terminal marker is emitted only after the kernel proves a second restart is
+rejected. A general policy/configuration service remains future work.
 As elsewhere, these host-visible markers are test evidence, not attestation
 against a compromised host; protecting guest memory from that host requires the
 confidential-computing boundary described in the threat model.

@@ -191,8 +191,13 @@ kernel supervisor: both retired instances receive fresh service and task
 generations through exact `CONTROL` capabilities, receive new task-local IPC
 authority, and repeat the complete block/send/exit/fault path from rebuilt
 memory. Checked lifecycle markers expose each transition to the live WHP and
-KVM runners. This is an automatic restart proof for the fixed two-service test
-policy, not yet a general user-configurable restart daemon.
+KVM runners. Each supervisor registration now carries a validated maximum
+restart count and bounded exponential backoff in scheduler ticks. Unauthorized
+callers are rejected before learning budget/timing state; early retries do not
+consume a generation, and retirement-time overflow fails after revocation. The
+signed two-service policy permits exactly one immediate restart and proves a
+second restart is denied. Policy parsing and a general management service remain
+outside this fixed live proof.
 Kernel task domains now contain a two-message, allocation-free inbox. Receiving
 from an empty inbox blocks only the current task and immediately selects a
 replacement; capability-authorized delivery enqueues in FIFO order and wakes
@@ -260,8 +265,9 @@ termination policy under nested KVM. That proof temporarily maps the entire
 diagnostic PE in the lower half with user permissions and is therefore not an
 acceptable service isolation design. Separate signed user mappings and
 distinct CR3 roots are now exercised by both the service IPC and timer probes.
-Independent arenas for additional CPUs and platform-backed writable-memory
-reprovisioning on supervised restart remain unfinished. Clean user-requested
+Independent arenas for additional CPUs remain unfinished. Platform-backed
+writable-memory reprovisioning and one bounded supervised restart are now part
+of the live WHP/KVM proof. Clean user-requested
 service exit, generational ownership, and domain revocation are now
 part of the signed two-root IPC proof. The live
 probe now uses the reusable context transition that writes its validated CR3,
