@@ -6,11 +6,11 @@ use mrml_kernel::arch::x86_64::{
     VirtAddr,
 };
 use mrml_kernel::{
-    BootHandoff, PeImage, PhysAddr, VerifiedExecutable, VmBackend, VmExit, MAX_PE_SECTIONS,
-    PAGE_SIZE,
+    BootHandoff, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr, VerifiedExecutable, VmBackend,
+    VmExit,
 };
 
-use crate::{decode_run_page, KvmError, KvmMemoryRegion, KVM_API_VERSION};
+use crate::{KVM_API_VERSION, KvmError, KvmMemoryRegion, decode_run_page};
 
 mod launch;
 pub use launch::{KvmLaunchLayout, PreparedKvmGuest};
@@ -70,7 +70,7 @@ pub struct KvmSystem {
 
 impl KvmSystem {
     pub fn open() -> Result<Self, KvmError> {
-        let file = unsafe { open(b"/dev/kvm\0".as_ptr().cast(), O_RDWR | O_CLOEXEC) };
+        let file = unsafe { open(c"/dev/kvm".as_ptr(), O_RDWR | O_CLOEXEC) };
         if file < 0 {
             return Err(KvmError::SystemCall);
         }
@@ -189,7 +189,7 @@ impl KvmVcpu {
         argument0: u64,
         argument1: u64,
     ) -> Result<(), KvmError> {
-        if !canonical(entry) || !canonical(stack) || cr3 % PAGE_SIZE != 0 {
+        if !canonical(entry) || !canonical(stack) || !cr3.is_multiple_of(PAGE_SIZE) {
             return Err(KvmError::InvalidRegisterState);
         }
         let mut special = KvmSpecialRegisters::zeroed();
@@ -543,7 +543,7 @@ impl<const N: usize> KvmGuestMemory<N> {
         encoded: &[u8],
         guest_physical_address: u64,
     ) -> Result<KvmLoadedHandoff, KvmError> {
-        if guest_physical_address % PAGE_SIZE != 0 {
+        if !guest_physical_address.is_multiple_of(PAGE_SIZE) {
             return Err(KvmError::UnalignedMemory);
         }
         BootHandoff::decode(encoded, |_| {}).map_err(KvmError::Handoff)?;
@@ -767,7 +767,7 @@ impl<'a, const N: usize> KvmPageTableStore<'a, N> {
         guest_start: u64,
         pages: u64,
     ) -> Result<Self, KvmError> {
-        if pages == 0 || guest_start % PAGE_SIZE != 0 {
+        if pages == 0 || !guest_start.is_multiple_of(PAGE_SIZE) {
             return Err(KvmError::UnalignedMemory);
         }
         let bytes = pages
@@ -793,7 +793,7 @@ impl<'a, const N: usize> KvmPageTableStore<'a, N> {
         if index >= 512
             || table.get() < self.start
             || table.get() >= self.next
-            || table.get() % PAGE_SIZE != 0
+            || !table.get().is_multiple_of(PAGE_SIZE)
         {
             return Err(PageTableBuildError::Storage);
         }

@@ -1,7 +1,7 @@
 use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, VirtAddr};
-use mrml_kernel::{BootHandoff, PhysAddr, VerifiedExecutable, VmBackend, VmExit, PAGE_SIZE};
+use mrml_kernel::{BootHandoff, PAGE_SIZE, PhysAddr, VerifiedExecutable, VmBackend, VmExit};
 
-use super::{map_loaded_handoff, map_loaded_pe, KvmBackend, KvmError, KvmSystem};
+use super::{KvmBackend, KvmError, KvmSystem, map_loaded_handoff, map_loaded_pe};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KvmLaunchLayout {
@@ -178,7 +178,7 @@ impl KvmSystem {
             )
             .map_err(|_| KvmError::PageTable)?;
         let root = tables.root();
-        drop(tables.into_store());
+        let _ = tables.into_store();
         backend.vcpu.configure_long_mode_entry(
             loaded_image.entry(),
             stack,
@@ -244,18 +244,20 @@ mod tests {
             validate_ranges(&[(0x1000, 0x2000), (0x2000, 0x1000)]),
             Err(KvmError::MemoryOverlap)
         );
-        assert!(KvmLaunchLayout::new(
-            0x1000,
-            8,
-            0x10000,
-            0x140000000,
-            0x20000,
-            0x200000,
-            0x30000,
-            0x300000,
-            2,
-            true
-        )
-        .is_ok());
+        assert!(
+            KvmLaunchLayout::new(
+                0x1000,
+                8,
+                0x10000,
+                0x140000000,
+                0x20000,
+                0x200000,
+                0x30000,
+                0x300000,
+                2,
+                true
+            )
+            .is_ok()
+        );
     }
 }

@@ -511,6 +511,16 @@ current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
 the live capability probe records that as unavailable and no launch claim is
 made for this environment.
 
+The allocation-free `kvm_run` decoder validates the fixed x86 header before it
+reads the kernel-owned union: padding is zero, readiness and IF fields are
+boolean, only the defined SMM flag is accepted, and CR8 is bounded. Port I/O is
+limited to one scalar transfer and its data offset cannot alias exit metadata.
+MMIO requires zero padding and an exact supported width. MRML hypercalls require
+the private number, one descriptor argument, zero unused arguments and return
+state, zero padding, and a long-mode origin. Exception vectors above 31 fail
+closed. These checks keep malformed kernel ABI state from becoming a broader
+backend-neutral operation.
+
 The separate core-only `mrml-whp` crate now provides the first Windows
 Hypervisor Platform boundary without SDK bindings, import libraries, `std`, or
 third-party crates. It dynamically resolves the documented C entry points from

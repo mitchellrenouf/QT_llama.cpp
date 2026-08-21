@@ -1,4 +1,4 @@
-use mrml_kernel::{HandoffError, PeError, VmExit, PAGE_SIZE};
+use mrml_kernel::{HandoffError, PAGE_SIZE, PeError, VmExit};
 
 pub const KVM_API_VERSION: i32 = 12;
 pub const MRML_KVM_HYPERCALL: u64 = 0x4d52_4d4c;
@@ -63,9 +63,9 @@ impl KvmMemoryRegion {
         if size == 0 {
             return Err(KvmError::EmptyMemory);
         }
-        if guest_address % PAGE_SIZE != 0
-            || size % PAGE_SIZE != 0
-            || userspace_address % PAGE_SIZE != 0
+        if !guest_address.is_multiple_of(PAGE_SIZE)
+            || !size.is_multiple_of(PAGE_SIZE)
+            || !userspace_address.is_multiple_of(PAGE_SIZE)
         {
             return Err(KvmError::UnalignedMemory);
         }
@@ -100,14 +100,21 @@ pub fn decode_run_page(run: &[u8]) -> Result<VmExit, KvmError> {
     if run.len() < UNION {
         return Err(KvmError::TruncatedRun);
     }
+    validate_run_header(run)?;
     let reason = u32_at(run, 8)?;
     match reason {
         EXIT_UNKNOWN => Ok(VmExit::Unknown {
             reason: u64_at(run, UNION)?,
         }),
-        EXIT_EXCEPTION => Ok(VmExit::Unknown {
-            reason: (reason as u64) << 32 | u32_at(run, UNION)? as u64,
-        }),
+        EXIT_EXCEPTION => {
+            let exception = u32_at(run, UNION)?;
+            if exception >= 32 {
+                return Err(KvmError::MalformedExit);
+            }
+            Ok(VmExit::Unknown {
+                reason: (reason as u64) << 32 | exception as u64,
+            })
+        }
         EXIT_IO => decode_io(run),
         EXIT_HYPERCALL => decode_hypercall(run),
         EXIT_HLT => Ok(VmExit::Halted),
@@ -126,7 +133,7 @@ fn decode_io(run: &[u8]) -> Result<VmExit, KvmError> {
     let port = u16_at(run, 34)?;
     let count = u32_at(run, 36)?;
     let offset = usize::try_from(u64_at(run, 40)?).map_err(|_| KvmError::MalformedExit)?;
-    if !matches!(direction, 0 | 1) || !matches!(size, 1 | 2 | 4) || count != 1 {
+    if !matches!(direction, 0 | 1) || !matches!(size, 1 | 2 | 4) || count != 1 || offset < 48 {
         return Err(KvmError::MalformedExit);
     }
     let end = offset
@@ -153,6 +160,16 @@ fn decode_hypercall(run: &[u8]) -> Result<VmExit, KvmError> {
             return Err(KvmError::MalformedExit);
         }
     }
+    if u64_at(run, 88)? != 0
+        || byte(run, 96)? != 1
+        || run
+            .get(97..100)
+            .ok_or(KvmError::TruncatedRun)?
+            .iter()
+            .any(|byte| *byte != 0)
+    {
+        return Err(KvmError::MalformedExit);
+    }
     Ok(VmExit::Hypercall { descriptor_address })
 }
 
@@ -160,7 +177,14 @@ fn decode_mmio(run: &[u8]) -> Result<VmExit, KvmError> {
     let guest_address = u64_at(run, 32)?;
     let size = u32_at(run, 48)?;
     let write = byte(run, 52)?;
-    if !matches!(size, 1 | 2 | 4 | 8) || !matches!(write, 0 | 1) {
+    if !matches!(size, 1 | 2 | 4 | 8)
+        || !matches!(write, 0 | 1)
+        || run
+            .get(53..56)
+            .ok_or(KvmError::TruncatedRun)?
+            .iter()
+            .any(|byte| *byte != 0)
+    {
         return Err(KvmError::MalformedExit);
     }
     let data = run.get(40..48).ok_or(KvmError::TruncatedRun)?;
@@ -172,6 +196,22 @@ fn decode_mmio(run: &[u8]) -> Result<VmExit, KvmError> {
         write: write == 1,
         value: u64::from_ne_bytes(value),
     })
+}
+
+fn validate_run_header(run: &[u8]) -> Result<(), KvmError> {
+    if run
+        .get(2..8)
+        .ok_or(KvmError::TruncatedRun)?
+        .iter()
+        .any(|byte| *byte != 0)
+        || !matches!(byte(run, 12)?, 0 | 1)
+        || !matches!(byte(run, 13)?, 0 | 1)
+        || u16_at(run, 14)? & !1 != 0
+        || u64_at(run, 16)? > 15
+    {
+        return Err(KvmError::MalformedExit);
+    }
+    Ok(())
 }
 
 fn byte(input: &[u8], at: usize) -> Result<u8, KvmError> {
@@ -250,14 +290,18 @@ mod tests {
         );
         run[36..40].copy_from_slice(&2u32.to_ne_bytes());
         assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
+        run[36..40].copy_from_slice(&1u32.to_ne_bytes());
+        run[40..48].copy_from_slice(&40u64.to_ne_bytes());
+        assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
     }
 
     #[test]
     fn hypercall_requires_number_and_zero_unused_arguments() {
-        let mut run = [0u8; 96];
+        let mut run = [0u8; 104];
         run[8..12].copy_from_slice(&EXIT_HYPERCALL.to_ne_bytes());
         run[32..40].copy_from_slice(&MRML_KVM_HYPERCALL.to_ne_bytes());
         run[40..48].copy_from_slice(&0x4000u64.to_ne_bytes());
+        run[96] = 1;
         assert_eq!(
             decode_run_page(&run),
             Ok(VmExit::Hypercall {
@@ -265,6 +309,9 @@ mod tests {
             })
         );
         run[80] = 1;
+        assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
+        run[80] = 0;
+        run[96] = 0;
         assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
     }
 
@@ -286,5 +333,28 @@ mod tests {
             })
         );
         assert_eq!(decode_run_page(&run[..35]), Err(KvmError::TruncatedRun));
+        run[53] = 1;
+        assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
+    }
+
+    #[test]
+    fn run_header_and_exception_vector_are_bounded() {
+        let mut run = [0u8; 48];
+        run[8..12].copy_from_slice(&EXIT_EXCEPTION.to_ne_bytes());
+        run[32..36].copy_from_slice(&13u32.to_ne_bytes());
+        assert_eq!(
+            decode_run_page(&run),
+            Ok(VmExit::Unknown {
+                reason: (EXIT_EXCEPTION as u64) << 32 | 13,
+            })
+        );
+        run[32..36].copy_from_slice(&32u32.to_ne_bytes());
+        assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
+        run[32..36].copy_from_slice(&13u32.to_ne_bytes());
+        run[2] = 1;
+        assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
+        run[2] = 0;
+        run[16..24].copy_from_slice(&16u64.to_ne_bytes());
+        assert_eq!(decode_run_page(&run), Err(KvmError::MalformedExit));
     }
 }

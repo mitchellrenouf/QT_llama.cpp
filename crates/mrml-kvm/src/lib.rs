@@ -5,11 +5,11 @@ mod abi;
 mod native;
 
 pub use abi::{
-    decode_run_page, KvmError, KvmMemoryRegion, KVM_API_VERSION, KVM_MEMORY_REGION_BYTES,
-    MAX_KVM_MEMORY_SLOTS, MRML_KVM_HYPERCALL,
+    KVM_API_VERSION, KVM_MEMORY_REGION_BYTES, KvmError, KvmMemoryRegion, MAX_KVM_MEMORY_SLOTS,
+    MRML_KVM_HYPERCALL, decode_run_page,
 };
 #[cfg(target_os = "linux")]
 pub use native::{
-    map_loaded_handoff, map_loaded_pe, KvmGuestMemory, KvmLaunchLayout, KvmLoadedHandoff,
-    KvmLoadedImage, KvmPageTableStore, KvmSystem, PreparedKvmGuest,
+    KvmGuestMemory, KvmLaunchLayout, KvmLoadedHandoff, KvmLoadedImage, KvmPageTableStore,
+    KvmSystem, PreparedKvmGuest, map_loaded_handoff, map_loaded_pe,
 };
