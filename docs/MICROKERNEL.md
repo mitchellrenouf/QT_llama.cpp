@@ -195,8 +195,16 @@ vocabulary, recent count, generated count, k, and partition count. Empty
 partitions and k beyond a partition are rejected. The 256-thread specialized
 kernel is accepted only when the maximum partition is at most 2048; larger
 partitions must use the single-thread generic kernel.
+Kernel ID 19 validates in-place QKV normalization, RoPE, and cache conversion.
+It binds positive head counts and even head width to the exact packed QKV and
+normalization ranges, requires grouped-query head divisibility, and rejects
+position arithmetic that could overflow the kernel's signed indices. K and V
+caches independently select only F16, Q8_0, or Q4_0 storage; quantized formats
+require 32-value head blocks and every cache length is derived exactly from
+capacity, KV heads, width, and format. Grid and block geometry are fixed from
+the same dimensions.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 10 schemas and the
+registry alone cannot make it executable. The remaining 9 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
