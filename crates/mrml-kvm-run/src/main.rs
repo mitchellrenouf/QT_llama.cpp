@@ -1,33 +1,59 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 
+#[cfg(target_os = "linux")]
 use mrml_crypto::{LAMPORT_PUBLIC_KEY_BYTES, Sha3_512};
 use mrml_error::{Result, anyhow};
+#[cfg(target_os = "linux")]
 use mrml_kernel::{
     ArtifactKind, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot, VmBackend, VmExit,
 };
+#[cfg(target_os = "linux")]
 use mrml_kvm::{KvmLaunchLayout, KvmSystem};
 use mrml_runtime::mrml_println as println;
 
+#[cfg(target_os = "linux")]
+#[cfg_attr(test, allow(dead_code))]
 const MAX_KERNEL_BUNDLE: usize = SIGNED_ARTIFACT_OVERHEAD_BYTES + 16 * 1024 * 1024;
+#[cfg(any(test, target_os = "linux"))]
 const FRAMEBUFFER: u64 = 0x00a0_0000;
 
+#[cfg(target_os = "linux")]
+#[cfg_attr(test, allow(dead_code))]
 fn application_main() -> Result<()> {
     let arguments = mrml_runtime::command_arguments();
-    if arguments.len() != 3 {
-        return Err(anyhow!("usage: mrml-kvm-run KERNEL.signed RELEASE.public"));
+    if arguments.len() != 4 {
+        return Err(anyhow!(
+            "usage: mrml-kvm-run KERNEL.signed RELEASE.public MINIMUM_VERSION"
+        ));
     }
+    let minimum_version = arguments[3]
+        .parse::<u64>()
+        .ok()
+        .filter(|version| *version != 0)
+        .ok_or_else(|| anyhow!("minimum version must be a nonzero integer"))?;
     let bundle = mrml_runtime::read_file_bounded(&arguments[1], MAX_KERNEL_BUNDLE)?;
     let public = mrml_runtime::read_file_bounded(&arguments[2], LAMPORT_PUBLIC_KEY_BYTES)?;
     if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
         return Err(anyhow!("invalid release public-key length"));
     }
-    let root = TrustRoot::new(ArtifactKind::Kernel, Sha3_512::digest(&public), 1);
+    let root = TrustRoot::new(
+        ArtifactKind::Kernel,
+        Sha3_512::digest(&public),
+        minimum_version,
+    );
     let signed = SignedArtifact::decode(&bundle).map_err(|_| anyhow!("invalid signed bundle"))?;
     let executable = signed
         .verify_executable(&root, ArtifactKind::Kernel)
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
-    let handoff = boot_handoff(executable.artifact().version());
+    let mut entropy = [0u8; 32];
+    mrml_runtime::fill_random(&mut entropy)
+        .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
+    let handoff = boot_handoff(
+        executable.artifact().version(),
+        entropy,
+        *executable.artifact().digest(),
+    );
     let layout = KvmLaunchLayout::new(
         0x10_0000,
         32,
@@ -63,15 +89,23 @@ fn application_main() -> Result<()> {
     Ok(())
 }
 
-fn boot_handoff(version: u64) -> [u8; 240] {
+#[cfg(not(target_os = "linux"))]
+fn application_main() -> Result<()> {
+    Err(anyhow!("mrml-kvm-run is available only on Linux hosts"))
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> [u8; 240] {
     let mut encoded = [0u8; 240];
     encoded[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
     encoded[16..20].copy_from_slice(&240u32.to_le_bytes());
     encoded[20..22].copy_from_slice(&3u16.to_le_bytes());
-    encoded[22..24].copy_from_slice(&7u16.to_le_bytes());
+    // The verified bundle establishes secure loading. Hardware measurement and
+    // persistent rollback protection are not claimed by this host runner.
+    encoded[22..24].copy_from_slice(&1u16.to_le_bytes());
     encoded[24..32].copy_from_slice(&version.to_le_bytes());
-    encoded[32..64].fill(0xa5);
-    encoded[64..128].copy_from_slice(&Sha3_512::digest(b"mrml-kvm-run measured boot"));
+    encoded[32..64].copy_from_slice(&entropy);
+    encoded[64..128].copy_from_slice(&measurement);
     encoded[128..136].copy_from_slice(&0x9000u64.to_le_bytes());
     encoded[136..144].copy_from_slice(&FRAMEBUFFER.to_le_bytes());
     encoded[144..152].copy_from_slice(&0x1000u64.to_le_bytes());
@@ -91,3 +125,23 @@ fn boot_handoff(version: u64) -> [u8; 240] {
 }
 
 mrml_runtime::mrml_entrypoint!(application_main);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrml_kernel::BootHandoff;
+
+    #[test]
+    fn handoff_binds_verified_version_entropy_and_measurement() {
+        let entropy = [0x35; 32];
+        let measurement = [0xa7; 64];
+        let encoded = boot_handoff(19, entropy, measurement);
+        let decoded = BootHandoff::decode(&encoded, |_| {}).unwrap();
+        assert_eq!(decoded.evidence().image_version(), 19);
+        assert_eq!(decoded.evidence().entropy(), &entropy);
+        assert_eq!(decoded.evidence().image_measurement(), &measurement);
+        assert!(decoded.evidence().secure_boot());
+        assert!(!decoded.evidence().measured_boot());
+        assert!(!decoded.evidence().rollback_protected());
+    }
+}

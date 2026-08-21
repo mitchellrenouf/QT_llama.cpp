@@ -525,6 +525,15 @@ in-kernel IRQ chip so the current interrupt-disabled `HLT` is observable; adding
 an interrupt controller belongs with the timer and scheduler rather than this
 one-shot boot proof.
 
+The runner obtains 256 bits of fresh boot entropy from the host operating
+system's cryptographic generator and places the verified artifact's actual
+SHA3-512 digest in the handoff measurement field. It accepts an explicit nonzero
+minimum release version and rejects older signed bundles before creating a VM.
+It claims secure loading because signature and PE policy verification occurred,
+but deliberately leaves measured-boot and rollback-protected evidence clear:
+software hashing is not a hardware trust-anchor measurement, and a command-line
+version floor is not persistent monotonic rollback state.
+
 The reproducible integration sequence is:
 
 ```text
@@ -532,7 +541,7 @@ cargo build --release -p mrml-kernel-image --bin mrml-kernel-pe --features kerne
 cargo build --release -p mrml-sign -p mrml-kvm-run
 mrml-sign keygen release.private release.public
 mrml-sign sign-bundle kernel 1 mrml-kernel-pe.efi release.private kernel.signed
-mrml-kvm-run kernel.signed release.public
+mrml-kvm-run kernel.signed release.public 1
 ```
 
 The allocation-free `kvm_run` decoder validates the fixed x86 header before it
