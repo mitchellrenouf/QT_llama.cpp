@@ -28,6 +28,7 @@ pub enum VmError {
     IoDenied,
     IoPolicyFull,
     UnhandledExit,
+    InterruptDenied,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

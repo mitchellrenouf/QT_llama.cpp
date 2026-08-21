@@ -454,6 +454,13 @@ error also fails the instance because its register and device state cannot be
 assumed resumable. Concrete adapters remain responsible for translating native
 exit structures into this deliberately small representation.
 
+Interrupt injection is a separate capability-authorized path. The caller must
+hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector
+must be present in a 256-bit allowlist. Architectural exception vectors 0--31
+and vector 255 cannot be enabled. Injection is accepted only while the VM is
+running; a backend injection failure moves it to the failed state because
+delivery may have partially changed backend state.
+
 ## Performance policy
 
 Fast IPC alone is insufficient. MRML will measure call frequency, duplicate

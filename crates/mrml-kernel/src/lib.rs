@@ -22,6 +22,7 @@ mod scheduler;
 mod virtual_gpu;
 mod vm;
 mod vm_dispatch;
+mod vm_interrupt;
 
 pub use artifact::{
     ArtifactError, ArtifactKind, BOOTSTRAP_STATE_BYTES, BootstrapState, ExecutableArtifactError,
@@ -70,3 +71,4 @@ pub use vm_dispatch::{
     ExitDisposition, IoDirection, IoPortPolicy, IoPortRule, MAX_IO_PORT_RULES, dispatch_vm_exit,
     run_vm_once,
 };
+pub use vm_interrupt::{InterruptPolicy, inject_vm_interrupt};
