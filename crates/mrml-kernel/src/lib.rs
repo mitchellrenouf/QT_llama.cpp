@@ -20,6 +20,7 @@ mod platform;
 mod policy;
 mod scheduler;
 mod virtual_gpu;
+mod vm;
 
 pub use artifact::{
     ArtifactError, ArtifactKind, BOOTSTRAP_STATE_BYTES, BootstrapState, ExecutableArtifactError,
@@ -58,4 +59,9 @@ pub use virtual_gpu::{
     BufferAccess, BufferId, BufferMode, Dispatch, DispatchId, DispatchTable,
     GPU_QUEUE_MESSAGE_BYTES, GpuError, GpuQueueReceiver, GpuQueueSender, KernelId,
     MAX_DISPATCH_BUFFERS, ResourceCommand, VirtualGpuSession,
+};
+pub use vm::{
+    GuestAccess, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall, HypercallOperation,
+    HypercallRouter, MAX_GUEST_REGIONS, RoutedHypercall, VmBackend, VmError, VmExit, VmRunError,
+    decode_hypercall_exit,
 };

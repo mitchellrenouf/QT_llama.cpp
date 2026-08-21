@@ -426,6 +426,18 @@ queues, directory-handle grants, measured images, and optional IOMMU device
 assignment. Bare metal uses native architecture modules and the CPU inference
 backend until a separately isolated GPU service is available.
 
+The implemented backend-neutral VM boundary uses a fixed 64-byte `MRMLHC01`
+hypercall descriptor and a caller-owned copy buffer. Reserved bytes and
+operation-specific unused fields must be zero, sequences are exact and advance
+only after successful authorization, and tool, GPU, and shutdown operations
+require distinct capability objects. Guest mappings are fixed-capacity,
+page-aligned, non-overlapping in both guest and host address spaces, and never
+writable and executable. A request buffer must fit wholly within one readable
+mapping. Backend-owned pointers never enter the policy core. The common
+`VmBackend` contract currently covers vCPU exits, bounded guest copies, and
+interrupt injection; concrete KVM and Hyper-V adapters and shared-memory data
+queues remain pending, so this is not yet a runnable hosted VM.
+
 ## Performance policy
 
 Fast IPC alone is insufficient. MRML will measure call frequency, duplicate
