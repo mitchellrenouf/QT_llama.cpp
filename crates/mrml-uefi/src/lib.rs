@@ -48,6 +48,12 @@ pub const FILE_INFO_GUID: Guid = Guid {
     data3: 0x11d2,
     data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
+pub const TCG2_PROTOCOL_GUID: Guid = Guid {
+    data1: 0x607f_766c,
+    data2: 0x7455,
+    data3: 0x42be,
+    data4: [0x93, 0x0b, 0xe4, 0xd7, 0x6d, 0xb2, 0x72, 0x0f],
+};
 pub const ACPI_20_TABLE_GUID: Guid = Guid {
     data1: 0x8868_e871,
     data2: 0xe4f1,
@@ -99,6 +105,35 @@ pub type LocateProtocol =
 pub type HandleProtocol =
     unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void) -> Status;
 pub type AllocatePages = unsafe extern "efiapi" fn(u32, u32, usize, *mut u64) -> Status;
+pub type Tcg2HashLogExtendEvent =
+    unsafe extern "efiapi" fn(*mut Tcg2Protocol, u64, u64, u64, *mut Tcg2Event) -> Status;
+
+#[repr(C)]
+pub struct Tcg2Protocol {
+    pub get_capability: usize,
+    pub get_event_log: usize,
+    pub hash_log_extend_event: Tcg2HashLogExtendEvent,
+    pub submit_command: usize,
+    pub get_active_pcr_banks: usize,
+    pub set_active_pcr_banks: usize,
+    pub get_result_of_set_active_pcr_banks: usize,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct Tcg2EventHeader {
+    pub header_size: u32,
+    pub header_version: u16,
+    pub pcr_index: u32,
+    pub event_type: u32,
+}
+
+#[repr(C, packed)]
+pub struct Tcg2Event {
+    pub size: u32,
+    pub header: Tcg2EventHeader,
+    pub event: [u8; 32],
+}
 
 #[repr(C)]
 pub struct BootServices {
@@ -589,6 +624,10 @@ mod tests {
         assert_eq!(core::mem::offset_of!(BootServices, exit_boot_services), 232);
         assert_eq!(core::mem::offset_of!(BootServices, locate_protocol), 320);
         assert_eq!(core::mem::offset_of!(SystemTable, boot_services), 96);
+        assert_eq!(core::mem::size_of::<Tcg2EventHeader>(), 14);
+        assert_eq!(core::mem::offset_of!(Tcg2Event, header), 4);
+        assert_eq!(core::mem::offset_of!(Tcg2Event, event), 18);
+        assert_eq!(core::mem::size_of::<Tcg2Protocol>(), 56);
         assert_eq!(
             core::mem::offset_of!(LoadedImageProtocol, device_handle),
             24

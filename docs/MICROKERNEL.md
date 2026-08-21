@@ -192,6 +192,18 @@ deterministic fail-stop handling, not yet recoverable fault dispatch. A signed
 `fault-probe` build executed `UD2` under QEMU and stopped with `HLT=1` at the
 kernel handler while retaining the loader-created CR3 and kernel GDT/IDT bases.
 
+Before materialization, the loader can now use the packed, raw
+`EFI_TCG2_PROTOCOL` ABI to hash the already authenticated kernel PE into PCR 11
+and append an `EV_IPL` event named `MRML authenticated kernel PE`. The canonical
+handoff sets its measured-boot flag only after `HashLogExtendEvent` succeeds.
+Set `MRML_REQUIRE_TPM=1` when building the loader to make a missing TCG2
+protocol or failed extend boot-fatal; QEMU without a virtual TPM stopped at the
+blue `RGB(0,0,128)` stage under that policy, while the optional development
+policy still reached the kernel marker. PCR extension supplies attestation and
+an event log, but is not a monotonic counter. TPM NV provisioning,
+authorization, atomic version advancement, and recovery remain separate work
+and no rollback-resistance claim is made yet.
+
 ### OS executable format
 
 PE32+ is the sole executable binary format for MRML on x86-64. The kernel, VM

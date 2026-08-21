@@ -201,6 +201,10 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
             ArtifactKind::Kernel,
         )
         .map_err(|_| LOAD_ERROR)?;
+    let measured_boot = measure_kernel(services, signed.payload())?;
+    if require_tpm_measurement() && !measured_boot {
+        return Err(LOAD_ERROR);
+    }
     if verified.image().image_size() == 0 {
         return Err(LOAD_ERROR);
     }
@@ -252,6 +256,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         kernel_entry,
         kernel_version,
         kernel_measurement,
+        measured_boot,
         entropy,
         acpi_root,
         framebuffer,
@@ -266,6 +271,53 @@ fn embedded_kernel_root() -> Option<[u8; 64]> {
 
 fn embedded_minimum_version() -> Option<u64> {
     parse_nonzero_version(option_env!("MRML_KERNEL_MIN_VERSION")?.as_bytes())
+}
+
+fn require_tpm_measurement() -> bool {
+    matches!(option_env!("MRML_REQUIRE_TPM"), Some("1"))
+}
+
+fn measure_kernel(services: &BootServices, payload: &[u8]) -> Result<bool, Status> {
+    if payload.is_empty() {
+        return Err(LOAD_ERROR);
+    }
+    let mut protocol_pointer = core::ptr::null_mut();
+    let status = unsafe {
+        (services.locate_protocol)(
+            &TCG2_PROTOCOL_GUID,
+            core::ptr::null_mut(),
+            &mut protocol_pointer,
+        )
+    };
+    if status == NOT_FOUND {
+        return Ok(false);
+    }
+    check(status)?;
+    let protocol = unsafe { (protocol_pointer as *mut Tcg2Protocol).as_mut() }.ok_or(LOAD_ERROR)?;
+    const DESCRIPTION: &[u8] = b"MRML authenticated kernel PE";
+    let mut event = Tcg2Event {
+        size: (core::mem::size_of::<u32>()
+            + core::mem::size_of::<Tcg2EventHeader>()
+            + DESCRIPTION.len()) as u32,
+        header: Tcg2EventHeader {
+            header_size: core::mem::size_of::<Tcg2EventHeader>() as u32,
+            header_version: 1,
+            pcr_index: 11,
+            event_type: 0x0000_000d,
+        },
+        event: [0; 32],
+    };
+    event.event[..DESCRIPTION.len()].copy_from_slice(DESCRIPTION);
+    check(unsafe {
+        (protocol.hash_log_extend_event)(
+            protocol,
+            0,
+            payload.as_ptr() as u64,
+            payload.len() as u64,
+            &mut event,
+        )
+    })?;
+    Ok(true)
 }
 
 struct LoadedFile {
@@ -378,6 +430,7 @@ fn enter_kernel(
     kernel_entry: u64,
     kernel_version: u64,
     kernel_measurement: [u8; 64],
+    measured_boot: bool,
     entropy: [u8; 32],
     acpi_root: u64,
     framebuffer: Framebuffer,
@@ -426,7 +479,7 @@ fn enter_kernel(
         entropy,
         kernel_measurement,
         false,
-        false,
+        measured_boot,
         acpi_root,
         framebuffer_info,
         &kernel_regions[..regions.len()],
