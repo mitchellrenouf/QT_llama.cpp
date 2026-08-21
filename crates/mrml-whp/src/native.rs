@@ -46,7 +46,7 @@ const REG_CR0: u32 = 0x1000;
 const REG_CR3: u32 = 0x1002;
 const REG_CR4: u32 = 0x1003;
 const REG_EFER: u32 = 0x2001;
-const CR0_LONG_MODE: u64 = (1 << 0) | (1 << 16) | (1 << 31);
+const CR0_LONG_MODE: u64 = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 16) | (1 << 31);
 const CR4_PAE: u64 = 1 << 5;
 const EFER_LONG_MODE_NX: u64 = (1 << 8) | (1 << 11);
 
@@ -400,7 +400,7 @@ impl PreparedWhpPartition<'_> {
         values[8] = RegisterValue::scalar(EFER_LONG_MODE_NX);
         values[9] = RegisterValue::segment(0x8, 0xa09b);
         for value in &mut values[10..] {
-            *value = RegisterValue::segment(0x10, 0x8093);
+            *value = RegisterValue::segment(0x10, 0xc093);
         }
         check(unsafe {
             (self.api.set_registers)(

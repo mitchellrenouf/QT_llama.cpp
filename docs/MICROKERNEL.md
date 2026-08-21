@@ -542,8 +542,15 @@ partition, vCPU, and guest mapping when the host reports Hyper-V present.
 The partition enables WHP's xAPIC emulation before setup, and prepared guests
 can request fixed, edge-triggered, physical-destination interrupts through the
 documented 16-byte control record. Architectural vectors 0--31 and vector 255
-are rejected before the host call. A successful signed guest execution remains
-pending, so this milestone does not claim Hyper-V bootability.
+are rejected before the host call. `PreparedWhpGuest` now implements the same
+`VmBackend` run, bounded-copy, and interrupt contract as KVM and rejects every
+vCPU identity except its single configured vCPU. Long-mode state also sets the
+architectural MP, ET, and NE control bits and a 32/64-bit data-segment stack
+width instead of relying on reset-state defaults. A direct execution probe
+currently exits on a low guest-memory access before reaching its test `HLT`;
+that result is retained as a blocker rather than being reported as a boot.
+A successful signed guest execution therefore remains pending, and this
+milestone does not claim Hyper-V bootability.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector

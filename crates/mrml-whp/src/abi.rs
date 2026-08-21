@@ -23,6 +23,7 @@ pub enum WhpError {
     MemoryOverlap,
     InvalidPermissions,
     InvalidRegisterState,
+    InvalidVcpu,
     InvalidInterrupt,
     InvalidMapping,
     UnmappedMemory,

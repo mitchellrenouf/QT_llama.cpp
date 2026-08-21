@@ -3,7 +3,8 @@ use mrml_kernel::arch::x86_64::{
     VirtAddr,
 };
 use mrml_kernel::{
-    BootHandoff, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr, VerifiedExecutable, VmExit,
+    BootHandoff, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr, VerifiedExecutable, VmBackend,
+    VmExit,
 };
 
 use crate::{GuestRange, MapPermissions, WhpError};
@@ -89,6 +90,32 @@ impl PreparedWhpGuest<'_> {
         self.partition.read_guest(address, output)
     }
     pub fn inject_interrupt(&mut self, vector: u8) -> Result<(), WhpError> {
+        self.partition.inject_interrupt(vector)
+    }
+}
+
+impl VmBackend for PreparedWhpGuest<'_> {
+    type Error = WhpError;
+
+    fn run(&mut self, vcpu: u32) -> Result<VmExit, Self::Error> {
+        if vcpu != 0 {
+            return Err(WhpError::InvalidVcpu);
+        }
+        self.partition.run()
+    }
+
+    fn read_guest(&self, address: u64, output: &mut [u8]) -> Result<(), Self::Error> {
+        self.partition.read_guest(address, output)
+    }
+
+    fn write_guest(&mut self, address: u64, input: &[u8]) -> Result<(), Self::Error> {
+        self.partition.write_guest(address, input)
+    }
+
+    fn inject_interrupt(&mut self, vcpu: u32, vector: u8) -> Result<(), Self::Error> {
+        if vcpu != 0 {
+            return Err(WhpError::InvalidVcpu);
+        }
         self.partition.inject_interrupt(vector)
     }
 }
@@ -228,7 +255,7 @@ fn build_page_tables(
     Ok(tables.root())
 }
 
-struct WhpPageTableStore<'a, 'system> {
+pub(super) struct WhpPageTableStore<'a, 'system> {
     partition: &'a mut PreparedWhpPartition<'system>,
     start: u64,
     next: u64,
@@ -236,7 +263,7 @@ struct WhpPageTableStore<'a, 'system> {
 }
 
 impl<'a, 'system> WhpPageTableStore<'a, 'system> {
-    fn new(
+    pub(super) fn new(
         partition: &'a mut PreparedWhpPartition<'system>,
         start: u64,
         pages: u64,
@@ -435,6 +462,25 @@ mod tests {
                 false
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn backend_rejects_nonexistent_virtual_processors() {
+        let system = WhpSystem::open().unwrap();
+        if !system.hypervisor_present().unwrap() {
+            return;
+        }
+        let partition = system.prepare_partition().unwrap();
+        let mut guest = PreparedWhpGuest {
+            partition,
+            entry: 0x20_0000,
+            root: PhysAddr::new(0x10_0000).unwrap(),
+        };
+        assert_eq!(VmBackend::run(&mut guest, 1), Err(WhpError::InvalidVcpu));
+        assert_eq!(
+            VmBackend::inject_interrupt(&mut guest, 1, 48),
+            Err(WhpError::InvalidVcpu)
         );
     }
 }
