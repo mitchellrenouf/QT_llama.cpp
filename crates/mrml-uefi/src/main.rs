@@ -309,20 +309,64 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     }
 
     let (map_size, descriptor_size) = unsafe { exit_boot_services(image, services) }?;
+    unsafe {
+        launch_after_exit(
+            map_size,
+            descriptor_size,
+            transition,
+            kernel_entry,
+            kernel_version,
+            kernel_measurement,
+            measured_boot,
+            secure_boot,
+            rollback_protected,
+            entropy,
+            acpi_root,
+            framebuffer,
+        )
+    }
+}
+
+/// Completes the one-way transition after UEFI boot services have terminated.
+/// Every validation failure beyond this boundary fail-stops because returning
+/// to firmware after a successful `ExitBootServices` call is invalid.
+///
+/// # Safety
+///
+/// The caller must have successfully exited boot services with the memory-map
+/// snapshot stored in `MEMORY_MAP`, and `map_size` must describe initialized
+/// bytes in that buffer using the supplied nonzero `descriptor_size`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn launch_after_exit(
+    map_size: usize,
+    descriptor_size: usize,
+    transition: Transition,
+    kernel_entry: u64,
+    kernel_version: u64,
+    kernel_measurement: [u8; 64],
+    measured_boot: bool,
+    secure_boot: bool,
+    rollback_protected: bool,
+    entropy: [u8; 32],
+    acpi_root: u64,
+    framebuffer: Framebuffer,
+) -> ! {
     let map_bytes = unsafe { core::slice::from_raw_parts(MEMORY_MAP.0.get().cast(), map_size) };
     let regions = unsafe { &mut *REGIONS.0.get() };
-    let region_count = normalize_memory_map(
+    let region_count = match normalize_memory_map(
         map_bytes,
         descriptor_size,
         framebuffer.base,
         framebuffer.size as u64,
         regions,
-    )
-    .map_err(|_| LOAD_ERROR)?;
+    ) {
+        Ok(count) => count,
+        Err(_) => halt(),
+    };
     if region_count == 0 {
-        return Err(LOAD_ERROR);
+        halt();
     }
-    enter_kernel(
+    if enter_kernel(
         transition,
         kernel_entry,
         kernel_version,
@@ -334,7 +378,11 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         acpi_root,
         framebuffer,
         &regions[..region_count],
-    )?;
+    )
+    .is_err()
+    {
+        halt();
+    }
     halt()
 }
 

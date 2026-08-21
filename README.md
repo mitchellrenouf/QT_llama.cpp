@@ -104,6 +104,9 @@ and erases every byte of that page immediately before encoding the bounded
 handoff, preventing uninitialized tail data from crossing the boundary. Recoverable
 exception dispatch, timers, scheduling from the standalone
 image, service VMs, and bare-metal validation remain unfinished.
+The successful `ExitBootServices` call is a one-way boundary: memory-map
+normalization, handoff construction, and launch failures after it halt locally
+and can never return into terminated firmware services.
 
 ### Secure mediated CUDA design
 

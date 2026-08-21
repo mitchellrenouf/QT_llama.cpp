@@ -356,6 +356,10 @@ while cross-region conflicts fail closed. QEMU still reached the green marker
 after this normalization was enabled.
 
 The post-firmware path now enters the independent `mrml-kernel-pe.efi` image.
+The successful `ExitBootServices` call is treated as an irreversible state
+transition. All subsequent memory-map, handoff, and launch failures enter the
+loader's fail-stop loop rather than returning a status through invalidated UEFI
+state.
 Its entry parses the canonical handoff again and revalidates nonzero entropy,
 the ACPI pointer, the sorted memory map, and complete framebuffer MMIO
 containment before drawing. It retains every emitted region in fixed bounded
