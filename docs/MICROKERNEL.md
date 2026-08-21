@@ -407,7 +407,8 @@ canonical handoff read-only; and one page-aligned read-only/executable assembly
 trampoline. The trampoline enables EFER.NXE and CR0.WP, replaces CR3, changes
 to the dedicated stack, and jumps without returning. No writable alias of an
 executable image page is retained. The handoff has a dedicated, statically
-size-checked 4 KiB page, and the transition rejects a trampoline whose linker
+size-checked 4 KiB page whose complete contents are erased immediately before
+the canonical prefix is encoded. The transition rejects a trampoline whose linker
 symbols do not prove that it fits entirely within its dedicated page. Thus
 neither restricted mapping silently grants access to adjacent loader data or
 code. QEMU 11.1 reached the independent kernel

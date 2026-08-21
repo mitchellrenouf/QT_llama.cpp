@@ -32,9 +32,9 @@ static FILE_INFO: FileInfoBuffer = FileInfoBuffer(UnsafeCell::new([0; FILE_INFO_
 const HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
 const PAGE_BYTES: usize = 4096;
 #[repr(C, align(4096))]
-struct HandoffBuffer(UnsafeCell<[u8; HANDOFF_BYTES]>);
+struct HandoffBuffer(UnsafeCell<[u8; PAGE_BYTES]>);
 unsafe impl Sync for HandoffBuffer {}
-static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; HANDOFF_BYTES]));
+static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; PAGE_BYTES]));
 const _: () = assert!(HANDOFF_BYTES <= PAGE_BYTES);
 const _: () = assert!(core::mem::align_of::<HandoffBuffer>() == PAGE_BYTES);
 const _: () = assert!(core::mem::size_of::<HandoffBuffer>() == PAGE_BYTES);
@@ -616,7 +616,9 @@ fn enter_kernel(
         pixel_format,
     )
     .map_err(|_| LOAD_ERROR)?;
-    let handoff = unsafe { &mut *HANDOFF.0.get() };
+    let handoff_page = unsafe { &mut *HANDOFF.0.get() };
+    handoff_page.fill(0);
+    let handoff = &mut handoff_page[..HANDOFF_BYTES];
     let handoff_length = encode_handoff(
         kernel_version,
         entropy,

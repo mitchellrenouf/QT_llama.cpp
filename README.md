@@ -96,7 +96,9 @@ firmware-era tail or stack data enters the kernel mapping. A separately
 allocated lower guard page is deliberately absent from the new page tables, so
 downward stack overflow faults instead of reaching an adjacent allocation. The
 canonical handoff occupies its own compile-time-checked 4 KiB-aligned page, so
-making it read-only cannot expose neighboring loader statics. Recoverable
+making it read-only cannot expose neighboring loader statics. The loader owns
+and erases every byte of that page immediately before encoding the bounded
+handoff, preventing uninitialized tail data from crossing the boundary. Recoverable
 exception dispatch, timers, scheduling from the standalone
 image, service VMs, and bare-metal validation remain unfinished.
 
