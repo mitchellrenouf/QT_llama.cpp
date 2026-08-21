@@ -150,6 +150,10 @@ WHP applies the identical initial page-table policy and exposes a bounded
 four-level diagnostic walk for verification. The live Windows test checks both
 leaf translations and permission bits, guest write denial, service-only
 completion publication, and continued execution of the signed PE.
+The guest and isolated service derive their queue session and key from the
+authenticated 256-bit boot entropy with a versioned SHA3-512 domain. This makes
+the identity unique to each launch without placing a reusable symmetric key in
+the signed benchmark image; zero entropy is rejected.
 Platform cache-coherence validation, CUDA graph capture, IOMMU plumbing, the
 platform-specific physical
 device-reset callback, and end-to-end inference benchmarks remain pending.

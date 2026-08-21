@@ -30,6 +30,7 @@ pub enum GpuError {
     CommandBufferTooSmall,
     UnsupportedCommand,
     InvalidQueueKey,
+    InvalidQueueIdentity,
     AuthenticationFailed,
     WrongSession,
     Replay,
@@ -263,6 +264,45 @@ fn invalidate_dispatch(entry: &mut InFlightDispatch) {
 pub const GPU_QUEUE_MESSAGE_BYTES: usize = 80;
 pub const MAX_GPU_QUEUE_SLOTS: usize = 256;
 const GPU_QUEUE_AUTHENTICATED_BYTES: usize = 48;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuQueueIdentity {
+    session: u64,
+    key: [u8; 32],
+}
+
+impl GpuQueueIdentity {
+    /// Derives a launch-unique queue identity from authenticated boot entropy.
+    /// An all-zero entropy input is rejected at the boot boundary and again
+    /// here so this helper cannot silently create a predictable session.
+    pub fn from_boot_entropy(entropy: &[u8; 32]) -> Result<Self, GpuError> {
+        if entropy.iter().all(|byte| *byte == 0) {
+            return Err(GpuError::InvalidQueueIdentity);
+        }
+        let mut hash = Sha3_512::new();
+        hash.update(b"MRML-GPU-QUEUE-IDENTITY-v1\0");
+        hash.update(entropy);
+        let digest = hash.finalize();
+        let mut session = u64::from_le_bytes(digest[..8].try_into().unwrap());
+        if session == 0 {
+            session = 1;
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&digest[8..40]);
+        if key.iter().all(|byte| *byte == 0) {
+            return Err(GpuError::InvalidQueueIdentity);
+        }
+        Ok(Self { session, key })
+    }
+
+    pub const fn session(self) -> u64 {
+        self.session
+    }
+
+    pub const fn key(self) -> [u8; 32] {
+        self.key
+    }
+}
 
 /// Architecture-neutral physical layout for two unidirectional shared rings.
 /// Command and completion memory are deliberately disjoint so neither endpoint
@@ -4001,6 +4041,23 @@ mod tests {
             bridge.publish_completion(&mut backend, &completion),
             Err(GpuVmmQueueError::Poisoned)
         );
+    }
+
+    #[test]
+    fn queue_identity_is_launch_unique_and_rejects_absent_entropy() {
+        assert_eq!(
+            GpuQueueIdentity::from_boot_entropy(&[0; 32]),
+            Err(GpuError::InvalidQueueIdentity)
+        );
+        let first = GpuQueueIdentity::from_boot_entropy(&[0x35; 32]).unwrap();
+        let repeated = GpuQueueIdentity::from_boot_entropy(&[0x35; 32]).unwrap();
+        let second = GpuQueueIdentity::from_boot_entropy(&[0x36; 32]).unwrap();
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert_ne!(first.session(), 0);
+        assert!(first.key().iter().any(|byte| *byte != 0));
+        GpuQueueSender::new(first.session(), first.key()).unwrap();
+        GpuQueueReceiver::new(first.session(), first.key()).unwrap();
     }
 
     #[test]

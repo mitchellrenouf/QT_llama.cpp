@@ -281,6 +281,9 @@ WHP now provides the same initial queue mapping and an independently inspected
 x86-64 page walk. Its live Hyper-V test proves command writable/NX and
 completion read-only/NX translations, preserves guest write denial, and proves
 that the isolated service authority can still publish completion bytes.
+Queue authentication no longer needs a reusable benchmark secret: a
+domain-separated SHA3-512 derivation produces the session ID and 256-bit key
+from the authenticated, per-launch boot entropy, and rejects absent entropy.
 The `SubmitBatch` service path now joins sealed-control revalidation, canonical
 decode, current buffer-generation checks, transactional watchdog admission,
 signed schema validation, execution, and completion publication in one API.
