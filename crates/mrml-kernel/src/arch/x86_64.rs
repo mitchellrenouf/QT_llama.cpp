@@ -1,8 +1,10 @@
 use crate::{PAGE_SIZE, PhysAddr};
 
 mod address_space;
+mod page_table;
 mod pe_mapping;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
+pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
 
 const MAX_PHYSICAL_ADDRESS: u64 = (1u64 << 52) - PAGE_SIZE;
@@ -30,6 +32,15 @@ impl VirtAddr {
 
     pub const fn pml4_index(self) -> usize {
         ((self.0 >> 39) & 0x1ff) as usize
+    }
+    pub const fn pdpt_index(self) -> usize {
+        ((self.0 >> 30) & 0x1ff) as usize
+    }
+    pub const fn directory_index(self) -> usize {
+        ((self.0 >> 21) & 0x1ff) as usize
+    }
+    pub const fn table_index(self) -> usize {
+        ((self.0 >> 12) & 0x1ff) as usize
     }
 }
 

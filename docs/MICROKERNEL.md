@@ -185,8 +185,8 @@ without crossing normalized firmware regions. PE admission can consume that
 allocator to produce a fixed-capacity physical load plan containing one run for
 the read-only NX headers and one run per section. Alignment padding and partial
 allocations are never recycled during boot, preventing stale-frame aliasing;
-failure is therefore fatal rather than rolled back. Actual architecture page-
-table installation and the final control transfer remain pending.
+failure is therefore fatal rather than rolled back. Physical table storage,
+installation, and the final control transfer remain pending.
 
 The x86-64 address-space layer now converts that physical plan into final user
 or kernel mappings with permissions derived from the validated PE sections.
@@ -195,7 +195,17 @@ and physical alias checks are repeated, and all mapping identifiers are
 generation-tagged. Installation is transactional: a conflict in any later
 section removes every mapping installed earlier in the same attempt, leaving
 no half-mapped executable. Hardware page-table construction and CR3 transfer
-remain pending behind this policy layer.
+are separated behind this policy layer.
+
+An original four-level x86-64 page-table builder now converts approved
+mappings into hardware-format 4 KiB leaves through a minimal physical-table
+storage trait. It allocates only zeroed table frames, validates every existing
+intermediate entry, propagates user accessibility through all parent levels,
+rejects huge-page collisions and duplicate leaves, and reuses the same NX/W^X
+leaf constructor tested by the address-space policy. The builder returns its
+root physical frame but does not write CR3 itself. A real UEFI physical-memory
+backend, boot-time table population from the complete PE plan, TLB transition,
+and final control transfer remain pending.
 
 Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
 dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.
