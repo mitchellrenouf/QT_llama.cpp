@@ -147,8 +147,12 @@ Kernel ID 0 (`gemm_q4_0_f32`) is also typed: positive signed rows, columns, and
 batch dimensions must produce the exact Q4_0 weight length (18 bytes per 32
 values), f32 input/output lengths, required alignments, access modes, and tiled
 grid. Checked multiplication rejects dimension overflow before handoff.
+Kernel IDs 3 and 4 reuse one checked GEMV policy while retaining distinct Q4_0
+and Q8_0 storage sizes, block widths, and grid tiling. Substituting Q4 storage
+for a Q8 dispatch or changing rows, columns, permissions, or output length is
+rejected before the executor sees it.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 26 schemas and the
+registry alone cannot make it executable. The remaining 24 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot

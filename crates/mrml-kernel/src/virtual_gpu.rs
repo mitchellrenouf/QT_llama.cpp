@@ -1638,9 +1638,62 @@ impl Dispatch {
     pub fn validate_executor_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
         match self.kernel.get() {
             0 => self.validate_gemm_q4_0_f32_schema(),
+            3 => self.validate_quantized_gemv_schema(18, 16, 256),
+            4 => self.validate_quantized_gemv_schema(34, 8, 128),
             7 => self.validate_add_f32_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
+    }
+
+    fn validate_quantized_gemv_schema(
+        &self,
+        quantized_block_bytes: u64,
+        rows_per_grid_block: u32,
+        threads_per_block: u32,
+    ) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 3
+            || self.scalar_count != 2
+            || self.shared_memory != 0
+            || self.block != [threads_per_block, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let weights = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let input = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let output = self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?;
+        let rows = self.positive_i32_scalar(0)?;
+        let columns = self.positive_i32_scalar(1)?;
+        if columns % 32 != 0
+            || weights.mode != BufferMode::Read
+            || input.mode != BufferMode::Read
+            || output.mode != BufferMode::Write
+            || weights.offset % 2 != 0
+            || input.offset % 4 != 0
+            || output.offset % 4 != 0
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let weight_bytes = u64::from(rows)
+            .checked_mul(u64::from(columns / 32))
+            .and_then(|value| value.checked_mul(quantized_block_bytes))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let input_bytes = u64::from(columns)
+            .checked_mul(4)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let output_bytes = u64::from(rows)
+            .checked_mul(4)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        if weights.length != weight_bytes
+            || input.length != input_bytes
+            || output.length != output_bytes
+            || self.grid != [rows.div_ceil(rows_per_grid_block), 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: rows,
+        })
     }
 
     fn validate_gemm_q4_0_f32_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
@@ -2101,6 +2154,60 @@ mod tests {
         .unwrap();
         assert_eq!(
             wrong_type.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn executor_distinguishes_q4_and_q8_gemv_storage_and_tiling() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let scalars = [ScalarArg::i32(32), ScalarArg::i32(64)];
+        let q4_accesses = [
+            BufferAccess::new(id(0), 0, 1152, BufferMode::Read),
+            BufferAccess::new(id(1), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 128, BufferMode::Write),
+        ];
+        let q4 = Dispatch::new_with_scalars(
+            KernelId::new(3).unwrap(),
+            [2, 1, 1],
+            [256, 1, 1],
+            0,
+            &q4_accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(q4.validate_executor_schema().unwrap().element_count(), 32);
+
+        let q8_accesses = [
+            BufferAccess::new(id(0), 0, 2176, BufferMode::Read),
+            q4_accesses[1],
+            q4_accesses[2],
+        ];
+        let q8 = Dispatch::new_with_scalars(
+            KernelId::new(4).unwrap(),
+            [4, 1, 1],
+            [128, 1, 1],
+            0,
+            &q8_accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(q8.validate_executor_schema().unwrap().element_count(), 32);
+
+        let q8_with_q4_storage = Dispatch::new_with_scalars(
+            KernelId::new(4).unwrap(),
+            [4, 1, 1],
+            [128, 1, 1],
+            0,
+            &q4_accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            q8_with_q4_storage.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
     }
