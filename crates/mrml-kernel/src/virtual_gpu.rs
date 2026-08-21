@@ -1484,6 +1484,13 @@ pub enum GpuSubmitError<E> {
     Uncertain(E),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuLifecycleError<E> {
+    InvalidState(GpuError),
+    Rejected,
+    Uncertain(E),
+}
+
 /// Narrow service boundary for lowering one already validated batch. `false`
 /// means the service definitely rejected it before any GPU-visible action;
 /// `Err` means acceptance is uncertain and requires watchdog/reset recovery.
@@ -1889,6 +1896,52 @@ where
         }
         Err(error) => Err(GpuSubmitError::Uncertain(error)),
     }
+}
+
+/// Executes one validated batch, then retires every watchdog identity and
+/// emits its authenticated success completion. All fallible completion state
+/// is preflighted before the executor can produce GPU-visible effects.
+pub fn submit_gpu_batch_with_completions<E, const WATCHDOG: usize, const BATCH: usize>(
+    executor: &mut E,
+    watchdog: &mut DispatchTable<WATCHDOG>,
+    sender: &mut GpuCompletionSender,
+    batch: &ValidatedGpuBatch<BATCH>,
+    outputs: &mut [[u8; GPU_QUEUE_MESSAGE_BYTES]; BATCH],
+) -> Result<(), GpuLifecycleError<E::Error>>
+where
+    E: GpuBatchExecutor<BATCH>,
+{
+    for entry in batch.prepared().entries() {
+        if !watchdog.contains(entry.dispatch_id) {
+            return Err(GpuLifecycleError::InvalidState(GpuError::InvalidDispatch));
+        }
+    }
+    sender
+        .next_sequence
+        .checked_add(batch.len() as u64)
+        .ok_or(GpuLifecycleError::InvalidState(GpuError::SequenceExhausted))?;
+
+    match executor.submit(batch) {
+        Ok(false) => {
+            watchdog.cancel_batch(batch.prepared());
+            return Err(GpuLifecycleError::Rejected);
+        }
+        Err(error) => return Err(GpuLifecycleError::Uncertain(error)),
+        Ok(true) => {}
+    }
+
+    for (entry, output) in batch.prepared().entries().zip(outputs.iter_mut()) {
+        let request_id = watchdog
+            .complete(entry.dispatch_id)
+            .map_err(GpuLifecycleError::InvalidState)?;
+        let completion =
+            GpuCompletion::new(request_id, entry.dispatch_id, GpuCompletionStatus::Success)
+                .map_err(GpuLifecycleError::InvalidState)?;
+        sender
+            .encode(completion, output)
+            .map_err(GpuLifecycleError::InvalidState)?;
+    }
+    Ok(())
 }
 
 impl Dispatch {
@@ -5094,16 +5147,31 @@ mod tests {
         let mut accepted_watchdog = DispatchTable::<2>::new();
         let accepted_batch = accepted_watchdog.begin_batch(&batch, 100, 200).unwrap();
         let validated_accepted = bundle.validate_batch(&accepted_batch).unwrap();
+        let completion_key = [0x5a; 32];
+        let mut completion_sender = GpuCompletionSender::new(71, completion_key).unwrap();
+        let mut completion_receiver = GpuCompletionReceiver::new(71, completion_key).unwrap();
+        let mut completion_frames = [[0; GPU_QUEUE_MESSAGE_BYTES]; 2];
         assert!(
-            submit_gpu_batch(
+            submit_gpu_batch_with_completions(
                 &mut MockExecutor(Ok(true)),
                 &mut accepted_watchdog,
-                &validated_accepted
+                &mut completion_sender,
+                &validated_accepted,
+                &mut completion_frames,
             )
             .is_ok()
         );
-        for entry in accepted_batch.entries() {
-            assert!(accepted_watchdog.contains(entry.dispatch_id()));
+        for (entry, frame) in accepted_batch.entries().zip(completion_frames.iter()) {
+            assert!(!accepted_watchdog.contains(entry.dispatch_id()));
+            assert_eq!(
+                completion_receiver.decode(frame).unwrap(),
+                GpuCompletion::new(
+                    entry.request_id(),
+                    entry.dispatch_id(),
+                    GpuCompletionStatus::Success,
+                )
+                .unwrap()
+            );
         }
 
         session.free(buffer).unwrap();

@@ -228,6 +228,11 @@ Mediated submission now synchronizes the CUDA stream after the ordered launch
 pass and reports acceptance only after that barrier succeeds. A synchronization
 error is not treated as rejection: watchdog identities remain live because GPU
 effects may have occurred and reset recovery is required.
+The complete submission path preflights watchdog identities and authenticated
+completion-sequence capacity before execution. After the barrier succeeds it
+retires each generational identity and emits one ordered, session-bound success
+frame; rejection cancels the batch, while uncertain execution retains it for
+timeout or reset recovery.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject

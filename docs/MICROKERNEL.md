@@ -259,6 +259,11 @@ After lowering the ordered batch, the backend synchronizes its CUDA stream
 before the executor reports acceptance. Barrier failure is an uncertain result,
 not a clean rejection, so the watchdog retains every in-flight identity until
 completion or reset recovery resolves device state.
+The lifecycle submitter validates every watchdog identity and reserves enough
+completion sequence space before calling the backend. Once synchronization
+succeeds, it retires the identities and produces ordered authenticated success
+frames. Clean rejection cancels all identities; uncertain errors leave all
+identities live for deadline or reset handling.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
 registry alone cannot make it executable. All embedded kernel schemas,
 including the proof-bearing MoE variants, are integrated with the concrete CUDA
