@@ -1,6 +1,7 @@
 use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, VirtAddr};
 use mrml_kernel::{
-    BootHandoff, GpuSharedQueueLayout, PAGE_SIZE, PhysAddr, VerifiedExecutable, VmBackend, VmExit,
+    BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, PAGE_SIZE, PhysAddr, VerifiedExecutable,
+    VmBackend, VmExit,
 };
 
 use super::{KvmBackend, KvmError, KvmSystem, KvmVcpuSnapshot, map_loaded_handoff, map_loaded_pe};
@@ -169,6 +170,12 @@ impl<const N: usize> VmBackend for PreparedKvmGuest<N> {
     }
 }
 
+impl<const N: usize> GpuVmmMemory for PreparedKvmGuest<N> {
+    fn write_gpu_service(&mut self, address: u64, input: &[u8]) -> Result<(), Self::Error> {
+        self.backend.memory.write_service(address, input)
+    }
+}
+
 impl KvmSystem {
     pub fn prepare_guest<const N: usize>(
         &self,
@@ -177,7 +184,7 @@ impl KvmSystem {
         handoff: &[u8],
         layout: KvmLaunchLayout,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
-        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, false)
+        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, false, None)
     }
 
     /// Prepares a kernel guest and maps the authenticated handoff framebuffer
@@ -189,7 +196,21 @@ impl KvmSystem {
         handoff: &[u8],
         layout: KvmLaunchLayout,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
-        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, true)
+        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, true, None)
+    }
+
+    /// Prepares a kernel guest with its authenticated framebuffer and mediated
+    /// GPU rings present in the initial address space. Both rings are identity
+    /// mapped NX; only the command ring is guest-writable.
+    pub fn prepare_kernel_gpu_guest<const N: usize>(
+        &self,
+        vcpu_id: u32,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: KvmLaunchLayout,
+        queue: GpuSharedQueueLayout,
+    ) -> Result<PreparedKvmGuest<N>, KvmError> {
+        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, true, Some(queue))
     }
 
     fn prepare_guest_inner<const N: usize>(
@@ -199,8 +220,9 @@ impl KvmSystem {
         handoff: &[u8],
         layout: KvmLaunchLayout,
         map_framebuffer: bool,
+        queue: Option<GpuSharedQueueLayout>,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
-        if N < 4 + usize::from(map_framebuffer) {
+        if N < 4 + usize::from(map_framebuffer) + usize::from(queue.is_some()) * 2 {
             return Err(KvmError::MemoryTableFull);
         }
         let decoded = BootHandoff::decode(handoff, |_| {}).map_err(KvmError::Handoff)?;
@@ -216,23 +238,35 @@ impl KvmSystem {
             .ok_or(KvmError::MemoryOverflow)?;
         let framebuffer = decoded.framebuffer();
         let framebuffer_bytes = page_bytes(framebuffer.byte_length())?;
+        let queue_bytes = match queue {
+            Some(value) => value
+                .pages_per_ring()
+                .checked_mul(PAGE_SIZE)
+                .ok_or(KvmError::MemoryOverflow)?,
+            None => PAGE_SIZE,
+        };
+        let (command_base, completion_base) = queue
+            .map(|value| (value.command_base(), value.completion_base()))
+            .unwrap_or((0, 0));
         let physical_ranges = [
             (layout.table_physical, table_bytes),
             (layout.image_physical, image_bytes),
             (layout.handoff_physical, handoff_bytes),
             (layout.stack_physical, stack_bytes),
             (framebuffer.base().get(), framebuffer_bytes),
+            (command_base, queue_bytes),
+            (completion_base, queue_bytes),
         ];
-        validate_ranges(if map_framebuffer {
-            &physical_ranges
-        } else {
-            &physical_ranges[..4]
-        })?;
-        validate_ranges(&[
+        let physical_count = 4 + usize::from(map_framebuffer) + usize::from(queue.is_some()) * 2;
+        validate_ranges(&physical_ranges[..physical_count])?;
+        let virtual_ranges = [
             (layout.image_virtual, image_bytes),
             (layout.handoff_virtual, handoff_bytes),
             (layout.stack_virtual, stack_bytes),
-        ])?;
+            (command_base, queue_bytes),
+            (completion_base, queue_bytes),
+        ];
+        validate_ranges(&virtual_ranges[..3 + usize::from(queue.is_some()) * 2])?;
 
         let mut backend = self.create_backend::<N>(vcpu_id)?;
         backend.map_memory(layout.table_physical, table_bytes as usize, false)?;
@@ -241,6 +275,11 @@ impl KvmSystem {
         backend.map_memory(layout.stack_physical, stack_bytes as usize, false)?;
         if map_framebuffer {
             backend.map_memory(framebuffer.base().get(), framebuffer_bytes as usize, false)?;
+        }
+        if let Some(queue) = queue {
+            let bytes = usize::try_from(queue_bytes).map_err(|_| KvmError::MemoryOverflow)?;
+            backend.map_memory(queue.command_base(), bytes, false)?;
+            backend.map_memory(queue.completion_base(), bytes, true)?;
         }
         let loaded_image = backend.memory.load_verified_executable(
             executable,
@@ -296,6 +335,34 @@ impl KvmSystem {
                             .map_err(|_| KvmError::InvalidMapping)?,
                         framebuffer_bytes / PAGE_SIZE,
                         PagePermissions::KERNEL_MMIO_READ_WRITE,
+                    )
+                    .map_err(|_| KvmError::InvalidMapping)?,
+                )
+                .map_err(|_| KvmError::PageTable)?;
+        }
+        if let Some(queue) = queue {
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(queue.command_base())
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        PhysAddr::new(queue.command_base())
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        queue.pages_per_ring(),
+                        PagePermissions::KERNEL_SHARED_READ_WRITE,
+                    )
+                    .map_err(|_| KvmError::InvalidMapping)?,
+                )
+                .map_err(|_| KvmError::PageTable)?;
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(queue.completion_base())
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        PhysAddr::new(queue.completion_base())
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        queue.pages_per_ring(),
+                        PagePermissions::KERNEL_SHARED_READ,
                     )
                     .map_err(|_| KvmError::InvalidMapping)?,
                 )
@@ -513,9 +580,7 @@ mod tests {
         .unwrap();
         let queue_layout = GpuSharedQueueLayout::new(0x50_0000, 0x50_2000, 64).unwrap();
         let mut guest = system
-            .prepare_kernel_guest::<7>(0, &executable, &valid_handoff(), layout)
-            .unwrap()
-            .attach_gpu_queue_memory(queue_layout)
+            .prepare_kernel_gpu_guest::<7>(0, &executable, &valid_handoff(), layout, queue_layout)
             .unwrap();
         assert_eq!(guest.entry(), 0xffff_8001_4000_1000);
         let walk = guest.page_walk(guest.entry()).unwrap();
@@ -529,6 +594,20 @@ mod tests {
         let mut opcode = [0u8; 1];
         VmBackend::read_guest(&guest, 0x20_1000, &mut opcode).unwrap();
         assert_eq!(opcode, [0x48]);
+        let command_walk = guest.page_walk(queue_layout.command_base()).unwrap();
+        assert_eq!(
+            command_walk.physical_address(queue_layout.command_base()),
+            Some(queue_layout.command_base())
+        );
+        assert_ne!(command_walk.entries()[3] & (1 << 1), 0);
+        assert_ne!(command_walk.entries()[3] & (1 << 63), 0);
+        let completion_walk = guest.page_walk(queue_layout.completion_base()).unwrap();
+        assert_eq!(
+            completion_walk.physical_address(queue_layout.completion_base()),
+            Some(queue_layout.completion_base())
+        );
+        assert_eq!(completion_walk.entries()[3] & (1 << 1), 0);
+        assert_ne!(completion_walk.entries()[3] & (1 << 63), 0);
         VmBackend::write_guest(&mut guest, queue_layout.command_base(), &[1]).unwrap();
         assert_eq!(
             VmBackend::write_guest(&mut guest, queue_layout.completion_base(), &[1]),

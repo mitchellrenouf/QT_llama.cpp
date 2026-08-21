@@ -614,6 +614,25 @@ impl<const N: usize> KvmGuestMemory<N> {
         Ok(())
     }
 
+    /// Writes through the host-owned backing even when KVM denies guest writes
+    /// to the slot. Callers must hold the isolated service authority for the
+    /// target shared-memory protocol.
+    pub(crate) fn write_service(
+        &mut self,
+        guest_address: u64,
+        input: &[u8],
+    ) -> Result<(), KvmError> {
+        let (region, offset) = self.locate(guest_address, input.len())?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                input.as_ptr(),
+                region.host.as_ptr().add(offset),
+                input.len(),
+            )
+        };
+        Ok(())
+    }
+
     pub fn load_verified_executable(
         &mut self,
         executable: &VerifiedExecutable<'_>,

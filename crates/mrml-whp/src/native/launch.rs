@@ -3,7 +3,7 @@ use mrml_kernel::arch::x86_64::{
     VirtAddr,
 };
 use mrml_kernel::{
-    BootHandoff, GpuSharedQueueLayout, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr,
+    BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, MAX_PE_SECTIONS, PAGE_SIZE, PeImage, PhysAddr,
     VerifiedExecutable, VmBackend, VmExit,
 };
 
@@ -142,6 +142,12 @@ impl VmBackend for PreparedWhpGuest<'_> {
             return Err(WhpError::InvalidVcpu);
         }
         self.partition.inject_interrupt(vector)
+    }
+}
+
+impl GpuVmmMemory for PreparedWhpGuest<'_> {
+    fn write_gpu_service(&mut self, address: u64, input: &[u8]) -> Result<(), Self::Error> {
+        self.partition.write_service(address, input)
     }
 }
 

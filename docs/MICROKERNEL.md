@@ -141,6 +141,11 @@ those mapped slots and the kernel-owned command/completion queues through the
 common `VmBackend` interface. Monotonic tickets prevent reuse before
 consumption, and any uncertain backend read or write permanently poisons the
 bridge until VM teardown.
+KVM can now create these mappings as part of the initial signed-kernel address
+space rather than attaching unreachable GPAs after CR3 setup. Command pages are
+writable/NX, completion pages are read-only/NX, and both resolve to their
+dedicated identity GPAs. Host completion publication uses a separate
+service-memory capability that does not weaken the guest-facing write check.
 Platform cache-coherence validation, CUDA graph capture, IOMMU plumbing, the
 platform-specific physical
 device-reset callback, and end-to-end inference benchmarks remain pending.

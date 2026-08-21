@@ -272,6 +272,11 @@ kernel-owned storage and publishes service completions through the protected
 ring using the `VmBackend` contract shared by KVM and WHP. It enforces monotonic
 slot ownership and permanently poisons itself after uncertain backend I/O, so a
 VM reset is required instead of risking duplicate GPU work.
+The KVM GPU-guest constructor now installs both rings in the initial kernel
+page tables as identity-mapped NX memory: commands are writable and
+completions are read-only. A separate `GpuVmmMemory` authority lets only the
+isolated host service update read-only completion backing; ordinary guest-write
+APIs continue to reject that operation.
 The `SubmitBatch` service path now joins sealed-control revalidation, canonical
 decode, current buffer-generation checks, transactional watchdog admission,
 signed schema validation, execution, and completion publication in one API.

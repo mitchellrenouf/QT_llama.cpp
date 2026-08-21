@@ -525,6 +525,13 @@ pub enum GpuVmmQueueError<E> {
     Poisoned,
 }
 
+/// VMM memory authority held only by the isolated GPU service. Unlike
+/// `VmBackend::write_guest`, this may update a GPA intentionally mapped
+/// read-only to the guest, such as the completion ring.
+pub trait GpuVmmMemory: crate::VmBackend {
+    fn write_gpu_service(&mut self, guest_address: u64, input: &[u8]) -> Result<(), Self::Error>;
+}
+
 /// Copy boundary between a platform VMM mapping and kernel-owned GPU queues.
 /// Backend I/O failure is uncertain, so the bridge poisons itself and requires
 /// VM teardown instead of risking duplicate consumption or publication.
@@ -552,7 +559,7 @@ impl<const N: usize> GpuVmmQueueBridge<N> {
         self.poisoned
     }
 
-    pub fn consume_command<B: crate::VmBackend>(
+    pub fn consume_command<B: GpuVmmMemory>(
         &mut self,
         backend: &mut B,
         owned: &mut GpuCommandRing<N>,
@@ -580,7 +587,7 @@ impl<const N: usize> GpuVmmQueueBridge<N> {
         self.write_counter(backend, self.layout.command_base() + 64, consumed)
     }
 
-    pub fn publish_completion<B: crate::VmBackend>(
+    pub fn publish_completion<B: GpuVmmMemory>(
         &mut self,
         backend: &mut B,
         message: &[u8; GPU_QUEUE_MESSAGE_BYTES],
@@ -621,7 +628,7 @@ impl<const N: usize> GpuVmmQueueBridge<N> {
         Ok(u64::from_le_bytes(encoded))
     }
 
-    fn write_counter<B: crate::VmBackend>(
+    fn write_counter<B: GpuVmmMemory>(
         &mut self,
         backend: &mut B,
         address: u64,
@@ -642,13 +649,13 @@ impl<const N: usize> GpuVmmQueueBridge<N> {
         })
     }
 
-    fn write<B: crate::VmBackend>(
+    fn write<B: GpuVmmMemory>(
         &mut self,
         backend: &mut B,
         address: u64,
         input: &[u8],
     ) -> Result<(), GpuVmmQueueError<B::Error>> {
-        backend.write_guest(address, input).map_err(|error| {
+        backend.write_gpu_service(address, input).map_err(|error| {
             self.poisoned = true;
             GpuVmmQueueError::Backend(error)
         })
@@ -3940,6 +3947,12 @@ mod tests {
 
         fn inject_interrupt(&mut self, _: u32, _: u8) -> Result<(), Self::Error> {
             Ok(())
+        }
+    }
+
+    impl GpuVmmMemory for MockVmm {
+        fn write_gpu_service(&mut self, address: u64, input: &[u8]) -> Result<(), Self::Error> {
+            self.write_guest(address, input)
         }
     }
 

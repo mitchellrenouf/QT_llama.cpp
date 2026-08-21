@@ -435,6 +435,20 @@ impl PreparedWhpPartition<'_> {
         Ok(())
     }
 
+    /// Writes host-owned backing memory without granting the guest write
+    /// permission. This is reserved for isolated service-owned shared pages.
+    pub(crate) fn write_service(&mut self, address: u64, input: &[u8]) -> Result<(), WhpError> {
+        let (mapping, offset) = self.locate(address, input.len())?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                input.as_ptr(),
+                mapping.address.as_ptr().cast::<u8>().add(offset),
+                input.len(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn mutable_guest(
         &mut self,
         address: u64,
