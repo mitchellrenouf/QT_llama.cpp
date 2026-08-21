@@ -195,9 +195,10 @@ syscall-visible message delivery.
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented. A signed nested-KVM probe now proves external vector 32 enters the
 booted kernel and advances that scheduler by exactly one tick. This currently
-uses capability-controlled VMM interrupt injection; local APIC timer setup,
-interrupt acknowledgement, and context restoration in the standalone image
-remain unfinished. Validated generational ring-three context
+uses capability-controlled VMM interrupt injection. A bounded architecture
+layer now validates periodic timer vectors, counts, and divisors and implements
+ordered x2APIC or xAPIC programming plus EOI, but platform controller/mapping
+setup and live standalone hookup remain unfinished. Validated generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A

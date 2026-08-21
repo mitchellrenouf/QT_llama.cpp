@@ -1,0 +1,196 @@
+use core::arch::{asm, x86_64::__cpuid};
+
+const IA32_APIC_BASE: u32 = 0x1b;
+const X2APIC_EOI: u32 = 0x80b;
+const X2APIC_LVT_TIMER: u32 = 0x832;
+const X2APIC_INITIAL_COUNT: u32 = 0x838;
+const X2APIC_DIVIDE_CONFIGURATION: u32 = 0x83e;
+const XAPIC_BASE: usize = 0xfee0_0000;
+const XAPIC_EOI: usize = 0x0b0;
+const XAPIC_LVT_TIMER: usize = 0x320;
+const XAPIC_INITIAL_COUNT: usize = 0x380;
+const XAPIC_DIVIDE_CONFIGURATION: usize = 0x3e0;
+const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
+const X2APIC_ENABLE: u64 = 1 << 10;
+const APIC_BASE_MASK: u64 = 0xffff_f000;
+const LVT_MASKED: u64 = 1 << 16;
+const LVT_PERIODIC: u64 = 1 << 17;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalApicError {
+    Unsupported,
+    InvalidVector,
+    InvalidInitialCount,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimerDivide {
+    By1,
+    By2,
+    By4,
+    By8,
+    By16,
+    By32,
+    By64,
+    By128,
+}
+
+impl TimerDivide {
+    const fn register(self) -> u64 {
+        match self {
+            Self::By1 => 0b1011,
+            Self::By2 => 0b0000,
+            Self::By4 => 0b0001,
+            Self::By8 => 0b0010,
+            Self::By16 => 0b0011,
+            Self::By32 => 0b1000,
+            Self::By64 => 0b1001,
+            Self::By128 => 0b1010,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalApicTimer {
+    vector: u8,
+    initial_count: u32,
+    divide: TimerDivide,
+}
+
+impl LocalApicTimer {
+    pub const fn periodic(
+        vector: u8,
+        initial_count: u32,
+        divide: TimerDivide,
+    ) -> Result<Self, LocalApicError> {
+        if vector < 32 || vector == 0xff {
+            return Err(LocalApicError::InvalidVector);
+        }
+        if initial_count == 0 {
+            return Err(LocalApicError::InvalidInitialCount);
+        }
+        Ok(Self {
+            vector,
+            initial_count,
+            divide,
+        })
+    }
+
+    pub const fn vector(self) -> u8 {
+        self.vector
+    }
+
+    /// Enables x2APIC and arms this periodic timer. The LVT remains masked
+    /// until its divisor and initial count have both been installed.
+    ///
+    /// # Safety
+    ///
+    /// The caller must execute at CPL0 after installing a present interrupt
+    /// gate for `self.vector`, with a valid privilege stack and interrupts
+    /// disabled. No other CPU may concurrently program this local APIC. If
+    /// x2APIC is unavailable, physical `0xfee00000` must be mapped supervisor
+    /// writable, uncached, and NX at the identical virtual address.
+    pub unsafe fn enable(self) -> Result<(), LocalApicError> {
+        let features = __cpuid(1);
+        if features.edx & (1 << 9) == 0 {
+            return Err(LocalApicError::Unsupported);
+        }
+        let base = unsafe { read_msr(IA32_APIC_BASE) };
+        if features.ecx & (1 << 21) != 0 {
+            unsafe { write_msr(IA32_APIC_BASE, base | APIC_GLOBAL_ENABLE | X2APIC_ENABLE) };
+            unsafe { write_msr(X2APIC_LVT_TIMER, LVT_MASKED | u64::from(self.vector)) };
+            unsafe { write_msr(X2APIC_DIVIDE_CONFIGURATION, self.divide.register()) };
+            unsafe { write_msr(X2APIC_INITIAL_COUNT, u64::from(self.initial_count)) };
+            unsafe { write_msr(X2APIC_LVT_TIMER, LVT_PERIODIC | u64::from(self.vector)) };
+        } else {
+            if base & APIC_BASE_MASK != XAPIC_BASE as u64 {
+                return Err(LocalApicError::Unsupported);
+            }
+            unsafe { write_msr(IA32_APIC_BASE, (base | APIC_GLOBAL_ENABLE) & !X2APIC_ENABLE) };
+            unsafe { write_xapic(XAPIC_LVT_TIMER, LVT_MASKED | u64::from(self.vector)) };
+            unsafe { write_xapic(XAPIC_DIVIDE_CONFIGURATION, self.divide.register()) };
+            unsafe { write_xapic(XAPIC_INITIAL_COUNT, u64::from(self.initial_count)) };
+            unsafe { write_xapic(XAPIC_LVT_TIMER, LVT_PERIODIC | u64::from(self.vector)) };
+        }
+        Ok(())
+    }
+
+    /// Acknowledges the current local-APIC interrupt.
+    ///
+    /// # Safety
+    ///
+    /// The local APIC must be enabled on this CPU and this must be called
+    /// exactly once for an accepted interrupt before permitting another one.
+    /// The xAPIC mapping requirement from [`Self::enable`] also applies.
+    pub unsafe fn acknowledge() {
+        if unsafe { read_msr(IA32_APIC_BASE) } & X2APIC_ENABLE != 0 {
+            unsafe { write_msr(X2APIC_EOI, 0) }
+        } else {
+            unsafe { write_xapic(XAPIC_EOI, 0) }
+        }
+    }
+}
+
+unsafe fn read_msr(register: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe {
+        asm!("rdmsr", in("ecx") register, out("eax") low, out("edx") high, options(nomem, nostack))
+    };
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+unsafe fn write_msr(register: u32, value: u64) {
+    unsafe {
+        asm!(
+            "wrmsr",
+            in("ecx") register,
+            in("eax") value as u32,
+            in("edx") (value >> 32) as u32,
+            options(nomem, nostack)
+        )
+    }
+}
+
+unsafe fn write_xapic(offset: usize, value: u64) {
+    unsafe { ((XAPIC_BASE + offset) as *mut u32).write_volatile(value as u32) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timer_policy_rejects_architectural_and_spurious_vectors() {
+        assert_eq!(
+            LocalApicTimer::periodic(31, 1, TimerDivide::By16),
+            Err(LocalApicError::InvalidVector)
+        );
+        assert_eq!(
+            LocalApicTimer::periodic(0xff, 1, TimerDivide::By16),
+            Err(LocalApicError::InvalidVector)
+        );
+        assert_eq!(
+            LocalApicTimer::periodic(32, 0, TimerDivide::By16),
+            Err(LocalApicError::InvalidInitialCount)
+        );
+        assert_eq!(
+            LocalApicTimer::periodic(32, 100_000, TimerDivide::By16)
+                .unwrap()
+                .vector(),
+            32
+        );
+    }
+
+    #[test]
+    fn divisor_encoding_matches_the_xapic_architecture() {
+        assert_eq!(TimerDivide::By1.register(), 0b1011);
+        assert_eq!(TimerDivide::By2.register(), 0);
+        assert_eq!(TimerDivide::By4.register(), 1);
+        assert_eq!(TimerDivide::By8.register(), 2);
+        assert_eq!(TimerDivide::By16.register(), 3);
+        assert_eq!(TimerDivide::By32.register(), 8);
+        assert_eq!(TimerDivide::By64.register(), 9);
+        assert_eq!(TimerDivide::By128.register(), 10);
+    }
+}

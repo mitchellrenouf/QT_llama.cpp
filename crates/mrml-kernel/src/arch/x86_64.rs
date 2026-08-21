@@ -3,6 +3,7 @@ use crate::{PAGE_SIZE, PhysAddr};
 mod address_space;
 mod context;
 mod descriptors;
+mod local_apic;
 mod page_table;
 mod pe_mapping;
 mod service_space;
@@ -17,6 +18,7 @@ pub use descriptors::{
     install_external_interrupt_gate, install_fail_stop_tables, install_user_call_gate,
     load_task_register, task_state_descriptor, write_task_state_descriptor,
 };
+pub use local_apic::{LocalApicError, LocalApicTimer, TimerDivide};
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
 pub use service_space::{ServiceAddressSpace, ServiceSpaceError};

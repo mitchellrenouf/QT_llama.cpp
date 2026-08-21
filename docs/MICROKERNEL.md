@@ -570,8 +570,11 @@ tick, emits a distinct proof, and fails closed. A freshly signed nested-KVM run
 completed this path in 145 microseconds (`verify=724us`, `prepare=1030us`,
 `total=4621us`). KVM exit errors now retain the exact numeric reason; this
 exposed and prevented an invalid early injection while IF was clear. This is a
-live external-interrupt/scheduler proof, not yet a local-APIC timer, end-of-
-interrupt acknowledgement, or resumable context switch.
+live external-interrupt/scheduler proof. A bounded architecture layer now
+validates periodic vectors, nonzero counts, and every architectural divisor;
+it masks the LVT while programming x2APIC or xAPIC state and exposes an exact
+EOI operation. Controller/mapping setup and a live resumable timer switch are
+not yet complete.
 
 The `user-probe` diagnostic now gives the context and TSS work a live privilege-
 transition proof. Its signed PE is relocated into a bounded lower-half layout;
@@ -596,7 +599,7 @@ registers, and executes `IRETQ`. Compile-time Rust layout plus unit tests bind
 every assembly offset to the context representation. Its safety contract
 requires the new root to retain the transition page until the CR3 write, map
 the target RIP user-executable and RSP user-writable, and retain a kernel-only
-TSS `RSP0`. Windows and Linux now pass 127 kernel tests. A fresh signed KVM
+TSS `RSP0`. Windows and Linux now pass 129 kernel tests. A fresh signed KVM
 probe exercised this reusable CR3/register path and the checked return path in
 210 microseconds (`verify=729us`, `prepare=1231us`, `total=5403us`). The probe
 used the same root before and after CR3 as an earlier transition proof; the
@@ -719,7 +722,7 @@ or marks only the empty receiver blocked and selects a replacement.
 capability derivation; after transactional `send_ipc` succeeds it publishes at
 the tail and wakes the receiver. FIFO head/tail/count invariants make overwrite
 impossible, and a full inbox returns without consuming endpoint sequence or
-creating receiver capabilities. Windows and Linux pass 127 kernel tests,
+creating receiver capabilities. Windows and Linux pass 129 kernel tests,
 including block, wake, FIFO, overflow behavior, syscall continuation capture,
 and voluntary switching. The two-root signed probe exercises live delivery,
 wakeup, and syscall-visible receive results on WHP and KVM.
@@ -1288,9 +1291,10 @@ termination clear the current identity before selecting a replacement; removal
 advances its generation so a faulted task can never be woken or resumed through
 a stale handle. Windows and Linux tests cover preemption, idle wakeup, task
 termination, stale identities, and invalid timer policies. A separate release
-microbenchmark now measures tick accounting. Hardware timer programming,
-interrupt acknowledgement, saved-context installation, and `iretq` remain the
-next integration gate.
+microbenchmark now measures tick accounting. Validated x2APIC/xAPIC timer
+programming and acknowledgement primitives now exist; platform controller and
+mapping setup, saved-context installation, and live `iretq` remain the next
+integration gate.
 
 The x86_64 architecture layer now defines a fixed user-context record and a
 generational task-to-context table. New contexts require a nonzero page-aligned
