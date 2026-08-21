@@ -151,6 +151,12 @@ self-routing, requires the sender's exact endpoint capability, attenuates every
 transferred right, and transactionally revokes all receiver capabilities if
 endpoint authorization fails. This path is covered on Windows and Linux but is
 not yet invoked by a live user syscall.
+The x86 syscall boundary now reserves only DPL3 interrupt vector `0x80` and
+defines a pointer-free register ABI. Yield requires every reserved register to
+be zero; inline send carries generational endpoint/task tokens and at most 24
+payload bytes by value in registers. Unknown operations, malformed tokens, and
+oversized payloads fail before any user address can be dereferenced. The call
+gate and decoder are tested but the live assembly dispatcher remains unfinished.
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented. A signed nested-KVM probe now proves external vector 32 enters the
 booted kernel and advances that scheduler by exactly one tick. This currently

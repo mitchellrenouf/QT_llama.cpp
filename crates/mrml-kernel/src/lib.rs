@@ -19,6 +19,7 @@ mod pe;
 mod platform;
 mod policy;
 mod scheduler;
+mod syscall;
 mod task_runtime;
 mod virtual_gpu;
 mod vm;
@@ -61,6 +62,7 @@ pub use scheduler::{
     KernelScheduleError, KernelScheduler, Priority, ScheduleOutcome, Scheduler, SchedulerError,
     TaskId, TaskState,
 };
+pub use syscall::{MAX_SYSCALL_INLINE_PAYLOAD, SyscallError, SyscallRequest, X86_USER_CALL_VECTOR};
 pub use task_runtime::{FaultRetirement, TaskRuntime, TaskRuntimeError};
 pub use virtual_gpu::{
     BatchedDispatch, BufferAccess, BufferId, BufferMode, ControlBufferId, ControlBufferTable,

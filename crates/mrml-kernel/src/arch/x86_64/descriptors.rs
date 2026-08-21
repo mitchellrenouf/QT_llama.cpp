@@ -142,6 +142,29 @@ pub unsafe fn install_external_interrupt_gate(
     Ok(())
 }
 
+/// Installs the one DPL3 software-call gate admitted by the kernel ABI.
+///
+/// # Safety
+///
+/// The same live-IDT serialization requirements as
+/// [`install_external_interrupt_gate`] apply.
+pub unsafe fn install_user_call_gate(
+    idt: *mut InterruptGate,
+    idt_entries: usize,
+    handler: u64,
+    selector: u16,
+) -> Result<(), DescriptorError> {
+    if idt.is_null() || idt_entries != 256 {
+        return Err(DescriptorError::InvalidTableSize);
+    }
+    let gate = InterruptGate::interrupt(handler, selector, 0, 3)?;
+    unsafe {
+        idt.add(usize::from(crate::X86_USER_CALL_VECTOR))
+            .write(gate)
+    };
+    Ok(())
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InterruptGate {
@@ -573,6 +596,20 @@ mod tests {
             idt[..32]
                 .iter()
                 .chain(&idt[33..])
+                .all(|gate| *gate == InterruptGate::MISSING)
+        );
+    }
+
+    #[test]
+    fn user_call_gate_is_exactly_vector_128_and_dpl3() {
+        let mut idt = [InterruptGate::MISSING; 256];
+        unsafe { install_user_call_gate(idt.as_mut_ptr(), idt.len(), 0xffff_8000_0000_2000, 0x38) }
+            .unwrap();
+        assert_eq!(idt[128].encode()[5], 0xee);
+        assert!(
+            idt[..128]
+                .iter()
+                .chain(&idt[129..])
                 .all(|gate| *gate == InterruptGate::MISSING)
         );
     }

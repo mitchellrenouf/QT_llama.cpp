@@ -633,6 +633,18 @@ bypass a domain boundary. Windows and Linux pass 116 kernel tests, including
 attenuation and failed-authorization rollback. Live syscall entry and blocking
 endpoint queues remain unfinished.
 
+The initial x86 user-call ABI is deliberately pointer-free. Exactly IDT vector
+`0x80` receives a DPL3 interrupt gate; external interrupt gates remain DPL0 and
+all other fallback vectors remain inaccessible to `INT`. Operation zero is
+yield and accepts no nonzero reserved argument. Operation one carries an
+endpoint capability token, a generational receiver task token, a length no
+larger than 24, and three payload words in registers r10/r8/r9. Decoding zeros
+the unused payload tail and rejects unknown operations, generation-zero tokens,
+and oversized lengths without reading guest memory. Windows and Linux pass 120
+kernel tests, including exact gate privilege/vector placement and canonical ABI
+decoding. Assembly entry, runtime dispatch, response registers, and live CPL3
+execution remain unfinished.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.
