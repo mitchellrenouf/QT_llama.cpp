@@ -1114,6 +1114,19 @@ microbenchmark now measures tick accounting. Hardware timer programming,
 interrupt acknowledgement, saved-context installation, and `iretq` remain the
 next integration gate.
 
+The x86_64 architecture layer now defines a fixed user-context record and a
+generational task-to-context table. New contexts require a nonzero page-aligned
+CR3, canonical lower-half entry point, nonzero 16-byte-aligned initial stack,
+fixed ring-three code/data selectors, and a minimal initial RFLAGS value.
+Contexts captured from traps must carry those exact selectors and may contain
+only explicitly enumerated user-modifiable status flags; IOPL, NT, VM, RF,
+reserved high bits, kernel addresses, and zero roots fail closed. Binding,
+replacement, lookup, and revocation use the complete generational `TaskId`, so
+a context belonging to a terminated task cannot attach to a reused scheduler
+slot. Windows and Linux tests exercise selector, flag, address, CR3, duplicate,
+revocation, and stale-generation rejection. GDT user descriptors, TSS/RSP0,
+assembly restore, CR3 switching, and live ring-three entry remain pending.
+
 ## Milestones
 
 1. Capability model, explicit directory grants, IPC wire format, and property

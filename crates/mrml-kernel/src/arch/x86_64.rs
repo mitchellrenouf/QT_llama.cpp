@@ -1,11 +1,16 @@
 use crate::{PAGE_SIZE, PhysAddr};
 
 mod address_space;
+mod context;
 mod descriptors;
 mod page_table;
 mod pe_mapping;
 mod trap;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
+pub use context::{
+    ContextError, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_INITIAL_RFLAGS, UserContext,
+    UserContextTable,
+};
 pub use descriptors::{
     DescriptorError, InterruptGate, install_exception_tables, install_fail_stop_tables,
 };

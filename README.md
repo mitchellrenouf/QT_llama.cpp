@@ -141,8 +141,10 @@ kernel now has a validated x86_64 trap-frame and user-fault termination policy,
 dispatch proof. User-task revocation and task-switch integration remain unfinished.
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented, but hardware timer interrupts and context restoration in the
-standalone image remain unfinished. Service VMs and bare-metal validation also
-remain unfinished.
+standalone image remain unfinished. Validated generational ring-three context
+storage is implemented; GDT/TSS installation, CR3 switching, and live `iretq`
+entry remain unfinished. Service VMs and bare-metal validation also remain
+unfinished.
 The successful `ExitBootServices` call is a one-way boundary: memory-map
 normalization, handoff construction, and launch failures after it halt locally
 and can never return into terminated firmware services.
