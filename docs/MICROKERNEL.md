@@ -78,6 +78,13 @@ completion direction has its own HMAC domain, fixed status encoding, session
 and sequence state, and binds the original request ID to the exact generational
 dispatch ID. It rejects tampering, replay, cross-direction substitution,
 reserved bytes, unknown status, and stale handles before watchdog completion.
+The executor-facing batch policy holds at most 32 ordered dispatches in fixed
+storage and validates every buffer generation and range before admission. It
+rejects empty/oversized batches, duplicate or zero request IDs, stale buffers,
+and capacity overflow. This is the coarse submission unit intended for one
+doorbell and one CUDA graph/stream sequence. A separate generational control
+buffer wire capability is still required; device `BufferId` is deliberately
+not reused for batch descriptors because that would create type confusion.
 The KVM adapter now consumes the common layout and registers two dedicated
 memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining

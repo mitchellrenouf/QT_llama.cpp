@@ -6,6 +6,7 @@ use core::{
 use mrml_crypto::hmac_sha256;
 
 pub const MAX_DISPATCH_BUFFERS: usize = 16;
+pub const MAX_BATCH_DISPATCHES: usize = 32;
 const MAX_BLOCK_THREADS: u64 = 1024;
 const MAX_SHARED_MEMORY: u32 = 96 * 1024;
 
@@ -40,6 +41,9 @@ pub enum GpuError {
     ReservationPending,
     InvalidReservation,
     InvalidQueueMapping,
+    InvalidBatchCapacity,
+    EmptyBatch,
+    BatchFull,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1011,6 +1015,7 @@ impl BufferAccess {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Dispatch {
     kernel: KernelId,
     grid: [u32; 3],
@@ -1018,6 +1023,90 @@ pub struct Dispatch {
     shared_memory: u32,
     accesses: [Option<BufferAccess>; MAX_DISPATCH_BUFFERS],
     access_count: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatchedDispatch {
+    request_id: u64,
+    dispatch: Dispatch,
+}
+
+impl BatchedDispatch {
+    pub const fn request_id(self) -> u64 {
+        self.request_id
+    }
+
+    pub const fn dispatch(&self) -> &Dispatch {
+        &self.dispatch
+    }
+}
+
+/// Kernel-validated coarse submission unit for the isolated GPU service. The
+/// fixed capacity prevents attacker-controlled allocation; preserving order
+/// lets the service submit one CUDA graph/stream sequence per doorbell.
+pub struct GpuDispatchBatch<const N: usize> {
+    entries: [Option<BatchedDispatch>; N],
+    count: usize,
+}
+
+impl<const N: usize> GpuDispatchBatch<N> {
+    pub const fn new() -> Result<Self, GpuError> {
+        if N == 0 || N > MAX_BATCH_DISPATCHES {
+            return Err(GpuError::InvalidBatchCapacity);
+        }
+        Ok(Self {
+            entries: [None; N],
+            count: 0,
+        })
+    }
+
+    pub fn push<const BUFFERS: usize>(
+        &mut self,
+        request_id: u64,
+        dispatch: Dispatch,
+        session: &VirtualGpuSession<BUFFERS>,
+    ) -> Result<(), GpuError> {
+        if request_id == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        if self.count == N {
+            return Err(GpuError::BatchFull);
+        }
+        if self.entries[..self.count]
+            .iter()
+            .flatten()
+            .any(|entry| entry.request_id == request_id)
+        {
+            return Err(GpuError::DuplicateRequest);
+        }
+        session.validate_dispatch(&dispatch)?;
+        self.entries[self.count] = Some(BatchedDispatch {
+            request_id,
+            dispatch,
+        });
+        self.count += 1;
+        Ok(())
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = BatchedDispatch> + '_ {
+        self.entries[..self.count].iter().flatten().copied()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn validate_ready(&self) -> Result<(), GpuError> {
+        if self.is_empty() {
+            Err(GpuError::EmptyBatch)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Dispatch {
@@ -1471,6 +1560,49 @@ mod tests {
             GpuCompletionStatus::Success,
         );
         assert_eq!(invalid, Err(GpuError::InvalidDispatch));
+    }
+
+    #[test]
+    fn dispatch_batches_are_bounded_ordered_and_session_validated() {
+        assert!(matches!(
+            GpuDispatchBatch::<0>::new(),
+            Err(GpuError::InvalidBatchCapacity)
+        ));
+        assert!(matches!(
+            GpuDispatchBatch::<33>::new(),
+            Err(GpuError::InvalidBatchCapacity)
+        ));
+        let mut session = VirtualGpuSession::<2>::new(4096);
+        let buffer = session.allocate(4096).unwrap();
+        let dispatch = Dispatch::new(
+            KernelId::new(0).unwrap(),
+            [1, 1, 1],
+            [32, 1, 1],
+            0,
+            &[BufferAccess::new(buffer, 0, 4096, BufferMode::Read)],
+        )
+        .unwrap();
+        let mut batch = GpuDispatchBatch::<2>::new().unwrap();
+        assert_eq!(batch.validate_ready(), Err(GpuError::EmptyBatch));
+        assert!(batch.push(10, dispatch, &session).is_ok());
+        assert_eq!(
+            batch.push(10, dispatch, &session),
+            Err(GpuError::DuplicateRequest)
+        );
+        assert!(batch.push(11, dispatch, &session).is_ok());
+        assert_eq!(batch.push(12, dispatch, &session), Err(GpuError::BatchFull));
+        assert!(batch.validate_ready().is_ok());
+        let mut entries = batch.entries();
+        assert_eq!(entries.next().map(BatchedDispatch::request_id), Some(10));
+        assert_eq!(entries.next().map(BatchedDispatch::request_id), Some(11));
+        assert_eq!(entries.next(), None);
+
+        session.free(buffer).unwrap();
+        let mut stale_batch = GpuDispatchBatch::<1>::new().unwrap();
+        assert_eq!(
+            stale_batch.push(12, dispatch, &session),
+            Err(GpuError::InvalidBuffer)
+        );
     }
 
     #[test]
