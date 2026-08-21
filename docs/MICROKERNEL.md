@@ -226,6 +226,16 @@ and rollback protection. A version meeting the compiled floor is therefore not
 enough when monotonic enforcement was skipped. A freshly signed version-5
 kernel using the expanded evidence contract still reached the QEMU GOP marker.
 
+The standalone image also has a `production-policy` feature. Such builds embed
+`MRML_KERNEL_MIN_VERSION` independently of the loader and validate the decoded
+handoff with `BootPolicy::production` before touching the framebuffer or
+starting subsystems. Missing or malformed compile-time policy fails closed. A
+properly hash-signed version-6 production image transferred under loader-owned
+CR3/GDT/IDT but refused the deliberately unmeasured, non-Secure-Boot QEMU
+handoff, leaving the loader's `RGB(20,33,53)` stage unchanged. All terminal
+kernel paths now use interrupt-disabled `HLT` rather than consuming a CPU in a
+spin loop.
+
 The loader also reads the standard global `SecureBoot` and `SetupMode`
 variables through its original raw runtime-services ABI. It reports secure boot
 only when `SecureBoot` is exactly one and `SetupMode` is exactly zero; absent,

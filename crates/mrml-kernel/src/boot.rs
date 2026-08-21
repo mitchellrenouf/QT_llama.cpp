@@ -55,6 +55,18 @@ impl BootEvidence {
         &self.image_measurement
     }
 
+    pub const fn image_version(&self) -> u64 {
+        self.image_version
+    }
+
+    pub const fn secure_boot(&self) -> bool {
+        self.secure_boot
+    }
+
+    pub const fn measured_boot(&self) -> bool {
+        self.measured_boot
+    }
+
     pub const fn rollback_protected(&self) -> bool {
         self.rollback_protected
     }
