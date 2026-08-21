@@ -25,6 +25,7 @@ const MAP_ANONYMOUS: c_int = 0x20;
 const MAP_FAILED: *mut c_void = usize::MAX as *mut c_void;
 const KVM_GET_API_VERSION: c_ulong = 0xae00;
 const KVM_CREATE_VM: c_ulong = 0xae01;
+const KVM_CHECK_EXTENSION: c_ulong = 0xae03;
 const KVM_GET_VCPU_MMAP_SIZE: c_ulong = 0xae04;
 const KVM_CREATE_VCPU: c_ulong = 0xae41;
 const KVM_SET_USER_MEMORY_REGION: c_ulong = 0x4020_ae46;
@@ -35,6 +36,9 @@ const KVM_SET_SREGS: c_ulong = 0x4138_ae84;
 const KVM_INTERRUPT: c_ulong = 0x4004_ae86;
 const MIN_RUN_BYTES: usize = 88;
 const MAX_RUN_BYTES: usize = 1024 * 1024;
+const KVM_CAP_USER_MEMORY: u32 = 3;
+const KVM_CAP_NR_MEMSLOTS: u32 = 10;
+const REQUIRED_MEMORY_SLOTS: i32 = 5;
 
 #[link(name = "c")]
 unsafe extern "C" {
@@ -77,6 +81,11 @@ impl KvmSystem {
         if unsafe { ioctl(file.0, KVM_GET_API_VERSION, 0 as c_ulong) } != KVM_API_VERSION {
             return Err(KvmError::ApiVersion);
         }
+        let user_memory =
+            unsafe { ioctl(file.0, KVM_CHECK_EXTENSION, KVM_CAP_USER_MEMORY as c_ulong) };
+        let memory_slots =
+            unsafe { ioctl(file.0, KVM_CHECK_EXTENSION, KVM_CAP_NR_MEMSLOTS as c_ulong) };
+        validate_capabilities(user_memory, memory_slots)?;
         let run_bytes = unsafe { ioctl(file.0, KVM_GET_VCPU_MMAP_SIZE, 0 as c_ulong) };
         if run_bytes < 0 {
             return Err(KvmError::SystemCall);
@@ -114,6 +123,16 @@ impl KvmSystem {
             vcpu_id,
         })
     }
+}
+
+fn validate_capabilities(user_memory: c_int, memory_slots: c_int) -> Result<(), KvmError> {
+    if user_memory <= 0 {
+        return Err(KvmError::UnsupportedCapability(KVM_CAP_USER_MEMORY));
+    }
+    if memory_slots < REQUIRED_MEMORY_SLOTS {
+        return Err(KvmError::InsufficientMemorySlots(memory_slots));
+    }
+    Ok(())
 }
 
 pub(crate) struct KvmVm {
@@ -964,6 +983,7 @@ mod tests {
     fn ioctl_numbers_match_x86_64_kvm_uapi() {
         assert_eq!(KVM_GET_API_VERSION, 0xae00);
         assert_eq!(KVM_CREATE_VM, 0xae01);
+        assert_eq!(KVM_CHECK_EXTENSION, 0xae03);
         assert_eq!(KVM_SET_USER_MEMORY_REGION, 0x4020_ae46);
         assert_eq!(KVM_CREATE_VCPU, 0xae41);
         assert_eq!(KVM_RUN, 0xae80);
@@ -973,6 +993,19 @@ mod tests {
         assert_eq!(core::mem::size_of::<KvmRegisters>(), 144);
         assert_eq!(core::mem::size_of::<KvmSegment>(), 24);
         assert_eq!(core::mem::size_of::<KvmSpecialRegisters>(), 312);
+    }
+
+    #[test]
+    fn required_capabilities_fail_closed_before_vm_creation() {
+        assert_eq!(
+            validate_capabilities(0, 32),
+            Err(KvmError::UnsupportedCapability(KVM_CAP_USER_MEMORY))
+        );
+        assert_eq!(
+            validate_capabilities(1, 4),
+            Err(KvmError::InsufficientMemorySlots(4))
+        );
+        assert_eq!(validate_capabilities(1, 5), Ok(()));
     }
 
     #[test]

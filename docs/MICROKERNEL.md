@@ -472,7 +472,10 @@ all unused KVM arguments to be zero. Memory-slot encodings are page-aligned,
 overflow checked, optionally read-only, and capped at 32 slots. Native file
 descriptor ownership, KVM API-version validation, VM and vCPU creation,
 memory-slot registration, bounded `kvm_run` mapping, and exit execution are
-also implemented with RAII cleanup. The adapter now owns fixed-capacity
+also implemented with RAII cleanup. System admission queries the stable KVM
+extension interface and rejects hosts without `KVM_CAP_USER_MEMORY` or at least
+five memory slots before VM creation; API version alone is not treated as proof
+of optional capability support. The adapter now owns fixed-capacity
 anonymous guest RAM, rejects overlapping GPA regions and cross-region copies,
 enforces read-only host writes, registers slots transactionally, validates its
 single vCPU identity, implements the common `VmBackend` copy/run methods, and
@@ -500,8 +503,8 @@ read-only and NX. This prevents a malformed record from partially replacing the
 previous launch state. Host attestation remains part of the VMM trust boundary;
 the handoff cannot make an untrusted host truthful. A fail-closed launch
 transaction now composes these stages and publishes only `PreparedKvmGuest`:
-it validates physical and virtual ranges, creates the VM, vCPU, and IRQ chip,
-registers four disjoint memory slots, installs the signed image, immutable
+it validates physical and virtual ranges, creates the VM and vCPU, registers up
+to five disjoint memory slots, installs the signed image, immutable
 handoff, guarded stack, and page tables, then writes CR3 and entry registers
 last. The Microsoft x64 entry frame places the handoff pointer and length in
 RCX/RDX and reserves a zero return slot with the required stack alignment.
@@ -509,12 +512,13 @@ Low-level construction and mutable backend extraction are not public. The Arch
 WSL2 environment now exposes nested KVM through Hyper-V enlightened VMCS; API
 version 12 and the 12,288-byte vCPU mapping query both succeed. A live regression
 constructs and verifies a complete Lamport-signed VM artifact, materializes its
-PE at a canonical supervisor high-half address, creates the VM, IRQ chip, vCPU,
+PE at a canonical supervisor high-half address, creates the VM and vCPU,
 five memory slots, and hardware page tables, enters at the signed entry point,
 writes a known pixel into the handoff-authenticated framebuffer, executes
 `HLT`, and observes both `VmExit::Halted` and the pixel through a bounded guest
-copy. Kernel launch derives the identity-mapped, supervisor-only, writable, NX framebuffer solely
-from the validated handoff and rejects overlap with every private launch region.
+copy. Kernel launch derives the identity-mapped, supervisor-only, writable, NX
+framebuffer solely from the validated handoff and rejects overlap with every
+private launch region.
 This proves the complete signed artifact-to-native-KVM execution and framebuffer
 boundary. The core-only `mrml-kvm-run` host utility now verifies a release public
 root and signed kernel bundle, prepares that same bounded launch environment,

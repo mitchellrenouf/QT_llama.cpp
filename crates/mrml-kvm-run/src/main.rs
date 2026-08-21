@@ -14,6 +14,7 @@ use mrml_kernel::{
 };
 #[cfg(target_os = "linux")]
 use mrml_kvm::{KvmLaunchLayout, KvmSystem};
+#[cfg(target_os = "linux")]
 use mrml_runtime::mrml_println as println;
 
 #[cfg(target_os = "linux")]

@@ -27,6 +27,8 @@ pub enum KvmError {
     InvalidSlot,
     SystemCall,
     ApiVersion,
+    UnsupportedCapability(u32),
+    InsufficientMemorySlots(i32),
     InvalidRunSize(i32),
     MemoryTableFull,
     MemoryOverlap,
