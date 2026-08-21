@@ -287,13 +287,14 @@ impl PreparedWhpPartition<'_> {
     /// per-region permissions. The vCPU does not exist in a running state while
     /// this transition occurs, so no guest can observe the unmapped interval.
     pub(crate) fn seal_pe(&mut self, id: usize, image: &PeImage<'_>) -> Result<(), WhpError> {
-        let mapping = self
+        let allocation = self
             .mappings
-            .get_mut(id)
-            .and_then(Option::as_mut)
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|mapping| mapping.range)
             .ok_or(WhpError::UnmappedMemory)?;
         if image.load_region_count() > MAX_SUBMAPPINGS
-            || image.image_size() as u64 != mapping.range.size()
+            || image.image_size() as u64 != allocation.size()
         {
             return Err(WhpError::InvalidMapping);
         }
@@ -309,8 +310,7 @@ impl PreparedWhpPartition<'_> {
                 (true, false) => MapPermissions::read_write(),
                 (true, true) => return Err(WhpError::InvalidPermissions),
             };
-            let start = mapping
-                .range
+            let start = allocation
                 .guest_address()
                 .checked_add(region.virtual_address() as u64)
                 .ok_or(WhpError::MemoryOverflow)?;
@@ -319,6 +319,19 @@ impl PreparedWhpPartition<'_> {
                 .ok_or(WhpError::MemoryOverflow)?;
             *slot = Some(GuestRange::new(start, bytes, permissions)?);
         }
+        self.replace_subranges(id, final_ranges)
+    }
+
+    fn replace_subranges(
+        &mut self,
+        id: usize,
+        final_ranges: [Option<GuestRange>; MAX_SUBMAPPINGS],
+    ) -> Result<(), WhpError> {
+        let mapping = self
+            .mappings
+            .get_mut(id)
+            .and_then(Option::as_mut)
+            .ok_or(WhpError::UnmappedMemory)?;
 
         check(unsafe {
             (self.api.unmap_gpa_range)(

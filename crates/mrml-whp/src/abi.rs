@@ -148,6 +148,14 @@ fn decode_exception(input: &[u8]) -> Result<VmExit, WhpError> {
 fn decode_memory(input: &[u8]) -> Result<VmExit, WhpError> {
     // 8-byte exit prefix + 40-byte VP context. MemoryAccessInfo is a 32-bit bitfield,
     // followed by instruction bytes, GPA, and GVA.
+    let instruction_bytes = *input.get(48).ok_or(WhpError::TruncatedExit)?;
+    let instruction_reserved = input.get(49..52).ok_or(WhpError::TruncatedExit)?;
+    if instruction_bytes > 16 || instruction_reserved.iter().any(|byte| *byte != 0) {
+        return Err(WhpError::MalformedExit);
+    }
+    input
+        .get(52..52 + instruction_bytes as usize)
+        .ok_or(WhpError::TruncatedExit)?;
     let info = u32_at(input, 68)?;
     let access = info & 3;
     let access = match access {
@@ -160,6 +168,14 @@ fn decode_memory(input: &[u8]) -> Result<VmExit, WhpError> {
         return Err(WhpError::MalformedExit);
     }
     let guest_address = u64_at(input, 72)?;
+    if info & (1 << 3) != 0 {
+        let virtual_address = u64_at(input, 80)?;
+        let high = virtual_address >> 48;
+        let sign = virtual_address >> 47 & 1;
+        if (sign == 0 && high != 0) || (sign == 1 && high != 0xffff) {
+            return Err(WhpError::MalformedExit);
+        }
+    }
     Ok(VmExit::GuestMemoryFault {
         guest_address,
         access,
@@ -271,6 +287,33 @@ mod tests {
             })
         );
         bytes[68..72].copy_from_slice(&4u32.to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+    }
+
+    #[test]
+    fn memory_exit_validates_instruction_and_virtual_address_metadata() {
+        let mut bytes = [0u8; 88];
+        bytes[..4].copy_from_slice(&EXIT_MEMORY_ACCESS.to_ne_bytes());
+        bytes[48] = 2;
+        bytes[52..54].copy_from_slice(&[0x89, 0x18]);
+        bytes[68..72].copy_from_slice(&((1 << 3) | 1u32).to_ne_bytes());
+        bytes[72..80].copy_from_slice(&0x20_0000u64.to_ne_bytes());
+        bytes[80..88].copy_from_slice(&0xffff_8000_0020_0000u64.to_ne_bytes());
+        assert_eq!(
+            decode_exit_context(&bytes),
+            Ok(VmExit::GuestMemoryFault {
+                guest_address: 0x20_0000,
+                access: GuestAccess::Write,
+            })
+        );
+
+        bytes[48] = 17;
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[48] = 2;
+        bytes[49] = 1;
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[49] = 0;
+        bytes[80..88].copy_from_slice(&0x0000_8000_0000_0000u64.to_ne_bytes());
         assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
     }
 }
