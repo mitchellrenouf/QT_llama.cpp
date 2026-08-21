@@ -29,6 +29,7 @@ pub enum VmError {
     IoPolicyFull,
     UnhandledExit,
     InterruptDenied,
+    StaleMapping,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -207,6 +208,21 @@ pub struct GuestRegion {
     executable: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuestMappingId(u64);
+
+impl GuestMappingId {
+    pub const fn token(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GuestMapping {
+    id: GuestMappingId,
+    region: GuestRegion,
+}
+
 impl GuestRegion {
     pub fn new(
         guest_start: u64,
@@ -245,25 +261,28 @@ impl GuestRegion {
 }
 
 pub struct GuestMemory<const N: usize> {
-    regions: [Option<GuestRegion>; N],
+    mappings: [Option<GuestMapping>; N],
     count: usize,
+    next_id: u64,
 }
 
 impl<const N: usize> GuestMemory<N> {
     pub const fn new() -> Self {
         Self {
-            regions: [None; N],
+            mappings: [None; N],
             count: 0,
+            next_id: 1,
         }
     }
 
-    pub fn map(&mut self, region: GuestRegion) -> Result<(), VmError> {
+    pub fn map(&mut self, region: GuestRegion) -> Result<GuestMappingId, VmError> {
         if N > MAX_GUEST_REGIONS || self.count == N {
             return Err(VmError::RegionTableFull);
         }
         let guest_end = region.guest_start + region.length();
         let host_end = region.host_start.get() + region.length();
-        for existing in self.regions[..self.count].iter().flatten().copied() {
+        for existing in self.mappings[..self.count].iter().flatten().copied() {
+            let existing = existing.region;
             if overlaps(
                 region.guest_start,
                 guest_end,
@@ -281,12 +300,48 @@ impl<const N: usize> GuestMemory<N> {
                 return Err(VmError::HostAlias);
             }
         }
-        let at = self.regions[..self.count].partition_point(|entry| {
-            entry.is_some_and(|value| value.guest_start < region.guest_start)
+        let at = self.mappings[..self.count].partition_point(|entry| {
+            entry.is_some_and(|value| value.region.guest_start < region.guest_start)
         });
-        self.regions.copy_within(at..self.count, at + 1);
-        self.regions[at] = Some(region);
+        let id = GuestMappingId(self.next_id);
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(VmError::SequenceExhausted)?;
+        self.mappings.copy_within(at..self.count, at + 1);
+        self.mappings[at] = Some(GuestMapping { id, region });
         self.count += 1;
+        Ok(id)
+    }
+
+    pub fn unmap(&mut self, id: GuestMappingId) -> Result<GuestRegion, VmError> {
+        let at = self.mappings[..self.count]
+            .iter()
+            .position(|mapping| mapping.is_some_and(|mapping| mapping.id == id))
+            .ok_or(VmError::StaleMapping)?;
+        let region = self.mappings[at].unwrap().region;
+        self.mappings.copy_within(at + 1..self.count, at);
+        self.count -= 1;
+        self.mappings[self.count] = None;
+        Ok(region)
+    }
+
+    pub fn protect(
+        &mut self,
+        id: GuestMappingId,
+        writable: bool,
+        executable: bool,
+    ) -> Result<(), VmError> {
+        if writable && executable {
+            return Err(VmError::WritableExecutable);
+        }
+        let mapping = self.mappings[..self.count]
+            .iter_mut()
+            .flatten()
+            .find(|mapping| mapping.id == id)
+            .ok_or(VmError::StaleMapping)?;
+        mapping.region.writable = writable;
+        mapping.region.executable = executable;
         Ok(())
     }
 
@@ -295,10 +350,11 @@ impl<const N: usize> GuestMemory<N> {
             return Err(VmError::Unmapped);
         }
         let end = guest.checked_add(length).ok_or(VmError::Overflow)?;
-        let region = self.regions[..self.count]
+        let region = self.mappings[..self.count]
             .iter()
             .flatten()
             .copied()
+            .map(|mapping| mapping.region)
             .find(|region| {
                 guest >= region.guest_start && end <= region.guest_start + region.length()
             })
@@ -705,6 +761,34 @@ mod tests {
             ),
             Err(VmError::HostAlias)
         );
+    }
+
+    #[test]
+    fn guest_mappings_are_revocable_and_permissions_are_wx_safe() {
+        let mut memory = GuestMemory::<2>::new();
+        let id = memory
+            .map(GuestRegion::new(0x1000, PhysAddr::new(0x8000).unwrap(), 1, true, false).unwrap())
+            .unwrap();
+        assert_eq!(memory.translate(0x1000, 1, GuestAccess::Write), Ok(0x8000));
+        memory.protect(id, false, true).unwrap();
+        assert_eq!(
+            memory.translate(0x1000, 1, GuestAccess::Write),
+            Err(VmError::PermissionDenied)
+        );
+        assert_eq!(
+            memory.translate(0x1000, 1, GuestAccess::Execute),
+            Ok(0x8000)
+        );
+        assert_eq!(
+            memory.protect(id, true, true),
+            Err(VmError::WritableExecutable)
+        );
+        memory.unmap(id).unwrap();
+        assert_eq!(
+            memory.translate(0x1000, 1, GuestAccess::Read),
+            Err(VmError::Unmapped)
+        );
+        assert_eq!(memory.unmap(id), Err(VmError::StaleMapping));
     }
 
     #[test]

@@ -63,7 +63,7 @@ pub use virtual_gpu::{
     MAX_DISPATCH_BUFFERS, ResourceCommand, VirtualGpuSession,
 };
 pub use vm::{
-    GuestAccess, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall, HypercallOperation,
+    GuestAccess, GuestMappingId, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall, HypercallOperation,
     HypercallRouter, MAX_GUEST_REGIONS, RoutedHypercall, VmBackend, VmError, VmExit, VmRunError,
     VmId, VmState, VmTable, decode_hypercall_exit,
 };

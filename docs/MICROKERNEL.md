@@ -438,6 +438,13 @@ mapping. Backend-owned pointers never enter the policy core. The common
 interrupt injection; concrete KVM and Hyper-V adapters and shared-memory data
 queues remain pending, so this is not yet a runnable hosted VM.
 
+Guest mappings receive opaque monotonic identifiers and can be revoked or have
+their permissions changed without exposing array slots. Revocation compacts the
+bounded table but never reissues an old identifier. Permission changes retain
+the W^X invariant, and translations fail immediately after revocation. This is
+the common policy operation that concrete adapters must pair with their native
+second-level page-table invalidation before allowing a vCPU to resume.
+
 VM instances are tracked in a fixed-capacity lifecycle table with generational
 identities. Only created images may become loaded, only loaded or cleanly
 stopped VMs may run, and destroyed identifiers cannot control a replacement in
