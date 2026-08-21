@@ -188,6 +188,37 @@ pub fn rsa_pkcs1_sha256_verify(
     }
 }
 
+pub fn rsa_pkcs1_sha256_sign(
+    modulus: &[u8],
+    private_exponent: &[u8],
+    message: &[u8],
+    signature: &mut [u8],
+) -> Result<(), RsaError> {
+    const PREFIX: &[u8] = &[
+        0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+        0x05, 0x00, 0x04, 0x20,
+    ];
+    if modulus.is_empty()
+        || signature.len() != modulus.len()
+        || private_exponent.is_empty()
+        || modulus.len() < 3 + 8 + PREFIX.len() + 32
+    {
+        return Err(RsaError::InvalidKey);
+    }
+    let mut encoded = mrml_runtime::Vector::new();
+    encoded
+        .try_resize(modulus.len(), 0xff)
+        .map_err(|_| RsaError::UnsupportedSize)?;
+    encoded[0] = 0;
+    encoded[1] = 1;
+    let digest = Sha256::digest(message);
+    let separator = encoded.len() - PREFIX.len() - digest.len() - 1;
+    encoded[separator] = 0;
+    encoded[separator + 1..separator + 1 + PREFIX.len()].copy_from_slice(PREFIX);
+    encoded[separator + 1 + PREFIX.len()..].copy_from_slice(&digest);
+    modular_power(modulus, private_exponent, &encoded, signature)
+}
+
 fn mgf1_sha256(seed: &[u8], output: &mut [u8]) {
     for (counter, chunk) in output.chunks_mut(32).enumerate() {
         let mut hash = Sha256::new();
@@ -360,6 +391,30 @@ mod tests {
                 b"mrml-rsa-verification-vector",
                 &signature
             ),
+            Err(RsaError::InvalidSignature)
+        );
+    }
+    #[test]
+    fn signs_pkcs1_sha256_and_self_verifies() {
+        let modulus = decode(
+            "9eff1e540991fee9de7c7ed50d5da16508d610090a52c9aa4c41bc868e93e7cc03a6cc766fb2dab78ba91e4315f6524e355fda2c8a71b372f012d43460c2c425c2ae763d96a20584bc030e3595cc9f2352f51288f8db5d398d55efc566381707b4df848444641093fc5c48ca894db8397b252d00d5d606fe377b09f3609850fb",
+        );
+        let private = decode(
+            "2187d1e08d2821e736497102035094a1d70c35d3823ed552b9c43f3aed4499e4b77c6cb0297c418de5c123a5a8330b467d111ad4bbd9a0ab839fa4eaeae108364d4ad3f439916be8a244f8071922b1918cce92b27fe5f6ed24a328b15030b3fb3e300166c651f5f457daef746c4051a7a0f035379dcacf3a164fb4aedd284a11",
+        );
+        let message = b"mrml-authenticode-rsa-vector";
+        let mut signature = [0u8; 128];
+        assert_eq!(
+            rsa_pkcs1_sha256_sign(&modulus, &private, message, &mut signature),
+            Ok(())
+        );
+        assert_eq!(
+            rsa_pkcs1_sha256_verify(&modulus, &[1, 0, 1], message, &signature),
+            Ok(())
+        );
+        signature[0] ^= 1;
+        assert_eq!(
+            rsa_pkcs1_sha256_verify(&modulus, &[1, 0, 1], message, &signature),
             Err(RsaError::InvalidSignature)
         );
     }

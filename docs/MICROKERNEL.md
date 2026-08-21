@@ -238,6 +238,13 @@ RSA/PKCS#1 and CMS `SignedData` emission plus verification against an
 independent platform tool remain necessary before claiming firmware-compatible
 signing.
 
+The original fixed-storage RSA implementation now also emits deterministic
+PKCS#1 v1.5 SHA-256 signatures using the same constant-work exponent traversal
+as RSA-PSS. It constructs the complete DigestInfo and requires at least eight
+padding octets, rejects inconsistent modulus/signature sizes, and has a
+disposable independently generated RSA-1024 private-key round-trip vector.
+This primitive is required by Authenticode but is not itself CMS or a signed PE.
+
 ### OS executable format
 
 PE32+ is the sole executable binary format for MRML on x86-64. The kernel, VM
