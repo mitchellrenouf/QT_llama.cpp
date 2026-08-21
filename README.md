@@ -139,8 +139,10 @@ handoff, preventing uninitialized tail data from crossing the boundary. The
 kernel now has a validated x86_64 trap-frame and user-fault termination policy,
 32 vector-specific assembly entries, and a live signed nested-KVM invalid-opcode
 dispatch proof. User-task revocation and task-switch integration remain unfinished.
-Timers, scheduling from the standalone
-image, service VMs, and bare-metal validation remain unfinished.
+Bounded timer-driven scheduler policy and faulted-task retirement are
+implemented, but hardware timer interrupts and context restoration in the
+standalone image remain unfinished. Service VMs and bare-metal validation also
+remain unfinished.
 The successful `ExitBootServices` call is a one-way boundary: memory-map
 normalization, handoff construction, and launch failures after it halt locally
 and can never return into terminated firmware services.

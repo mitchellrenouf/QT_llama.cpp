@@ -33,6 +33,22 @@ pub enum SchedulerError {
     RetiredSlot,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KernelScheduleError {
+    InvalidTimerFrequency,
+    InvalidQuantum,
+    TickExhausted,
+    NoCurrentTask,
+    Scheduler(SchedulerError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScheduleOutcome {
+    Idle,
+    Continue(TaskId),
+    Switch { from: Option<TaskId>, to: TaskId },
+}
+
 #[derive(Clone, Copy)]
 struct Task {
     generation: u32,
@@ -146,6 +162,116 @@ impl<const TASKS: usize> Default for Scheduler<TASKS> {
     }
 }
 
+/// Timer-driven owner of scheduler state. Exactly one current task is tracked;
+/// exceptions can revoke it without leaving a stale identity resumable.
+pub struct KernelScheduler<const TASKS: usize> {
+    scheduler: Scheduler<TASKS>,
+    current: Option<TaskId>,
+    ticks: u64,
+    quantum_ticks: u32,
+    remaining: u32,
+}
+
+impl<const TASKS: usize> KernelScheduler<TASKS> {
+    pub fn new(ticks_per_second: u32, quantum_ticks: u32) -> Result<Self, KernelScheduleError> {
+        if !(10..=100_000).contains(&ticks_per_second) {
+            return Err(KernelScheduleError::InvalidTimerFrequency);
+        }
+        if quantum_ticks == 0 || quantum_ticks > ticks_per_second {
+            return Err(KernelScheduleError::InvalidQuantum);
+        }
+        Ok(Self {
+            scheduler: Scheduler::new(),
+            current: None,
+            ticks: 0,
+            quantum_ticks,
+            remaining: quantum_ticks,
+        })
+    }
+
+    pub fn create(&mut self, priority: Priority) -> Result<TaskId, KernelScheduleError> {
+        self.scheduler
+            .create(priority)
+            .map_err(KernelScheduleError::Scheduler)
+    }
+
+    pub const fn current(&self) -> Option<TaskId> {
+        self.current
+    }
+
+    pub const fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    pub fn start(&mut self) -> ScheduleOutcome {
+        if let Some(current) = self.current {
+            return ScheduleOutcome::Continue(current);
+        }
+        self.select_replacement(None)
+    }
+
+    pub fn timer_tick(&mut self) -> Result<ScheduleOutcome, KernelScheduleError> {
+        self.ticks = self
+            .ticks
+            .checked_add(1)
+            .ok_or(KernelScheduleError::TickExhausted)?;
+        let Some(current) = self.current else {
+            return Ok(self.select_replacement(None));
+        };
+        self.remaining -= 1;
+        if self.remaining != 0 {
+            return Ok(ScheduleOutcome::Continue(current));
+        }
+        Ok(self.select_replacement(Some(current)))
+    }
+
+    pub fn block_current(&mut self) -> Result<ScheduleOutcome, KernelScheduleError> {
+        let current = self
+            .current
+            .take()
+            .ok_or(KernelScheduleError::NoCurrentTask)?;
+        self.scheduler
+            .set_state(current, TaskState::Blocked)
+            .map_err(KernelScheduleError::Scheduler)?;
+        Ok(self.select_replacement(Some(current)))
+    }
+
+    pub fn terminate_current(&mut self) -> Result<ScheduleOutcome, KernelScheduleError> {
+        let current = self
+            .current
+            .take()
+            .ok_or(KernelScheduleError::NoCurrentTask)?;
+        self.scheduler
+            .remove(current)
+            .map_err(KernelScheduleError::Scheduler)?;
+        Ok(self.select_replacement(Some(current)))
+    }
+
+    pub fn wake(&mut self, task: TaskId) -> Result<(), KernelScheduleError> {
+        self.scheduler
+            .set_state(task, TaskState::Runnable)
+            .map_err(KernelScheduleError::Scheduler)
+    }
+
+    fn select_replacement(&mut self, from: Option<TaskId>) -> ScheduleOutcome {
+        self.remaining = self.quantum_ticks;
+        match self.scheduler.schedule() {
+            Some(to) => {
+                self.current = Some(to);
+                if from == Some(to) {
+                    ScheduleOutcome::Continue(to)
+                } else {
+                    ScheduleOutcome::Switch { from, to }
+                }
+            }
+            None => {
+                self.current = None;
+                ScheduleOutcome::Idle
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +315,93 @@ mod tests {
         assert_eq!(scheduler.schedule(), None);
         scheduler.set_state(task, TaskState::Runnable).unwrap();
         assert_eq!(scheduler.schedule(), Some(task));
+    }
+
+    #[test]
+    fn timer_preempts_only_at_the_validated_quantum() {
+        let mut kernel = KernelScheduler::<2>::new(1_000, 3).unwrap();
+        let first = kernel.create(Priority::NORMAL).unwrap();
+        let second = kernel.create(Priority::NORMAL).unwrap();
+        assert_eq!(
+            kernel.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: first
+            }
+        );
+        assert_eq!(kernel.timer_tick(), Ok(ScheduleOutcome::Continue(first)));
+        assert_eq!(kernel.timer_tick(), Ok(ScheduleOutcome::Continue(first)));
+        assert_eq!(
+            kernel.timer_tick(),
+            Ok(ScheduleOutcome::Switch {
+                from: Some(first),
+                to: second
+            })
+        );
+        assert_eq!(kernel.ticks(), 3);
+    }
+
+    #[test]
+    fn faulted_current_identity_is_retired_before_replacement() {
+        let mut kernel = KernelScheduler::<2>::new(100, 1).unwrap();
+        let faulted = kernel.create(Priority::NORMAL).unwrap();
+        let survivor = kernel.create(Priority::NORMAL).unwrap();
+        assert_eq!(
+            kernel.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: faulted
+            }
+        );
+        assert_eq!(
+            kernel.terminate_current(),
+            Ok(ScheduleOutcome::Switch {
+                from: Some(faulted),
+                to: survivor
+            })
+        );
+        assert_eq!(
+            kernel.wake(faulted),
+            Err(KernelScheduleError::Scheduler(SchedulerError::InvalidTask))
+        );
+    }
+
+    #[test]
+    fn blocked_and_idle_transitions_are_explicit() {
+        let mut kernel = KernelScheduler::<1>::new(100, 5).unwrap();
+        let task = kernel.create(Priority::BACKGROUND).unwrap();
+        assert_eq!(
+            kernel.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: task
+            }
+        );
+        assert_eq!(kernel.block_current(), Ok(ScheduleOutcome::Idle));
+        assert_eq!(kernel.timer_tick(), Ok(ScheduleOutcome::Idle));
+        kernel.wake(task).unwrap();
+        assert_eq!(
+            kernel.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: task
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_timer_policy_fails_closed() {
+        assert!(matches!(
+            KernelScheduler::<1>::new(9, 1),
+            Err(KernelScheduleError::InvalidTimerFrequency)
+        ));
+        assert!(matches!(
+            KernelScheduler::<1>::new(100, 0),
+            Err(KernelScheduleError::InvalidQuantum)
+        ));
+        assert!(matches!(
+            KernelScheduler::<1>::new(100, 101),
+            Err(KernelScheduleError::InvalidQuantum)
+        ));
     }
 }

@@ -1102,6 +1102,18 @@ changes, context switches, or end-to-end IPC. Sub-nanosecond averages can result
 from pipelining across independent iterations and must not be presented as
 single-operation latency.
 
+The kernel scheduler now has a bounded timer-driven owner above the existing
+weighted round-robin policy. Timer frequency is restricted to 10--100,000 Hz,
+the quantum must be nonzero and no longer than one second, tick overflow fails
+closed, and preemption occurs only at an exact quantum boundary. Blocking and
+termination clear the current identity before selecting a replacement; removal
+advances its generation so a faulted task can never be woken or resumed through
+a stale handle. Windows and Linux tests cover preemption, idle wakeup, task
+termination, stale identities, and invalid timer policies. A separate release
+microbenchmark now measures tick accounting. Hardware timer programming,
+interrupt acknowledgement, saved-context installation, and `iretq` remain the
+next integration gate.
+
 ## Milestones
 
 1. Capability model, explicit directory grants, IPC wire format, and property

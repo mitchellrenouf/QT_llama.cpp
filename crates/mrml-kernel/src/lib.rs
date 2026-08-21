@@ -56,7 +56,10 @@ pub use policy::{
     DeviceAddress, DeviceGrant, HostDevice, IommuTopology, MAX_VM_NAME, PolicyError, SystemPolicy,
     VmName, VmPolicy,
 };
-pub use scheduler::{Priority, Scheduler, SchedulerError, TaskId, TaskState};
+pub use scheduler::{
+    KernelScheduleError, KernelScheduler, Priority, ScheduleOutcome, Scheduler, SchedulerError,
+    TaskId, TaskState,
+};
 pub use virtual_gpu::{
     BatchedDispatch, BufferAccess, BufferId, BufferMode, ControlBufferId, ControlBufferTable,
     Dispatch, DispatchId, DispatchTable, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES,

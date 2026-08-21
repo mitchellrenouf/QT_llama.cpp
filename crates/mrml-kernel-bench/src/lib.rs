@@ -7,7 +7,9 @@
 #[cfg(test)]
 mod tests {
     use core::hint::black_box;
-    use mrml_kernel::{CapabilitySpace, ObjectId, Priority, Rights, Scheduler, VmTable};
+    use mrml_kernel::{
+        CapabilitySpace, KernelScheduler, ObjectId, Priority, Rights, Scheduler, VmTable,
+    };
     use mrml_runtime::{Instant, mrml_println};
 
     const ITERATIONS: u64 = 1_000_000;
@@ -82,6 +84,28 @@ mod tests {
         let picoseconds = elapsed.saturating_mul(1000) / ITERATIONS as u128;
         mrml_println!(
             "MRML_KERNEL_BENCH vm_exit_account_total_ns={} vm_exit_account_ps={} iterations={}",
+            elapsed,
+            picoseconds,
+            ITERATIONS
+        );
+        assert!(per_operation < MAX_NANOSECONDS_PER_OPERATION);
+    }
+
+    #[test]
+    #[ignore = "manual release-mode performance gate"]
+    fn timer_tick_accounting_budget() {
+        let mut scheduler = KernelScheduler::<1>::new(10_000, 10_000).unwrap();
+        scheduler.create(Priority::NORMAL).unwrap();
+        scheduler.start();
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            black_box(scheduler.timer_tick().unwrap());
+        }
+        let elapsed = start.elapsed().as_nanos();
+        let per_operation = elapsed / ITERATIONS as u128;
+        let picoseconds = elapsed.saturating_mul(1000) / ITERATIONS as u128;
+        mrml_println!(
+            "MRML_KERNEL_BENCH timer_tick_total_ns={} timer_tick_ps={} iterations={}",
             elapsed,
             picoseconds,
             ITERATIONS
