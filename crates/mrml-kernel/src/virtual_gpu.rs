@@ -263,6 +263,9 @@ fn invalidate_dispatch(entry: &mut InFlightDispatch) {
 
 pub const GPU_QUEUE_MESSAGE_BYTES: usize = 80;
 pub const MAX_GPU_QUEUE_SLOTS: usize = 256;
+pub const GPU_DOORBELL_PORT: u16 = 0x4d52;
+pub const MAX_GPU_BENCHMARK_ELEMENTS: u32 = 16 * 1024 * 1024;
+pub const MAX_GPU_BENCHMARK_ITERATIONS: u32 = 10_000;
 const GPU_QUEUE_AUTHENTICATED_BYTES: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -440,6 +443,53 @@ impl<const N: usize> GpuRingProducer<N> {
 
     pub const fn published(&self) -> u64 {
         self.published
+    }
+}
+
+/// Guest-side authenticated command publisher over already validated shared
+/// pages. The caller supplies typed, non-aliasing views of the index header and
+/// slot array; this type owns the monotonic producer state.
+pub struct GpuGuestCommandPublisher<const N: usize> {
+    producer: GpuRingProducer<N>,
+    poisoned: bool,
+}
+
+impl<const N: usize> GpuGuestCommandPublisher<N> {
+    pub fn new() -> Result<Self, GpuError> {
+        Ok(Self {
+            producer: GpuRingProducer::new()?,
+            poisoned: false,
+        })
+    }
+
+    pub const fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    pub fn publish(
+        &mut self,
+        indices: &GpuSharedRingIndices,
+        slots: &mut [[u8; GPU_QUEUE_MESSAGE_BYTES]; N],
+        message: &[u8; GPU_QUEUE_MESSAGE_BYTES],
+    ) -> Result<u64, GpuError> {
+        if self.poisoned {
+            return Err(GpuError::InvalidQueueState);
+        }
+        let previous = self.producer.published();
+        let ticket = self.producer.reserve(indices.consumed())?;
+        slots[usize::from(ticket.slot())].copy_from_slice(message);
+        if let Err(error) = indices.publish(previous, ticket) {
+            slots[usize::from(ticket.slot())].fill(0);
+            self.poisoned = true;
+            return Err(error);
+        }
+        match self.producer.commit(ticket) {
+            Ok(position) => Ok(position),
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -1424,6 +1474,7 @@ pub enum ResourceCommand {
     Allocate { bytes: u64 },
     Free { buffer: BufferId },
     SubmitBatch { control: ControlBufferId },
+    BenchmarkAdd { elements: u32, iterations: u32 },
 }
 
 pub trait GpuResourceBackend {
@@ -1447,6 +1498,11 @@ pub enum GpuResourceOutcome {
         request_id: u64,
         control: ControlBufferId,
     },
+    BenchmarkAdd {
+        request_id: u64,
+        elements: u32,
+        iterations: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1466,6 +1522,7 @@ impl GpuResourceResponse {
                 Ok(Self::Freed { request_id, bytes })
             }
             GpuResourceOutcome::SubmitBatch { .. } => Err(GpuError::UnsupportedCommand),
+            GpuResourceOutcome::BenchmarkAdd { .. } => Err(GpuError::UnsupportedCommand),
         }
     }
 
@@ -1628,6 +1685,14 @@ pub fn process_gpu_resource_command<B: GpuResourceBackend, const RING: usize>(
             request_id,
             control,
         }),
+        ResourceCommand::BenchmarkAdd {
+            elements,
+            iterations,
+        } => Ok(GpuResourceOutcome::BenchmarkAdd {
+            request_id,
+            elements,
+            iterations,
+        }),
     }
 }
 
@@ -1690,6 +1755,13 @@ impl ResourceCommand {
         if request_id == 0 {
             return Err(GpuError::MalformedCommand);
         }
+        if let Self::BenchmarkAdd {
+            elements,
+            iterations,
+        } = self
+        {
+            validate_benchmark_shape(elements, iterations)?;
+        }
         let output = output
             .get_mut(..Self::WIRE_LENGTH)
             .ok_or(GpuError::CommandBufferTooSmall)?;
@@ -1700,12 +1772,17 @@ impl ResourceCommand {
             Self::Allocate { .. } => 1,
             Self::Free { .. } => 2,
             Self::SubmitBatch { .. } => 3,
+            Self::BenchmarkAdd { .. } => 4,
         };
         output[8..16].copy_from_slice(&request_id.to_le_bytes());
         let value = match self {
             Self::Allocate { bytes } => bytes,
             Self::Free { buffer } => buffer.token(),
             Self::SubmitBatch { control } => control.token(),
+            Self::BenchmarkAdd {
+                elements,
+                iterations,
+            } => (u64::from(iterations) << 32) | u64::from(elements),
         };
         output[16..24].copy_from_slice(&value.to_le_bytes());
         Ok(())
@@ -1732,11 +1809,34 @@ impl ResourceCommand {
             3 => Self::SubmitBatch {
                 control: ControlBufferId::from_token(value)?,
             },
+            4 => {
+                let elements = value as u32;
+                let iterations = (value >> 32) as u32;
+                validate_benchmark_shape(elements, iterations)?;
+                Self::BenchmarkAdd {
+                    elements,
+                    iterations,
+                }
+            }
             1 => return Err(GpuError::MalformedCommand),
             _ => return Err(GpuError::UnsupportedCommand),
         };
         Ok((request_id, command))
     }
+}
+
+fn validate_benchmark_shape(elements: u32, iterations: u32) -> Result<(), GpuError> {
+    if elements == 0
+        || elements > MAX_GPU_BENCHMARK_ELEMENTS
+        || iterations == 0
+        || iterations > MAX_GPU_BENCHMARK_ITERATIONS
+        || u64::from(elements)
+            .checked_mul(u64::from(iterations))
+            .is_none()
+    {
+        return Err(GpuError::InvalidKernelSchema);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -5407,6 +5507,32 @@ mod tests {
         let submit = ResourceCommand::SubmitBatch { control };
         submit.encode(8, &mut wire).unwrap();
         assert_eq!(ResourceCommand::decode(&wire), Ok((8, submit)));
+
+        let benchmark = ResourceCommand::BenchmarkAdd {
+            elements: 4 * 1024 * 1024,
+            iterations: 1000,
+        };
+        benchmark.encode(9, &mut wire).unwrap();
+        assert_eq!(ResourceCommand::decode(&wire), Ok((9, benchmark)));
+        assert_eq!(
+            ResourceCommand::BenchmarkAdd {
+                elements: 0,
+                iterations: 1,
+            }
+            .encode(9, &mut wire),
+            Err(GpuError::InvalidKernelSchema)
+        );
+        wire.fill(0);
+        wire[..4].copy_from_slice(b"MRVG");
+        wire[4] = 1;
+        wire[5] = 4;
+        wire[8..16].copy_from_slice(&9u64.to_le_bytes());
+        wire[16..20].copy_from_slice(&(MAX_GPU_BENCHMARK_ELEMENTS + 1).to_le_bytes());
+        wire[20..24].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            ResourceCommand::decode(&wire),
+            Err(GpuError::InvalidKernelSchema)
+        );
     }
 
     #[test]
@@ -5731,6 +5857,33 @@ mod tests {
         assert!(indices.consume(0, first).is_ok());
         assert_eq!(indices.consumed(), 1);
         assert_eq!(indices.consume(0, first), Err(GpuError::InvalidQueueState));
+    }
+
+    #[test]
+    fn guest_command_publisher_copies_before_release_and_detects_forgery() {
+        let indices = GpuSharedRingIndices::new();
+        let mut slots = [[0u8; GPU_QUEUE_MESSAGE_BYTES]; 2];
+        let mut publisher = GpuGuestCommandPublisher::<2>::new().unwrap();
+        let first = [0x35; GPU_QUEUE_MESSAGE_BYTES];
+        assert_eq!(publisher.publish(&indices, &mut slots, &first), Ok(1));
+        assert_eq!(indices.published(), 1);
+        assert_eq!(slots[0], first);
+
+        let forged = GpuRingTicket {
+            position: 1,
+            slot: 0,
+        };
+        indices.consume(0, forged).unwrap();
+        let second = [0x57; GPU_QUEUE_MESSAGE_BYTES];
+        assert_eq!(publisher.publish(&indices, &mut slots, &second), Ok(2));
+        assert_eq!(slots[1], second);
+
+        indices.published.store(9, Ordering::Release);
+        assert_eq!(
+            publisher.publish(&indices, &mut slots, &first),
+            Err(GpuError::InvalidQueueState)
+        );
+        assert!(publisher.is_poisoned());
     }
 
     #[test]

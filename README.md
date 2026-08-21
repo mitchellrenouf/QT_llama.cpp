@@ -284,6 +284,11 @@ that the isolated service authority can still publish completion bytes.
 Queue authentication no longer needs a reusable benchmark secret: a
 domain-separated SHA3-512 derivation produces the session ID and 256-bit key
 from the authenticated, per-launch boot entropy, and rejects absent entropy.
+The guest-side producer copies a complete authenticated command before its
+release publication and permanently poisons itself if shared counters are
+forged. A fixed `0x4d52` doorbell and canonical bounded `BenchmarkAdd` request
+carry only element and iteration counts; pointers, symbols, PTX, and
+guest-selected launch geometry cannot be encoded.
 The `SubmitBatch` service path now joins sealed-control revalidation, canonical
 decode, current buffer-generation checks, transactional watchdog admission,
 signed schema validation, execution, and completion publication in one API.

@@ -154,6 +154,11 @@ The guest and isolated service derive their queue session and key from the
 authenticated 256-bit boot entropy with a versioned SHA3-512 domain. This makes
 the identity unique to each launch without placing a reusable symmetric key in
 the signed benchmark image; zero entropy is rejected.
+The signed guest workload can use a typed producer that fills one fixed slot
+before release-publishing its monotonic position. Counter forgery poisons that
+producer. Its VMM notification contract uses port `0x4d52`, and the diagnostic
+`BenchmarkAdd` command admits only bounded element/iteration counts. It cannot
+name memory, kernels, symbols, modules, or launch geometry.
 Platform cache-coherence validation, CUDA graph capture, IOMMU plumbing, the
 platform-specific physical
 device-reset callback, and end-to-end inference benchmarks remain pending.
