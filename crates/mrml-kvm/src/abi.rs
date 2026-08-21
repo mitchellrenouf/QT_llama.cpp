@@ -25,6 +25,9 @@ pub enum KvmError {
     EmptyMemory,
     MemoryOverflow,
     InvalidSlot,
+    SystemCall,
+    ApiVersion,
+    InvalidRunSize(i32),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

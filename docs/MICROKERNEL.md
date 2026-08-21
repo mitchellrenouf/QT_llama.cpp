@@ -468,8 +468,14 @@ validated direction and width, and an in-bounds data offset. MMIO accepts only
 1, 2, 4, or 8 byte accesses. MRML hypercalls use a dedicated number and require
 all unused KVM arguments to be zero. Memory-slot encodings are page-aligned,
 overflow checked, optionally read-only, and capped at 32 slots. Native file
-descriptor, ioctl, mmap, register setup, and interrupt-chip integration remain
-pending; this layer does not yet launch a KVM guest.
+descriptor ownership, KVM API-version validation, VM and vCPU creation,
+memory-slot registration, bounded `kvm_run` mapping, and exit execution are
+also implemented with RAII cleanup. Register setup, interrupt-chip integration,
+guest-memory ownership/copying, and a complete `VmBackend` implementation
+remain pending, so this layer does not yet launch a bootable KVM guest. The
+current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
+the live capability probe records that as unavailable and no launch claim is
+made for this environment.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector
