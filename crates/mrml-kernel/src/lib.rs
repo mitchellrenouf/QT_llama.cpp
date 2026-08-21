@@ -10,6 +10,7 @@ mod artifact;
 mod boot;
 mod capability;
 mod grant;
+mod handoff;
 mod ipc;
 mod memory;
 mod platform;
@@ -25,6 +26,9 @@ pub use artifact::{
 pub use boot::{BootEvidence, BootPolicy, BootValidationError};
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
+pub use handoff::{
+    BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, HandoffError, MAX_HANDOFF_REGIONS,
+};
 pub use ipc::{
     Endpoint, IpcError, MAX_CAPABILITIES, MAX_INLINE_PAYLOAD, MAX_WIRE_MESSAGE, Message, Receiver,
     WIRE_HEADER_LENGTH,

@@ -1,0 +1,236 @@
+use crate::{BootEvidence, BootValidationError, MemoryError, MemoryKind, MemoryRegion, PhysAddr};
+
+pub const HANDOFF_HEADER_BYTES: usize = 136;
+pub const HANDOFF_REGION_BYTES: usize = 24;
+pub const MAX_HANDOFF_REGIONS: usize = 128;
+
+const FLAG_SECURE_BOOT: u16 = 1;
+const FLAG_MEASURED_BOOT: u16 = 1 << 1;
+const KNOWN_FLAGS: u16 = FLAG_SECURE_BOOT | FLAG_MEASURED_BOOT;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HandoffError {
+    Truncated,
+    BadMagic,
+    NonCanonical,
+    UnknownFlags,
+    TooManyRegions,
+    MissingAcpiRoot,
+    InvalidMemoryMap(MemoryError),
+    InvalidBootEvidence(BootValidationError),
+}
+
+/// Validated architecture-neutral data passed after UEFI boot services exit.
+/// Firmware-owned structures must be normalized into this format first.
+pub struct BootHandoff {
+    evidence: BootEvidence,
+    acpi_root: PhysAddr,
+    region_count: usize,
+}
+
+impl BootHandoff {
+    pub const fn evidence(&self) -> &BootEvidence {
+        &self.evidence
+    }
+
+    pub const fn acpi_root(&self) -> PhysAddr {
+        self.acpi_root
+    }
+
+    pub const fn region_count(&self) -> usize {
+        self.region_count
+    }
+
+    /// Parses a bounded canonical handoff and emits validated regions in
+    /// ascending address order. Callers can place them directly into fixed
+    /// early-boot storage; the parser never allocates or dereferences firmware
+    /// pointers.
+    pub fn decode<F>(input: &[u8], mut emit: F) -> Result<Self, HandoffError>
+    where
+        F: FnMut(MemoryRegion),
+    {
+        if input.len() < HANDOFF_HEADER_BYTES {
+            return Err(HandoffError::Truncated);
+        }
+        if &input[..16] != b"MRML-HANDOFF-v1\0" {
+            return Err(HandoffError::BadMagic);
+        }
+        let encoded_length = read_u32(input, 16) as usize;
+        let region_count = read_u16(input, 20) as usize;
+        let flags = read_u16(input, 22);
+        if flags & !KNOWN_FLAGS != 0 {
+            return Err(HandoffError::UnknownFlags);
+        }
+        if region_count == 0 || region_count > MAX_HANDOFF_REGIONS {
+            return Err(HandoffError::TooManyRegions);
+        }
+        let expected_length = HANDOFF_HEADER_BYTES
+            .checked_add(
+                region_count
+                    .checked_mul(HANDOFF_REGION_BYTES)
+                    .ok_or(HandoffError::NonCanonical)?,
+            )
+            .ok_or(HandoffError::NonCanonical)?;
+        if encoded_length != expected_length || input.len() != expected_length {
+            return Err(HandoffError::NonCanonical);
+        }
+
+        let image_version = read_u64(input, 24);
+        let entropy = input[32..64].try_into().unwrap();
+        let image_measurement = input[64..128].try_into().unwrap();
+        let acpi_address = read_u64(input, 128);
+        if acpi_address == 0 {
+            return Err(HandoffError::MissingAcpiRoot);
+        }
+        let acpi_root = PhysAddr::new(acpi_address).map_err(HandoffError::InvalidMemoryMap)?;
+
+        let mut previous_start = 0u64;
+        let mut previous_end = 0u64;
+        for index in 0..region_count {
+            let region = decode_region(input, index)?;
+            let start = region.start().get();
+            if index != 0 && start < previous_start {
+                return Err(HandoffError::InvalidMemoryMap(MemoryError::Unsorted));
+            }
+            if index != 0 && start < previous_end {
+                return Err(HandoffError::InvalidMemoryMap(MemoryError::Overlap));
+            }
+            previous_start = start;
+            previous_end = region.end();
+        }
+
+        let evidence = BootEvidence::new(
+            entropy,
+            image_measurement,
+            image_version,
+            flags & FLAG_SECURE_BOOT != 0,
+            flags & FLAG_MEASURED_BOOT != 0,
+        )
+        .map_err(HandoffError::InvalidBootEvidence)?;
+        for index in 0..region_count {
+            emit(decode_region(input, index)?);
+        }
+        Ok(Self {
+            evidence,
+            acpi_root,
+            region_count,
+        })
+    }
+}
+
+fn decode_region(input: &[u8], index: usize) -> Result<MemoryRegion, HandoffError> {
+    let offset = HANDOFF_HEADER_BYTES + index * HANDOFF_REGION_BYTES;
+    let start = read_u64(input, offset);
+    let pages = read_u64(input, offset + 8);
+    let kind = decode_kind(input[offset + 16])?;
+    if input[offset + 17..offset + HANDOFF_REGION_BYTES]
+        .iter()
+        .any(|byte| *byte != 0)
+    {
+        return Err(HandoffError::NonCanonical);
+    }
+    MemoryRegion::new(
+        PhysAddr::new(start).map_err(HandoffError::InvalidMemoryMap)?,
+        pages,
+        kind,
+    )
+    .map_err(HandoffError::InvalidMemoryMap)
+}
+
+fn decode_kind(value: u8) -> Result<MemoryKind, HandoffError> {
+    match value {
+        0 => Ok(MemoryKind::Free),
+        1 => Ok(MemoryKind::Kernel),
+        2 => Ok(MemoryKind::Firmware),
+        3 => Ok(MemoryKind::Mmio),
+        4 => Ok(MemoryKind::Acpi),
+        5 => Ok(MemoryKind::Reserved),
+        _ => Err(HandoffError::NonCanonical),
+    }
+}
+
+fn read_u16(input: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(input[offset..offset + 2].try_into().unwrap())
+}
+
+fn read_u32(input: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(input[offset..offset + 4].try_into().unwrap())
+}
+
+fn read_u64(input: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(input[offset..offset + 8].try_into().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TWO_REGION_BYTES: usize = HANDOFF_HEADER_BYTES + 2 * HANDOFF_REGION_BYTES;
+
+    fn valid_handoff() -> [u8; TWO_REGION_BYTES] {
+        let mut encoded = [0u8; TWO_REGION_BYTES];
+        encoded[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
+        encoded[16..20].copy_from_slice(&(TWO_REGION_BYTES as u32).to_le_bytes());
+        encoded[20..22].copy_from_slice(&2u16.to_le_bytes());
+        encoded[22..24].copy_from_slice(&KNOWN_FLAGS.to_le_bytes());
+        encoded[24..32].copy_from_slice(&7u64.to_le_bytes());
+        encoded[32..64].fill(1);
+        encoded[64..128].fill(2);
+        encoded[128..136].copy_from_slice(&0x9000u64.to_le_bytes());
+        encoded[136..144].copy_from_slice(&0x1000u64.to_le_bytes());
+        encoded[144..152].copy_from_slice(&2u64.to_le_bytes());
+        encoded[152] = 0;
+        encoded[160..168].copy_from_slice(&0x3000u64.to_le_bytes());
+        encoded[168..176].copy_from_slice(&1u64.to_le_bytes());
+        encoded[176] = 1;
+        encoded
+    }
+
+    #[test]
+    fn decodes_canonical_bounded_handoff() {
+        let encoded = valid_handoff();
+        let mut starts = [0u64; 2];
+        let mut count = 0;
+        let handoff = BootHandoff::decode(&encoded, |region| {
+            starts[count] = region.start().get();
+            count += 1;
+        })
+        .unwrap();
+        assert_eq!(handoff.region_count(), 2);
+        assert_eq!(handoff.acpi_root().get(), 0x9000);
+        assert_eq!(starts, [0x1000, 0x3000]);
+        assert_eq!(handoff.evidence().image_measurement(), &[2; 64]);
+    }
+
+    #[test]
+    fn rejects_lengths_flags_reserved_bytes_and_overlaps() {
+        let mut encoded = valid_handoff();
+        encoded[22..24].copy_from_slice(&0x8000u16.to_le_bytes());
+        assert_eq!(
+            BootHandoff::decode(&encoded, |_| {}).err(),
+            Some(HandoffError::UnknownFlags)
+        );
+
+        let mut encoded = valid_handoff();
+        encoded[153] = 1;
+        assert_eq!(
+            BootHandoff::decode(&encoded, |_| {}).err(),
+            Some(HandoffError::NonCanonical)
+        );
+
+        let mut encoded = valid_handoff();
+        encoded[160..168].copy_from_slice(&0x2000u64.to_le_bytes());
+        let mut emitted = 0;
+        assert_eq!(
+            BootHandoff::decode(&encoded, |_| emitted += 1).err(),
+            Some(HandoffError::InvalidMemoryMap(MemoryError::Overlap))
+        );
+        assert_eq!(emitted, 0);
+
+        let encoded = valid_handoff();
+        assert_eq!(
+            BootHandoff::decode(&encoded[..encoded.len() - 1], |_| {}).err(),
+            Some(HandoffError::NonCanonical)
+        );
+    }
+}
