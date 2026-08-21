@@ -188,6 +188,15 @@ allocations are never recycled during boot, preventing stale-frame aliasing;
 failure is therefore fatal rather than rolled back. Actual architecture page-
 table installation and the final control transfer remain pending.
 
+The x86-64 address-space layer now converts that physical plan into final user
+or kernel mappings with permissions derived from the validated PE sections.
+Headers remain read-only/NX, executable mappings are never writable, virtual
+and physical alias checks are repeated, and all mapping identifiers are
+generation-tagged. Installation is transactional: a conflict in any later
+section removes every mapping installed earlier in the same attempt, leaving
+no half-mapped executable. Hardware page-table construction and CR3 transfer
+remain pending behind this policy layer.
+
 Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
 dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.
 `mrml-crypto` exposes a fixed-storage boot feature path while its runtime-backed

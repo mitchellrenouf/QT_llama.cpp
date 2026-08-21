@@ -57,6 +57,13 @@ impl PeAllocatedRegion {
     pub const fn physical_start(self) -> PhysAddr {
         self.physical_start
     }
+    #[cfg(test)]
+    pub(crate) const fn test_value(load: PeLoadRegion, physical_start: PhysAddr) -> Self {
+        Self {
+            load,
+            physical_start,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +74,21 @@ pub enum PeAllocationError {
 }
 
 impl PeLoadRegion {
+    #[cfg(test)]
+    pub(crate) const fn test_value(
+        virtual_address: u32,
+        pages: u32,
+        writable: bool,
+        executable: bool,
+    ) -> Self {
+        Self {
+            virtual_address,
+            pages,
+            readable: true,
+            writable,
+            executable,
+        }
+    }
     pub const fn virtual_address(self) -> u32 {
         self.virtual_address
     }
@@ -465,6 +487,7 @@ fn validate_section(
         || section_end(section)? > image_size
         || section.writable() && section.executable()
         || section.executable() && !section.readable()
+        || section.writable() && !section.readable()
         || !(section.readable() || section.writable() || section.executable())
     {
         return Err(if section.writable() && section.executable() {

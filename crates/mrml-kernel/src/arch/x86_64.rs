@@ -1,7 +1,9 @@
 use crate::{PAGE_SIZE, PhysAddr};
 
 mod address_space;
+mod pe_mapping;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
+pub use pe_mapping::{PeMappingError, map_pe_image};
 
 const MAX_PHYSICAL_ADDRESS: u64 = (1u64 << 52) - PAGE_SIZE;
 const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
