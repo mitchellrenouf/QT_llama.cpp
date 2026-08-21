@@ -3,10 +3,11 @@ use core::{
     array,
     sync::atomic::{AtomicU64, Ordering},
 };
-use mrml_crypto::hmac_sha256;
+use mrml_crypto::{Sha3_512, hmac_sha256};
 
 pub const MAX_DISPATCH_BUFFERS: usize = 16;
 pub const MAX_BATCH_DISPATCHES: usize = 32;
+pub const MAX_GPU_CONTROL_BYTES: usize = 64 * 1024;
 const MAX_BLOCK_THREADS: u64 = 1024;
 const MAX_SHARED_MEMORY: u32 = 96 * 1024;
 
@@ -44,6 +45,10 @@ pub enum GpuError {
     InvalidBatchCapacity,
     EmptyBatch,
     BatchFull,
+    ControlBufferTableFull,
+    ControlBufferTooLarge,
+    InvalidControlBuffer,
+    ControlBufferChanged,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -772,6 +777,122 @@ fn constant_time_equal(expected: &[u8; 32], candidate: &[u8]) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControlBufferId {
+    slot: u32,
+    generation: u32,
+}
+
+impl ControlBufferId {
+    const fn token(self) -> u64 {
+        ((self.generation as u64) << 32) | self.slot as u64
+    }
+
+    const fn from_token(token: u64) -> Result<Self, GpuError> {
+        if token >> 32 == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        Ok(Self {
+            slot: token as u32,
+            generation: (token >> 32) as u32,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ControlBuffer {
+    generation: u32,
+    length: u32,
+    digest: [u8; 64],
+    occupied: bool,
+}
+
+impl ControlBuffer {
+    const EMPTY: Self = Self {
+        generation: 1,
+        length: 0,
+        digest: [0; 64],
+        occupied: false,
+    };
+}
+
+/// Kernel-owned admission records for immutable batch/control descriptors.
+/// Shared bytes must match the sealed length and SHA3-512 digest on every use,
+/// closing mutation-after-validation without copying a maximum-size graph into
+/// privileged memory.
+pub struct ControlBufferTable<const N: usize> {
+    entries: [ControlBuffer; N],
+}
+
+impl<const N: usize> ControlBufferTable<N> {
+    pub const fn new() -> Self {
+        Self {
+            entries: [ControlBuffer::EMPTY; N],
+        }
+    }
+
+    pub fn seal(&mut self, bytes: &[u8]) -> Result<ControlBufferId, GpuError> {
+        if bytes.is_empty() || bytes.len() > MAX_GPU_CONTROL_BYTES {
+            return Err(GpuError::ControlBufferTooLarge);
+        }
+        let (slot, entry) = self
+            .entries
+            .iter_mut()
+            .enumerate()
+            .find(|(_, entry)| !entry.occupied && entry.generation != 0)
+            .ok_or(GpuError::ControlBufferTableFull)?;
+        entry.length = bytes.len() as u32;
+        entry.digest = Sha3_512::digest(bytes);
+        entry.occupied = true;
+        Ok(ControlBufferId {
+            slot: slot as u32,
+            generation: entry.generation,
+        })
+    }
+
+    pub fn verify(&self, id: ControlBufferId, bytes: &[u8]) -> Result<(), GpuError> {
+        let entry = self.entry(id)?;
+        if bytes.len() != entry.length as usize {
+            return Err(GpuError::ControlBufferChanged);
+        }
+        let candidate = Sha3_512::digest(bytes);
+        let mut difference = 0u8;
+        for (expected, candidate) in entry.digest.iter().zip(candidate.iter()) {
+            difference |= *expected ^ *candidate;
+        }
+        if difference != 0 {
+            return Err(GpuError::ControlBufferChanged);
+        }
+        Ok(())
+    }
+
+    pub fn release(&mut self, id: ControlBufferId) -> Result<(), GpuError> {
+        let entry = self
+            .entries
+            .get_mut(id.slot as usize)
+            .filter(|entry| entry.occupied && entry.generation == id.generation)
+            .ok_or(GpuError::InvalidControlBuffer)?;
+        entry.length = 0;
+        entry.digest.fill(0);
+        entry.occupied = false;
+        entry.generation = entry.generation.checked_add(1).unwrap_or(0);
+        Ok(())
+    }
+
+    fn entry(&self, id: ControlBufferId) -> Result<&ControlBuffer, GpuError> {
+        self.entries
+            .get(id.slot as usize)
+            .filter(|entry| entry.occupied && entry.generation == id.generation)
+            .ok_or(GpuError::InvalidControlBuffer)
+    }
+}
+
+impl<const N: usize> Default for ControlBufferTable<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferId {
     slot: u32,
     generation: u32,
@@ -797,6 +918,7 @@ impl BufferId {
 pub enum ResourceCommand {
     Allocate { bytes: u64 },
     Free { buffer: BufferId },
+    SubmitBatch { control: ControlBufferId },
 }
 
 impl ResourceCommand {
@@ -818,11 +940,13 @@ impl ResourceCommand {
         output[5] = match self {
             Self::Allocate { .. } => 1,
             Self::Free { .. } => 2,
+            Self::SubmitBatch { .. } => 3,
         };
         output[8..16].copy_from_slice(&request_id.to_le_bytes());
         let value = match self {
             Self::Allocate { bytes } => bytes,
             Self::Free { buffer } => buffer.token(),
+            Self::SubmitBatch { control } => control.token(),
         };
         output[16..24].copy_from_slice(&value.to_le_bytes());
         Ok(())
@@ -845,6 +969,9 @@ impl ResourceCommand {
             1 if value != 0 => Self::Allocate { bytes: value },
             2 => Self::Free {
                 buffer: BufferId::from_token(value)?,
+            },
+            3 => Self::SubmitBatch {
+                control: ControlBufferId::from_token(value)?,
             },
             1 => return Err(GpuError::MalformedCommand),
             _ => return Err(GpuError::UnsupportedCommand),
@@ -1344,6 +1471,37 @@ mod tests {
             ResourceCommand::decode(&wire),
             Err(GpuError::MalformedCommand)
         );
+
+        let mut controls = ControlBufferTable::<1>::new();
+        let control = controls.seal(b"canonical batch descriptor").unwrap();
+        let submit = ResourceCommand::SubmitBatch { control };
+        submit.encode(8, &mut wire).unwrap();
+        assert_eq!(ResourceCommand::decode(&wire), Ok((8, submit)));
+    }
+
+    #[test]
+    fn control_buffers_are_typed_sealed_bounded_and_generational() {
+        let mut controls = ControlBufferTable::<1>::new();
+        assert_eq!(controls.seal(&[]), Err(GpuError::ControlBufferTooLarge));
+        let bytes = b"bounded canonical dispatch batch";
+        let id = controls.seal(bytes).unwrap();
+        assert!(controls.verify(id, bytes).is_ok());
+        assert_eq!(
+            controls.verify(id, b"bounded canonical dispatch batcH"),
+            Err(GpuError::ControlBufferChanged)
+        );
+        assert_eq!(
+            controls.seal(b"second"),
+            Err(GpuError::ControlBufferTableFull)
+        );
+        controls.release(id).unwrap();
+        assert_eq!(
+            controls.verify(id, bytes),
+            Err(GpuError::InvalidControlBuffer)
+        );
+        let replacement = controls.seal(bytes).unwrap();
+        assert_ne!(replacement, id);
+        assert_eq!(controls.release(id), Err(GpuError::InvalidControlBuffer));
     }
 
     #[test]

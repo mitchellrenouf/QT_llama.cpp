@@ -125,13 +125,17 @@ monotonic producer/consumer ownership state, cache-line-separated atomic
 publication indices with acquire/release ordering, embedded-kernel allowlist,
 launch validation, an independently authenticated completion protocol bound to
 generational dispatch IDs, bounded ordered batches of up to 32 prevalidated
-dispatches, dispatch watchdog, and adversarial unit tests. The cross-VM
+dispatches, and a separate generational control-buffer namespace capped at
+64 KiB whose shared bytes are SHA3-512 sealed and rechecked on use. The queue
+has a canonical `SubmitBatch` command; device buffers cannot be substituted
+for control descriptors. Also implemented are the dispatch watchdog and
+adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
 guest execution. Platform cache-coherence validation, host CUDA executor,
-batch control-buffer wire capability, service-side queue execution, CUDA graph
+service-side queue execution, canonical batch serialization, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims

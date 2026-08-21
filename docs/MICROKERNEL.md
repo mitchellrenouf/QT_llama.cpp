@@ -82,9 +82,13 @@ The executor-facing batch policy holds at most 32 ordered dispatches in fixed
 storage and validates every buffer generation and range before admission. It
 rejects empty/oversized batches, duplicate or zero request IDs, stale buffers,
 and capacity overflow. This is the coarse submission unit intended for one
-doorbell and one CUDA graph/stream sequence. A separate generational control
-buffer wire capability is still required; device `BufferId` is deliberately
-not reused for batch descriptors because that would create type confusion.
+doorbell and one CUDA graph/stream sequence. Batch descriptors use a separate
+generational `ControlBufferId`, never device `BufferId`. Admission caps shared
+control bytes at 64 KiB and records their length and SHA3-512 digest; every use
+rehashes before parsing, release erases the privileged digest, and stale IDs do
+not revalidate. The authenticated resource queue has a canonical `SubmitBatch`
+variant carrying only this typed ID. Canonical batch serialization and the
+service-side executor remain pending.
 The KVM adapter now consumes the common layout and registers two dedicated
 memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining
