@@ -185,9 +185,12 @@ trampoline. The trampoline enables EFER.NXE and CR0.WP, replaces CR3, changes
 to the dedicated stack, and jumps without returning. No writable alias of an
 executable image page is retained. QEMU 11.1 reached the independent kernel
 marker with `CR0=0x80010033`, `EFER=0xd00`, and the loader-created CR3 root.
-The current fail-stop transition deliberately has no mapped firmware IDT/GDT
-memory; the next kernel checkpoint must install owned descriptor and exception
-tables before enabling interrupts or attempting recoverable fault handling.
+The standalone kernel immediately installs an image-owned GDT preserving the
+transition selectors and a complete image-owned IDT whose gates all target a
+non-returning interrupt-disabled halt stub. Interrupts remain disabled; this is
+deterministic fail-stop handling, not yet recoverable fault dispatch. A signed
+`fault-probe` build executed `UD2` under QEMU and stopped with `HLT=1` at the
+kernel handler while retaining the loader-created CR3 and kernel GDT/IDT bases.
 
 ### OS executable format
 

@@ -1,12 +1,85 @@
 #![no_std]
 #![no_main]
 
+use core::arch::{asm, global_asm};
+#[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, Color, FramebufferSurface, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
     MAX_HANDOFF_REGIONS,
 };
 
+#[cfg(not(feature = "fault-probe"))]
 const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
+
+#[repr(C, packed)]
+struct DescriptorPointer {
+    limit: u16,
+    base: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InterruptGate {
+    low: u16,
+    selector: u16,
+    ist: u8,
+    attributes: u8,
+    middle: u16,
+    high: u32,
+    reserved: u32,
+}
+
+impl InterruptGate {
+    const MISSING: Self = Self {
+        low: 0,
+        selector: 0,
+        ist: 0,
+        attributes: 0,
+        middle: 0,
+        high: 0,
+        reserved: 0,
+    };
+
+    fn fail_stop(address: u64) -> Self {
+        Self {
+            low: address as u16,
+            selector: 0x38,
+            ist: 0,
+            attributes: 0x8e,
+            middle: (address >> 16) as u16,
+            high: (address >> 32) as u32,
+            reserved: 0,
+        }
+    }
+}
+
+static GDT: [u64; 8] = [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0x00cf_9300_0000_ffff,
+    0x00af_9a00_0000_ffff,
+];
+static mut IDT: [InterruptGate; 256] = [InterruptGate::MISSING; 256];
+
+global_asm!(
+    r#"
+    .section .text
+    .global mrml_exception_fail_stop
+mrml_exception_fail_stop:
+    cli
+1:
+    hlt
+    jmp 1b
+    "#
+);
+
+unsafe extern "C" {
+    fn mrml_exception_fail_stop() -> !;
+}
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
@@ -17,6 +90,20 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 /// services have exited and after authenticating both this image and handoff.
 #[unsafe(export_name = "efi_main")]
 pub unsafe extern "efiapi" fn kernel_entry(bytes: *const u8, length: usize) -> usize {
+    unsafe { install_descriptor_tables() };
+    #[cfg(feature = "fault-probe")]
+    unsafe {
+        let _ = (bytes, length);
+        asm!("ud2", options(noreturn));
+    }
+    #[cfg(not(feature = "fault-probe"))]
+    unsafe {
+        run_kernel(bytes, length)
+    }
+}
+
+#[cfg(not(feature = "fault-probe"))]
+unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     if bytes.is_null() || !(HANDOFF_HEADER_BYTES..=MAX_HANDOFF_BYTES).contains(&length) {
         halt();
     }
@@ -64,6 +151,30 @@ pub unsafe extern "efiapi" fn kernel_entry(bytes: *const u8, length: usize) -> u
         },
     );
     halt()
+}
+
+unsafe fn install_descriptor_tables() {
+    let handler = mrml_exception_fail_stop as *const () as usize as u64;
+    let idt_pointer = core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>();
+    for index in 0..256 {
+        unsafe {
+            idt_pointer
+                .add(index)
+                .write(InterruptGate::fail_stop(handler))
+        };
+    }
+    let gdtr = DescriptorPointer {
+        limit: (core::mem::size_of_val(&GDT) - 1) as u16,
+        base: core::ptr::addr_of!(GDT) as u64,
+    };
+    let idtr = DescriptorPointer {
+        limit: (core::mem::size_of::<InterruptGate>() * 256 - 1) as u16,
+        base: core::ptr::addr_of!(IDT) as u64,
+    };
+    unsafe {
+        asm!("lgdt [{}]", in(reg) &gdtr, options(readonly, nostack, preserves_flags));
+        asm!("lidt [{}]", in(reg) &idtr, options(readonly, nostack, preserves_flags));
+    }
 }
 
 fn halt() -> ! {

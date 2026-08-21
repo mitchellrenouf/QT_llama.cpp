@@ -7,6 +7,7 @@ license.workspace = true
 
 [features]
 kernel-image = []
+fault-probe = []
 
 [[bin]]
 name = "mrml-kernel-pe"

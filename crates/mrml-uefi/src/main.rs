@@ -94,6 +94,7 @@ global_asm!(
     .p2align 12
     .global mrml_activate_address_space
 mrml_activate_address_space:
+    cli
     mov r11, rcx
     mov r12, rdx
     mov r10, qword ptr [rsp + 40]
