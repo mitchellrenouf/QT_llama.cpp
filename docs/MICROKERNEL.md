@@ -531,9 +531,16 @@ function pointers cannot outlive their code. Hardened x64 register setup now
 validates canonical entry/stack/handoff addresses, aligned CR3, Microsoft ABI
 stack alignment, and bounded handoff length. It installs explicit long-mode,
 PAE, supervisor write-protect, NX, RFLAGS, code/data segments, and RCX/RDX
-handoff state through one register transaction. Page-table construction, signed
-PE launch composition, interrupt injection, and a successful live WHP guest
-execution remain pending, so this milestone does not claim Hyper-V bootability.
+handoff state through one register transaction. The launch transaction now
+accepts only a `VerifiedExecutable`, validates the complete boot handoff before
+native allocation, creates four disjoint table/image/handoff/stack mappings,
+materializes and relocates the PE image, builds section-specific W^X page
+tables, maps the handoff read-only and NX, writes a guarded ABI stack, and
+programs CR3 and entry state last. Only `PreparedWhpGuest` is published after
+all stages succeed. A live Windows test now creates and deletes an actual WHP
+partition, vCPU, and guest mapping when the host reports Hyper-V present.
+Interrupt injection and a successful signed guest execution remain pending, so
+this milestone does not claim Hyper-V bootability.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector

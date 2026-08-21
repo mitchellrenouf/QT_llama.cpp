@@ -6,6 +6,9 @@ use mrml_kernel::VmExit;
 
 use crate::{GuestRange, WHP_EXIT_CONTEXT_BYTES, WhpError, decode_exit_context};
 
+mod launch;
+pub use launch::{PreparedWhpGuest, WhpLaunchLayout};
+
 type Handle = *mut c_void;
 type Hresult = i32;
 type GetCapability = unsafe extern "system" fn(u32, *mut c_void, u32, *mut u32) -> Hresult;
@@ -176,6 +179,10 @@ pub struct PreparedWhpPartition<'system> {
 }
 
 impl PreparedWhpPartition<'_> {
+    pub(crate) fn map_zeroed(&mut self, range: GuestRange) -> Result<usize, WhpError> {
+        self.map_initialized(range, &[])
+    }
+
     pub fn map_initialized(
         &mut self,
         range: GuestRange,
@@ -253,6 +260,66 @@ impl PreparedWhpPartition<'_> {
         };
         output.copy_from_slice(source);
         Ok(())
+    }
+
+    pub(crate) fn read_guest(&self, address: u64, output: &mut [u8]) -> Result<(), WhpError> {
+        let (mapping, offset) = self.locate(address, output.len())?;
+        let source = unsafe {
+            slice::from_raw_parts(
+                mapping.address.as_ptr().cast::<u8>().add(offset),
+                output.len(),
+            )
+        };
+        output.copy_from_slice(source);
+        Ok(())
+    }
+
+    pub(crate) fn write_guest(&mut self, address: u64, input: &[u8]) -> Result<(), WhpError> {
+        let (mapping, offset) = self.locate(address, input.len())?;
+        if mapping.range.permissions().bits() & 2 == 0 {
+            return Err(WhpError::ReadOnlyMemory);
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                input.as_ptr(),
+                mapping.address.as_ptr().cast::<u8>().add(offset),
+                input.len(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn mutable_guest(
+        &mut self,
+        address: u64,
+        bytes: usize,
+    ) -> Result<&mut [u8], WhpError> {
+        let (mapping, offset) = self.locate(address, bytes)?;
+        if mapping.range.permissions().bits() & 2 == 0 {
+            return Err(WhpError::ReadOnlyMemory);
+        }
+        Ok(unsafe {
+            slice::from_raw_parts_mut(mapping.address.as_ptr().cast::<u8>().add(offset), bytes)
+        })
+    }
+
+    fn locate(&self, address: u64, bytes: usize) -> Result<(&OwnedMapping, usize), WhpError> {
+        if bytes == 0 {
+            return Err(WhpError::UnmappedMemory);
+        }
+        let end = address
+            .checked_add(bytes as u64)
+            .ok_or(WhpError::MemoryOverflow)?;
+        let mapping = self
+            .mappings
+            .iter()
+            .flatten()
+            .find(|mapping| {
+                address >= mapping.range.guest_address()
+                    && end <= mapping.range.guest_address() + mapping.range.size()
+            })
+            .ok_or(WhpError::UnmappedMemory)?;
+        Ok((mapping, (address - mapping.range.guest_address()) as usize))
     }
 
     pub fn run(&mut self) -> Result<VmExit, WhpError> {
@@ -429,6 +496,7 @@ const fn wide_name() -> [u16; 18] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MapPermissions;
 
     #[test]
     fn register_values_match_whp_union_layout() {
@@ -451,5 +519,19 @@ mod tests {
     fn installed_platform_exports_are_complete() {
         let system = WhpSystem::open().unwrap();
         assert!(system.hypervisor_present().is_ok());
+    }
+
+    #[test]
+    fn live_partition_lifecycle_when_hypervisor_is_present() {
+        let system = WhpSystem::open().unwrap();
+        if system.hypervisor_present().unwrap() {
+            let mut partition = system.prepare_partition().unwrap();
+            let range = GuestRange::new(0x10_0000, 0x1000, MapPermissions::read_write()).unwrap();
+            partition.map_zeroed(range).unwrap();
+            partition.write_guest(0x10_0000, &[0x5a]).unwrap();
+            let mut value = [0u8; 1];
+            partition.read_guest(0x10_0000, &mut value).unwrap();
+            assert_eq!(value, [0x5a]);
+        }
     }
 }

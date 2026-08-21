@@ -1,4 +1,4 @@
-use mrml_kernel::{GuestAccess, PAGE_SIZE, VmExit};
+use mrml_kernel::{GuestAccess, HandoffError, PAGE_SIZE, PeError, VmExit};
 
 pub const WHP_EXIT_CONTEXT_BYTES: usize = 224;
 const EXIT_MEMORY_ACCESS: u32 = 1;
@@ -23,6 +23,12 @@ pub enum WhpError {
     MemoryOverlap,
     InvalidPermissions,
     InvalidRegisterState,
+    InvalidMapping,
+    UnmappedMemory,
+    ReadOnlyMemory,
+    PageTable,
+    Pe(PeError),
+    Handoff(HandoffError),
     TruncatedExit,
     MalformedExit,
     UnsupportedExit,
