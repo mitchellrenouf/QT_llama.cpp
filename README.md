@@ -148,13 +148,16 @@ disabled until specified. Dispatch wire version 2 carries at most 16 explicitly
 typed 32-bit scalar arguments (`u32`, `i32`, or IEEE-754 bits); unused slots and
 per-scalar reserved bytes must be zero, and version-1 records are rejected.
 This provides bounded scalar transport without pointers or variable blobs.
+Kernel 0 (`gemm_q4_0_f32`) is enabled only when its positive signed
+rows/columns/batch scalars exactly match Q4_0 weight bytes, f32 input/output
+bytes, alignment, permissions, and fixed tiled launch geometry.
 Also implemented are the dispatch watchdog and
 adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 27
+guest execution. Platform cache-coherence validation, the remaining 26
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML

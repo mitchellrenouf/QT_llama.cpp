@@ -143,8 +143,12 @@ The first typed executor schema is implemented for kernel ID 7 (`add_f32`). It
 derives the scalar element count from three equal nonempty f32 buffer ranges,
 requires read/read/write permissions and four-byte alignment, fixes the block
 to 256 threads, verifies the corresponding grid, and forbids shared memory.
+Kernel ID 0 (`gemm_q4_0_f32`) is also typed: positive signed rows, columns, and
+batch dimensions must produce the exact Q4_0 weight length (18 bytes per 32
+values), f32 input/output lengths, required alignments, access modes, and tiled
+grid. Checked multiplication rejects dimension overflow before handoff.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 27 schemas and the
+registry alone cannot make it executable. The remaining 26 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
