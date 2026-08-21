@@ -30,9 +30,14 @@ struct FileInfoBuffer(UnsafeCell<[u8; FILE_INFO_BYTES]>);
 unsafe impl Sync for FileInfoBuffer {}
 static FILE_INFO: FileInfoBuffer = FileInfoBuffer(UnsafeCell::new([0; FILE_INFO_BYTES]));
 const HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
+const PAGE_BYTES: usize = 4096;
+#[repr(C, align(4096))]
 struct HandoffBuffer(UnsafeCell<[u8; HANDOFF_BYTES]>);
 unsafe impl Sync for HandoffBuffer {}
 static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; HANDOFF_BYTES]));
+const _: () = assert!(HANDOFF_BYTES <= PAGE_BYTES);
+const _: () = assert!(core::mem::align_of::<HandoffBuffer>() == PAGE_BYTES);
+const _: () = assert!(core::mem::size_of::<HandoffBuffer>() == PAGE_BYTES);
 const KERNEL_STACK_PAGES: usize = 16;
 const KERNEL_STACK_GUARD_PAGES: usize = 1;
 const KERNEL_PATH: &[u16] = &[
@@ -147,6 +152,8 @@ mrml_activate_address_space:
     mov rcx, r9
     mov rdx, r10
     jmp r8
+    .global mrml_activate_address_space_end
+mrml_activate_address_space_end:
     "#
 );
 
@@ -158,6 +165,7 @@ unsafe extern "efiapi" {
         handoff: *const u8,
         handoff_length: usize,
     ) -> !;
+    static mrml_activate_address_space_end: u8;
 }
 
 #[panic_handler]
@@ -694,10 +702,14 @@ fn prepare_transition(
         KERNEL_STACK_PAGES as u64,
         PagePermissions::KERNEL_READ_WRITE,
     )?;
-    map_containing_identity(
+    let handoff_address = HANDOFF.0.get() as u64;
+    if !handoff_address.is_multiple_of(PAGE_BYTES as u64) {
+        return Err(LOAD_ERROR);
+    }
+    map_identity(
         &mut tables,
-        HANDOFF.0.get() as u64,
-        HANDOFF_BYTES as u64,
+        handoff_address,
+        1,
         PagePermissions::KERNEL_READ,
     )?;
     map_containing_identity(
@@ -706,9 +718,20 @@ fn prepare_transition(
         framebuffer.size as u64,
         PagePermissions::KERNEL_READ_WRITE,
     )?;
-    map_containing_identity(
+    let trampoline_start = mrml_activate_address_space as *const () as usize as u64;
+    let trampoline_end = core::ptr::addr_of!(mrml_activate_address_space_end) as u64;
+    if !trampoline_start.is_multiple_of(PAGE_BYTES as u64)
+        || trampoline_end <= trampoline_start
+        || trampoline_end
+            > trampoline_start
+                .checked_add(PAGE_BYTES as u64)
+                .ok_or(LOAD_ERROR)?
+    {
+        return Err(LOAD_ERROR);
+    }
+    map_identity(
         &mut tables,
-        mrml_activate_address_space as *const () as usize as u64,
+        trampoline_start,
         1,
         PagePermissions::KERNEL_READ_EXECUTE,
     )?;

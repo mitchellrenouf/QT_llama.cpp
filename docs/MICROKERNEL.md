@@ -406,7 +406,11 @@ read-only/executable permissions; the stack and GOP aperture writable/NX; the
 canonical handoff read-only; and one page-aligned read-only/executable assembly
 trampoline. The trampoline enables EFER.NXE and CR0.WP, replaces CR3, changes
 to the dedicated stack, and jumps without returning. No writable alias of an
-executable image page is retained. QEMU 11.1 reached the independent kernel
+executable image page is retained. The handoff has a dedicated, statically
+size-checked 4 KiB page, and the transition rejects a trampoline whose linker
+symbols do not prove that it fits entirely within its dedicated page. Thus
+neither restricted mapping silently grants access to adjacent loader data or
+code. QEMU 11.1 reached the independent kernel
 marker with `CR0=0x80010033`, `EFER=0xd00`, and the loader-created CR3 root.
 The standalone kernel immediately installs an image-owned GDT preserving the
 transition selectors and a complete image-owned IDT whose gates all target a

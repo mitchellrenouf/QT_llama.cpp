@@ -94,7 +94,9 @@ marker. Before installing the guarded address space, the loader erases the
 entire page-rounded kernel allocation and all 64 KiB of the kernel stack, so no
 firmware-era tail or stack data enters the kernel mapping. A separately
 allocated lower guard page is deliberately absent from the new page tables, so
-downward stack overflow faults instead of reaching an adjacent allocation. Recoverable
+downward stack overflow faults instead of reaching an adjacent allocation. The
+canonical handoff occupies its own compile-time-checked 4 KiB-aligned page, so
+making it read-only cannot expose neighboring loader statics. Recoverable
 exception dispatch, timers, scheduling from the standalone
 image, service VMs, and bare-metal validation remain unfinished.
 
