@@ -1,12 +1,15 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 
-use mrml_error::{Context, Result};
 use core::fmt::Write as _;
 use mrml_agent::client::StreamEvent;
 use mrml_agent::{Config, MrmlAgent};
+use mrml_error::{Context, Result};
 use mrml_json::{Value, object};
-use mrml_runtime::{Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln, mrml_format as format, mrml_println as println};
+use mrml_runtime::{
+    Shared, SpinMutex, Text, Vector, mrml_eprintln as eprintln, mrml_format as format,
+    mrml_println as println,
+};
 
 const RECORD_PREFIX: &str = "MRML_MACHINE_JSON=";
 
@@ -19,7 +22,6 @@ macro_rules! text_format {
 }
 
 /// Stable, non-interactive MRML interface for ChatGPT and test harnesses.
-#[derive(Debug)]
 struct Args {
     config: Config,
     require_full_gpu: bool,
