@@ -1,4 +1,4 @@
-use mrml_kernel::{PeError, VmExit, PAGE_SIZE};
+use mrml_kernel::{HandoffError, PeError, VmExit, PAGE_SIZE};
 
 pub const KVM_API_VERSION: i32 = 12;
 pub const MRML_KVM_HYPERCALL: u64 = 0x4d52_4d4c;
@@ -37,6 +37,7 @@ pub enum KvmError {
     Pe(PeError),
     InvalidMapping,
     PageTable,
+    Handoff(HandoffError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

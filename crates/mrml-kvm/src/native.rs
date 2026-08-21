@@ -6,7 +6,8 @@ use mrml_kernel::arch::x86_64::{
     VirtAddr,
 };
 use mrml_kernel::{
-    PeImage, PhysAddr, VerifiedExecutable, VmBackend, VmExit, MAX_PE_SECTIONS, PAGE_SIZE,
+    BootHandoff, PeImage, PhysAddr, VerifiedExecutable, VmBackend, VmExit, MAX_PE_SECTIONS,
+    PAGE_SIZE,
 };
 
 use crate::{decode_run_page, KvmError, KvmMemoryRegion, KVM_API_VERSION};
@@ -533,6 +534,42 @@ impl<const N: usize> KvmGuestMemory<N> {
         self.load_pe(executable.image(), guest_physical_base, virtual_base)
     }
 
+    pub fn load_boot_handoff(
+        &mut self,
+        encoded: &[u8],
+        guest_physical_address: u64,
+    ) -> Result<KvmLoadedHandoff, KvmError> {
+        if guest_physical_address % PAGE_SIZE != 0 {
+            return Err(KvmError::UnalignedMemory);
+        }
+        BootHandoff::decode(encoded, |_| {}).map_err(KvmError::Handoff)?;
+        let pages = (encoded.len() as u64)
+            .checked_add(PAGE_SIZE - 1)
+            .ok_or(KvmError::MemoryOverflow)?
+            / PAGE_SIZE;
+        let allocation_bytes = pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(KvmError::MemoryOverflow)?;
+        let allocation_bytes =
+            usize::try_from(allocation_bytes).map_err(|_| KvmError::MemoryOverflow)?;
+        let (host, offset, readonly) = {
+            let (region, offset) = self.locate(guest_physical_address, allocation_bytes)?;
+            (region.host, offset, region.readonly)
+        };
+        if readonly {
+            return Err(KvmError::ReadOnlyMemory);
+        }
+        let destination =
+            unsafe { slice::from_raw_parts_mut(host.as_ptr().add(offset), allocation_bytes) };
+        destination.fill(0);
+        destination[..encoded.len()].copy_from_slice(encoded);
+        Ok(KvmLoadedHandoff {
+            physical_address: guest_physical_address,
+            bytes: encoded.len() as u32,
+            pages: pages as u32,
+        })
+    }
+
     fn load_pe(
         &mut self,
         image: &PeImage<'_>,
@@ -597,6 +634,46 @@ impl KvmLoadedImage {
     pub const fn image_bytes(self) -> u32 {
         self.image_bytes
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvmLoadedHandoff {
+    physical_address: u64,
+    bytes: u32,
+    pages: u32,
+}
+
+impl KvmLoadedHandoff {
+    pub const fn physical_address(self) -> u64 {
+        self.physical_address
+    }
+    pub const fn bytes(self) -> u32 {
+        self.bytes
+    }
+    pub const fn pages(self) -> u32 {
+        self.pages
+    }
+}
+
+pub fn map_loaded_handoff<S: PageTableStore>(
+    tables: &mut PageTableBuilder<S>,
+    handoff: KvmLoadedHandoff,
+    virtual_address: u64,
+    user: bool,
+) -> Result<(), KvmError> {
+    let permissions = if user {
+        PagePermissions::USER_READ
+    } else {
+        PagePermissions::KERNEL_READ
+    };
+    let mapping = Mapping::new(
+        VirtAddr::new(virtual_address).map_err(|_| KvmError::InvalidMapping)?,
+        PhysAddr::new(handoff.physical_address).map_err(|_| KvmError::InvalidMapping)?,
+        handoff.pages as u64,
+        permissions,
+    )
+    .map_err(|_| KvmError::InvalidMapping)?;
+    tables.map(mapping).map_err(|_| KvmError::PageTable)
 }
 
 pub fn map_loaded_pe<S: PageTableStore>(
@@ -863,6 +940,34 @@ mod tests {
         pe
     }
 
+    fn valid_handoff() -> [u8; 240] {
+        let mut encoded = [0u8; 240];
+        encoded[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
+        encoded[16..20].copy_from_slice(&240u32.to_le_bytes());
+        encoded[20..22].copy_from_slice(&3u16.to_le_bytes());
+        encoded[22..24].copy_from_slice(&7u16.to_le_bytes());
+        encoded[24..32].copy_from_slice(&7u64.to_le_bytes());
+        encoded[32..64].fill(1);
+        encoded[64..128].fill(2);
+        encoded[128..136].copy_from_slice(&0x9000u64.to_le_bytes());
+        encoded[136..144].copy_from_slice(&0xa0000u64.to_le_bytes());
+        encoded[144..152].copy_from_slice(&0x1000u64.to_le_bytes());
+        encoded[152..156].copy_from_slice(&16u32.to_le_bytes());
+        encoded[156..160].copy_from_slice(&16u32.to_le_bytes());
+        encoded[160..164].copy_from_slice(&16u32.to_le_bytes());
+        encoded[164] = 1;
+        encoded[168..176].copy_from_slice(&0x1000u64.to_le_bytes());
+        encoded[176..184].copy_from_slice(&2u64.to_le_bytes());
+        encoded[184] = 0;
+        encoded[192..200].copy_from_slice(&0x3000u64.to_le_bytes());
+        encoded[200..208].copy_from_slice(&1u64.to_le_bytes());
+        encoded[208] = 1;
+        encoded[216..224].copy_from_slice(&0xa0000u64.to_le_bytes());
+        encoded[224..232].copy_from_slice(&1u64.to_le_bytes());
+        encoded[232] = 3;
+        encoded
+    }
+
     #[test]
     fn ioctl_numbers_match_x86_64_kvm_uapi() {
         assert_eq!(KVM_GET_API_VERSION, 0xae00);
@@ -961,5 +1066,32 @@ mod tests {
         let store = KvmPageTableStore::new(&mut memory, 0x10_0000, 8).unwrap();
         let mut tables = PageTableBuilder::new(store).unwrap();
         map_pe(&mut tables, &image, loaded, true).unwrap();
+    }
+
+    #[test]
+    fn handoff_is_validated_before_copy_and_mapped_read_only() {
+        let mut memory = KvmGuestMemory::<2>::new();
+        memory.allocate(0x10_0000, 0x8000, false).unwrap();
+        memory.allocate(0x20_0000, 0x1000, false).unwrap();
+        memory.write(0x20_0000, &[0xaa]).unwrap();
+        let mut malformed = valid_handoff();
+        malformed[0] = 0;
+        assert!(matches!(
+            memory.load_boot_handoff(&malformed, 0x20_0000),
+            Err(KvmError::Handoff(_))
+        ));
+        let mut marker = [0u8; 1];
+        memory.read(0x20_0000, &mut marker).unwrap();
+        assert_eq!(marker, [0xaa]);
+
+        let encoded = valid_handoff();
+        let loaded = memory.load_boot_handoff(&encoded, 0x20_0000).unwrap();
+        assert_eq!((loaded.bytes(), loaded.pages()), (240, 1));
+        let mut tail = [1u8; 1];
+        memory.read(0x20_0fff, &mut tail).unwrap();
+        assert_eq!(tail, [0]);
+        let store = KvmPageTableStore::new(&mut memory, 0x10_0000, 8).unwrap();
+        let mut tables = PageTableBuilder::new(store).unwrap();
+        map_loaded_handoff(&mut tables, loaded, 0x40_0000, true).unwrap();
     }
 }

@@ -490,8 +490,14 @@ section mapping are implemented, but their public entry points accept only a
 is zero-filled and relocated in owned RAM, every mapping is prevalidated before
 hardware tables change, and final permissions come only from the validated PE
 load plan. A late page-table storage failure discards the unpublished VM.
-Constructing the signed boot handoff and completing the launch transaction
-remain pending, so this does not yet launch a bootable KVM guest. The
+Canonical boot-handoff placement is also implemented. The complete handoff is
+decoded and validated before guest memory changes, must occupy isolated
+page-aligned storage, and has its unused page tail zeroed before being mapped
+read-only and NX. This prevents a malformed record from partially replacing the
+previous launch state. Host attestation remains part of the VMM trust boundary;
+the handoff cannot make an untrusted host truthful. Completing the atomic
+launch transaction and executing it on a KVM-capable host remain pending, so
+this does not yet launch a bootable KVM guest. The
 current WSL2 host exposes `/dev/kvm` but rejects the vCPU mapping-size query;
 the live capability probe records that as unavailable and no launch claim is
 made for this environment.

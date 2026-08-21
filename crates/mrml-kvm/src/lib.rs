@@ -10,6 +10,6 @@ pub use abi::{
 };
 #[cfg(target_os = "linux")]
 pub use native::{
-    map_loaded_pe, KvmBackend, KvmGuestMemory, KvmLoadedImage, KvmPageTableStore, KvmSystem,
-    KvmVcpu, KvmVm,
+    map_loaded_handoff, map_loaded_pe, KvmBackend, KvmGuestMemory, KvmLoadedHandoff,
+    KvmLoadedImage, KvmPageTableStore, KvmSystem, KvmVcpu, KvmVm,
 };
