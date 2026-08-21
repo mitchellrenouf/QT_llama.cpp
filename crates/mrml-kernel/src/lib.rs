@@ -66,7 +66,8 @@ pub use virtual_gpu::{
     MAX_ACTIVE_EXPERTS, MAX_BATCH_DISPATCHES, MAX_DISPATCH_BUFFERS, MAX_DISPATCH_SCALARS,
     MAX_GPU_CONTROL_BYTES, MAX_GPU_QUEUE_SLOTS, PreparedGpuBatch, PreparedGpuDispatch,
     ResourceCommand, ScalarArg, ScalarKind, ValidatedExpertSelection, ValidatedGpuBatch,
-    ValidatedKernelLaunch, VerifiedGpuKernelBundle, VirtualGpuSession, submit_gpu_batch,
+    ValidatedKernelLaunch, ValidatedMoeKernelLaunch, VerifiedGpuKernelBundle, VirtualGpuSession,
+    submit_gpu_batch,
 };
 pub use vm::{
     GuestAccess, GuestMappingId, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall,

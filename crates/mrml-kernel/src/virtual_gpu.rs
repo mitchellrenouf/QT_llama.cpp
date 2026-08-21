@@ -1409,6 +1409,23 @@ pub struct ValidatedKernelLaunch {
     element_count: u32,
 }
 
+/// MoE launch proof that retains the checked data-dependent expert selection.
+/// It is intentionally distinct from shape-only kernel validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedMoeKernelLaunch {
+    launch: ValidatedKernelLaunch,
+    selection: ValidatedExpertSelection,
+}
+
+impl ValidatedMoeKernelLaunch {
+    pub const fn launch(&self) -> &ValidatedKernelLaunch {
+        &self.launch
+    }
+    pub const fn selection(&self) -> &ValidatedExpertSelection {
+        &self.selection
+    }
+}
+
 impl ValidatedKernelLaunch {
     pub const fn dispatch(&self) -> &Dispatch {
         &self.dispatch
@@ -1873,6 +1890,26 @@ impl Dispatch {
             27 => self.validate_embedding_q8_0_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
+    }
+
+    /// Validate a data-dependent MoE launch while retaining the range-checked,
+    /// mutation-bound expert selection required by the service at launch time.
+    pub fn validate_moe_executor_schema(
+        &self,
+        selection: &ValidatedExpertSelection,
+    ) -> Result<ValidatedMoeKernelLaunch, GpuError> {
+        let launch = match self.kernel.get() {
+            22 => self.validate_moe_gate_schema(selection, false)?,
+            23 => self.validate_moe_gate_schema(selection, true)?,
+            24 => self.validate_moe_down_schema(selection, 0)?,
+            25 => self.validate_moe_down_schema(selection, 1)?,
+            26 => self.validate_moe_down_schema(selection, 2)?,
+            _ => return Err(GpuError::UnsupportedKernelSchema),
+        };
+        Ok(ValidatedMoeKernelLaunch {
+            launch,
+            selection: *selection,
+        })
     }
 
     fn validate_quantized_gemv_schema(
@@ -2657,6 +2694,166 @@ impl Dispatch {
         Ok(ValidatedKernelLaunch {
             dispatch: *self,
             element_count: elements,
+        })
+    }
+
+    fn validate_moe_gate_schema(
+        &self,
+        selection: &ValidatedExpertSelection,
+        specialized: bool,
+    ) -> Result<ValidatedKernelLaunch, GpuError> {
+        let (dimension, expert_dimension, active, batch) = if specialized {
+            if self.scalar_count != 0 {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+            (2816, 704, 8, 1)
+        } else {
+            if self.scalar_count != 4 {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+            (
+                self.positive_i32_scalar(1)?,
+                self.positive_i32_scalar(0)?,
+                self.positive_i32_scalar(2)?,
+                self.positive_i32_scalar(3)?,
+            )
+        };
+        if self.access_count != 4
+            || self.shared_memory != 0
+            || self.block != [128, 1, 1]
+            || dimension % 32 != 0
+            || active != selection.active
+            || batch != selection.batch
+            || specialized
+                != (dimension == 2816 && expert_dimension == 704 && active == 8 && batch == 1)
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let row_bytes = u64::from(dimension / 32) * 18;
+        let gate_bytes = u64::from(selection.experts)
+            .checked_mul(2)
+            .and_then(|value| value.checked_mul(u64::from(expert_dimension)))
+            .and_then(|value| value.checked_mul(row_bytes))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let input_elements = dimension
+            .checked_mul(batch)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let output_elements = expert_dimension
+            .checked_mul(active)
+            .and_then(|value| value.checked_mul(batch))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let gate = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        if gate.mode != BufferMode::Read
+            || !gate.offset.is_multiple_of(2)
+            || gate.length != gate_bytes
+            || self.accesses[1] != Some(selection.ids)
+            || !valid_f32_access(
+                self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?,
+                u64::from(input_elements) * 4,
+                BufferMode::Read,
+            )
+            || !valid_f32_access(
+                self.accesses[3].ok_or(GpuError::InvalidKernelSchema)?,
+                u64::from(output_elements) * 4,
+                BufferMode::Write,
+            )
+            || self.grid != [expert_dimension.div_ceil(8), active, batch]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: output_elements,
+        })
+    }
+
+    fn validate_moe_down_schema(
+        &self,
+        selection: &ValidatedExpertSelection,
+        variant: u8,
+    ) -> Result<ValidatedKernelLaunch, GpuError> {
+        let specialized = variant == 2;
+        let (dimension, expert_dimension, active, batch) = if specialized {
+            if self.scalar_count != 0 {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+            (2816, 704, 8, 1)
+        } else {
+            if self.scalar_count != 4 {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+            (
+                self.positive_i32_scalar(0)?,
+                self.positive_i32_scalar(1)?,
+                self.positive_i32_scalar(2)?,
+                self.positive_i32_scalar(3)?,
+            )
+        };
+        let expected_variant =
+            if dimension == 2816 && expert_dimension == 704 && active == 8 && batch == 1 {
+                2
+            } else if batch == 1 {
+                1
+            } else {
+                0
+            };
+        if self.access_count != 6
+            || self.shared_memory != 0
+            || self.block != [128, 1, 1]
+            || expert_dimension % 32 != 0
+            || variant != expected_variant
+            || active != selection.active
+            || batch != selection.batch
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let row_bytes = u64::from(expert_dimension / 32) * 18;
+        let down_bytes = u64::from(selection.experts)
+            .checked_mul(u64::from(dimension))
+            .and_then(|value| value.checked_mul(row_bytes))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let activation_elements = batch
+            .checked_mul(active)
+            .and_then(|value| value.checked_mul(expert_dimension))
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let output_elements = batch
+            .checked_mul(dimension)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let down = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let scales = self.accesses[3].ok_or(GpuError::InvalidKernelSchema)?;
+        let output_mode = if variant == 0 {
+            BufferMode::ReadWrite
+        } else {
+            BufferMode::Write
+        };
+        let expected_grid = [
+            dimension.div_ceil(8),
+            if variant == 0 { active } else { 1 },
+            batch,
+        ];
+        if down.mode != BufferMode::Read
+            || !down.offset.is_multiple_of(2)
+            || down.length != down_bytes
+            || self.accesses[1] != Some(selection.ids)
+            || self.accesses[2] != Some(selection.weights)
+            || !valid_f32_access(scales, u64::from(selection.experts) * 4, BufferMode::Read)
+            || !valid_f32_access(
+                self.accesses[4].ok_or(GpuError::InvalidKernelSchema)?,
+                u64::from(activation_elements) * 4,
+                BufferMode::Read,
+            )
+            || !valid_f32_access(
+                self.accesses[5].ok_or(GpuError::InvalidKernelSchema)?,
+                u64::from(output_elements) * 4,
+                output_mode,
+            )
+            || self.grid != expected_grid
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: output_elements,
         })
     }
 
@@ -4210,6 +4407,96 @@ mod tests {
                 2,
             ),
             Err(GpuError::InvalidExpertSelection)
+        );
+    }
+
+    #[test]
+    fn moe_schemas_require_and_retain_validated_expert_selection() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let ids_access = BufferAccess::new(id(1), 0, 16, BufferMode::Read);
+        let weights_access = BufferAccess::new(id(2), 0, 16, BufferMode::Read);
+        let mut ids = [0u8; 16];
+        let mut weights = [0u8; 16];
+        for (index, value) in [0_i32, 2, 1, 3].into_iter().enumerate() {
+            ids[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (index, value) in [0.6_f32, 0.4, 0.75, 0.25].into_iter().enumerate() {
+            weights[index * 4..index * 4 + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+        let selection =
+            ValidatedExpertSelection::admit(ids_access, &ids, weights_access, &weights, 4, 2, 2)
+                .unwrap();
+        let gate_accesses = [
+            BufferAccess::new(id(0), 0, 4608, BufferMode::Read),
+            ids_access,
+            BufferAccess::new(id(3), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(4), 0, 512, BufferMode::Write),
+        ];
+        let dimensions = [
+            ScalarArg::i32(32),
+            ScalarArg::i32(32),
+            ScalarArg::i32(2),
+            ScalarArg::i32(2),
+        ];
+        let gate = Dispatch::new_with_scalars(
+            KernelId::new(22).unwrap(),
+            [4, 2, 2],
+            [128, 1, 1],
+            0,
+            &gate_accesses,
+            &dimensions,
+        )
+        .unwrap();
+        assert_eq!(
+            gate.validate_executor_schema(),
+            Err(GpuError::UnsupportedKernelSchema)
+        );
+        let proven = gate.validate_moe_executor_schema(&selection).unwrap();
+        assert_eq!(proven.launch().element_count(), 128);
+        assert_eq!(proven.selection(), &selection);
+
+        let down_accesses = [
+            BufferAccess::new(id(5), 0, 2304, BufferMode::Read),
+            ids_access,
+            weights_access,
+            BufferAccess::new(id(6), 0, 16, BufferMode::Read),
+            BufferAccess::new(id(4), 0, 512, BufferMode::Read),
+            BufferAccess::new(id(7), 0, 256, BufferMode::ReadWrite),
+        ];
+        let down = Dispatch::new_with_scalars(
+            KernelId::new(24).unwrap(),
+            [4, 2, 2],
+            [128, 1, 1],
+            0,
+            &down_accesses,
+            &dimensions,
+        )
+        .unwrap();
+        assert_eq!(
+            down.validate_moe_executor_schema(&selection)
+                .unwrap()
+                .launch()
+                .element_count(),
+            64
+        );
+
+        let mut forged = gate_accesses;
+        forged[1] = BufferAccess::new(id(8), 0, 16, BufferMode::Read);
+        let invalid = Dispatch::new_with_scalars(
+            KernelId::new(22).unwrap(),
+            [4, 2, 2],
+            [128, 1, 1],
+            0,
+            &forged,
+            &dimensions,
+        )
+        .unwrap();
+        assert_eq!(
+            invalid.validate_moe_executor_schema(&selection),
+            Err(GpuError::InvalidKernelSchema)
         );
     }
 

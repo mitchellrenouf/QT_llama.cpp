@@ -199,6 +199,11 @@ limits active experts to 32, requires finite weights in `[0, 1]` with positive
 per-token mass, and binds the checked bytes and dimensions with domain-separated
 SHA3-512. The service must reverify that digest immediately before a
 data-dependent launch, detecting mutation after admission.
+All five MoE projection schemas now require that retained proof through a
+distinct `ValidatedMoeKernelLaunch`. Generic batched, single-token combined,
+and fixed Gemma 4 26B variants exclusively bind exact Q4 storage, activation
+tensors, scales, outputs, and geometry. Shape-only validation still rejects
+IDs 22–26, preventing callers from discarding expert provenance.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject
@@ -209,7 +214,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 5
+guest execution. Platform cache-coherence validation, contextual batch integration of the 5 MoE
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML

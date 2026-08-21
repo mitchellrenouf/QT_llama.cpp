@@ -228,8 +228,14 @@ rejects negative, out-of-range, duplicate, non-finite, or zero-mass selections,
 and caps active experts at 32. A domain-separated SHA3-512 digest binds both
 buffers and their expert/active/batch dimensions; the GPU service must verify
 the bytes again immediately before launch to close mutation after validation.
+Kernel IDs 22 through 26 are implemented behind this proof-bearing API rather
+than the ordinary shape-only validator. Generic gate/up and batched down,
+single-token combined down, and fixed Gemma 4 26B variants bind exact Q4_0
+matrices, selection buffers, scales, tensors, and geometry. Variant selection
+is exclusive, and `ValidatedMoeKernelLaunch` retains the proof for immediate
+service-side reverification.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 5 schemas and the
+registry alone cannot make it executable. Contextual batch integration of the 5 MoE schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
