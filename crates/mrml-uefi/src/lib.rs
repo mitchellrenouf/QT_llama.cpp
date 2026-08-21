@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod tpm;
+
 use core::ffi::c_void;
 
 pub type Status = usize;

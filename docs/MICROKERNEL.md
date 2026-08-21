@@ -204,6 +204,14 @@ an event log, but is not a monotonic counter. TPM NV provisioning,
 authorization, atomic version advancement, and recovery remain separate work
 and no rollback-resistance claim is made yet.
 
+An allocation-free TPM 2.0 NV wire codec now emits bounded `NV_Read` and
+`NV_Increment` commands with password-session framing, parses declared response
+lengths and empty authorization responses exactly, rejects a stored counter
+above the signed version, and caps per-boot advancement. It is not connected to
+the production loader yet: admission must first issue `NV_ReadPublic` and prove
+the configured handle is an eight-byte counter index. Treating an ordinary NV
+blob as monotonic state would be insecure.
+
 The loader also reads the standard global `SecureBoot` and `SetupMode`
 variables through its original raw runtime-services ABI. It reports secure boot
 only when `SecureBoot` is exactly one and `SetupMode` is exactly zero; absent,
