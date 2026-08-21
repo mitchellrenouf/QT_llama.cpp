@@ -1,0 +1,16 @@
+[package]
+name = "mrml-sign"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mrml-sign"
+path = "src/main.rs"
+
+[dependencies]
+mrml-crypto = { path = "../mrml-crypto" }
+mrml-error = { path = "../mrml-error" }
+mrml-kernel = { path = "../mrml-kernel" }
+mrml-runtime = { path = "../mrml-runtime" }

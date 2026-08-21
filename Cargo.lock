@@ -123,6 +123,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-sign"
+version = "0.4.0"
+dependencies = [
+ "mrml-crypto",
+ "mrml-error",
+ "mrml-kernel",
+ "mrml-runtime",
+]
+
+[[package]]
 name = "mrml-tensor"
 version = "0.4.0"
 dependencies = [

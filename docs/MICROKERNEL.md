@@ -90,6 +90,35 @@ verified-boot set, not general network signing. Production-security claims
 remain prohibited until the signing workflow, key lifecycle, loaders, recovery
 path, and verifier receive external cryptographic and platform audits.
 
+### Reproducible signing and bootstrap
+
+`mrml-sign` is the original, dependency-free release signer. It runs after
+compilation, never from `build.rs`, so Cargo and repository contents do not need
+access to private keys:
+
+```text
+cargo build --release -p mrml-sign
+mrml-sign keygen release.private release.public
+mrml-sign sign kernel 1 mrml-kernel.efi release.private mrml-kernel.sig
+mrml-sign key-digest release.public
+```
+
+The signer refuses to overwrite keys or signatures, self-verifies before
+writing a signature, and then consumes and removes the private-key file. Any
+external backup of that one-time key must also be destroyed and must never sign
+a second statement.
+
+The bootstrap loader contains only a genesis public-key SHA3-512 digest and a
+minimum release version, never a private key. That genesis key signs the first
+canonical launch-policy artifact. The policy contains distinct one-time public
+key digests for every kernel, VM, service, CUDA bundle, and the next policy
+root. After successful verification, the next root digest and release counter
+are sealed into TPM-backed monotonic state. Each release therefore authenticates
+its successor without rebuilding trust from an unsigned file. Recovery uses a
+separate offline root and must not lower the monotonic version. Until TPM/NVRAM
+persistence and the canonical policy parser are implemented, this describes
+the required bootstrap flow rather than an end-to-end completed secure boot.
+
 Hyper-V and KVM are host backends, not code in the guest kernel. Both implement
 the same VMM contract for vCPU lifecycle, guest memory, interrupts, virtio-like
 queues, directory-handle grants, measured images, and optional IOMMU device
