@@ -144,41 +144,44 @@ a checked user fault removes that complete domain and retires the current
 generational task. The same signed run then selects a second task, restores its
 validated context through CR3/`iretq`, and observes that replacement's distinct
 CPL3 breakpoint before reaching idle. This proves exception-path replacement
-restoration with a shared diagnostic address space; distinct service address
-spaces remain unfinished.
+restoration with a shared diagnostic address space. Separate production-style
+service address spaces are exercised by the live service probe below.
 The architecture layer now has a service-address-space constructor that accepts
 only an already verified `ServiceImage`. It creates a fresh mapping policy with
 explicit supervisor-only higher-half kernel mappings, user PE sections with
 their final W^X permissions, one user RW/NX stack, and an absent lower guard
 page, then materializes those mappings into a newly allocated page-table root.
-The signed service bytes still need to be supplied and exercised by the live
-WHP launch path. The KVM path now verifies the kernel and service with separate
+The KVM path verifies the kernel and service with separate
 one-time keys, materializes a fresh service root, retains only supervisor kernel
 PE mappings plus the service PE and guarded stack, switches CR3, and enters the
 service at CPL3. A separately built 2 KiB service PE raises its signed breakpoint
 and returns through the kernel IDT successfully. The Windows WHP path now uses
 the same artifact and mapping contract, disables its test-only breakpoint
-intercept for this partition, and completes the same guest-IDT proof. A useful
-service loop remains unfinished. The signed service now also issues the
-pointer-free vector-`0x80` yield call, receives a validated zero-status return,
-resumes in the same isolated address space, and only then raises its completion
-breakpoint on both KVM and WHP. Because this probe has one runnable service,
-yield returns to the caller; multi-service blocking and wakeup remain unfinished.
+intercept for this partition, and completes the same guest-IDT proof. The
+current probe materializes the authenticated service PE twice under distinct
+roots (`0xc00000` and `0xd00000`) with different physical image, stack, and
+table arenas and no shared user mappings. Receiver A issues pointer-free
+receive and blocks. The scheduler switches CR3 to sender B; B sends `ping`
+using its exact SIGNAL capability, wakes A, then yields. The kernel dequeues
+the message into A's saved registers and restores A's post-`INT 0x80` context
+under A's root. Fresh signed runs completed this chain in 301 microseconds on
+WHP and 404 microseconds on nested KVM.
 Kernel task domains now contain a two-message, allocation-free inbox. Receiving
 from an empty inbox blocks only the current task and immediately selects a
 replacement; capability-authorized delivery enqueues in FIFO order and wakes
 the receiver. A full inbox is rejected before endpoint sequence or capability
 state changes, so overflow cannot grant authority or create a replay gap. This
-is tested on Windows and Linux but is not yet exercised by two independently
-signed live services.
+is tested on Windows and Linux and exercised by the two-root live service flow.
+Both instances use one independently signed service artifact; they are separate
+task/address-space instances, not two differently signed binaries.
 Task-to-task IPC is now routed through those runtime domains. It rejects
 self-routing, requires the sender's exact endpoint capability, attenuates every
 transferred right, and transactionally revokes all receiver capabilities if
 endpoint authorization fails. This path is covered on Windows and Linux but is
-not yet invoked by a live user syscall.
+invoked by the live sender's pointer-free user syscall.
 The x86 syscall boundary now reserves only DPL3 interrupt vector `0x80` and
-defines a pointer-free register ABI. Yield requires every reserved register to
-be zero; inline send carries generational endpoint/task tokens and at most 24
+defines a pointer-free register ABI. Yield and receive require every reserved
+register to be zero; inline send carries generational endpoint/task tokens and at most 24
 payload bytes by value in registers. Unknown operations, malformed tokens, and
 oversized payloads fail before any user address can be dereferenced. The call
 gate now has a live assembly dispatcher. A signed nested-KVM run enters vector
@@ -186,8 +189,9 @@ gate now has a live assembly dispatcher. A signed nested-KVM run enters vector
 authorizes a four-byte `ping` through the sender's endpoint capability, creates
 the receiver message, returns status and sequence through registers, restores
 all user registers, and executes `iretq`. The resumed task then faults and the
-existing recovery path restores its replacement. Blocking receive and a
-production service image remain unfinished.
+existing recovery path restores its replacement. The two-root service probe
+additionally proves blocking receive, wakeup, cross-root scheduling, and
+syscall-visible message delivery.
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented. A signed nested-KVM probe now proves external vector 32 enters the
 booted kernel and advances that scheduler by exactly one tick. This currently

@@ -74,8 +74,8 @@ pub struct PreparedWhpGuest<'system> {
     partition: PreparedWhpPartition<'system>,
     entry: u64,
     root: PhysAddr,
-    service_entry: Option<u64>,
-    service_root: Option<PhysAddr>,
+    service_entry: [Option<u64>; 2],
+    service_root: [Option<PhysAddr>; 2],
 }
 
 impl PreparedWhpGuest<'_> {
@@ -86,10 +86,24 @@ impl PreparedWhpGuest<'_> {
         self.root
     }
     pub const fn service_entry(&self) -> Option<u64> {
-        self.service_entry
+        self.service_entry[0]
     }
     pub const fn service_page_table_root(&self) -> Option<PhysAddr> {
-        self.service_root
+        self.service_root[0]
+    }
+    pub const fn service_entry_at(&self, slot: usize) -> Option<u64> {
+        if slot < 2 {
+            self.service_entry[slot]
+        } else {
+            None
+        }
+    }
+    pub const fn service_page_table_root_at(&self, slot: usize) -> Option<PhysAddr> {
+        if slot < 2 {
+            self.service_root[slot]
+        } else {
+            None
+        }
     }
     pub fn run(&mut self) -> Result<VmExit, WhpError> {
         self.partition.run()
@@ -158,7 +172,7 @@ impl PreparedWhpGuest<'_> {
 
     #[allow(clippy::too_many_arguments)]
     pub fn attach_isolated_service(
-        mut self,
+        self,
         kernel: &VerifiedExecutable<'_>,
         kernel_layout: WhpLaunchLayout,
         service: &VerifiedExecutable<'_>,
@@ -170,7 +184,38 @@ impl PreparedWhpGuest<'_> {
         table_physical: u64,
         table_pages: u64,
     ) -> Result<Self, WhpError> {
-        if self.service_root.is_some()
+        self.attach_isolated_service_at(
+            0,
+            kernel,
+            kernel_layout,
+            service,
+            service_physical,
+            service_virtual,
+            stack_physical,
+            stack_virtual,
+            stack_pages,
+            table_physical,
+            table_pages,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_isolated_service_at(
+        mut self,
+        slot: usize,
+        kernel: &VerifiedExecutable<'_>,
+        kernel_layout: WhpLaunchLayout,
+        service: &VerifiedExecutable<'_>,
+        service_physical: u64,
+        service_virtual: u64,
+        stack_physical: u64,
+        stack_virtual: u64,
+        stack_pages: u64,
+        table_physical: u64,
+        table_pages: u64,
+    ) -> Result<Self, WhpError> {
+        if slot >= 2
+            || self.service_root[slot].is_some()
             || kernel.artifact().kind() != ArtifactKind::Kernel
             || service.artifact().kind() != ArtifactKind::ServiceImage
             || stack_pages == 0
@@ -260,8 +305,8 @@ impl PreparedWhpGuest<'_> {
             .map_err(|_| WhpError::InvalidRegisterState)?;
         let service_root = tables.root();
         let _ = tables.into_store();
-        self.service_entry = Some(service_entry);
-        self.service_root = Some(service_root);
+        self.service_entry[slot] = Some(service_entry);
+        self.service_root[slot] = Some(service_root);
         Ok(self)
     }
 }
@@ -513,8 +558,8 @@ impl WhpSystem {
             partition,
             entry,
             root,
-            service_entry: None,
-            service_root: None,
+            service_entry: [None; 2],
+            service_root: [None; 2],
         })
     }
 }
@@ -939,8 +984,8 @@ mod tests {
             partition,
             entry: 0x20_0000,
             root: PhysAddr::new(0x10_0000).unwrap(),
-            service_entry: None,
-            service_root: None,
+            service_entry: [None; 2],
+            service_root: [None; 2],
         };
         assert_eq!(VmBackend::run(&mut guest, 1), Err(WhpError::InvalidVcpu));
         assert_eq!(

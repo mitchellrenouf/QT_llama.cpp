@@ -45,6 +45,12 @@ const SERVICE_STACK_PHYSICAL: u64 = 0x0080_0000;
 const SERVICE_STACK_VIRTUAL: u64 = 0x0070_0000;
 #[cfg(target_os = "windows")]
 const SERVICE_TABLE_PHYSICAL: u64 = 0x00c0_0000;
+#[cfg(target_os = "windows")]
+const SERVICE_B_PHYSICAL: u64 = 0x0090_0000;
+#[cfg(target_os = "windows")]
+const SERVICE_B_STACK_PHYSICAL: u64 = 0x00e0_0000;
+#[cfg(target_os = "windows")]
+const SERVICE_B_TABLE_PHYSICAL: u64 = 0x00d0_0000;
 
 #[cfg(target_os = "windows")]
 fn application_main() -> Result<()> {
@@ -180,8 +186,32 @@ fn application_main() -> Result<()> {
                 32,
             )
             .map_err(|error| anyhow!("isolated WHP service preparation failed: {:?}", error))?;
+        guest = guest
+            .attach_isolated_service_at(
+                1,
+                &executable,
+                layout,
+                service_executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing verified service executable"))?,
+                SERVICE_B_PHYSICAL,
+                SERVICE_VIRTUAL,
+                SERVICE_B_STACK_PHYSICAL,
+                SERVICE_STACK_VIRTUAL,
+                2,
+                SERVICE_B_TABLE_PHYSICAL,
+                32,
+            )
+            .map_err(|error| {
+                anyhow!(
+                    "second isolated WHP service preparation failed: {:?}",
+                    error
+                )
+            })?;
         if guest.service_entry() != Some(0x0000_0001_4000_1000)
             || guest.service_page_table_root() != PhysAddr::new(SERVICE_TABLE_PHYSICAL).ok()
+            || guest.service_entry_at(1) != Some(0x0000_0001_4000_1000)
+            || guest.service_page_table_root_at(1) != PhysAddr::new(SERVICE_B_TABLE_PHYSICAL).ok()
         {
             return Err(anyhow!("isolated WHP service layout mismatch"));
         }
@@ -226,13 +256,28 @@ fn application_main() -> Result<()> {
                 value: 1,
             })
         {
-            return Err(anyhow!(
-                "isolated WHP service user call mismatch: {:?}",
-                exit
-            ));
+            return Err(anyhow!("isolated WHP receiver did not block: {:?}", exit));
+        }
+        for stage in [2u32, 3] {
+            let exit = VmBackend::run(&mut guest, 0)
+                .map_err(|error| anyhow!("WHP execution during service IPC failed: {:?}", error))?;
+            if exit
+                != (VmExit::Io {
+                    port: SERVICE_CALL_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "isolated WHP IPC stage {} mismatch: {:?}",
+                    stage,
+                    exit
+                ));
+            }
         }
         let exit = VmBackend::run(&mut guest, 0)
-            .map_err(|error| anyhow!("WHP execution after service call failed: {:?}", error))?;
+            .map_err(|error| anyhow!("WHP execution after service IPC failed: {:?}", error))?;
         if exit
             != (VmExit::Io {
                 port: SERVICE_FRAME_PORT,

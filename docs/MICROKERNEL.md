@@ -596,12 +596,11 @@ registers, and executes `IRETQ`. Compile-time Rust layout plus unit tests bind
 every assembly offset to the context representation. Its safety contract
 requires the new root to retain the transition page until the CR3 write, map
 the target RIP user-executable and RSP user-writable, and retain a kernel-only
-TSS `RSP0`. Windows and Linux now pass 113 kernel tests. A fresh signed KVM
+TSS `RSP0`. Windows and Linux now pass 127 kernel tests. A fresh signed KVM
 probe exercised this reusable CR3/register path and the checked return path in
 210 microseconds (`verify=729us`, `prepare=1231us`, `total=5403us`). The probe
-uses the same root before and after CR3 solely because isolated service roots
-are the next milestone; it proves the transition mechanism, not address-space
-separation.
+used the same root before and after CR3 as an earlier transition proof; the
+two-root service probe below now proves address-space switching as well.
 
 `TaskRuntime` now binds each scheduler identity to exactly one saved
 `UserContext` and one fixed-capacity `CapabilitySpace`. Recoverable fault
@@ -631,7 +630,7 @@ the error becomes visible; failure to perform that rollback is an integrity
 failure. Same-task routing is rejected so callers cannot use this interface to
 bypass a domain boundary. Windows and Linux pass 116 kernel tests, including
 attenuation and failed-authorization rollback. Live syscall entry and blocking
-endpoint queues remain unfinished.
+endpoint queues are now exercised by the two-root service proof below.
 
 The initial x86 user-call ABI is deliberately pointer-free. Exactly IDT vector
 `0x80` receives a DPL3 interrupt gate; external interrupt gates remain DPL0 and
@@ -652,7 +651,7 @@ after endpoint authorization and message construction, returns to CPL3, then
 continues through the existing `#UD` revocation and task-B breakpoint recovery.
 A fresh run completed the combined path in 192 microseconds (`verify=783us`,
 `prepare=1125us`, `total=6426us`). Blocking receive, wakeup, and production
-service-image entry remain unfinished.
+service-image entry were subsequently completed by the two-root service proof.
 
 `ServiceAddressSpace` now defines the production mapping boundary independently
 of the permissive probe layout. Its public constructor accepts only a
@@ -699,8 +698,19 @@ only if that return succeeds. Fresh signed runs completed the call, return, and
 breakpoint chain in 260 microseconds on KVM (`verify=5908us`, `prepare=1325us`,
 `total=11398us`) and 190 microseconds on WHP (`verify=1565us`, `prepare=3535us`,
 `total=7117us`). A yield with one runnable service legitimately continues that
-service. Multi-service blocking, wakeup, and capability IPC from separately
-signed service images remain unfinished.
+service. The next increment materializes the verified service PE twice with
+distinct physical images, guarded stacks, and roots (`0xc00000` and
+`0xd00000`). Receiver A executes operation two, and the kernel validates and
+captures its exact post-interrupt continuation before blocking it. Sender B
+runs under the second CR3, uses its exact SIGNAL capability and A's generational
+task token to deliver `ping`, wakes A, and yields. The kernel dequeues into A's
+saved registers and restores A under its own root; A validates RAX, RDX, and
+R10 before raising its completion breakpoint. Clean independently signed runs
+completed the chain in 301 microseconds on WHP (`verify=1781us`,
+`prepare=3154us`, `total=7091us`) and 404 microseconds on nested KVM
+(`verify=5508us`, `prepare=1443us`, `total=13300us`). One authenticated service
+artifact supplies both instances; task identities, address spaces, physical
+copies, stacks, and table arenas remain separate.
 
 Each `TaskRuntime` domain now owns a fixed two-message inbox in addition to its
 context and capability space. `receive_or_block_current` dequeues immediately
@@ -709,9 +719,10 @@ or marks only the empty receiver blocked and selects a replacement.
 capability derivation; after transactional `send_ipc` succeeds it publishes at
 the tail and wakes the receiver. FIFO head/tail/count invariants make overwrite
 impossible, and a full inbox returns without consuming endpoint sequence or
-creating receiver capabilities. Windows and Linux pass 123 kernel tests,
-including block, wake, FIFO, and overflow behavior. Two-service live delivery
-and syscall-visible receive results remain unfinished.
+creating receiver capabilities. Windows and Linux pass 127 kernel tests,
+including block, wake, FIFO, overflow behavior, syscall continuation capture,
+and voluntary switching. The two-root signed probe exercises live delivery,
+wakeup, and syscall-visible receive results on WHP and KVM.
 
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel

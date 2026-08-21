@@ -35,7 +35,7 @@ use mrml_kernel::{
     not(feature = "service-probe")
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
-#[cfg(feature = "user-probe")]
+#[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::{Endpoint, ObjectId, Rights, TaskRuntime};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
 use mrml_kernel::{
@@ -43,7 +43,11 @@ use mrml_kernel::{
     GpuQueueSender, GpuResourceResponse, GpuResourceResponseReceiver, GpuSharedRingIndices,
     ResourceCommand,
 };
-#[cfg(any(feature = "timer-probe", feature = "user-probe"))]
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "user-probe",
+    feature = "service-probe"
+))]
 use mrml_kernel::{Priority, ScheduleOutcome};
 
 #[cfg(not(feature = "fault-probe"))]
@@ -77,7 +81,11 @@ const SERVICE_CALL_PORT: u16 = 0x4d5a;
 #[cfg(feature = "service-probe")]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
 #[cfg(feature = "service-probe")]
+const SERVICE_B_ROOT: u64 = 0x00d0_0000;
+#[cfg(feature = "service-probe")]
 const SERVICE_ENTRY: u64 = 0x0000_0001_4000_1000;
+#[cfg(feature = "service-probe")]
+const SERVICE_SENDER_ENTRY: u64 = SERVICE_ENTRY + 0x80;
 #[cfg(feature = "service-probe")]
 const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 
@@ -110,7 +118,9 @@ static mut USER_RUNTIME: Option<TaskRuntime<2, 1>> = None;
 #[cfg(feature = "user-probe")]
 static mut USER_ENDPOINT: Option<Endpoint> = None;
 #[cfg(feature = "service-probe")]
-static mut SERVICE_CONTEXT: Option<UserContext> = None;
+static mut SERVICE_RUNTIME: Option<TaskRuntime<2, 1>> = None;
+#[cfg(feature = "service-probe")]
+static mut SERVICE_ENDPOINT: Option<Endpoint> = None;
 
 global_asm!(
     r#"
@@ -311,7 +321,7 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
             SyscallRequest::SendInline {
                 endpoint, receiver, ..
             } => (*endpoint, *receiver),
-            SyscallRequest::Yield => halt(),
+            SyscallRequest::Yield | SyscallRequest::Receive => halt(),
         };
         let payload = request.payload();
         let runtime = match (*core::ptr::addr_of_mut!(USER_RUNTIME)).as_mut() {
@@ -354,16 +364,79 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
             Some(frame) => frame,
             None => halt(),
         };
-        if frame.request() != Ok(SyscallRequest::Yield) {
-            halt();
+        let request = frame.request().unwrap_or_else(|_| halt());
+        let runtime = (*core::ptr::addr_of_mut!(SERVICE_RUNTIME))
+            .as_mut()
+            .unwrap_or_else(|| halt());
+        let current = runtime.current().unwrap_or_else(|| halt());
+        let root = runtime
+            .context(current)
+            .unwrap_or_else(|_| halt())
+            .page_table();
+        *runtime.context_mut(current).unwrap_or_else(|_| halt()) =
+            UserContext::from_user_call(root, frame).unwrap_or_else(|_| halt());
+        match request {
+            SyscallRequest::Receive => match runtime
+                .receive_or_block_current()
+                .unwrap_or_else(|_| halt())
+            {
+                Ok(message) => frame.complete_message(message.payload()),
+                Err(ScheduleOutcome::Switch { to, .. }) => {
+                    asm!(
+                        "out dx, eax",
+                        in("dx") SERVICE_CALL_PORT,
+                        in("eax") 1u32,
+                        options(nomem, nostack)
+                    );
+                    enter_service_task(runtime, to)
+                }
+                _ => halt(),
+            },
+            SyscallRequest::SendInline {
+                endpoint,
+                receiver,
+                payload,
+                length,
+            } => {
+                let endpoint_object = (*core::ptr::addr_of_mut!(SERVICE_ENDPOINT))
+                    .as_mut()
+                    .unwrap_or_else(|| halt());
+                let sequence = runtime
+                    .deliver_ipc(
+                        current,
+                        receiver,
+                        endpoint_object,
+                        endpoint,
+                        &payload[..usize::from(length)],
+                        &[],
+                    )
+                    .unwrap_or_else(|_| halt());
+                frame.complete(sequence);
+                asm!(
+                    "out dx, eax",
+                    in("dx") SERVICE_CALL_PORT,
+                    in("eax") 2u32,
+                    options(nomem, nostack)
+                );
+            }
+            SyscallRequest::Yield => match runtime.yield_current().unwrap_or_else(|_| halt()) {
+                ScheduleOutcome::Switch { to, .. } => {
+                    let message = runtime.receive_ipc(to).unwrap_or_else(|_| halt());
+                    runtime
+                        .context_mut(to)
+                        .unwrap_or_else(|_| halt())
+                        .complete_message(message.payload());
+                    asm!(
+                        "out dx, eax",
+                        in("dx") SERVICE_CALL_PORT,
+                        in("eax") 3u32,
+                        options(nomem, nostack)
+                    );
+                    enter_service_task(runtime, to)
+                }
+                _ => halt(),
+            },
         }
-        frame.complete(0);
-        asm!(
-            "out dx, eax",
-            in("dx") SERVICE_CALL_PORT,
-            in("eax") 1u32,
-            options(nomem, nostack)
-        );
     }
     #[cfg(not(any(feature = "user-probe", feature = "service-probe")))]
     let _ = frame;
@@ -523,6 +596,7 @@ pub unsafe extern "efiapi" fn kernel_entry(bytes: *const u8, length: usize) -> u
 }
 
 #[cfg(not(feature = "fault-probe"))]
+#[allow(unreachable_code)]
 unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     if bytes.is_null() || !(HANDOFF_HEADER_BYTES..=MAX_HANDOFF_BYTES).contains(&length) {
         halt();
@@ -555,20 +629,49 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     }
     #[cfg(feature = "service-probe")]
     unsafe {
-        let root = match PhysAddr::new(SERVICE_ROOT) {
-            Ok(root) => root,
-            Err(_) => halt(),
-        };
-        let context = match UserContext::new(root, SERVICE_ENTRY, SERVICE_STACK_TOP) {
-            Ok(context) => context,
-            Err(_) => halt(),
-        };
-        let context_pointer = core::ptr::addr_of_mut!(SERVICE_CONTEXT);
-        context_pointer.write(Some(context));
-        let context = match (*context_pointer).as_ref() {
-            Some(context) => context as *const UserContext,
-            None => halt(),
-        };
+        let context_a = UserContext::new(
+            PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
+            SERVICE_ENTRY,
+            SERVICE_STACK_TOP,
+        )
+        .unwrap_or_else(|_| halt());
+        let context_b = UserContext::new(
+            PhysAddr::new(SERVICE_B_ROOT).unwrap_or_else(|_| halt()),
+            SERVICE_SENDER_ENTRY,
+            SERVICE_STACK_TOP,
+        )
+        .unwrap_or_else(|_| halt());
+        let mut runtime = TaskRuntime::<2, 1>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let receiver = runtime
+            .create(Priority::NORMAL, context_a)
+            .unwrap_or_else(|_| halt());
+        let sender = runtime
+            .create(Priority::NORMAL, context_b)
+            .unwrap_or_else(|_| halt());
+        let endpoint_object = ObjectId(0x91);
+        let capability = runtime
+            .capabilities_mut(sender)
+            .and_then(|space| {
+                space
+                    .insert(endpoint_object, Rights::SIGNAL)
+                    .map_err(|_| mrml_kernel::TaskRuntimeError::IntegrityFailure)
+            })
+            .unwrap_or_else(|_| halt());
+        let sender_context = runtime.context_mut(sender).unwrap_or_else(|_| halt());
+        sender_context.r13 = capability.token();
+        sender_context.r14 = receiver.token();
+        if !matches!(runtime.start(), ScheduleOutcome::Switch { from: None, to } if to == receiver)
+        {
+            halt();
+        }
+        core::ptr::addr_of_mut!(SERVICE_ENDPOINT).write(Some(Endpoint::new(endpoint_object)));
+        let runtime_pointer = core::ptr::addr_of_mut!(SERVICE_RUNTIME);
+        runtime_pointer.write(Some(runtime));
+        let context = (*runtime_pointer)
+            .as_ref()
+            .and_then(|runtime| runtime.context(receiver).ok())
+            .map(|context| context as *const UserContext)
+            .unwrap_or_else(|| halt());
         enter_service_probe_context(&*context);
     }
     #[cfg(feature = "user-probe")]
@@ -765,10 +868,19 @@ unsafe fn enter_user_probe_context(context: &UserContext) {
 }
 
 #[cfg(feature = "service-probe")]
-unsafe fn enter_service_probe_context(context: &UserContext) {
+unsafe fn enter_service_probe_context(context: &UserContext) -> ! {
     let transition_stack =
         core::ptr::addr_of!(KERNEL_ENTRY_STACK) as u64 + PRIVILEGE_STACK_BYTES as u64;
     unsafe { enter_user_context_on_stack(context, transition_stack) }
+}
+
+#[cfg(feature = "service-probe")]
+unsafe fn enter_service_task(runtime: &TaskRuntime<2, 1>, task: mrml_kernel::TaskId) -> ! {
+    let context = runtime
+        .context(task)
+        .map(|context| context as *const UserContext)
+        .unwrap_or_else(|_| halt());
+    unsafe { enter_service_probe_context(&*context) }
 }
 
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]

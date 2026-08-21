@@ -1,33 +1,62 @@
 #![no_std]
 #![no_main]
 
-use core::arch::asm;
+use core::arch::{asm, global_asm};
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     halt()
 }
 
-/// Minimal independently signed service entry used to prove that the kernel
-/// can enter a separate user PE under its own CR3. Production services replace
-/// the deliberate breakpoint with the pointer-free user-call ABI.
-#[unsafe(export_name = "efi_main")]
-pub extern "efiapi" fn service_entry() -> usize {
-    unsafe {
-        asm!(
-            "xor eax, eax",
-            "xor edi, edi",
-            "xor esi, esi",
-            "xor edx, edx",
-            "xor r10d, r10d",
-            "xor r8d, r8d",
-            "xor r9d, r9d",
-            "int 0x80",
-            "int3",
-            options(noreturn)
-        )
-    }
-}
+// This entry is assembly rather than a Rust ABI function because r12-r14 are
+// intentional launch registers, not compiler-owned callee-saved temporaries.
+global_asm!(
+    r#"
+            .section .text
+            .global efi_main
+        efi_main:
+            mov eax, 2
+            xor edi, edi
+            xor esi, esi
+            xor edx, edx
+            xor r10d, r10d
+            xor r8d, r8d
+            xor r9d, r9d
+            int 0x80
+            cmp rax, 0
+            jne 3f
+            cmp rdx, 4
+            jne 3f
+            cmp r10d, 0x676e6970
+            jne 3f
+            int3
+        3:
+            ud2
+
+            // Fix the secondary entry ABI exactly; assembly fails if the
+            // receiver ever grows beyond its reserved 128-byte window.
+            .org efi_main + 128, 0xcc
+            .global mrml_service_sender
+        mrml_service_sender:
+            mov eax, 1
+            mov rdi, r13
+            mov rsi, r14
+            mov edx, 4
+            mov r10d, 0x676e6970
+            xor r8d, r8d
+            xor r9d, r9d
+            int 0x80
+            xor eax, eax
+            xor edi, edi
+            xor esi, esi
+            xor edx, edx
+            xor r10d, r10d
+            xor r8d, r8d
+            xor r9d, r9d
+            int 0x80
+            ud2
+    "#
+);
 
 fn halt() -> ! {
     unsafe {

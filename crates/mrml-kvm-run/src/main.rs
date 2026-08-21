@@ -55,6 +55,12 @@ const SERVICE_STACK_PHYSICAL: u64 = 0x0080_0000;
 const SERVICE_STACK_VIRTUAL: u64 = 0x0070_0000;
 #[cfg(target_os = "linux")]
 const SERVICE_TABLE_PHYSICAL: u64 = 0x00c0_0000;
+#[cfg(target_os = "linux")]
+const SERVICE_B_PHYSICAL: u64 = 0x0090_0000;
+#[cfg(target_os = "linux")]
+const SERVICE_B_STACK_PHYSICAL: u64 = 0x00e0_0000;
+#[cfg(target_os = "linux")]
+const SERVICE_B_TABLE_PHYSICAL: u64 = 0x00d0_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg(any(test, target_os = "linux"))]
@@ -214,9 +220,9 @@ fn application_main() -> Result<()> {
         .map_err(|_| anyhow!("invalid fixed GPU queue layout"))?;
     let mut guest = match mode {
         LaunchMode::GpuBenchmark => {
-            system.prepare_kernel_gpu_guest::<10>(0, &executable, &handoff, layout, queue_layout)
+            system.prepare_kernel_gpu_guest::<13>(0, &executable, &handoff, layout, queue_layout)
         }
-        _ => system.prepare_kernel_guest::<10>(0, &executable, &handoff, layout),
+        _ => system.prepare_kernel_guest::<13>(0, &executable, &handoff, layout),
     }
     .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
     if mode == LaunchMode::ServiceProbe {
@@ -236,8 +242,27 @@ fn application_main() -> Result<()> {
                 32,
             )
             .map_err(|error| anyhow!("isolated service preparation failed: {:?}", error))?;
+        guest = guest
+            .attach_isolated_service_at(
+                1,
+                &executable,
+                layout,
+                service_executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing verified service executable"))?,
+                SERVICE_B_PHYSICAL,
+                SERVICE_VIRTUAL,
+                SERVICE_B_STACK_PHYSICAL,
+                SERVICE_STACK_VIRTUAL,
+                2,
+                SERVICE_B_TABLE_PHYSICAL,
+                32,
+            )
+            .map_err(|error| anyhow!("second isolated service preparation failed: {:?}", error))?;
         if guest.service_entry() != Some(0x0000_0001_4000_1000)
             || guest.service_page_table_root() != PhysAddr::new(SERVICE_TABLE_PHYSICAL).ok()
+            || guest.service_entry_at(1) != Some(0x0000_0001_4000_1000)
+            || guest.service_page_table_root_at(1) != PhysAddr::new(SERVICE_B_TABLE_PHYSICAL).ok()
         {
             return Err(anyhow!(
                 "isolated service layout did not match the signed probe ABI"
@@ -357,10 +382,28 @@ fn application_main() -> Result<()> {
                 value: 1,
             })
         {
-            return Err(anyhow!("isolated service user call failed: {:?}", exit));
+            return Err(anyhow!("isolated receiver did not block: {:?}", exit));
+        }
+        for stage in [2u32, 3] {
+            exit = VmBackend::run(&mut guest, 0)
+                .map_err(|error| anyhow!("KVM execution during service IPC failed: {:?}", error))?;
+            if exit
+                != (VmExit::Io {
+                    port: SERVICE_CALL_PORT,
+                    size: 4,
+                    write: true,
+                    value: stage,
+                })
+            {
+                return Err(anyhow!(
+                    "isolated service IPC stage {} failed: {:?}",
+                    stage,
+                    exit
+                ));
+            }
         }
         exit = VmBackend::run(&mut guest, 0)
-            .map_err(|error| anyhow!("KVM execution after service call failed: {:?}", error))?;
+            .map_err(|error| anyhow!("KVM execution after service IPC failed: {:?}", error))?;
         if exit
             != (VmExit::Io {
                 port: SERVICE_FRAME_PORT,

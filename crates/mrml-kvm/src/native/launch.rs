@@ -69,8 +69,8 @@ pub struct PreparedKvmGuest<const N: usize> {
     backend: KvmBackend<N>,
     entry: u64,
     root: PhysAddr,
-    service_entry: Option<u64>,
-    service_root: Option<PhysAddr>,
+    service_entry: [Option<u64>; 2],
+    service_root: [Option<PhysAddr>; 2],
 }
 
 impl<const N: usize> PreparedKvmGuest<N> {
@@ -81,10 +81,24 @@ impl<const N: usize> PreparedKvmGuest<N> {
         self.root
     }
     pub const fn service_entry(&self) -> Option<u64> {
-        self.service_entry
+        self.service_entry[0]
     }
     pub const fn service_page_table_root(&self) -> Option<PhysAddr> {
-        self.service_root
+        self.service_root[0]
+    }
+    pub const fn service_entry_at(&self, slot: usize) -> Option<u64> {
+        if slot < 2 {
+            self.service_entry[slot]
+        } else {
+            None
+        }
+    }
+    pub const fn service_page_table_root_at(&self, slot: usize) -> Option<PhysAddr> {
+        if slot < 2 {
+            self.service_root[slot]
+        } else {
+            None
+        }
     }
     pub fn snapshot(&self) -> Result<KvmVcpuSnapshot, KvmError> {
         self.backend.snapshot()
@@ -145,7 +159,7 @@ impl<const N: usize> PreparedKvmGuest<N> {
     /// service's user PE and guarded stack mapping.
     #[allow(clippy::too_many_arguments)]
     pub fn attach_isolated_service(
-        mut self,
+        self,
         kernel: &VerifiedExecutable<'_>,
         kernel_layout: KvmLaunchLayout,
         service: &VerifiedExecutable<'_>,
@@ -157,7 +171,38 @@ impl<const N: usize> PreparedKvmGuest<N> {
         table_physical: u64,
         table_pages: u64,
     ) -> Result<Self, KvmError> {
-        if self.service_root.is_some()
+        self.attach_isolated_service_at(
+            0,
+            kernel,
+            kernel_layout,
+            service,
+            service_physical,
+            service_virtual,
+            stack_physical,
+            stack_virtual,
+            stack_pages,
+            table_physical,
+            table_pages,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_isolated_service_at(
+        mut self,
+        slot: usize,
+        kernel: &VerifiedExecutable<'_>,
+        kernel_layout: KvmLaunchLayout,
+        service: &VerifiedExecutable<'_>,
+        service_physical: u64,
+        service_virtual: u64,
+        stack_physical: u64,
+        stack_virtual: u64,
+        stack_pages: u64,
+        table_physical: u64,
+        table_pages: u64,
+    ) -> Result<Self, KvmError> {
+        if slot >= 2
+            || self.service_root[slot].is_some()
             || kernel.artifact().kind() != ArtifactKind::Kernel
             || service.artifact().kind() != ArtifactKind::ServiceImage
             || stack_pages == 0
@@ -232,8 +277,8 @@ impl<const N: usize> PreparedKvmGuest<N> {
             .map_err(|_| KvmError::PageTable)?;
         let root = tables.root();
         let _ = tables.into_store();
-        self.service_entry = Some(loaded_service.entry());
-        self.service_root = Some(root);
+        self.service_entry[slot] = Some(loaded_service.entry());
+        self.service_root[slot] = Some(root);
         Ok(self)
     }
 }
@@ -486,8 +531,8 @@ impl KvmSystem {
             backend,
             entry: loaded_image.entry(),
             root,
-            service_entry: None,
-            service_root: None,
+            service_entry: [None; 2],
+            service_root: [None; 2],
         })
     }
 }
