@@ -509,10 +509,15 @@ WSL2 environment now exposes nested KVM through Hyper-V enlightened VMCS; API
 version 12 and the 12,288-byte vCPU mapping query both succeed. A live regression
 constructs and verifies a complete Lamport-signed VM artifact, materializes its
 PE at a canonical supervisor high-half address, creates the VM, IRQ chip, vCPU,
-four memory slots, and hardware page tables, enters at the signed entry point,
-executes `HLT`, and observes `VmExit::Halted`. This proves the complete signed
-artifact-to-native-KVM execution boundary. It is not yet a boot of the full
-standalone MRML kernel image with its complete device environment.
+five memory slots, and hardware page tables, enters at the signed entry point,
+writes a known pixel into the handoff-authenticated framebuffer, executes
+`HLT`, and observes both `VmExit::Halted` and the pixel through a bounded guest
+copy. Kernel launch derives the identity-mapped, writable, NX framebuffer solely
+from the validated handoff and rejects overlap with every private launch region.
+This proves the complete signed artifact-to-native-KVM execution and framebuffer
+boundary. The real four-section, 8,704-byte standalone kernel PE also builds for
+`x86_64-unknown-uefi`; executing that exact build through a release-artifact
+host runner remains the next integration milestone.
 
 The allocation-free `kvm_run` decoder validates the fixed x86 header before it
 reads the kernel-owned union: padding is zero, readiness and IF fields are

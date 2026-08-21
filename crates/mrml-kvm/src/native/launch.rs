@@ -101,10 +101,33 @@ impl KvmSystem {
         handoff: &[u8],
         layout: KvmLaunchLayout,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
-        if N < 4 {
+        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, false)
+    }
+
+    /// Prepares a kernel guest and maps the authenticated handoff framebuffer
+    /// as writable, non-executable memory at its identity address.
+    pub fn prepare_kernel_guest<const N: usize>(
+        &self,
+        vcpu_id: u32,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: KvmLaunchLayout,
+    ) -> Result<PreparedKvmGuest<N>, KvmError> {
+        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, true)
+    }
+
+    fn prepare_guest_inner<const N: usize>(
+        &self,
+        vcpu_id: u32,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: KvmLaunchLayout,
+        map_framebuffer: bool,
+    ) -> Result<PreparedKvmGuest<N>, KvmError> {
+        if N < 4 + usize::from(map_framebuffer) {
             return Err(KvmError::MemoryTableFull);
         }
-        BootHandoff::decode(handoff, |_| {}).map_err(KvmError::Handoff)?;
+        let decoded = BootHandoff::decode(handoff, |_| {}).map_err(KvmError::Handoff)?;
         let image_bytes = page_bytes(executable.image().image_size() as u64)?;
         let handoff_bytes = page_bytes(handoff.len() as u64)?;
         let table_bytes = layout
@@ -115,12 +138,20 @@ impl KvmSystem {
             .stack_pages
             .checked_mul(PAGE_SIZE)
             .ok_or(KvmError::MemoryOverflow)?;
-        validate_ranges(&[
+        let framebuffer = decoded.framebuffer();
+        let framebuffer_bytes = page_bytes(framebuffer.byte_length())?;
+        let physical_ranges = [
             (layout.table_physical, table_bytes),
             (layout.image_physical, image_bytes),
             (layout.handoff_physical, handoff_bytes),
             (layout.stack_physical, stack_bytes),
-        ])?;
+            (framebuffer.base().get(), framebuffer_bytes),
+        ];
+        validate_ranges(if map_framebuffer {
+            &physical_ranges
+        } else {
+            &physical_ranges[..4]
+        })?;
         validate_ranges(&[
             (layout.image_virtual, image_bytes),
             (layout.handoff_virtual, handoff_bytes),
@@ -133,6 +164,9 @@ impl KvmSystem {
         backend.map_memory(layout.image_physical, image_bytes as usize, false)?;
         backend.map_memory(layout.handoff_physical, handoff_bytes as usize, false)?;
         backend.map_memory(layout.stack_physical, stack_bytes as usize, false)?;
+        if map_framebuffer {
+            backend.map_memory(framebuffer.base().get(), framebuffer_bytes as usize, false)?;
+        }
         let loaded_image = backend.memory.load_verified_executable(
             executable,
             layout.image_physical,
@@ -177,6 +211,21 @@ impl KvmSystem {
                 .map_err(|_| KvmError::InvalidMapping)?,
             )
             .map_err(|_| KvmError::PageTable)?;
+        if map_framebuffer {
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(framebuffer.base().get())
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        PhysAddr::new(framebuffer.base().get())
+                            .map_err(|_| KvmError::InvalidMapping)?,
+                        framebuffer_bytes / PAGE_SIZE,
+                        PagePermissions::KERNEL_READ_WRITE,
+                    )
+                    .map_err(|_| KvmError::InvalidMapping)?,
+                )
+                .map_err(|_| KvmError::PageTable)?;
+        }
         let root = tables.root();
         let _ = tables.into_store();
         backend.vcpu.configure_long_mode_entry(
@@ -231,7 +280,7 @@ mod tests {
         TrustRoot, artifact_statement,
     };
 
-    fn halted_pe() -> [u8; 1024] {
+    fn framebuffer_pe() -> [u8; 1024] {
         let mut pe = [0u8; 1024];
         pe[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
         pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
@@ -251,12 +300,16 @@ mod tests {
         pe[optional + 70..optional + 72].copy_from_slice(&0x100u16.to_le_bytes());
         let section = optional + 240;
         pe[section..section + 5].copy_from_slice(b".text");
-        pe[section + 8..section + 12].copy_from_slice(&1u32.to_le_bytes());
+        pe[section + 8..section + 12].copy_from_slice(&17u32.to_le_bytes());
         pe[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
         pe[section + 16..section + 20].copy_from_slice(&0x200u32.to_le_bytes());
         pe[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
         pe[section + 36..section + 40].copy_from_slice(&0x6000_0000u32.to_le_bytes());
-        pe[0x200] = 0xf4;
+        // mov rax, 0xa0000; mov dword ptr [rax], 0x00ffc857; hlt
+        pe[0x200..0x211].copy_from_slice(&[
+            0x48, 0xb8, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x00, 0x57, 0xc8,
+            0xff, 0x00, 0xf4,
+        ]);
         pe
     }
 
@@ -288,7 +341,7 @@ mod tests {
     }
 
     fn signed_pe() -> [u8; SIGNED_ARTIFACT_OVERHEAD_BYTES + 1024] {
-        let payload = halted_pe();
+        let payload = framebuffer_pe();
         let mut private = [0u8; LAMPORT_PRIVATE_KEY_BYTES];
         for (index, byte) in private.iter_mut().enumerate() {
             *byte = (index as u64).wrapping_mul(61).wrapping_add(17) as u8;
@@ -352,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn live_signed_high_half_pe_reaches_halt() {
+    fn live_signed_high_half_pe_writes_authenticated_framebuffer() {
         let system = match KvmSystem::open() {
             Ok(system) => system,
             Err(KvmError::SystemCall) => return,
@@ -384,12 +437,15 @@ mod tests {
         )
         .unwrap();
         let mut guest = system
-            .prepare_guest::<4>(0, &executable, &valid_handoff(), layout)
+            .prepare_kernel_guest::<5>(0, &executable, &valid_handoff(), layout)
             .unwrap();
         assert_eq!(guest.entry(), 0xffff_8001_4000_1000);
         let mut opcode = [0u8; 1];
         VmBackend::read_guest(&guest, 0x20_1000, &mut opcode).unwrap();
-        assert_eq!(opcode, [0xf4]);
+        assert_eq!(opcode, [0x48]);
         assert_eq!(VmBackend::run(&mut guest, 0), Ok(VmExit::Halted));
+        let mut pixel = [0u8; 4];
+        VmBackend::read_guest(&guest, 0xa0000, &mut pixel).unwrap();
+        assert_eq!(pixel, [0x57, 0xc8, 0xff, 0x00]);
     }
 }

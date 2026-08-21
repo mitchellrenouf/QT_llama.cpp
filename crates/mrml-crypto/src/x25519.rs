@@ -136,15 +136,15 @@ impl Field {
         let modulus = [MASK - 18, MASK, MASK, MASK, MASK];
         let mut reduced = [0u64; 5];
         let mut borrow = 0u64;
-        for index in 0..5 {
+        for (index, value) in reduced.iter_mut().enumerate() {
             let subtrahend = modulus[index] + borrow;
-            reduced[index] = self.0[index].wrapping_sub(subtrahend) & MASK;
+            *value = self.0[index].wrapping_sub(subtrahend) & MASK;
             borrow = (self.0[index] < subtrahend) as u64;
         }
         let select = 0u64.wrapping_sub(borrow ^ 1);
         let reject = !select;
-        for index in 0..5 {
-            self.0[index] = (self.0[index] & reject) | (reduced[index] & select);
+        for (value, reduced) in self.0.iter_mut().zip(reduced) {
+            *value = (*value & reject) | (reduced & select);
         }
         let mut output = [0u8; 32];
         for bit in 0..255 {

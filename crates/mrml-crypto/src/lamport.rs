@@ -19,10 +19,9 @@ pub fn lamport_public_key(private_key: &[u8], public_key: &mut [u8]) -> Result<(
     {
         return Err(LamportError::InvalidPrivateKey);
     }
-    for (secret, public) in private_key
-        .chunks_exact(64)
-        .zip(public_key.chunks_exact_mut(64))
-    {
+    let (secrets, _) = private_key.as_chunks::<64>();
+    let (public_values, _) = public_key.as_chunks_mut::<64>();
+    for (secret, public) in secrets.iter().zip(public_values) {
         public.copy_from_slice(&Sha3_512::digest(secret));
     }
     Ok(())

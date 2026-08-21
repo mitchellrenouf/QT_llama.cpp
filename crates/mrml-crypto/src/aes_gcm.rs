@@ -120,7 +120,7 @@ fn ghash(h: u128, aad: &[u8], data: &[u8]) -> u128 {
             state = ghash_mul(state ^ u128::from_be_bytes(padded), h);
         }
     }
-    let lengths = ((aad.len() as u128 * 8) << 64) | data.len() as u128 * 8;
+    let lengths = ((aad.len() as u128 * 8) << 64) | (data.len() as u128 * 8);
     ghash_mul(state ^ lengths, h)
 }
 
