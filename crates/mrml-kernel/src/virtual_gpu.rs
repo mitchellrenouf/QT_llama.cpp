@@ -530,6 +530,78 @@ pub struct GpuCommandRing<const N: usize> {
     count: usize,
 }
 
+/// Kernel-owned completion transport. Capacity is preflighted for a complete
+/// batch so execution never starts unless every authenticated result can be
+/// published without partial enqueue.
+pub struct GpuCompletionRing<const N: usize> {
+    slots: [[u8; GPU_QUEUE_MESSAGE_BYTES]; N],
+    read: usize,
+    write: usize,
+    count: usize,
+}
+
+impl<const N: usize> GpuCompletionRing<N> {
+    pub const fn new() -> Result<Self, GpuError> {
+        if N == 0 || N > MAX_GPU_QUEUE_SLOTS {
+            return Err(GpuError::InvalidQueueCapacity);
+        }
+        Ok(Self {
+            slots: [[0; GPU_QUEUE_MESSAGE_BYTES]; N],
+            read: 0,
+            write: 0,
+            count: 0,
+        })
+    }
+
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub const fn remaining_capacity(&self) -> usize {
+        N - self.count
+    }
+
+    fn ensure_capacity(&self, count: usize) -> Result<(), GpuError> {
+        if count <= self.remaining_capacity() {
+            Ok(())
+        } else {
+            Err(GpuError::QueueFull)
+        }
+    }
+
+    fn enqueue_batch<const M: usize>(
+        &mut self,
+        messages: &[[u8; GPU_QUEUE_MESSAGE_BYTES]; M],
+        count: usize,
+    ) -> Result<(), GpuError> {
+        if count > M {
+            return Err(GpuError::InvalidQueueState);
+        }
+        self.ensure_capacity(count)?;
+        for message in messages.iter().take(count) {
+            self.slots[self.write].copy_from_slice(message);
+            self.write = (self.write + 1) % N;
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    pub fn dequeue(&mut self, output: &mut [u8; GPU_QUEUE_MESSAGE_BYTES]) -> Result<(), GpuError> {
+        if self.is_empty() {
+            return Err(GpuError::QueueEmpty);
+        }
+        output.copy_from_slice(&self.slots[self.read]);
+        self.slots[self.read].fill(0);
+        self.read = (self.read + 1) % N;
+        self.count -= 1;
+        Ok(())
+    }
+}
+
 impl<const N: usize> GpuCommandRing<N> {
     pub const fn new() -> Result<Self, GpuError> {
         if N == 0 || N > MAX_GPU_QUEUE_SLOTS {
@@ -2009,6 +2081,32 @@ where
             .map_err(GpuLifecycleError::InvalidState)?;
     }
     Ok(())
+}
+
+/// End-to-end service submission into the kernel-owned completion transport.
+/// Ring capacity is checked before execution and the exclusive borrow prevents
+/// another producer from consuming that reservation during the call.
+pub fn submit_gpu_batch_to_completion_ring<
+    E,
+    const WATCHDOG: usize,
+    const BATCH: usize,
+    const RING: usize,
+>(
+    executor: &mut E,
+    watchdog: &mut DispatchTable<WATCHDOG>,
+    sender: &mut GpuCompletionSender,
+    ring: &mut GpuCompletionRing<RING>,
+    batch: &ValidatedGpuBatch<BATCH>,
+) -> Result<(), GpuLifecycleError<E::Error>>
+where
+    E: GpuBatchExecutor<BATCH>,
+{
+    ring.ensure_capacity(batch.len())
+        .map_err(GpuLifecycleError::InvalidState)?;
+    let mut outputs = [[0; GPU_QUEUE_MESSAGE_BYTES]; BATCH];
+    submit_gpu_batch_with_completions(executor, watchdog, sender, batch, &mut outputs)?;
+    ring.enqueue_batch(&outputs, batch.len())
+        .map_err(GpuLifecycleError::InvalidState)
 }
 
 impl Dispatch {
@@ -5217,21 +5315,38 @@ mod tests {
         let completion_key = [0x5a; 32];
         let mut completion_sender = GpuCompletionSender::new(71, completion_key).unwrap();
         let mut completion_receiver = GpuCompletionReceiver::new(71, completion_key).unwrap();
-        let mut completion_frames = [[0; GPU_QUEUE_MESSAGE_BYTES]; 2];
-        assert!(
-            submit_gpu_batch_with_completions(
+        let mut too_small_ring = GpuCompletionRing::<1>::new().unwrap();
+        assert_eq!(
+            submit_gpu_batch_to_completion_ring(
                 &mut MockExecutor(Ok(true)),
                 &mut accepted_watchdog,
                 &mut completion_sender,
+                &mut too_small_ring,
                 &validated_accepted,
-                &mut completion_frames,
+            ),
+            Err(GpuLifecycleError::InvalidState(GpuError::QueueFull))
+        );
+        for entry in accepted_batch.entries() {
+            assert!(accepted_watchdog.contains(entry.dispatch_id()));
+        }
+        let mut completion_ring = GpuCompletionRing::<2>::new().unwrap();
+        assert!(
+            submit_gpu_batch_to_completion_ring(
+                &mut MockExecutor(Ok(true)),
+                &mut accepted_watchdog,
+                &mut completion_sender,
+                &mut completion_ring,
+                &validated_accepted,
             )
             .is_ok()
         );
-        for (entry, frame) in accepted_batch.entries().zip(completion_frames.iter()) {
+        assert_eq!(completion_ring.len(), 2);
+        for entry in accepted_batch.entries() {
+            let mut frame = [0; GPU_QUEUE_MESSAGE_BYTES];
+            completion_ring.dequeue(&mut frame).unwrap();
             assert!(!accepted_watchdog.contains(entry.dispatch_id()));
             assert_eq!(
-                completion_receiver.decode(frame).unwrap(),
+                completion_receiver.decode(&frame).unwrap(),
                 GpuCompletion::new(
                     entry.request_id(),
                     entry.dispatch_id(),
@@ -5240,6 +5355,7 @@ mod tests {
                 .unwrap()
             );
         }
+        assert!(completion_ring.is_empty());
 
         session.free(buffer).unwrap();
         let mut stale_batch = GpuDispatchBatch::<1>::new().unwrap();

@@ -247,10 +247,12 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, contextual batch integration of the 5 MoE
-executor schemas, host CUDA executor, service-side queue execution, CUDA graph
-lowering, IOMMU plumbing,
-and end-to-end performance measurements are still pending. Consequently MRML
+guest execution. The kernel-owned completion transport preflights capacity for
+the whole batch before GPU-visible work, publishes authenticated results under
+an exclusive producer borrow, and erases consumed slots. Platform
+cache-coherence validation, the resource-command service pump, CUDA graph
+lowering, IOMMU plumbing, and end-to-end performance measurements are still
+pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
 to approach it for long-running LLM inference by avoiding copies, per-kernel VM
 exits, and repeated context setup; arbitrary CUDA applications are out of scope.
