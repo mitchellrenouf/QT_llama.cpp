@@ -84,6 +84,17 @@ pub struct PreparedKvmGuest<const N: usize> {
     root: PhysAddr,
     service_entry: [Option<u64>; 2],
     service_root: [Option<PhysAddr>; 2],
+    service_instance: [Option<ServiceInstance>; 2],
+}
+
+#[derive(Clone, Copy)]
+struct ServiceInstance {
+    digest: [u8; 64],
+    image_physical: u64,
+    image_virtual: u64,
+    image_bytes: u64,
+    stack_physical: u64,
+    stack_bytes: u64,
 }
 
 impl<const N: usize> PreparedKvmGuest<N> {
@@ -112,6 +123,47 @@ impl<const N: usize> PreparedKvmGuest<N> {
         } else {
             None
         }
+    }
+    /// Recreates one stopped service's writable state from its exact verified
+    /// artifact. The caller must have observed kernel retirement while the
+    /// vCPU is stopped. Publication is cleared before the first write.
+    pub fn reprovision_isolated_service_at(
+        &mut self,
+        slot: usize,
+        service: &VerifiedExecutable<'_>,
+    ) -> Result<(u64, PhysAddr), KvmError> {
+        let instance = self
+            .service_instance
+            .get(slot)
+            .and_then(|instance| *instance)
+            .ok_or(KvmError::InvalidMapping)?;
+        if service.artifact().kind() != ArtifactKind::ServiceImage
+            || service.artifact().digest() != &instance.digest
+            || u64::from(service.image().image_size()) != instance.image_bytes
+        {
+            return Err(KvmError::InvalidMapping);
+        }
+        let root = self.service_root[slot].ok_or(KvmError::InvalidMapping)?;
+        self.service_entry[slot] = None;
+        self.service_root[slot] = None;
+        zero_kvm_range(
+            &mut self.backend.memory,
+            instance.image_physical,
+            instance.image_bytes,
+        )?;
+        zero_kvm_range(
+            &mut self.backend.memory,
+            instance.stack_physical,
+            instance.stack_bytes,
+        )?;
+        let loaded = self.backend.memory.load_verified_executable(
+            service,
+            instance.image_physical,
+            instance.image_virtual,
+        )?;
+        self.service_entry[slot] = Some(loaded.entry());
+        self.service_root[slot] = Some(root);
+        Ok((loaded.entry(), root))
     }
     pub fn snapshot(&self) -> Result<KvmVcpuSnapshot, KvmError> {
         self.backend.snapshot()
@@ -334,6 +386,14 @@ impl<const N: usize> PreparedKvmGuest<N> {
         let _ = tables.into_store();
         self.service_entry[slot] = Some(loaded_service.entry());
         self.service_root[slot] = Some(root);
+        self.service_instance[slot] = Some(ServiceInstance {
+            digest: *service.artifact().digest(),
+            image_physical: service_physical,
+            image_virtual: service_virtual,
+            image_bytes,
+            stack_physical,
+            stack_bytes,
+        });
         Ok(self)
     }
 }
@@ -690,8 +750,26 @@ impl KvmSystem {
             root,
             service_entry: [None; 2],
             service_root: [None; 2],
+            service_instance: [None; 2],
         })
     }
+}
+
+fn zero_kvm_range<const N: usize>(
+    memory: &mut super::KvmGuestMemory<N>,
+    mut address: u64,
+    mut bytes: u64,
+) -> Result<(), KvmError> {
+    let zero = [0u8; PAGE_SIZE as usize];
+    while bytes != 0 {
+        let count = bytes.min(PAGE_SIZE) as usize;
+        memory.write(address, &zero[..count])?;
+        address = address
+            .checked_add(count as u64)
+            .ok_or(KvmError::MemoryOverflow)?;
+        bytes -= count as u64;
+    }
+    Ok(())
 }
 
 fn page_bytes(bytes: u64) -> Result<u64, KvmError> {

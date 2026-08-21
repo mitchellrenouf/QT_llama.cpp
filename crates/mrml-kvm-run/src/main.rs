@@ -468,6 +468,38 @@ fn application_main() -> Result<()> {
                 exit
             ));
         }
+        if guest
+            .reprovision_isolated_service_at(1, &executable)
+            .is_ok()
+        {
+            return Err(anyhow!(
+                "KVM service reprovision accepted a different signed executable"
+            ));
+        }
+        let sentinel = [0xa5u8; 32];
+        VmBackend::write_guest(&mut guest, SERVICE_B_STACK_PHYSICAL, &sentinel)
+            .map_err(|error| anyhow!("failed to seed stopped KVM service state: {:?}", error))?;
+        let (entry, root) = guest
+            .reprovision_isolated_service_at(
+                1,
+                service_executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing verified service executable"))?,
+            )
+            .map_err(|error| anyhow!("KVM service reprovision failed: {:?}", error))?;
+        let mut erased = [0xffu8; 32];
+        VmBackend::read_guest(&guest, SERVICE_B_STACK_PHYSICAL, &mut erased)
+            .map_err(|error| anyhow!("failed to inspect KVM service reset: {:?}", error))?;
+        if erased != [0; 32]
+            || entry != SERVICE_VIRTUAL + 0x1000
+            || root
+                != PhysAddr::new(SERVICE_B_TABLE_PHYSICAL)
+                    .map_err(|_| anyhow!("invalid fixed KVM service root"))?
+        {
+            return Err(anyhow!(
+                "KVM service reprovision did not publish clean state"
+            ));
+        }
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after user call failed: {:?}", error))?;
         if exit

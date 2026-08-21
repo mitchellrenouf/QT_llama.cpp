@@ -493,6 +493,17 @@ impl PreparedWhpPartition<'_> {
         })
     }
 
+    pub(crate) fn mutable_service(
+        &mut self,
+        address: u64,
+        bytes: usize,
+    ) -> Result<&mut [u8], WhpError> {
+        let (mapping, offset) = self.locate(address, bytes)?;
+        Ok(unsafe {
+            slice::from_raw_parts_mut(mapping.address.as_ptr().cast::<u8>().add(offset), bytes)
+        })
+    }
+
     fn locate(&self, address: u64, bytes: usize) -> Result<(&OwnedMapping, usize), WhpError> {
         if bytes == 0 {
             return Err(WhpError::UnmappedMemory);

@@ -178,8 +178,16 @@ with exact `CONTROL` authority for its service object and a freshly supplied
 validated context; restart advances the service generation, so old management
 handles cannot control the replacement. Tests on Windows and Linux cover wrong
 object authority, clean exit, fault retirement, restart, and stale identity
-rejection. Rebuilding and erasing a service's writable physical pages before
-supplying that fresh context remains the platform lifecycle manager's next gate.
+rejection. The WHP and KVM lifecycle managers now retain a private record of
+each verified service instance. After the kernel has retired the task and the
+vCPU has stopped, reprovision accepts only the same `ServiceImage` digest and
+image size, withdraws the published entry/root, erases the complete image and
+guarded-stack backing, rematerializes the verified PE, and only then republishes
+the instance. A different validly signed executable is rejected before
+publication changes. Live signed Windows WHP and nested-KVM runs exercise
+rejection, deliberate stack contamination, complete reset, and clean
+republication. This is a platform reset primitive; automatic policy-driven
+restart and execution of the replacement context are not yet claimed.
 Kernel task domains now contain a two-message, allocation-free inbox. Receiving
 from an empty inbox blocks only the current task and immediately selects a
 replacement; capability-authorized delivery enqueues in FIFO order and wakes

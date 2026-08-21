@@ -752,9 +752,25 @@ new task first, then advances the service generation and publishes the
 replacement, so allocation failure leaves the stopped record unchanged and a
 stale service ID never regains control. Windows and Linux tests cover wrong
 object authority, clean and fault retirement, successful restart, and stale-ID
-rejection. The current signed probe exercises supervised clean exit. A platform
-manager that erases/rebuilds writable service pages before issuing the fresh
-context is still required for a signed automatic-restart claim.
+rejection. The current signed probe exercises supervised clean exit.
+
+WHP and KVM now provide a platform reset primitive for the two isolated service
+slots. The launcher privately records the admitted `ServiceImage` digest, image
+size, physical/virtual placement, stack range, and page-table root. Reprovision
+is permitted only after the caller observes kernel retirement with the vCPU
+stopped, and only for the exact same verified digest and size. It withdraws the
+entry and root before mutation, zeroes the entire image and stack backing,
+rematerializes the verified PE (including initialized data and zeroed BSS), and
+republishes only after every step succeeds. The unchanged page tables remain
+safe for this operation because the exact image identity and mapping contract
+cannot change. Both signed live runners reject substitution with the valid
+kernel executable before publication changes, contaminate the second service
+stack, reset it, and verify its bytes, entry, and root. The 2026-08-21 release
+runs completed guest execution in 325 microseconds on WHP (`verify=1729us`,
+`prepare=3083us`, `total=7205us`) and 511 microseconds on nested KVM
+(`verify=4534us`, `prepare=1349us`, `total=9479us`). Automatic policy-driven
+restart and live entry into the newly created generation remain future work, so
+these results are not described as an automatic-restart proof.
 
 Each `TaskRuntime` domain now owns a fixed two-message inbox in addition to its
 context and capability space. `receive_or_block_current` dequeues immediately

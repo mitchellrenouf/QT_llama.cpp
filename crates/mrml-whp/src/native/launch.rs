@@ -86,6 +86,17 @@ pub struct PreparedWhpGuest<'system> {
     root: PhysAddr,
     service_entry: [Option<u64>; 2],
     service_root: [Option<PhysAddr>; 2],
+    service_instance: [Option<ServiceInstance>; 2],
+}
+
+#[derive(Clone, Copy)]
+struct ServiceInstance {
+    digest: [u8; 64],
+    image_physical: u64,
+    image_virtual: u64,
+    image_bytes: u64,
+    stack_physical: u64,
+    stack_bytes: u64,
 }
 
 impl PreparedWhpGuest<'_> {
@@ -114,6 +125,47 @@ impl PreparedWhpGuest<'_> {
         } else {
             None
         }
+    }
+    /// Recreates one stopped service's writable state from its exact verified
+    /// artifact. The caller must have observed kernel retirement while the
+    /// virtual processor is stopped. Publication is cleared before mutation.
+    pub fn reprovision_isolated_service_at(
+        &mut self,
+        slot: usize,
+        service: &VerifiedExecutable<'_>,
+    ) -> Result<(u64, PhysAddr), WhpError> {
+        let instance = self
+            .service_instance
+            .get(slot)
+            .and_then(|instance| *instance)
+            .ok_or(WhpError::InvalidMapping)?;
+        if service.artifact().kind() != ArtifactKind::ServiceImage
+            || service.artifact().digest() != &instance.digest
+            || u64::from(service.image().image_size()) != instance.image_bytes
+        {
+            return Err(WhpError::InvalidMapping);
+        }
+        let root = self.service_root[slot].ok_or(WhpError::InvalidMapping)?;
+        self.service_entry[slot] = None;
+        self.service_root[slot] = None;
+        let image_bytes =
+            usize::try_from(instance.image_bytes).map_err(|_| WhpError::MemoryOverflow)?;
+        let destination = self
+            .partition
+            .mutable_service(instance.image_physical, image_bytes)?;
+        destination.fill(0);
+        let entry = service
+            .image()
+            .materialize_at(destination, instance.image_virtual)
+            .map_err(WhpError::Pe)?;
+        let stack_bytes =
+            usize::try_from(instance.stack_bytes).map_err(|_| WhpError::MemoryOverflow)?;
+        self.partition
+            .mutable_service(instance.stack_physical, stack_bytes)?
+            .fill(0);
+        self.service_entry[slot] = Some(entry);
+        self.service_root[slot] = Some(root);
+        Ok((entry, root))
     }
     pub fn run(&mut self) -> Result<VmExit, WhpError> {
         self.partition.run()
@@ -359,6 +411,14 @@ impl PreparedWhpGuest<'_> {
         let _ = tables.into_store();
         self.service_entry[slot] = Some(service_entry);
         self.service_root[slot] = Some(service_root);
+        self.service_instance[slot] = Some(ServiceInstance {
+            digest: *service.artifact().digest(),
+            image_physical: service_physical,
+            image_virtual: service_virtual,
+            image_bytes,
+            stack_physical,
+            stack_bytes,
+        });
         Ok(self)
     }
 }
@@ -707,6 +767,7 @@ impl WhpSystem {
             root,
             service_entry: [None; 2],
             service_root: [None; 2],
+            service_instance: [None; 2],
         })
     }
 }
@@ -1172,6 +1233,7 @@ mod tests {
             root: PhysAddr::new(0x10_0000).unwrap(),
             service_entry: [None; 2],
             service_root: [None; 2],
+            service_instance: [None; 2],
         };
         assert_eq!(VmBackend::run(&mut guest, 1), Err(WhpError::InvalidVcpu));
         assert_eq!(
