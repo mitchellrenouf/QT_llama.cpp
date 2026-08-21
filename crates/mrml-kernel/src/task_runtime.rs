@@ -13,6 +13,7 @@ pub enum TaskRuntimeError {
     Full,
     MissingTask,
     NoCurrentTask,
+    AddressSpaceMismatch,
     NonRecoverableFault,
     Scheduler(KernelScheduleError),
     IntegrityFailure,
@@ -98,6 +99,30 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
         self.scheduler
             .timer_tick()
             .map_err(TaskRuntimeError::Scheduler)
+    }
+
+    /// Accounts one timer tick and atomically installs the interrupted CPL3
+    /// context into the domain that was current at interrupt entry.
+    pub fn preempt_current(
+        &mut self,
+        interrupted: UserContext,
+    ) -> Result<ScheduleOutcome, TaskRuntimeError> {
+        let current = self
+            .scheduler
+            .current()
+            .ok_or(TaskRuntimeError::NoCurrentTask)?;
+        let domain = self
+            .domain(current)
+            .ok_or(TaskRuntimeError::IntegrityFailure)?;
+        if domain.context.page_table() != interrupted.page_table() {
+            return Err(TaskRuntimeError::AddressSpaceMismatch);
+        }
+        let outcome = self
+            .scheduler
+            .timer_tick()
+            .map_err(TaskRuntimeError::Scheduler)?;
+        *self.context_mut(current)? = interrupted;
+        Ok(outcome)
     }
 
     pub fn yield_current(&mut self) -> Result<ScheduleOutcome, TaskRuntimeError> {
@@ -409,6 +434,35 @@ mod tests {
             Err(TaskRuntimeError::NonRecoverableFault)
         );
         assert!(runtime.context(task).is_ok());
+    }
+
+    #[test]
+    fn timer_preemption_saves_only_the_current_address_space() {
+        let mut runtime = TaskRuntime::<2, 1>::new(1_000, 1).unwrap();
+        let first = runtime
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let second = runtime
+            .create(Priority::NORMAL, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        runtime.start();
+        assert_eq!(
+            runtime.preempt_current(context(0x30_0000, 0x60_0000)),
+            Err(TaskRuntimeError::AddressSpaceMismatch)
+        );
+        assert_eq!(runtime.ticks(), 0);
+        let saved = context(0x20_0000, 0x60_0000);
+        assert_eq!(
+            runtime.preempt_current(saved),
+            Ok(ScheduleOutcome::Switch {
+                from: Some(first),
+                to: second,
+            })
+        );
+        assert_eq!(
+            runtime.context(first).unwrap().instruction_pointer(),
+            0x60_0000
+        );
     }
 
     #[test]
