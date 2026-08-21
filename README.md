@@ -86,6 +86,34 @@ Changes that do not satisfy every rule must not be merged:
   not claim that a platform, security property, or performance result was
   verified when it was not actually tested.
 
+## Platform trust boundaries
+
+On a bare-metal boot, the OS currently trusts the CPU and its documented
+execution and privilege behavior, CPU microcode, the chipset and memory
+controller, RAM, the TPM or other hardware attestation root when used, and the
+UEFI firmware that loads and describes the machine. It also trusts the
+repository-controlled MRML loader, kernel, policy, and embedded verification
+keys after their signatures and measurements have been accepted. Peripheral
+devices, device firmware, DMA input, network peers, model files, tools, and all
+other external input are untrusted and must be validated and capability
+restricted. Until MRML implements and verifies a dynamic root of trust and
+independent hardware reinitialization, a compromised UEFI, SMM, platform
+security processor, CPU, microcode, chipset, TPM, or physical machine is outside
+the security boundary; ordinary verified boot cannot defend against those
+components modifying the system after verification.
+
+When booted by the development VMM, the OS additionally trusts that VMM and its
+host operating system for guest memory, virtual CPU state, clocks, interrupts,
+virtual devices, entropy, persistence, availability, and GPU computation. A
+host-controlled VMM can read or alter the guest regardless of in-guest queue
+authentication or image signatures. Consequently, the current KVM and WHP
+paths provide functional isolation between cooperative guests and are suitable
+for development and benchmarking, but provide no confidentiality, integrity,
+verified-boot, attestation, or signing-key guarantee against a compromised
+host. Such guarantees would require a separately validated hardware-protected
+confidential-computing path and attestation rooted below the VMM; MRML does not
+currently claim that support.
+
 ## Status
 
 The experimental microkernel foundation and its security model are documented
