@@ -3,6 +3,7 @@ const TPM_ST_SESSIONS: u16 = 0x8002;
 const TPM_RS_PW: u32 = 0x4000_0009;
 const TPM_CC_NV_INCREMENT: u32 = 0x0000_0137;
 const TPM_CC_NV_READ: u32 = 0x0000_014e;
+const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 const TPM_RC_SUCCESS: u32 = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +29,7 @@ pub fn enforce_version<T: TpmTransport>(
     if !(0x0100_0000..=0x01ff_ffff).contains(&index) || version == 0 {
         return Err(NvCounterError::InvalidIndex);
     }
+    verify_counter_index(transport, index)?;
     let current = read_counter(transport, index)?;
     if current > version {
         return Err(NvCounterError::Rollback);
@@ -40,6 +42,23 @@ pub fn enforce_version<T: TpmTransport>(
         increment_counter(transport, index)?;
     }
     Ok(version)
+}
+
+pub fn verify_counter_index<T: TpmTransport>(
+    transport: &mut T,
+    index: u32,
+) -> Result<(), NvCounterError> {
+    if !(0x0100_0000..=0x01ff_ffff).contains(&index) {
+        return Err(NvCounterError::InvalidIndex);
+    }
+    let mut command = [0u8; 14];
+    command[..2].copy_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+    command[2..6].copy_from_slice(&14u32.to_be_bytes());
+    command[6..10].copy_from_slice(&TPM_CC_NV_READ_PUBLIC.to_be_bytes());
+    command[10..14].copy_from_slice(&index.to_be_bytes());
+    let mut response = [0u8; 128];
+    let length = transport.submit(&command, &mut response)?;
+    parse_public_response(&response[..length], index)
 }
 
 pub fn read_counter<T: TpmTransport>(transport: &mut T, index: u32) -> Result<u64, NvCounterError> {
@@ -128,6 +147,43 @@ fn parse_empty_response(response: &[u8]) -> Result<(), NvCounterError> {
     parse_empty_auth(&response[14..])
 }
 
+fn parse_public_response(response: &[u8], index: u32) -> Result<(), NvCounterError> {
+    let (tag, _) = response_header(response)?;
+    if tag != TPM_ST_NO_SESSIONS || response.len() < 28 {
+        return Err(NvCounterError::MalformedResponse);
+    }
+    let public_size = u16::from_be_bytes(response[10..12].try_into().unwrap()) as usize;
+    let public_end = 12usize
+        .checked_add(public_size)
+        .ok_or(NvCounterError::MalformedResponse)?;
+    if public_size < 14 || public_end + 2 > response.len() {
+        return Err(NvCounterError::MalformedResponse);
+    }
+    let public = &response[12..public_end];
+    if u32::from_be_bytes(public[..4].try_into().unwrap()) != index {
+        return Err(NvCounterError::InvalidIndex);
+    }
+    let attributes = u32::from_be_bytes(public[6..10].try_into().unwrap());
+    if (attributes >> 4) & 0x0f != 1 {
+        return Err(NvCounterError::InvalidIndex);
+    }
+    let policy_size = u16::from_be_bytes(public[10..12].try_into().unwrap()) as usize;
+    let data_size_at = 12usize
+        .checked_add(policy_size)
+        .ok_or(NvCounterError::MalformedResponse)?;
+    if data_size_at + 2 != public.len()
+        || u16::from_be_bytes(public[data_size_at..data_size_at + 2].try_into().unwrap()) != 8
+    {
+        return Err(NvCounterError::InvalidIndex);
+    }
+    let name_size =
+        u16::from_be_bytes(response[public_end..public_end + 2].try_into().unwrap()) as usize;
+    if name_size == 0 || public_end + 2 + name_size != response.len() {
+        return Err(NvCounterError::MalformedResponse);
+    }
+    Ok(())
+}
+
 fn parse_empty_auth(response: &[u8]) -> Result<(), NvCounterError> {
     if response == [0, 0, 0, 0, 0] {
         Ok(())
@@ -143,12 +199,29 @@ mod tests {
     struct Counter {
         value: u64,
         calls: usize,
+        attributes: u32,
+        data_size: u16,
     }
 
     impl TpmTransport for Counter {
         fn submit(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, NvCounterError> {
             self.calls += 1;
             let code = u32::from_be_bytes(command[6..10].try_into().unwrap());
+            if code == TPM_CC_NV_READ_PUBLIC {
+                let index = u32::from_be_bytes(command[10..14].try_into().unwrap());
+                response[..30].fill(0);
+                response[..2].copy_from_slice(&TPM_ST_NO_SESSIONS.to_be_bytes());
+                response[2..6].copy_from_slice(&30u32.to_be_bytes());
+                response[10..12].copy_from_slice(&14u16.to_be_bytes());
+                response[12..16].copy_from_slice(&index.to_be_bytes());
+                response[16..18].copy_from_slice(&0x000b_u16.to_be_bytes());
+                response[18..22].copy_from_slice(&self.attributes.to_be_bytes());
+                response[24..26].copy_from_slice(&self.data_size.to_be_bytes());
+                response[26..28].copy_from_slice(&2u16.to_be_bytes());
+                response[28] = 0xaa;
+                response[29] = 0x55;
+                return Ok(30);
+            }
             if code == TPM_CC_NV_INCREMENT {
                 self.value += 1;
                 response[..19].copy_from_slice(&[
@@ -167,10 +240,15 @@ mod tests {
 
     #[test]
     fn advances_monotonically_and_rejects_rollback() {
-        let mut counter = Counter { value: 3, calls: 0 };
+        let mut counter = Counter {
+            value: 3,
+            calls: 0,
+            attributes: 0x10,
+            data_size: 8,
+        };
         assert_eq!(enforce_version(&mut counter, 0x0180_0001, 5, 8), Ok(5));
         assert_eq!(counter.value, 5);
-        assert_eq!(counter.calls, 3);
+        assert_eq!(counter.calls, 4);
         assert_eq!(
             enforce_version(&mut counter, 0x0180_0001, 4, 8),
             Err(NvCounterError::Rollback)
@@ -179,7 +257,12 @@ mod tests {
 
     #[test]
     fn bounds_advancement_and_rejects_malformed_responses() {
-        let mut counter = Counter { value: 1, calls: 0 };
+        let mut counter = Counter {
+            value: 1,
+            calls: 0,
+            attributes: 0x10,
+            data_size: 8,
+        };
         assert_eq!(
             enforce_version(&mut counter, 0x0180_0001, 10, 4),
             Err(NvCounterError::AdvanceLimit)
@@ -187,6 +270,17 @@ mod tests {
         assert_eq!(
             response_header(&[0; 9]),
             Err(NvCounterError::MalformedResponse)
+        );
+        counter.attributes = 0;
+        assert_eq!(
+            enforce_version(&mut counter, 0x0180_0001, 1, 4),
+            Err(NvCounterError::InvalidIndex)
+        );
+        counter.attributes = 0x10;
+        counter.data_size = 16;
+        assert_eq!(
+            enforce_version(&mut counter, 0x0180_0001, 1, 4),
+            Err(NvCounterError::InvalidIndex)
         );
     }
 }

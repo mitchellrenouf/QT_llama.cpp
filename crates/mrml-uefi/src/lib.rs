@@ -115,13 +115,15 @@ pub type HandleProtocol =
 pub type AllocatePages = unsafe extern "efiapi" fn(u32, u32, usize, *mut u64) -> Status;
 pub type Tcg2HashLogExtendEvent =
     unsafe extern "efiapi" fn(*mut Tcg2Protocol, u64, u64, u64, *mut Tcg2Event) -> Status;
+pub type Tcg2SubmitCommand =
+    unsafe extern "efiapi" fn(*mut Tcg2Protocol, u32, *mut u8, u32, *mut u8) -> Status;
 
 #[repr(C)]
 pub struct Tcg2Protocol {
     pub get_capability: usize,
     pub get_event_log: usize,
     pub hash_log_extend_event: Tcg2HashLogExtendEvent,
-    pub submit_command: usize,
+    pub submit_command: Tcg2SubmitCommand,
     pub get_active_pcr_banks: usize,
     pub set_active_pcr_banks: usize,
     pub get_result_of_set_active_pcr_banks: usize,

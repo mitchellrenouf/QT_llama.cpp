@@ -11,6 +11,7 @@ use mrml_kernel::{
     PixelFormat, SignedArtifact, TrustRoot, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
     MAX_HANDOFF_REGIONS, MAX_KERNEL_IMAGE_BYTES, SIGNED_ARTIFACT_OVERHEAD_BYTES,
 };
+use mrml_uefi::tpm::{enforce_version, NvCounterError, TpmTransport};
 use mrml_uefi::*;
 
 const MAP_BYTES: usize = 64 * 1024;
@@ -54,6 +55,40 @@ struct Transition {
 
 struct FirmwarePageTables {
     services: *const BootServices,
+}
+
+struct FirmwareTpm {
+    protocol: *mut Tcg2Protocol,
+}
+
+impl TpmTransport for FirmwareTpm {
+    fn submit(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, NvCounterError> {
+        if command.len() > 128 || response.len() < 10 {
+            return Err(NvCounterError::Transport);
+        }
+        let protocol = unsafe { self.protocol.as_mut() }.ok_or(NvCounterError::Transport)?;
+        let mut input = [0u8; 128];
+        input[..command.len()].copy_from_slice(command);
+        check(unsafe {
+            (protocol.submit_command)(
+                protocol,
+                command.len() as u32,
+                input.as_mut_ptr(),
+                response.len() as u32,
+                response.as_mut_ptr(),
+            )
+        })
+        .map_err(|_| NvCounterError::Transport)?;
+        let declared = u32::from_be_bytes(
+            response[2..6]
+                .try_into()
+                .map_err(|_| NvCounterError::MalformedResponse)?,
+        ) as usize;
+        if !(10..=response.len()).contains(&declared) {
+            return Err(NvCounterError::MalformedResponse);
+        }
+        Ok(declared)
+    }
 }
 
 impl PageTableStore for FirmwarePageTables {
@@ -240,6 +275,10 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     if acpi_root == 0 {
         return Err(LOAD_ERROR);
     }
+    let rollback_protected = enforce_rollback_counter(services, kernel_version)?;
+    if require_rollback_counter() && !rollback_protected {
+        return Err(LOAD_ERROR);
+    }
 
     let (map_size, descriptor_size) = unsafe { exit_boot_services(image, services) }?;
     let map_bytes = unsafe { core::slice::from_raw_parts(MEMORY_MAP.0.get().cast(), map_size) };
@@ -284,6 +323,50 @@ fn require_tpm_measurement() -> bool {
 
 fn require_secure_boot() -> bool {
     matches!(option_env!("MRML_REQUIRE_SECURE_BOOT"), Some("1"))
+}
+
+fn require_rollback_counter() -> bool {
+    matches!(option_env!("MRML_REQUIRE_ROLLBACK"), Some("1"))
+}
+
+fn configured_nv_index() -> Result<Option<u32>, Status> {
+    let Some(encoded) = option_env!("MRML_TPM_NV_INDEX_HEX") else {
+        return Ok(None);
+    };
+    let bytes = encoded.as_bytes();
+    if bytes.len() != 8 {
+        return Err(LOAD_ERROR);
+    }
+    let mut value = 0u32;
+    for byte in bytes {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return Err(LOAD_ERROR),
+        };
+        value = value.checked_mul(16).ok_or(LOAD_ERROR)? | u32::from(digit);
+    }
+    Ok(Some(value))
+}
+
+fn enforce_rollback_counter(services: &BootServices, version: u64) -> Result<bool, Status> {
+    let Some(index) = configured_nv_index()? else {
+        return Ok(false);
+    };
+    let mut protocol_pointer = core::ptr::null_mut();
+    check(unsafe {
+        (services.locate_protocol)(
+            &TCG2_PROTOCOL_GUID,
+            core::ptr::null_mut(),
+            &mut protocol_pointer,
+        )
+    })?;
+    let mut transport = FirmwareTpm {
+        protocol: protocol_pointer.cast(),
+    };
+    enforce_version(&mut transport, index, version, 1024).map_err(|_| LOAD_ERROR)?;
+    Ok(true)
 }
 
 fn detect_secure_boot(runtime: *mut RuntimeServices) -> Result<bool, Status> {

@@ -204,13 +204,19 @@ an event log, but is not a monotonic counter. TPM NV provisioning,
 authorization, atomic version advancement, and recovery remain separate work
 and no rollback-resistance claim is made yet.
 
-An allocation-free TPM 2.0 NV wire codec now emits bounded `NV_Read` and
-`NV_Increment` commands with password-session framing, parses declared response
-lengths and empty authorization responses exactly, rejects a stored counter
-above the signed version, and caps per-boot advancement. It is not connected to
-the production loader yet: admission must first issue `NV_ReadPublic` and prove
-the configured handle is an eight-byte counter index. Treating an ordinary NV
-blob as monotonic state would be insecure.
+An allocation-free TPM 2.0 NV backend emits bounded `NV_ReadPublic`, `NV_Read`,
+and `NV_Increment` commands through TCG2 `SubmitCommand`. It rejects handles
+outside the platform NV range, non-counter index types, sizes other than eight
+bytes, mismatched public handles, malformed names, rollback below the stored
+counter, oversized per-boot advancement, malformed response lengths, and
+nonempty password-session responses. Set `MRML_TPM_NV_INDEX_HEX` to the exact
+eight-hex-digit handle of a separately provisioned empty-auth counter. The
+loader advances it only after signature verification, PE materialization,
+page-table construction, and ACPI validation. `MRML_REQUIRE_ROLLBACK=1` makes a
+missing configuration boot-fatal. Empty authorization permits unauthorized
+increments (denial of service) but never decrement or rollback; a production
+deployment should provision a policy-authorized index once policy sessions are
+implemented.
 
 The loader also reads the standard global `SecureBoot` and `SetupMode`
 variables through its original raw runtime-services ABI. It reports secure boot
