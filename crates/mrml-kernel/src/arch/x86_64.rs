@@ -5,6 +5,7 @@ mod context;
 mod descriptors;
 mod page_table;
 mod pe_mapping;
+mod service_space;
 mod trap;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
 pub use context::{
@@ -18,6 +19,7 @@ pub use descriptors::{
 };
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
+pub use service_space::{ServiceAddressSpace, ServiceSpaceError};
 pub use trap::{HardwareTrapFrame, TrapDisposition, TrapError, TrapFrame};
 
 const MAX_PHYSICAL_ADDRESS: u64 = (1u64 << 52) - PAGE_SIZE;

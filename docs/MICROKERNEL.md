@@ -654,6 +654,19 @@ A fresh run completed the combined path in 192 microseconds (`verify=783us`,
 `prepare=1125us`, `total=6426us`). Blocking receive, wakeup, and production
 service-image entry remain unfinished.
 
+`ServiceAddressSpace` now defines the production mapping boundary independently
+of the permissive probe layout. Its public constructor accepts only a
+`VerifiedExecutable` whose authenticated kind is `ServiceImage`. Each instance
+copies only explicitly supplied higher-half supervisor mappings, maps the
+validated PE allocation plan as lower-half user pages with final per-section
+W^X permissions, maps a user-writable/NX stack, proves the immediately lower
+page is absent, and can materialize the plan only through a fresh
+`PageTableBuilder` root. Low supervisor mappings, user-marked kernel mappings,
+physical aliases, overlap with the guard, overflow, and a non-service artifact
+fail closed. Windows now passes 122 kernel tests. Live loading of separately
+signed service bytes and switching between independently materialized roots is
+still required.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.

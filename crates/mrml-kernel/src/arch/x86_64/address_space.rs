@@ -180,6 +180,10 @@ impl<const MAPPINGS: usize> AddressSpace<MAPPINGS> {
         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
         Ok(mapping)
     }
+
+    pub fn mappings(&self) -> impl Iterator<Item = Mapping> + '_ {
+        self.slots.iter().filter_map(|slot| slot.mapping)
+    }
 }
 
 impl<const MAPPINGS: usize> Default for AddressSpace<MAPPINGS> {
