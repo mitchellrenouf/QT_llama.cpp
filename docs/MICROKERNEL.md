@@ -127,6 +127,12 @@ unforgeable result of typed artifact verification and constant-time compares
 that signed digest with the exact embedded bytes. A different artifact kind,
 empty bundle, or changed PTX cannot mint the token even when a numeric
 `KernelId` is otherwise valid.
+The existing native CUDA runtime now provides the service boundary with a
+read-only view of its build-embedded PTX and a bounded ID-to-symbol lookup for
+all 28 compiled kernels. A non-hardware regression proves every accepted ID is
+unique, nonempty, NUL-free, and identical to the runtime's fast lookup table,
+while ID 28 and arbitrary names are rejected. This closes registry drift; it
+does not yet implement the service-side argument schemas or graph launcher.
 
 ## Portability and boot
 

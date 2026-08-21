@@ -29,6 +29,49 @@ static CUDA_DRIVER: OnceCell<CudaDriverApi> = OnceCell::new();
 static CUDA_ALLOCATION_POOL: OnceCell<SpinMutex<OrderedMap<(i32, usize), Vector<usize>>>> =
     OnceCell::new();
 const RUST_CUDA_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rust_cuda_kernels.ptx"));
+const EMBEDDED_KERNEL_NAMES: [&str; 28] = [
+    "rust_cuda_gemm_q4_0_f32",
+    "rust_cuda_gemm_q4_0_qkv_f32",
+    "rust_cuda_gemv_q4_0_qkv_f32",
+    "rust_cuda_gemv_q4_0_f32",
+    "rust_cuda_gemv_q8_0_f32",
+    "rust_cuda_gemm_q4_0_geglu_f32",
+    "rust_cuda_gemv_q4_0_geglu_f32",
+    "rust_cuda_add_f32",
+    "rust_cuda_embedding_f32",
+    "rust_cuda_swiglu_f32",
+    "rust_cuda_geglu_f32",
+    "rust_cuda_rope_f32",
+    "rust_cuda_rms_norm_f32",
+    "rust_cuda_moe_router_logits_f32",
+    "rust_cuda_moe_router_top8_f32",
+    "rust_cuda_prepare_ffn_f32",
+    "rust_cuda_finish_ffn_f32",
+    "rust_cuda_vocab_topk_f32",
+    "rust_cuda_vocab_topk_generic_f32",
+    "rust_cuda_qkv_postprocess",
+    "rust_cuda_attention",
+    "rust_cuda_attention_streaming",
+    "rust_cuda_moe_gate_up_q4",
+    "rust_cuda_moe_gate_up_q4_gemma4_26b",
+    "rust_cuda_moe_down_q4",
+    "rust_cuda_moe_down_q4_combined",
+    "rust_cuda_moe_down_q4_gemma4_26b",
+    "rust_cuda_embedding_q8_0_f32",
+];
+
+/// Exact PTX bytes compiled into this runtime. Callers may hash these bytes for
+/// signed-bundle admission but cannot replace the module through this API.
+pub fn embedded_cuda_bundle() -> &'static [u8] {
+    RUST_CUDA_PTX
+}
+
+/// Fixed audited symbol for a mediated `KernelId`. No string-controlled module
+/// or function lookup is exposed to an untrusted guest.
+pub fn embedded_kernel_name(id: u8) -> Option<&'static str> {
+    EMBEDDED_KERNEL_NAMES.get(id as usize).copied()
+}
+
 #[inline(always)]
 fn rust_kernel_index(name: &str) -> Option<usize> {
     Some(match name {
@@ -2767,6 +2810,22 @@ mod tests {
         }};
     }
     static CUDA_TEST_LOCK: SpinMutex<()> = SpinMutex::new(());
+
+    #[test]
+    fn mediated_registry_is_exact_bounded_and_matches_fast_lookup() {
+        assert!(!embedded_cuda_bundle().is_empty());
+        for id in 0..28u8 {
+            let name = embedded_kernel_name(id).unwrap();
+            assert_eq!(rust_kernel_index(name), Some(id as usize));
+            assert!(!name.is_empty());
+            assert!(!name.as_bytes().contains(&0));
+            for other in 0..id {
+                assert_ne!(embedded_kernel_name(other), Some(name));
+            }
+        }
+        assert_eq!(embedded_kernel_name(28), None);
+        assert_eq!(rust_kernel_index("guest_selected_kernel"), None);
+    }
 
     #[test]
     fn arena_returns_stable_aligned_non_overlapping_views() -> Result<()> {

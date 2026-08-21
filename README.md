@@ -137,8 +137,11 @@ contract distinguishes acceptance, definite pre-accept rejection, and
 uncertain failure; uncertain work remains tracked until timeout/reset. A
 launch-enabling token can only be minted from a verified `CudaKernelBundle`
 whose digest exactly matches the PTX embedded in the service. Wrong artifact
-types or changed PTX fail closed. Also implemented are the dispatch watchdog
-and adversarial unit tests. The cross-VM
+types or changed PTX fail closed. The native CUDA runtime now exposes that
+compiled PTX only as a read-only byte slice for hashing and exposes the exact
+28-entry kernel registry only through bounded numeric lookup. It does not add
+an arbitrary module loader or guest-controlled symbol lookup. Also implemented
+are the dispatch watchdog and adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
