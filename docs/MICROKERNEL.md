@@ -395,7 +395,9 @@ executable, non-writable section, and the loader-owned CR3 enforces those final
 section permissions in hardware.
 
 The x86-64 transition now allocates a new zeroed four-level page-table tree and
-a dedicated, fully erased 64 KiB kernel stack before leaving firmware. It identity-maps only
+a dedicated, fully erased 64 KiB kernel stack before leaving firmware. One
+additional lower allocation page is deliberately omitted from the new address
+space as a stack-underflow guard. It identity-maps only
 the authenticated PE regions with their final read-only, writable/NX, or
 read-only/executable permissions; the stack and GOP aperture writable/NX; the
 canonical handoff read-only; and one page-aligned read-only/executable assembly

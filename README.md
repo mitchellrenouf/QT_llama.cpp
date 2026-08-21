@@ -90,7 +90,9 @@ validates the bounded handoff, installs its own GDT and 256-entry fail-stop IDT,
 uses a dedicated stack and guarded page tables, and renders a GOP framebuffer
 marker. Before installing the guarded address space, the loader erases the
 entire page-rounded kernel allocation and all 64 KiB of the kernel stack, so no
-firmware-era tail or stack data enters the kernel mapping. Recoverable
+firmware-era tail or stack data enters the kernel mapping. A separately
+allocated lower guard page is deliberately absent from the new page tables, so
+downward stack overflow faults instead of reaching an adjacent allocation. Recoverable
 exception dispatch, timers, scheduling from the standalone
 image, service VMs, and bare-metal validation remain unfinished.
 

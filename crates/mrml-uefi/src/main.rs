@@ -34,6 +34,7 @@ struct HandoffBuffer(UnsafeCell<[u8; HANDOFF_BYTES]>);
 unsafe impl Sync for HandoffBuffer {}
 static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; HANDOFF_BYTES]));
 const KERNEL_STACK_PAGES: usize = 16;
+const KERNEL_STACK_GUARD_PAGES: usize = 1;
 const KERNEL_PATH: &[u16] = &[
     92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 75, 69, 82, 78, 69, 76, 46, 83, 73, 71, 78, 69, 68, 0,
 ];
@@ -644,18 +645,30 @@ fn prepare_transition(
     image_address: u64,
     framebuffer: Framebuffer,
 ) -> Result<Transition, Status> {
-    let mut stack_base = 0u64;
-    check(unsafe { (services.allocate_pages)(0, 2, KERNEL_STACK_PAGES, &mut stack_base) })?;
+    let stack_allocation_pages = KERNEL_STACK_PAGES
+        .checked_add(KERNEL_STACK_GUARD_PAGES)
+        .ok_or(LOAD_ERROR)?;
+    let mut stack_allocation_base = 0u64;
+    check(unsafe {
+        (services.allocate_pages)(0, 2, stack_allocation_pages, &mut stack_allocation_base)
+    })?;
+    let stack_base = stack_allocation_base
+        .checked_add((KERNEL_STACK_GUARD_PAGES as u64) * 4096)
+        .ok_or(LOAD_ERROR)?;
     let stack_bytes = (KERNEL_STACK_PAGES as u64)
         .checked_mul(4096)
         .ok_or(LOAD_ERROR)?;
     let stack_end = stack_base.checked_add(stack_bytes).ok_or(LOAD_ERROR)?;
     let stack_top = stack_end.checked_sub(8).ok_or(LOAD_ERROR)?;
-    if stack_base == 0 || stack_base % 4096 != 0 || stack_end % 16 != 0 {
+    if stack_allocation_base == 0
+        || !stack_allocation_base.is_multiple_of(4096)
+        || !stack_base.is_multiple_of(4096)
+        || !stack_end.is_multiple_of(16)
+    {
         return Err(LOAD_ERROR);
     }
-    let stack_bytes = usize::try_from(stack_bytes).map_err(|_| LOAD_ERROR)?;
-    unsafe { core::ptr::write_bytes(stack_base as *mut u8, 0, stack_bytes) };
+    let stack_allocation_bytes = stack_allocation_pages.checked_mul(4096).ok_or(LOAD_ERROR)?;
+    unsafe { core::ptr::write_bytes(stack_allocation_base as *mut u8, 0, stack_allocation_bytes) };
     unsafe { *(stack_top as *mut u64) = 0 };
 
     let store = FirmwarePageTables {
