@@ -137,6 +137,20 @@ as MMIO: it is inserted into an address gap or splits one containing region,
 while cross-region conflicts fail closed. QEMU still reached the green marker
 after this normalization was enabled.
 
+The post-firmware path now enters code linked from `mrml-kernel`. A typed early
+context revalidates nonzero entropy, the ACPI pointer, the sorted memory map,
+and complete framebuffer MMIO containment before drawing. QEMU captured the
+kernel marker as a white 64x8 rectangle at pixel `(0,0)` over the green
+background; pixel `(0,8)` and the final framebuffer pixel remained
+`RGB(22,97,58)`. Thus the marker cannot be confused with the loader's earlier
+solid-color stages. This is a statically linked early kernel entry, not yet a
+separately loaded and signed kernel image.
+
+Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
+dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.
+`mrml-crypto` exposes a fixed-storage boot feature path while its runtime-backed
+TLS, RSA, and ML-KEM helpers remain enabled by default for applications.
+
 GOP is the primary early console because contemporary physical machines cannot
 be assumed to expose a usable serial port. Only the standard 32-bit RGB-reserved
 and BGR-reserved pixel layouts are accepted. Geometry, stride, byte length,
@@ -265,7 +279,7 @@ properties. Until those exist, the kernel remains experimental.
 Run the current release microbenchmarks with:
 
 ```text
-cargo test --release -p mrml-kernel --test performance -- --ignored --nocapture
+cargo test --release -p mrml-kernel-bench -- --ignored --nocapture
 ```
 
 They report nanoseconds per capability authorization and scheduler selection.

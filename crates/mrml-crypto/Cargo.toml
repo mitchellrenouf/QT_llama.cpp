@@ -6,5 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "Original no_std cryptographic primitives for MRML TLS and model integrity"
 
+[features]
+default = ["runtime"]
+runtime = ["dep:mrml-runtime"]
+
 [dependencies]
-mrml-runtime = { path = "../mrml-runtime" }
+mrml-runtime = { path = "../mrml-runtime", optional = true }

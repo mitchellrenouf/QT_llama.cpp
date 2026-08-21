@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/mrml-uefi",
     "crates/mrml-kernel",
+    "crates/mrml-kernel-bench",
     "crates/mrml-sign",
     "crates/mrml-crypto",
     "crates/mrml-tls",

@@ -2,6 +2,9 @@
 #![no_main]
 
 use core::cell::UnsafeCell;
+use mrml_kernel::{
+    EarlyKernelContext, FramebufferInfo, MemoryKind, MemoryRegion, PhysAddr, PixelFormat,
+};
 use mrml_uefi::*;
 
 const MAP_BYTES: usize = 64 * 1024;
@@ -19,6 +22,7 @@ static REGIONS: RegionBuffer = RegionBuffer(UnsafeCell::new(
 struct Framebuffer {
     base: u64,
     size: usize,
+    width: u32,
     height: u32,
     stride: u32,
     format: u32,
@@ -63,6 +67,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     let framebuffer = Framebuffer {
         base: mode.framebuffer_base,
         size: mode.framebuffer_size,
+        width: info.horizontal_resolution,
         height: info.vertical_resolution,
         stride: info.pixels_per_scan_line,
         format: info.pixel_format,
@@ -100,9 +105,67 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     if region_count == 0 {
         return Err(LOAD_ERROR);
     }
-
-    paint(framebuffer, [0x16, 0x61, 0x3a]);
+    enter_kernel(entropy, acpi_root, framebuffer, &regions[..region_count])?;
     halt()
+}
+
+fn enter_kernel(
+    entropy: [u8; 32],
+    acpi_root: u64,
+    framebuffer: Framebuffer,
+    regions: &[NormalizedRegion],
+) -> Result<(), Status> {
+    let placeholder = MemoryRegion::new(
+        PhysAddr::new(0).map_err(|_| LOAD_ERROR)?,
+        1,
+        MemoryKind::Reserved,
+    )
+    .map_err(|_| LOAD_ERROR)?;
+    let mut kernel_regions = [placeholder; MAX_NORMALIZED_REGIONS];
+    for (destination, source) in kernel_regions.iter_mut().zip(regions) {
+        let kind = match source.kind {
+            NormalizedMemoryKind::Free => MemoryKind::Free,
+            NormalizedMemoryKind::Kernel => MemoryKind::Kernel,
+            NormalizedMemoryKind::Firmware => MemoryKind::Firmware,
+            NormalizedMemoryKind::Mmio => MemoryKind::Mmio,
+            NormalizedMemoryKind::Acpi => MemoryKind::Acpi,
+            NormalizedMemoryKind::Reserved => MemoryKind::Reserved,
+        };
+        *destination = MemoryRegion::new(
+            PhysAddr::new(source.start).map_err(|_| LOAD_ERROR)?,
+            source.pages,
+            kind,
+        )
+        .map_err(|_| LOAD_ERROR)?;
+    }
+    let pixel_format = if framebuffer.format == 0 {
+        PixelFormat::RedGreenBlueReserved
+    } else {
+        PixelFormat::BlueGreenRedReserved
+    };
+    let framebuffer_info = FramebufferInfo::new(
+        framebuffer.base,
+        framebuffer.size as u64,
+        framebuffer.width,
+        framebuffer.height,
+        framebuffer.stride,
+        pixel_format,
+    )
+    .map_err(|_| LOAD_ERROR)?;
+    let context = EarlyKernelContext::new(
+        entropy,
+        acpi_root,
+        framebuffer_info,
+        &kernel_regions[..regions.len()],
+    )
+    .map_err(|_| LOAD_ERROR)?;
+    // SAFETY: GOP supplied this allocation and boot services have exited. The
+    // kernel surface checks the declared size and every rendered rectangle.
+    let framebuffer_bytes =
+        unsafe { core::slice::from_raw_parts_mut(framebuffer.base as *mut u8, framebuffer.size) };
+    context
+        .render_booted(framebuffer_bytes)
+        .map_err(|_| LOAD_ERROR)
 }
 
 unsafe fn exit_boot_services(

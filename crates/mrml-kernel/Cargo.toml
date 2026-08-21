@@ -9,7 +9,4 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-mrml-crypto = { path = "../mrml-crypto" }
-
-[dev-dependencies]
-mrml-runtime = { path = "../mrml-runtime" }
+mrml-crypto = { path = "../mrml-crypto", default-features = false }

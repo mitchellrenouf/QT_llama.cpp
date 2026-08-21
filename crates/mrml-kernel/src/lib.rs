@@ -9,6 +9,7 @@ pub mod arch;
 mod artifact;
 mod boot;
 mod capability;
+mod early;
 mod framebuffer;
 mod grant;
 mod handoff;
@@ -26,6 +27,7 @@ pub use artifact::{
 };
 pub use boot::{BootEvidence, BootPolicy, BootValidationError};
 pub use capability::{Capability, CapabilityError, CapabilitySpace, ObjectId, Rights};
+pub use early::{EarlyKernelContext, EarlyKernelError};
 pub use framebuffer::{Color, FramebufferError, FramebufferInfo, FramebufferSurface, PixelFormat};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
 pub use handoff::{
