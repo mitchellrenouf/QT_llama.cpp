@@ -124,7 +124,9 @@ and dispatch encodings, authenticated sender/receiver state, bounded FIFO,
 monotonic producer/consumer ownership state, cache-line-separated atomic
 publication indices with acquire/release ordering, embedded-kernel allowlist,
 launch validation, dispatch watchdog, and adversarial unit tests. The cross-VM
-shared-page mapping and platform cache-coherence/alignment validation,
+queue layout is also implemented: command and completion rings occupy separate,
+page-aligned, overflow-checked physical ranges sized from a bounded slot count.
+Actual KVM/Hyper-V shared-page attachment and platform cache-coherence validation,
 host CUDA executor, operation-graph batching, completion queue, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims

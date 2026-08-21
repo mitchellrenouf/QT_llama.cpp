@@ -57,7 +57,10 @@ session. A 128-byte, 64-byte-aligned shared index structure now places producer
 and consumer counters on separate cache lines and uses release compare-exchange
 for publication/consumption with acquire loads at the opposite endpoint. The
 remaining platform mapping layer must prove natural alignment and coherent
-shared-memory semantics before exposing it. Each fixed-size command is bound to a nonzero session and strict
+shared-memory semantics before exposing it. The common layout validator sizes
+each ring from the 128-byte index block plus its bounded slots, rounds only with
+checked arithmetic, requires page-aligned nonzero physical bases, and rejects
+overlapping command/completion ranges. Each fixed-size command is bound to a nonzero session and strict
 sequence and carries an HMAC tag under a per-session key; tampering, replay,
 cross-session substitution, noncanonical encoding, and zero keys are rejected
 before resource state changes. HMAC-SHA-256 is conservatively treated as a
@@ -71,7 +74,7 @@ variable argument blobs. In-flight work uses a fixed-capacity watchdog table
 with unique request IDs, kernel-minted generational dispatch IDs, explicit
 cancellation, and deadline expiry. Expiry invalidates an ID before requesting
 host recovery, so a late completion cannot affect a reused slot. The Hyper-V
-shared-page mapping and platform cache-coherence validation, host CUDA executor,
+KVM/Hyper-V shared-page attachment and platform cache-coherence validation, host CUDA executor,
 kernel-specific argument schemas, operation-graph batching, completion queue,
 IOMMU plumbing, the platform-specific device-reset callback, and end-to-end
 inference benchmarks remain pending. Until those pieces exist and are audited, this is not a working

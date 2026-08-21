@@ -1,3 +1,4 @@
+use crate::PAGE_SIZE;
 use core::{
     array,
     sync::atomic::{AtomicU64, Ordering},
@@ -38,6 +39,7 @@ pub enum GpuError {
     InvalidQueueState,
     ReservationPending,
     InvalidReservation,
+    InvalidQueueMapping,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,6 +175,75 @@ fn invalidate_dispatch(entry: &mut InFlightDispatch) {
 pub const GPU_QUEUE_MESSAGE_BYTES: usize = 80;
 pub const MAX_GPU_QUEUE_SLOTS: usize = 256;
 const GPU_QUEUE_AUTHENTICATED_BYTES: usize = 48;
+
+/// Architecture-neutral physical layout for two unidirectional shared rings.
+/// Command and completion memory are deliberately disjoint so neither endpoint
+/// receives write access to the other endpoint's publication area.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuSharedQueueLayout {
+    command_base: u64,
+    completion_base: u64,
+    pages_per_ring: u64,
+    slots: u16,
+}
+
+impl GpuSharedQueueLayout {
+    pub fn new(command_base: u64, completion_base: u64, slots: usize) -> Result<Self, GpuError> {
+        if slots == 0
+            || slots > MAX_GPU_QUEUE_SLOTS
+            || command_base == 0
+            || completion_base == 0
+            || !command_base.is_multiple_of(PAGE_SIZE)
+            || !completion_base.is_multiple_of(PAGE_SIZE)
+        {
+            return Err(GpuError::InvalidQueueMapping);
+        }
+        let payload = (slots as u64)
+            .checked_mul(GPU_QUEUE_MESSAGE_BYTES as u64)
+            .ok_or(GpuError::RangeOverflow)?;
+        let bytes = (core::mem::size_of::<GpuSharedRingIndices>() as u64)
+            .checked_add(payload)
+            .ok_or(GpuError::RangeOverflow)?;
+        let pages_per_ring = bytes
+            .checked_add(PAGE_SIZE - 1)
+            .ok_or(GpuError::RangeOverflow)?
+            / PAGE_SIZE;
+        let length = pages_per_ring
+            .checked_mul(PAGE_SIZE)
+            .ok_or(GpuError::RangeOverflow)?;
+        let command_end = command_base
+            .checked_add(length)
+            .ok_or(GpuError::RangeOverflow)?;
+        let completion_end = completion_base
+            .checked_add(length)
+            .ok_or(GpuError::RangeOverflow)?;
+        if command_base < completion_end && completion_base < command_end {
+            return Err(GpuError::InvalidQueueMapping);
+        }
+        Ok(Self {
+            command_base,
+            completion_base,
+            pages_per_ring,
+            slots: slots as u16,
+        })
+    }
+
+    pub const fn command_base(self) -> u64 {
+        self.command_base
+    }
+
+    pub const fn completion_base(self) -> u64 {
+        self.completion_base
+    }
+
+    pub const fn pages_per_ring(self) -> u64 {
+        self.pages_per_ring
+    }
+
+    pub const fn slots(self) -> u16 {
+        self.slots
+    }
+}
 
 /// A monotonic position and its derived physical slot. Positions do not wrap;
 /// exhaustion requires establishing a new authenticated GPU session.
@@ -1138,6 +1209,31 @@ mod tests {
         assert!(indices.consume(0, first).is_ok());
         assert_eq!(indices.consumed(), 1);
         assert_eq!(indices.consume(0, first), Err(GpuError::InvalidQueueState));
+    }
+
+    #[test]
+    fn shared_queue_layout_is_page_bounded_disjoint_and_overflow_safe() {
+        let layout = GpuSharedQueueLayout::new(0x1000, 0x3000, 64).unwrap();
+        assert_eq!(layout.command_base(), 0x1000);
+        assert_eq!(layout.completion_base(), 0x3000);
+        assert_eq!(layout.pages_per_ring(), 2);
+        assert_eq!(layout.slots(), 64);
+        assert_eq!(
+            GpuSharedQueueLayout::new(0x1000, 0x2000, 64),
+            Err(GpuError::InvalidQueueMapping)
+        );
+        assert_eq!(
+            GpuSharedQueueLayout::new(0x1001, 0x4000, 1),
+            Err(GpuError::InvalidQueueMapping)
+        );
+        assert_eq!(
+            GpuSharedQueueLayout::new(0x1000, 0x4000, 0),
+            Err(GpuError::InvalidQueueMapping)
+        );
+        assert_eq!(
+            GpuSharedQueueLayout::new(u64::MAX - (PAGE_SIZE - 1), 0x1000, 1),
+            Err(GpuError::RangeOverflow)
+        );
     }
 
     #[test]
