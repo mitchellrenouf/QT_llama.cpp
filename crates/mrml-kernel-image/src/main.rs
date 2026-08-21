@@ -4,14 +4,14 @@
 use core::arch::{asm, global_asm};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
-#[cfg(feature = "user-probe")]
-use mrml_kernel::arch::x86_64::TrapDisposition;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
 use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
     load_task_register, write_task_state_descriptor,
 };
+#[cfg(feature = "user-probe")]
+use mrml_kernel::arch::x86_64::{TrapDisposition, UserContext, enter_user_context};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -353,21 +353,22 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     #[cfg(feature = "user-probe")]
     unsafe {
         let user_stack: u64;
+        let page_table: u64;
         asm!("mov {}, rsp", out(reg) user_stack, options(nomem, nostack, preserves_flags));
-        let user_stack = user_stack & !0xf;
-        asm!(
-            "mov ax, 0x1b",
-            "mov ds, ax",
-            "mov es, ax",
-            "push 0x1b",
-            "push {stack}",
-            "push 0x202",
-            "push 0x23",
-            "push {entry}",
-            "iretq",
-            stack = in(reg) user_stack,
-            entry = in(reg) mrml_user_probe as *const () as usize as u64,
-        );
+        asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags));
+        let page_table = match PhysAddr::new(page_table) {
+            Ok(page_table) => page_table,
+            Err(_) => halt(),
+        };
+        let context = match UserContext::new(
+            page_table,
+            mrml_user_probe as *const () as usize as u64,
+            user_stack & !0xf,
+        ) {
+            Ok(context) => context,
+            Err(_) => halt(),
+        };
+        enter_user_probe_context(&context);
     }
     #[cfg(feature = "timer-probe")]
     unsafe {
@@ -475,6 +476,11 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         };
     }
     halt()
+}
+
+#[cfg(feature = "user-probe")]
+unsafe fn enter_user_probe_context(context: &UserContext) {
+    unsafe { enter_user_context(context) }
 }
 
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]

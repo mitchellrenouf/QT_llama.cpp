@@ -156,8 +156,11 @@ without guard pages. A separate signed diagnostic build now performs a live
 termination policy under nested KVM. That proof temporarily maps the entire
 diagnostic PE in the lower half with user permissions and is therefore not an
 acceptable service isolation design. Guarded per-CPU stacks, separate signed
-user mappings, and CR3 switching remain unfinished. Service VMs and bare-metal
-validation also remain unfinished.
+user mappings, and distinct production CR3 roots remain unfinished. The live
+probe now uses the reusable context transition that writes its validated CR3,
+sanitizes DS/ES/FS/GS, restores all fifteen general registers, and constructs
+the exact ring-three `iretq` frame rather than probe-specific entry assembly.
+Service VMs and bare-metal validation also remain unfinished.
 The successful `ExitBootServices` call is a one-way boundary: memory-map
 normalization, handoff construction, and launch failures after it halt locally
 and can never return into terminated firmware services.

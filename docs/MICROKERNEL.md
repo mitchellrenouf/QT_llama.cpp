@@ -588,6 +588,21 @@ path still requires separately authenticated service pages, a private guarded
 user stack, a kernel-only higher-half mapping, CR3/PCID switching, and revocation
 before another context can run.
 
+User entry is no longer encoded in the diagnostic image. The reusable x86-64
+transition consumes the fixed 152-byte `UserContext` contract, writes its
+page-aligned physical root to CR3, builds the exact five-word privilege frame,
+sets DS/ES/FS/GS to the ring-three data selector, restores all fifteen general
+registers, and executes `IRETQ`. Compile-time Rust layout plus unit tests bind
+every assembly offset to the context representation. Its safety contract
+requires the new root to retain the transition page until the CR3 write, map
+the target RIP user-executable and RSP user-writable, and retain a kernel-only
+TSS `RSP0`. Windows and Linux now pass 113 kernel tests. A fresh signed KVM
+probe exercised this reusable CR3/register path and the checked return path in
+210 microseconds (`verify=729us`, `prepare=1231us`, `total=5403us`). The probe
+uses the same root before and after CR3 solely because isolated service roots
+are the next milestone; it proves the transition mechanism, not address-space
+separation.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.

@@ -1,5 +1,48 @@
 use super::{TrapFrame, VirtAddr};
 use crate::{PAGE_SIZE, PhysAddr, TaskId};
+use core::arch::global_asm;
+
+global_asm!(
+    r#"
+    .section .text
+    .global mrml_x86_enter_user
+mrml_x86_enter_user:
+    mov rdx, rdi
+    mov rax, qword ptr [rdx + 144]
+    mov cr3, rax
+    push 0x1b
+    push qword ptr [rdx + 128]
+    push qword ptr [rdx + 136]
+    push 0x23
+    push qword ptr [rdx + 120]
+    mov ax, 0x1b
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov r15, qword ptr [rdx + 0]
+    mov r14, qword ptr [rdx + 8]
+    mov r13, qword ptr [rdx + 16]
+    mov r12, qword ptr [rdx + 24]
+    mov r11, qword ptr [rdx + 32]
+    mov r10, qword ptr [rdx + 40]
+    mov r9, qword ptr [rdx + 48]
+    mov r8, qword ptr [rdx + 56]
+    mov rsi, qword ptr [rdx + 72]
+    mov rbp, qword ptr [rdx + 80]
+    mov rbx, qword ptr [rdx + 88]
+    mov rcx, qword ptr [rdx + 104]
+    mov rax, qword ptr [rdx + 112]
+    mov rdi, qword ptr [rdx + 64]
+    mov rdx, qword ptr [rdx + 96]
+    iretq
+    ud2
+    "#
+);
+
+unsafe extern "sysv64" {
+    fn mrml_x86_enter_user(context: *const u64) -> !;
+}
 
 pub const USER_DATA_SELECTOR: u16 = 0x1b;
 pub const USER_CODE_SELECTOR: u16 = 0x23;
@@ -122,6 +165,19 @@ impl UserContext {
     pub const fn page_table(&self) -> PhysAddr {
         self.page_table
     }
+}
+
+/// Installs a validated task address space and restores its complete CPL3
+/// context. This function cannot return.
+///
+/// # Safety
+///
+/// The context's page-table root must map this transition code until the CR3
+/// write and must map `rip` user-executable and `rsp` user-writable. The active
+/// TSS must contain a mapped kernel-only `RSP0`, and interrupts must remain
+/// disabled until `IRETQ` applies the context's validated flags.
+pub unsafe fn enter_user_context(context: &UserContext) -> ! {
+    unsafe { mrml_x86_enter_user((context as *const UserContext).cast::<u64>()) }
 }
 
 pub struct UserContextTable<const TASKS: usize> {
@@ -316,5 +372,18 @@ mod tests {
         assert_eq!(contexts.get(old), Err(ContextError::MissingTask));
         contexts.bind(replacement, context).unwrap();
         assert_eq!(contexts.get(replacement), Ok(&context));
+    }
+
+    #[test]
+    fn user_context_layout_matches_transition_assembly() {
+        assert_eq!(core::mem::size_of::<UserContext>(), 19 * 8);
+        assert_eq!(core::mem::offset_of!(UserContext, r15), 0);
+        assert_eq!(core::mem::offset_of!(UserContext, rdi), 64);
+        assert_eq!(core::mem::offset_of!(UserContext, rdx), 96);
+        assert_eq!(core::mem::offset_of!(UserContext, rax), 112);
+        assert_eq!(core::mem::offset_of!(UserContext, rip), 120);
+        assert_eq!(core::mem::offset_of!(UserContext, rsp), 128);
+        assert_eq!(core::mem::offset_of!(UserContext, rflags), 136);
+        assert_eq!(core::mem::offset_of!(UserContext, page_table), 144);
     }
 }
