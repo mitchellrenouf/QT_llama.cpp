@@ -6,7 +6,10 @@ use mrml_crypto::{LAMPORT_PUBLIC_KEY_BYTES, Sha3_512};
 use mrml_error::{Result, anyhow};
 #[cfg(target_os = "linux")]
 use mrml_kernel::{
-    ArtifactKind, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot, VmBackend, VmExit,
+    ArtifactKind, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuQueueIdentity,
+    GpuQueueReceiver, GpuResourceResponse, GpuResourceResponseSender, GpuSharedQueueLayout,
+    GpuVmmQueueBridge, ResourceCommand, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
+    VmBackend, VmExit,
 };
 #[cfg(any(test, target_os = "linux"))]
 use mrml_kernel::{
@@ -30,6 +33,7 @@ const FRAMEBUFFER: u64 = 0x00a0_0000;
 enum LaunchMode {
     Boot,
     FaultProbe,
+    GpuBenchmark,
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -38,7 +42,8 @@ impl LaunchMode {
         match value {
             "boot" => Ok(Self::Boot),
             "fault-probe" => Ok(Self::FaultProbe),
-            _ => Err(anyhow!("mode must be boot or fault-probe")),
+            "gpu-benchmark" => Ok(Self::GpuBenchmark),
+            _ => Err(anyhow!("mode must be boot, fault-probe, or gpu-benchmark")),
         }
     }
 }
@@ -99,13 +104,24 @@ fn application_main() -> Result<()> {
     let system = KvmSystem::open()
         .map_err(|error| anyhow!("KVM is unavailable or incompatible: {:?}", error))?;
     let preparation_started = Instant::now();
-    let mut guest = system
-        .prepare_kernel_guest::<5>(0, &executable, &handoff, layout)
-        .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
+    let queue_layout = GpuSharedQueueLayout::new(0x00b0_0000, 0x00b0_1000, 1)
+        .map_err(|_| anyhow!("invalid fixed GPU queue layout"))?;
+    let mut guest = match mode {
+        LaunchMode::GpuBenchmark => {
+            system.prepare_kernel_gpu_guest::<7>(0, &executable, &handoff, layout, queue_layout)
+        }
+        _ => system.prepare_kernel_guest::<7>(0, &executable, &handoff, layout),
+    }
+    .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
     let preparation_micros = preparation_started.elapsed().as_micros();
     let execution_started = Instant::now();
-    let exit = VmBackend::run(&mut guest, 0)
+    let mut exit = VmBackend::run(&mut guest, 0)
         .map_err(|error| anyhow!("KVM execution failed: {:?}", error))?;
+    if mode == LaunchMode::GpuBenchmark {
+        service_gpu_benchmark(&mut guest, queue_layout, handoff_entropy(&handoff)?, exit)?;
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution after GPU completion failed: {:?}", error))?;
+    }
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
         let state = guest.snapshot().map_err(|error| {
@@ -169,6 +185,11 @@ fn application_main() -> Result<()> {
         LaunchMode::FaultProbe if marker != [0; 4] => {
             return Err(anyhow!("fault probe unexpectedly modified the framebuffer"));
         }
+        LaunchMode::GpuBenchmark if marker != [0x78, 0xe0, 0x46, 0] => {
+            return Err(anyhow!(
+                "kernel did not authenticate the GPU benchmark completion"
+            ));
+        }
         _ => {}
     }
     println!(
@@ -180,6 +201,133 @@ fn application_main() -> Result<()> {
         total_started.elapsed().as_micros()
     );
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn handoff_entropy(handoff: &[u8]) -> Result<[u8; 32]> {
+    let decoded = mrml_kernel::BootHandoff::decode(handoff, |_| {})
+        .map_err(|_| anyhow!("invalid benchmark handoff"))?;
+    Ok(*decoded.evidence().entropy())
+}
+
+#[cfg(target_os = "linux")]
+fn service_gpu_benchmark(
+    guest: &mut mrml_kvm::PreparedKvmGuest<7>,
+    layout: GpuSharedQueueLayout,
+    entropy: [u8; 32],
+    exit: VmExit,
+) -> Result<()> {
+    if exit
+        != (VmExit::Io {
+            port: GPU_DOORBELL_PORT,
+            size: 4,
+            write: true,
+            value: 1,
+        })
+    {
+        return Err(anyhow!(
+            "GPU benchmark guest did not issue the canonical doorbell: {:?}",
+            exit
+        ));
+    }
+    let identity = GpuQueueIdentity::from_boot_entropy(&entropy)
+        .map_err(|_| anyhow!("GPU queue identity derivation failed"))?;
+    let mut bridge = GpuVmmQueueBridge::<1>::new(layout)
+        .map_err(|_| anyhow!("GPU queue bridge initialization failed"))?;
+    let mut owned = GpuCommandRing::<1>::new()
+        .map_err(|_| anyhow!("GPU command queue initialization failed"))?;
+    bridge
+        .consume_command(guest, &mut owned)
+        .map_err(|error| anyhow!("GPU command transfer failed: {:?}", error))?;
+    let mut wire = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+    owned
+        .dequeue(&mut wire)
+        .map_err(|_| anyhow!("GPU command queue unexpectedly empty"))?;
+    let mut receiver = GpuQueueReceiver::new(identity.session(), identity.key())
+        .map_err(|_| anyhow!("GPU command receiver initialization failed"))?;
+    let (request_id, command) = receiver
+        .decode(&wire)
+        .map_err(|_| anyhow!("GPU benchmark command authentication failed"))?;
+    let ResourceCommand::BenchmarkAdd {
+        elements,
+        iterations,
+    } = command
+    else {
+        return Err(anyhow!("GPU doorbell carried a non-benchmark command"));
+    };
+    let elapsed_ns = execute_cuda_add_benchmark(elements, iterations)?;
+    let mut response = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+    GpuResourceResponseSender::new(identity.session(), identity.key())
+        .and_then(|mut sender| {
+            sender.encode(
+                GpuResourceResponse::BenchmarkComplete {
+                    request_id,
+                    elapsed_ns,
+                },
+                &mut response,
+            )
+        })
+        .map_err(|_| anyhow!("GPU benchmark response encoding failed"))?;
+    bridge
+        .publish_completion(guest, &response)
+        .map_err(|error| anyhow!("GPU completion publication failed: {:?}", error))?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn execute_cuda_add_benchmark(elements: u32, iterations: u32) -> Result<u64> {
+    use mrml_runtime::Vector;
+    use mrml_tensor::cuda::{CudaBuffer, CudaDevice};
+
+    let elements = usize::try_from(elements).map_err(|_| anyhow!("element count overflow"))?;
+    let mut a = Vector::new();
+    let mut b = Vector::new();
+    let mut output = Vector::new();
+    a.resize(elements, 1.25f32);
+    b.resize(elements, 2.5f32);
+    output.resize(elements, 0.0f32);
+    let device = CudaDevice::new(0).map_err(|_| anyhow!("CUDA device initialization failed"))?;
+    let d_a = CudaBuffer::from_host(&a).map_err(|_| anyhow!("CUDA input A upload failed"))?;
+    let d_b = CudaBuffer::from_host(&b).map_err(|_| anyhow!("CUDA input B upload failed"))?;
+    let mut d_output =
+        CudaBuffer::alloc(elements).map_err(|_| anyhow!("CUDA output allocation failed"))?;
+    for _ in 0..20 {
+        device.add(&d_a, &d_b, &mut d_output);
+    }
+    device
+        .sync()
+        .map_err(|_| anyhow!("CUDA warmup synchronization failed"))?;
+    let started = Instant::now();
+    for _ in 0..iterations {
+        device.add(&d_a, &d_b, &mut d_output);
+    }
+    device
+        .sync()
+        .map_err(|_| anyhow!("CUDA benchmark synchronization failed"))?;
+    let elapsed = started.elapsed().as_nanos();
+    let elapsed_ns = u64::try_from(elapsed)
+        .ok()
+        .filter(|value| *value != 0)
+        .ok_or_else(|| anyhow!("GPU benchmark duration is invalid"))?;
+    d_output
+        .copy_to_host(&mut output)
+        .map_err(|_| anyhow!("CUDA benchmark result download failed"))?;
+    if output
+        .iter()
+        .any(|value| (*value - 3.75).abs() >= f32::EPSILON)
+    {
+        return Err(anyhow!("GPU benchmark produced an incorrect result"));
+    }
+    let seconds = elapsed_ns as f64 / 1e9;
+    println!(
+        "MRML_IN_VM_GPU_BENCH elements={} iterations={} total_ns={} kernel_us={:.3} bandwidth_gbps={:.2}",
+        elements,
+        iterations,
+        elapsed_ns,
+        elapsed_ns as f64 / 1e3 / iterations as f64,
+        elements as f64 * 12.0 * iterations as f64 / seconds / 1e9
+    );
+    Ok(elapsed_ns)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -256,5 +404,9 @@ mod tests {
             LaunchMode::FaultProbe
         );
         assert!(LaunchMode::parse("diagnostic").is_err());
+        assert_eq!(
+            LaunchMode::parse("gpu-benchmark").unwrap(),
+            LaunchMode::GpuBenchmark
+        );
     }
 }

@@ -16,3 +16,6 @@ mrml-error = { path = "../mrml-error" }
 mrml-kernel = { path = "../mrml-kernel" }
 mrml-kvm = { path = "../mrml-kvm" }
 mrml-runtime = { path = "../mrml-runtime" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mrml-tensor = { path = "../mrml-tensor", features = ["cuda"] }

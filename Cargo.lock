@@ -96,6 +96,7 @@ dependencies = [
  "mrml-kernel",
  "mrml-kvm",
  "mrml-runtime",
+ "mrml-tensor",
 ]
 
 [[package]]

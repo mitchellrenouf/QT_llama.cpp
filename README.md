@@ -147,6 +147,27 @@ or modify guest RAM and the entropy-derived queue key. Authenticated queues
 still test canonical protocol enforcement and isolate ordinary peer guests,
 but they cannot authenticate a host that owns both endpoints.
 
+The KVM path now has a live, signed in-VM CUDA benchmark. A kernel image built
+with `gpu-benchmark` publishes one authenticated, pointer-free `BenchmarkAdd`
+request from inside the booted guest, rings port `0x4d52`, waits on its
+read-only completion page, authenticates the returned GPU duration, paints a
+distinct success marker, and halts. `mrml-kvm-run` admits only the exact
+doorbell and bounded request, executes the repository's Rust-PTX add kernel,
+checks every returned element, publishes an authenticated completion, resumes
+the vCPU, and verifies the guest marker. On an RTX 5070 Ti exposed to Arch Linux
+under WSL2, the 2026-08-21 release run processed 4,194,304 f32 elements for
+1,000 iterations in 26,499,503 ns: 26.500 us per launch and 1,899.34 GB/s of
+effective traffic. This is a functional/performance result under a compromised
+host, not evidence that the host cannot forge the result.
+
+Reproduce the KVM benchmark after generating a one-use release key and signing
+the benchmark PE as described in `docs/MICROKERNEL.md`:
+
+```bash
+cargo run --release -p mrml-kvm-run -- \
+  target/gpu-bench.signed target/gpu-bench.public 1 gpu-benchmark
+```
+
 ### Secure mediated CUDA design
 
 MRML's preferred VM accelerator path is an inference-specific paravirtual

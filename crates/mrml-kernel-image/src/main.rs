@@ -10,9 +10,23 @@ use mrml_kernel::{
     BootHandoff, Color, EarlyKernelContext, FramebufferSurface, HANDOFF_HEADER_BYTES,
     HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind, MemoryRegion, PhysAddr,
 };
+#[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
+use mrml_kernel::{
+    GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuGuestCommandPublisher, GpuQueueIdentity,
+    GpuQueueSender, GpuResourceResponse, GpuResourceResponseReceiver, GpuSharedRingIndices,
+    ResourceCommand,
+};
 
 #[cfg(not(feature = "fault-probe"))]
 const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
+#[cfg(feature = "gpu-benchmark")]
+const GPU_COMMAND_BASE: usize = 0x00b0_0000;
+#[cfg(feature = "gpu-benchmark")]
+const GPU_COMPLETION_BASE: usize = 0x00b0_1000;
+#[cfg(feature = "gpu-benchmark")]
+const GPU_BENCHMARK_ELEMENTS: u32 = 1 << 22;
+#[cfg(feature = "gpu-benchmark")]
+const GPU_BENCHMARK_ITERATIONS: u32 = 1_000;
 
 static GDT: [u64; 8] = [
     0,
@@ -167,7 +181,71 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             blue: 0x57,
         },
     );
+    #[cfg(feature = "gpu-benchmark")]
+    if run_gpu_benchmark(handoff.evidence().entropy()).is_err() {
+        halt();
+    }
+    #[cfg(feature = "gpu-benchmark")]
+    let _ = surface.fill_rectangle(
+        0,
+        0,
+        framebuffer.width().min(96),
+        framebuffer.height().min(12),
+        Color {
+            red: 0x46,
+            green: 0xe0,
+            blue: 0x78,
+        },
+    );
     halt()
+}
+
+#[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
+fn run_gpu_benchmark(entropy: &[u8; 32]) -> Result<(), ()> {
+    let identity = GpuQueueIdentity::from_boot_entropy(entropy).map_err(|_| ())?;
+    let mut sender = GpuQueueSender::new(identity.session(), identity.key()).map_err(|_| ())?;
+    let mut command = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+    sender
+        .encode(
+            1,
+            ResourceCommand::BenchmarkAdd {
+                elements: GPU_BENCHMARK_ELEMENTS,
+                iterations: GPU_BENCHMARK_ITERATIONS,
+            },
+            &mut command,
+        )
+        .map_err(|_| ())?;
+    let command_indices = unsafe { &*(GPU_COMMAND_BASE as *const GpuSharedRingIndices) };
+    let command_slots = unsafe {
+        &mut *((GPU_COMMAND_BASE + core::mem::size_of::<GpuSharedRingIndices>())
+            as *mut [[u8; GPU_QUEUE_MESSAGE_BYTES]; 1])
+    };
+    let mut publisher = GpuGuestCommandPublisher::<1>::new().map_err(|_| ())?;
+    publisher
+        .publish(command_indices, command_slots, &command)
+        .map_err(|_| ())?;
+    unsafe {
+        asm!("out dx, eax", in("dx") GPU_DOORBELL_PORT, in("eax") 1u32, options(nomem, nostack))
+    };
+
+    let published = GPU_COMPLETION_BASE as *const u64;
+    while unsafe { published.read_volatile() } != 1 {
+        core::hint::spin_loop();
+    }
+    let slot = (GPU_COMPLETION_BASE + core::mem::size_of::<GpuSharedRingIndices>()) as *const u8;
+    let mut completion = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+    for (index, byte) in completion.iter_mut().enumerate() {
+        *byte = unsafe { slot.add(index).read_volatile() };
+    }
+    let mut receiver =
+        GpuResourceResponseReceiver::new(identity.session(), identity.key()).map_err(|_| ())?;
+    match receiver.decode(&completion).map_err(|_| ())? {
+        GpuResourceResponse::BenchmarkComplete {
+            request_id: 1,
+            elapsed_ns,
+        } if elapsed_ns != 0 => Ok(()),
+        _ => Err(()),
+    }
 }
 
 #[cfg(all(not(feature = "fault-probe"), feature = "production-policy"))]

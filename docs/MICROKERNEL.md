@@ -195,6 +195,20 @@ Until those pieces exist and are audited, this is not a working
 shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a
 general `virtio-cuda` compatibility layer.
 
+The KVM diagnostic path now completes the narrower one-shot benchmark loop.
+The signed `gpu-benchmark` kernel derives its queue identity from authenticated
+boot entropy, publishes a bounded `BenchmarkAdd`, exits through the fixed
+doorbell, and refuses to report success until it authenticates a nonzero timing
+completion. The Linux launcher copies and authenticates the command, runs the
+original Rust-PTX add kernel through the native CUDA driver interface, checks
+the full output, publishes the authenticated completion through its
+service-only mapping, resumes the same vCPU, and verifies the kernel's green
+framebuffer marker. The 2026-08-21 live nested-KVM run on an RTX 5070 Ti measured
+26.500 us per 4,194,304-element launch over 1,000 iterations (1,899.34 GB/s
+effective traffic). This establishes an actual booted-guest/VMM/GPU round trip,
+but hosted-mode integrity remains outside the threat model and WHP live service
+execution is still pending.
+
 The CUDA service must verify the exact embedded PTX bundle as a
 `CudaKernelBundle` artifact before module loading. Kernel IDs are enabled only
 after this verification token exists; a digest mismatch or missing signature

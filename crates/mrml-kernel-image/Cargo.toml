@@ -9,6 +9,7 @@ license.workspace = true
 kernel-image = []
 fault-probe = []
 production-policy = []
+gpu-benchmark = []
 
 [[bin]]
 name = "mrml-kernel-pe"

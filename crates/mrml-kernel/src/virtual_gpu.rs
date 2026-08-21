@@ -1509,6 +1509,7 @@ pub enum GpuResourceOutcome {
 pub enum GpuResourceResponse {
     Allocated { request_id: u64, buffer: BufferId },
     Freed { request_id: u64, bytes: u64 },
+    BenchmarkComplete { request_id: u64, elapsed_ns: u64 },
     Rejected { request_id: u64 },
 }
 
@@ -1530,6 +1531,7 @@ impl GpuResourceResponse {
         match self {
             Self::Allocated { request_id, .. }
             | Self::Freed { request_id, .. }
+            | Self::BenchmarkComplete { request_id, .. }
             | Self::Rejected { request_id } => request_id,
         }
     }
@@ -1568,6 +1570,7 @@ impl GpuResourceResponseSender {
             GpuResourceResponse::Allocated { .. } => 1,
             GpuResourceResponse::Freed { .. } => 2,
             GpuResourceResponse::Rejected { .. } => 3,
+            GpuResourceResponse::BenchmarkComplete { .. } => 4,
         };
         output[8..16].copy_from_slice(&self.session.to_le_bytes());
         output[16..24].copy_from_slice(&sequence.to_le_bytes());
@@ -1575,6 +1578,7 @@ impl GpuResourceResponseSender {
         let value = match response {
             GpuResourceResponse::Allocated { buffer, .. } => buffer.token(),
             GpuResourceResponse::Freed { bytes, .. } => bytes,
+            GpuResourceResponse::BenchmarkComplete { elapsed_ns, .. } => elapsed_ns,
             GpuResourceResponse::Rejected { .. } => 0,
         };
         output[32..40].copy_from_slice(&value.to_le_bytes());
@@ -1642,6 +1646,10 @@ impl GpuResourceResponseReceiver {
                 bytes: value,
             },
             3 if value == 0 => GpuResourceResponse::Rejected { request_id },
+            4 if value != 0 => GpuResourceResponse::BenchmarkComplete {
+                request_id,
+                elapsed_ns: value,
+            },
             _ => return Err(GpuError::MalformedCommand),
         };
         self.next_sequence = self
@@ -5532,6 +5540,42 @@ mod tests {
         assert_eq!(
             ResourceCommand::decode(&wire),
             Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn benchmark_response_is_authenticated_bounded_and_replay_safe() {
+        let key = [0x6d; 32];
+        let response = GpuResourceResponse::BenchmarkComplete {
+            request_id: 17,
+            elapsed_ns: 98_765,
+        };
+        let mut sender = GpuResourceResponseSender::new(29, key).unwrap();
+        let mut receiver = GpuResourceResponseReceiver::new(29, key).unwrap();
+        let mut wire = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+        sender.encode(response, &mut wire).unwrap();
+        assert_eq!(receiver.decode(&wire), Ok(response));
+        assert_eq!(receiver.decode(&wire), Err(GpuError::Replay));
+
+        let mut tampered = wire;
+        tampered[32] ^= 1;
+        let mut fresh = GpuResourceResponseReceiver::new(29, key).unwrap();
+        assert_eq!(fresh.decode(&tampered), Err(GpuError::AuthenticationFailed));
+
+        let invalid = GpuResourceResponse::BenchmarkComplete {
+            request_id: 17,
+            elapsed_ns: 0,
+        };
+        let mut invalid_wire = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+        GpuResourceResponseSender::new(29, key)
+            .unwrap()
+            .encode(invalid, &mut invalid_wire)
+            .unwrap();
+        assert_eq!(
+            GpuResourceResponseReceiver::new(29, key)
+                .unwrap()
+                .decode(&invalid_wire),
+            Err(GpuError::MalformedCommand)
         );
     }
 
