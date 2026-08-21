@@ -24,6 +24,10 @@ pub enum VmError {
     StaleVm,
     InvalidVmState,
     ExitBudgetExceeded,
+    InvalidIo,
+    IoDenied,
+    IoPolicyFull,
+    UnhandledExit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -337,6 +341,53 @@ pub struct Hypercall {
 }
 
 impl Hypercall {
+    pub const fn yield_call(sequence: u64) -> Self {
+        Self {
+            operation: HypercallOperation::Yield,
+            sequence,
+            capability: Capability::from_token(0),
+            guest_address: 0,
+            length: 0,
+            argument: 0,
+        }
+    }
+
+    pub const fn shutdown(sequence: u64, capability: Capability) -> Self {
+        Self {
+            operation: HypercallOperation::Shutdown,
+            sequence,
+            capability,
+            guest_address: 0,
+            length: 0,
+            argument: 0,
+        }
+    }
+
+    pub fn request(
+        operation: HypercallOperation,
+        sequence: u64,
+        capability: Capability,
+        guest_address: u64,
+        length: u32,
+        argument: u64,
+    ) -> Result<Self, VmError> {
+        if !matches!(
+            operation,
+            HypercallOperation::ToolRequest | HypercallOperation::GpuRequest
+        ) || length == 0
+        {
+            return Err(VmError::MalformedHypercall);
+        }
+        Ok(Self {
+            operation,
+            sequence,
+            capability,
+            guest_address,
+            length,
+            argument,
+        })
+    }
+
     pub fn decode(input: &[u8]) -> Result<Self, VmError> {
         if input.len() != HYPERCALL_BYTES
             || &input[..8] != b"MRMLHC01"
@@ -399,8 +450,7 @@ impl Hypercall {
         self.argument
     }
 
-    #[cfg(test)]
-    fn encode(self) -> [u8; HYPERCALL_BYTES] {
+    pub fn encode(self) -> [u8; HYPERCALL_BYTES] {
         let mut output = [0u8; HYPERCALL_BYTES];
         output[..8].copy_from_slice(b"MRMLHC01");
         output[8..10].copy_from_slice(&(self.operation as u16).to_le_bytes());

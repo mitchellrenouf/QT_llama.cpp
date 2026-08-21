@@ -21,6 +21,7 @@ mod policy;
 mod scheduler;
 mod virtual_gpu;
 mod vm;
+mod vm_dispatch;
 
 pub use artifact::{
     ArtifactError, ArtifactKind, BOOTSTRAP_STATE_BYTES, BootstrapState, ExecutableArtifactError,
@@ -64,4 +65,8 @@ pub use vm::{
     GuestAccess, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall, HypercallOperation,
     HypercallRouter, MAX_GUEST_REGIONS, RoutedHypercall, VmBackend, VmError, VmExit, VmRunError,
     VmId, VmState, VmTable, decode_hypercall_exit,
+};
+pub use vm_dispatch::{
+    ExitDisposition, IoDirection, IoPortPolicy, IoPortRule, MAX_IO_PORT_RULES, dispatch_vm_exit,
+    run_vm_once,
 };

@@ -445,6 +445,15 @@ the same slot. Every run receives an explicit exit budget. Exceeding it moves
 the VM to a failed state, bounding denial-of-service through pathological exit
 storms and requiring an explicit destroy/recreate recovery path.
 
+The common single-exit run path now translates one backend exit, charges the
+VM's budget, and dispatches it through common policy. Port I/O is denied by
+default and may be enabled only by an exact port, transfer-width, and direction
+rule in a table capped at 32 entries. Unsupported exits and guest-memory faults
+fail the VM instead of being reflected or silently resumed. A backend execution
+error also fails the instance because its register and device state cannot be
+assumed resumable. Concrete adapters remain responsible for translating native
+exit structures into this deliberately small representation.
+
 ## Performance policy
 
 Fast IPC alone is insufficient. MRML will measure call frequency, duplicate
