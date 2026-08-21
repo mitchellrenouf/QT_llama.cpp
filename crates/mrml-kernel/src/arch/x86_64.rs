@@ -4,10 +4,12 @@ mod address_space;
 mod descriptors;
 mod page_table;
 mod pe_mapping;
+mod trap;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
 pub use descriptors::{DescriptorError, InterruptGate, install_fail_stop_tables};
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
+pub use trap::{TrapDisposition, TrapError, TrapFrame};
 
 const MAX_PHYSICAL_ADDRESS: u64 = (1u64 << 52) - PAGE_SIZE;
 const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;

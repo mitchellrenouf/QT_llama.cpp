@@ -135,8 +135,10 @@ downward stack overflow faults instead of reaching an adjacent allocation. The
 canonical handoff occupies its own compile-time-checked 4 KiB-aligned page, so
 making it read-only cannot expose neighboring loader statics. The loader owns
 and erases every byte of that page immediately before encoding the bounded
-handoff, preventing uninitialized tail data from crossing the boundary. Recoverable
-exception dispatch, timers, scheduling from the standalone
+handoff, preventing uninitialized tail data from crossing the boundary. The
+kernel now has a validated x86_64 trap-frame and user-fault termination policy,
+but its per-vector assembly entry and task-switch integration remain unfinished.
+Timers, scheduling from the standalone
 image, service VMs, and bare-metal validation remain unfinished.
 The successful `ExitBootServices` call is a one-way boundary: memory-map
 normalization, handoff construction, and launch failures after it halt locally

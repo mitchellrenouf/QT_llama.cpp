@@ -7,6 +7,8 @@ pub enum DescriptorError {
     InvalidHandler,
     InvalidSelector,
     InvalidSelectorDescriptor,
+    InvalidIst,
+    InvalidPrivilege,
 }
 
 #[repr(C, packed)]
@@ -39,17 +41,32 @@ impl InterruptGate {
     };
 
     pub fn fail_stop(address: u64, selector: u16) -> Result<Self, DescriptorError> {
+        Self::interrupt(address, selector, 0, 0)
+    }
+
+    pub fn interrupt(
+        address: u64,
+        selector: u16,
+        ist: u8,
+        privilege: u8,
+    ) -> Result<Self, DescriptorError> {
         if !canonical(address) {
             return Err(DescriptorError::InvalidHandler);
         }
         if selector == 0 || selector & 7 != 0 {
             return Err(DescriptorError::InvalidSelector);
         }
+        if ist > 7 {
+            return Err(DescriptorError::InvalidIst);
+        }
+        if privilege > 3 {
+            return Err(DescriptorError::InvalidPrivilege);
+        }
         Ok(Self {
             low: address as u16,
             selector,
-            ist: 0,
-            attributes: 0x8e,
+            ist,
+            attributes: 0x8e | (privilege << 5),
             middle: (address >> 16) as u16,
             high: (address >> 32) as u32,
             reserved: 0,
@@ -171,6 +188,17 @@ mod tests {
             InterruptGate::fail_stop(0xffff_8000_0000_0000, 0x39),
             Err(DescriptorError::InvalidSelector)
         );
+        assert_eq!(
+            InterruptGate::interrupt(0xffff_8000_0000_0000, 0x38, 8, 0),
+            Err(DescriptorError::InvalidIst)
+        );
+        assert_eq!(
+            InterruptGate::interrupt(0xffff_8000_0000_0000, 0x38, 0, 4),
+            Err(DescriptorError::InvalidPrivilege)
+        );
+        let user_breakpoint = InterruptGate::interrupt(0xffff_8001_2345_6789, 0x38, 1, 3).unwrap();
+        assert_eq!(user_breakpoint.encode()[4], 1);
+        assert_eq!(user_breakpoint.encode()[5], 0xee);
     }
 
     #[test]

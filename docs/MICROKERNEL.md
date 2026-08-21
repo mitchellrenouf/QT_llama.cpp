@@ -523,6 +523,18 @@ deterministic fail-stop handling, not yet recoverable fault dispatch. A signed
 kernel handler while retaining the loader-created CR3 and kernel GDT/IDT bases.
 Descriptor construction now lives in the reusable x86_64 architecture module
 rather than being duplicated in the PE image. It validates canonical handler
+addresses, ring-zero long-mode selectors, IST indices, and gate privilege.
+The architecture module now also defines the exact 176-byte trap-frame contract
+for the forthcoming assembly entry stubs. Its fail-closed dispatcher validates
+the exception vector, privilege transition, canonical RIP and user RSP, fixed
+RFLAGS bits, and whether that vector architecturally carries an error code.
+Validated ordinary user exceptions terminate only the current task; NMI,
+double fault, machine check, every kernel exception, and every malformed frame
+halt the kernel. Page faults additionally require a canonical captured CR2.
+This policy is tested on Windows and Linux, but the standalone image still uses
+the fail-stop assembly target until the per-vector stubs, task revocation, and
+context switcher are connected; recoverable exception execution is not yet
+claimed.
 and table ranges, a ring-zero GDT selector that names an existing entry, the
 exact 256-gate IDT size, and 16-bit descriptor limits before writing memory or
 executing `LGDT` or `LIDT`. Unit tests check the exact 16-byte gate encoding and
