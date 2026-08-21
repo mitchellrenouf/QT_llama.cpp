@@ -198,12 +198,16 @@ exact 256-gate IDT size, and 16-bit descriptor limits before writing memory or
 executing `LGDT` or `LIDT`. Unit tests check the exact 16-byte gate encoding and
 prove malformed pointers, sizes, handlers, and selectors fail before privileged
 instructions. The kernel image treats any installation error as a fail-stop.
-The equivalent relocated probe is not yet accepted as a KVM success: nested KVM
-reports shutdown reason 8 after `UD2`, indicating a triple fault instead of the
-expected handler `HLT`. The runner now includes the exact decoded exit in its
-failure message. This remains an explicit interrupt-state defect; normal signed
-kernel boot continues to pass, and no diagnostic-only relocation or address
-space exception was retained to hide the failure.
+Nested KVM initially reported a triple fault after `UD2`. A bounded post-exit
+snapshot and four-level hardware page walk proved that CR2 named the valid,
+present GDT code descriptor and that the vector-6 gate was exact. The descriptor
+used type `0x9a`, leaving its architectural accessed bit clear; exception entry
+therefore tried to set that bit on a deliberately read-only GDT page under
+CR0.WP. The code descriptor is now encoded pre-accessed as type `0x9b`, and
+installation rejects descriptors that are absent, non-code, non-ring-zero,
+non-long-mode, default-operand-size, or not pre-accessed. A freshly signed,
+high-half-relocated version-7 probe entered the kernel-owned invalid-opcode gate
+and reached `HLT` under nested KVM without changing the framebuffer.
 
 Before materialization, the loader can now use the packed, raw
 `EFI_TCG2_PROTOCOL` ABI to hash the already authenticated kernel PE into PCR 11
@@ -569,8 +573,14 @@ cargo build --release -p mrml-kernel-image --bin mrml-kernel-pe --features kerne
 cargo build --release -p mrml-sign -p mrml-kvm-run
 mrml-sign keygen release.private release.public
 mrml-sign sign-bundle kernel 1 mrml-kernel-pe.efi release.private kernel.signed
-mrml-kvm-run kernel.signed release.public 1
+mrml-kvm-run kernel.signed release.public 1 boot
 ```
+
+Use the explicit `fault-probe` mode only with a signed kernel built with the
+matching feature. It requires a halted VM and an untouched framebuffer; normal
+boot requires the authenticated color marker. Unknown modes fail before file or
+VM access. Unexpected exits capture only bounded architectural state and walk
+the faulting address through guest-owned page tables for precise diagnostics.
 
 The allocation-free `kvm_run` decoder validates the fixed x86 header before it
 reads the kernel-owned union: padding is zero, readiness and IF fields are

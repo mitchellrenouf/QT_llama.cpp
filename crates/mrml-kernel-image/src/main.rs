@@ -22,7 +22,7 @@ static GDT: [u64; 8] = [
     0,
     0,
     0x00cf_9300_0000_ffff,
-    0x00af_9a00_0000_ffff,
+    0x00af_9b00_0000_ffff,
 ];
 static mut IDT: [InterruptGate; 256] = [InterruptGate::MISSING; 256];
 
@@ -42,6 +42,10 @@ unsafe extern "C" {
     fn mrml_exception_fail_stop() -> !;
 }
 
+#[cfg(feature = "fault-probe")]
+#[used]
+static RELOCATION_ANCHOR: unsafe extern "C" fn() -> ! = mrml_exception_fail_stop;
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     halt()
@@ -55,6 +59,9 @@ pub unsafe extern "efiapi" fn kernel_entry(bytes: *const u8, length: usize) -> u
     #[cfg(feature = "fault-probe")]
     unsafe {
         let _ = (bytes, length);
+        // Keep one absolute pointer live so the minimal diagnostic PE exercises
+        // the same DIR64 high-half relocation path as the full kernel.
+        let _ = core::ptr::addr_of!(RELOCATION_ANCHOR).read_volatile();
         asm!("ud2", options(noreturn));
     }
     #[cfg(not(feature = "fault-probe"))]

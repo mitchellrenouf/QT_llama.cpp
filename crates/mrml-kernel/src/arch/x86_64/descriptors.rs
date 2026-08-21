@@ -6,6 +6,7 @@ pub enum DescriptorError {
     InvalidTableSize,
     InvalidHandler,
     InvalidSelector,
+    InvalidSelectorDescriptor,
 }
 
 #[repr(C, packed)]
@@ -112,6 +113,10 @@ pub unsafe fn install_fail_stop_tables(
         return Err(DescriptorError::InvalidTableSize);
     }
     let gate = InterruptGate::fail_stop(handler, selector)?;
+    let descriptor = unsafe { gdt.add(usize::from(selector >> 3)).read() };
+    if !valid_long_mode_code_descriptor(descriptor) {
+        return Err(DescriptorError::InvalidSelectorDescriptor);
+    }
     for index in 0..idt_entries {
         unsafe { idt.add(index).write(gate) };
     }
@@ -132,6 +137,16 @@ pub unsafe fn install_fail_stop_tables(
 
 const fn canonical(address: u64) -> bool {
     ((address << 16) as i64 >> 16) as u64 == address
+}
+
+const fn valid_long_mode_code_descriptor(descriptor: u64) -> bool {
+    descriptor & (1 << 47) != 0
+        && descriptor & (1 << 44) != 0
+        && descriptor & (1 << 43) != 0
+        && descriptor & (1 << 40) != 0
+        && descriptor & (3 << 45) == 0
+        && descriptor & (1 << 53) != 0
+        && descriptor & (1 << 54) == 0
 }
 
 #[cfg(test)]
@@ -201,5 +216,13 @@ mod tests {
             },
             Err(DescriptorError::InvalidTableSize)
         );
+    }
+
+    #[test]
+    fn selector_descriptor_must_be_present_ring_zero_long_code_and_preaccessed() {
+        assert!(valid_long_mode_code_descriptor(0x00af_9b00_0000_ffff));
+        assert!(!valid_long_mode_code_descriptor(0x00af_9a00_0000_ffff));
+        assert!(!valid_long_mode_code_descriptor(0x00af_9300_0000_ffff));
+        assert!(!valid_long_mode_code_descriptor(0x00cf_9b00_0000_ffff));
     }
 }

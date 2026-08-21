@@ -25,14 +25,32 @@ const MAX_KERNEL_BUNDLE: usize = SIGNED_ARTIFACT_OVERHEAD_BYTES + 16 * 1024 * 10
 #[cfg(any(test, target_os = "linux"))]
 const FRAMEBUFFER: u64 = 0x00a0_0000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(any(test, target_os = "linux"))]
+enum LaunchMode {
+    Boot,
+    FaultProbe,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl LaunchMode {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "boot" => Ok(Self::Boot),
+            "fault-probe" => Ok(Self::FaultProbe),
+            _ => Err(anyhow!("mode must be boot or fault-probe")),
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[cfg_attr(test, allow(dead_code))]
 fn application_main() -> Result<()> {
     let total_started = Instant::now();
     let arguments = mrml_runtime::command_arguments();
-    if arguments.len() != 4 {
+    if arguments.len() != 5 {
         return Err(anyhow!(
-            "usage: mrml-kvm-run KERNEL.signed RELEASE.public MINIMUM_VERSION"
+            "usage: mrml-kvm-run KERNEL.signed RELEASE.public MINIMUM_VERSION MODE"
         ));
     }
     let minimum_version = arguments[3]
@@ -40,6 +58,7 @@ fn application_main() -> Result<()> {
         .ok()
         .filter(|version| *version != 0)
         .ok_or_else(|| anyhow!("minimum version must be a nonzero integer"))?;
+    let mode = LaunchMode::parse(&arguments[4])?;
     let bundle = mrml_runtime::read_file_bounded(&arguments[1], MAX_KERNEL_BUNDLE)?;
     let public = mrml_runtime::read_file_bounded(&arguments[2], LAMPORT_PUBLIC_KEY_BYTES)?;
     if public.len() != LAMPORT_PUBLIC_KEY_BYTES {
@@ -89,18 +108,72 @@ fn application_main() -> Result<()> {
         .map_err(|error| anyhow!("KVM execution failed: {:?}", error))?;
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
-        return Err(anyhow!("kernel returned an unexpected VM exit: {:?}", exit));
+        let state = guest.snapshot().map_err(|error| {
+            anyhow!("kernel exit {:?}; state capture failed: {:?}", exit, error)
+        })?;
+        let walk = guest.page_walk(state.fault_address()).map_err(|error| {
+            anyhow!(
+                "kernel exit {:?}; page walk for {:#x} failed: {:?}",
+                exit,
+                state.fault_address(),
+                error
+            )
+        })?;
+        let physical = walk
+            .physical_address(state.fault_address())
+            .ok_or_else(|| anyhow!("fault address has no 4 KiB physical translation"))?;
+        let mut fault_bytes = [0u8; 8];
+        VmBackend::read_guest(&guest, physical, &mut fault_bytes)
+            .map_err(|_| anyhow!("translated fault bytes are unreadable"))?;
+        let invalid_opcode_gate = state
+            .idt_base()
+            .checked_add(6 * 16)
+            .ok_or_else(|| anyhow!("invalid-opcode gate address overflow"))?;
+        let gate_walk = guest
+            .page_walk(invalid_opcode_gate)
+            .map_err(|_| anyhow!("invalid-opcode gate page walk failed"))?;
+        let gate_physical = gate_walk
+            .physical_address(invalid_opcode_gate)
+            .ok_or_else(|| anyhow!("invalid-opcode gate is not mapped"))?;
+        let mut gate = [0u8; 16];
+        VmBackend::read_guest(&guest, gate_physical, &mut gate)
+            .map_err(|_| anyhow!("invalid-opcode gate bytes are unreadable"))?;
+        return Err(anyhow!(
+            "kernel exit {:?}: rip={:#x} rsp={:#x} rflags={:#x} cr2={:#x}->{:#x} bytes={:02x?} cr3={:#x} cs={:#x} gdt={:#x}/{:#x} idt={:#x}/{:#x} ud_gate={:02x?} walk={:x?}",
+            exit,
+            state.instruction_pointer(),
+            state.stack_pointer(),
+            state.flags(),
+            state.fault_address(),
+            physical,
+            fault_bytes,
+            state.page_table_root(),
+            state.code_selector(),
+            state.gdt_base(),
+            state.gdt_limit(),
+            state.idt_base(),
+            state.idt_limit(),
+            gate,
+            walk.entries()
+        ));
     }
     let mut marker = [0u8; 4];
     VmBackend::read_guest(&guest, FRAMEBUFFER, &mut marker)
         .map_err(|_| anyhow!("kernel framebuffer is unreadable"))?;
-    if marker != [0x57, 0xc8, 0xff, 0] {
-        return Err(anyhow!(
-            "kernel did not paint its authenticated boot marker"
-        ));
+    match mode {
+        LaunchMode::Boot if marker != [0x57, 0xc8, 0xff, 0] => {
+            return Err(anyhow!(
+                "kernel did not paint its authenticated boot marker"
+            ));
+        }
+        LaunchMode::FaultProbe if marker != [0; 4] => {
+            return Err(anyhow!("fault probe unexpectedly modified the framebuffer"));
+        }
+        _ => {}
     }
     println!(
-        "verified kernel reached its framebuffer marker under KVM: verify={}us prepare={}us execute={}us total={}us",
+        "verified {:?} kernel reached its expected halt under KVM: verify={}us prepare={}us execute={}us total={}us",
+        mode,
         verification_micros,
         preparation_micros,
         execution_micros,
@@ -173,5 +246,15 @@ mod tests {
         assert!(decoded.evidence().secure_boot());
         assert!(!decoded.evidence().measured_boot());
         assert!(!decoded.evidence().rollback_protected());
+    }
+
+    #[test]
+    fn launch_mode_is_explicit_and_fail_closed() {
+        assert_eq!(LaunchMode::parse("boot").unwrap(), LaunchMode::Boot);
+        assert_eq!(
+            LaunchMode::parse("fault-probe").unwrap(),
+            LaunchMode::FaultProbe
+        );
+        assert!(LaunchMode::parse("diagnostic").is_err());
     }
 }

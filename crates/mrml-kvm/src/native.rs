@@ -13,7 +13,7 @@ use mrml_kernel::{
 use crate::{KVM_API_VERSION, KvmError, KvmMemoryRegion, decode_run_page};
 
 mod launch;
-pub use launch::{KvmLaunchLayout, PreparedKvmGuest};
+pub use launch::{KvmLaunchLayout, KvmPageWalk, PreparedKvmGuest};
 
 const O_RDWR: c_int = 2;
 const O_CLOEXEC: c_int = 0x80000;
@@ -30,6 +30,7 @@ const KVM_GET_VCPU_MMAP_SIZE: c_ulong = 0xae04;
 const KVM_CREATE_VCPU: c_ulong = 0xae41;
 const KVM_SET_USER_MEMORY_REGION: c_ulong = 0x4020_ae46;
 const KVM_RUN: c_ulong = 0xae80;
+const KVM_GET_REGS: c_ulong = 0x8090_ae81;
 const KVM_GET_SREGS: c_ulong = 0x8138_ae83;
 const KVM_SET_REGS: c_ulong = 0x4090_ae82;
 const KVM_SET_SREGS: c_ulong = 0x4138_ae84;
@@ -227,6 +228,76 @@ impl KvmVcpu {
         }
         Ok(())
     }
+
+    fn snapshot(&self) -> Result<KvmVcpuSnapshot, KvmError> {
+        let mut registers = KvmRegisters::zeroed();
+        if unsafe { ioctl(self.file.0, KVM_GET_REGS, &mut registers) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        let mut special = KvmSpecialRegisters::zeroed();
+        if unsafe { ioctl(self.file.0, KVM_GET_SREGS, &mut special) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(KvmVcpuSnapshot {
+            instruction_pointer: registers.rip,
+            stack_pointer: registers.rsp,
+            flags: registers.rflags,
+            fault_address: special.cr2,
+            page_table_root: special.cr3,
+            code_selector: special.cs.selector,
+            gdt_base: special.gdt.base,
+            gdt_limit: special.gdt.limit,
+            idt_base: special.idt.base,
+            idt_limit: special.idt.limit,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvmVcpuSnapshot {
+    instruction_pointer: u64,
+    stack_pointer: u64,
+    flags: u64,
+    fault_address: u64,
+    page_table_root: u64,
+    code_selector: u16,
+    gdt_base: u64,
+    gdt_limit: u16,
+    idt_base: u64,
+    idt_limit: u16,
+}
+
+impl KvmVcpuSnapshot {
+    pub const fn instruction_pointer(self) -> u64 {
+        self.instruction_pointer
+    }
+    pub const fn stack_pointer(self) -> u64 {
+        self.stack_pointer
+    }
+    pub const fn flags(self) -> u64 {
+        self.flags
+    }
+    pub const fn fault_address(self) -> u64 {
+        self.fault_address
+    }
+    pub const fn page_table_root(self) -> u64 {
+        self.page_table_root
+    }
+    pub const fn code_selector(self) -> u16 {
+        self.code_selector
+    }
+    pub const fn gdt_base(self) -> u64 {
+        self.gdt_base
+    }
+    pub const fn gdt_limit(self) -> u16 {
+        self.gdt_limit
+    }
+    pub const fn idt_base(self) -> u64 {
+        self.idt_base
+    }
+    pub const fn idt_limit(self) -> u16 {
+        self.idt_limit
+    }
 }
 
 #[repr(C)]
@@ -252,6 +323,9 @@ struct KvmRegisters {
 }
 
 impl KvmRegisters {
+    const fn zeroed() -> Self {
+        Self::initial(0, 0, 0, 0)
+    }
     const fn initial(entry: u64, stack: u64, argument0: u64, argument1: u64) -> Self {
         Self {
             rax: 0,
@@ -886,6 +960,10 @@ impl<const N: usize> KvmBackend<N> {
         let store = KvmPageTableStore::new(&mut self.memory, guest_start, pages)?;
         PageTableBuilder::new(store).map_err(|_| KvmError::InvalidRegisterState)
     }
+
+    pub(crate) fn snapshot(&self) -> Result<KvmVcpuSnapshot, KvmError> {
+        self.vcpu.snapshot()
+    }
 }
 
 impl<const N: usize> VmBackend for KvmBackend<N> {
@@ -987,6 +1065,7 @@ mod tests {
         assert_eq!(KVM_SET_USER_MEMORY_REGION, 0x4020_ae46);
         assert_eq!(KVM_CREATE_VCPU, 0xae41);
         assert_eq!(KVM_RUN, 0xae80);
+        assert_eq!(KVM_GET_REGS, 0x8090_ae81);
         assert_eq!(KVM_GET_SREGS, 0x8138_ae83);
         assert_eq!(KVM_SET_REGS, 0x4090_ae82);
         assert_eq!(KVM_SET_SREGS, 0x4138_ae84);

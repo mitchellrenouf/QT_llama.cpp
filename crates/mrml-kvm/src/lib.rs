@@ -11,5 +11,5 @@ pub use abi::{
 #[cfg(target_os = "linux")]
 pub use native::{
     KvmGuestMemory, KvmLaunchLayout, KvmLoadedHandoff, KvmLoadedImage, KvmPageTableStore,
-    KvmSystem, PreparedKvmGuest, map_loaded_handoff, map_loaded_pe,
+    KvmPageWalk, KvmSystem, KvmVcpuSnapshot, PreparedKvmGuest, map_loaded_handoff, map_loaded_pe,
 };

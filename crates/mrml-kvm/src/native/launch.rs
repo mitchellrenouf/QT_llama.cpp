@@ -1,7 +1,7 @@
 use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, VirtAddr};
 use mrml_kernel::{BootHandoff, PAGE_SIZE, PhysAddr, VerifiedExecutable, VmBackend, VmExit};
 
-use super::{KvmBackend, KvmError, KvmSystem, map_loaded_handoff, map_loaded_pe};
+use super::{KvmBackend, KvmError, KvmSystem, KvmVcpuSnapshot, map_loaded_handoff, map_loaded_pe};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KvmLaunchLayout {
@@ -74,6 +74,59 @@ impl<const N: usize> PreparedKvmGuest<N> {
     }
     pub const fn page_table_root(&self) -> PhysAddr {
         self.root
+    }
+    pub fn snapshot(&self) -> Result<KvmVcpuSnapshot, KvmError> {
+        self.backend.snapshot()
+    }
+    pub fn page_walk(&self, virtual_address: u64) -> Result<KvmPageWalk, KvmError> {
+        if ((virtual_address << 16) as i64 >> 16) as u64 != virtual_address {
+            return Err(KvmError::InvalidMapping);
+        }
+        let indexes = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let mut entries = [0u64; 4];
+        let mut table = self.root.get();
+        let mut levels = 0u8;
+        for (level, index) in indexes.into_iter().enumerate() {
+            let address = table
+                .checked_add((index as u64) * 8)
+                .ok_or(KvmError::MemoryOverflow)?;
+            let mut encoded = [0u8; 8];
+            self.backend.read_guest(address, &mut encoded)?;
+            let entry = u64::from_le_bytes(encoded);
+            entries[level] = entry;
+            levels += 1;
+            if entry & 1 == 0 || (level < 3 && entry & (1 << 7) != 0) {
+                break;
+            }
+            table = entry & 0x000f_ffff_ffff_f000;
+        }
+        Ok(KvmPageWalk { entries, levels })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvmPageWalk {
+    entries: [u64; 4],
+    levels: u8,
+}
+
+impl KvmPageWalk {
+    pub const fn entries(self) -> [u64; 4] {
+        self.entries
+    }
+    pub const fn levels(self) -> u8 {
+        self.levels
+    }
+    pub fn physical_address(self, virtual_address: u64) -> Option<u64> {
+        if self.levels != 4 || self.entries[3] & 1 == 0 {
+            return None;
+        }
+        (self.entries[3] & 0x000f_ffff_ffff_f000).checked_add(virtual_address & 0xfff)
     }
 }
 
@@ -439,6 +492,14 @@ mod tests {
             .prepare_kernel_guest::<5>(0, &executable, &valid_handoff(), layout)
             .unwrap();
         assert_eq!(guest.entry(), 0xffff_8001_4000_1000);
+        let walk = guest.page_walk(guest.entry()).unwrap();
+        assert_eq!(walk.levels(), 4);
+        assert_eq!(walk.physical_address(guest.entry()), Some(0x20_1000));
+        assert_eq!(walk.entries()[3] & (1 << 63), 0);
+        assert_eq!(
+            guest.page_walk(0x0000_8000_0000_0000),
+            Err(KvmError::InvalidMapping)
+        );
         let mut opcode = [0u8; 1];
         VmBackend::read_guest(&guest, 0x20_1000, &mut opcode).unwrap();
         assert_eq!(opcode, [0x48]);
