@@ -70,6 +70,12 @@ Changes that do not satisfy every rule must not be merged:
   integer and buffer arithmetic, parsers, file and process operations, network
   input, and error paths; add adversarial and regression tests appropriate to
   the change. A change with an unresolved security weakness is rejected.
+- Assume any Windows or Linux host operating system and host VMM process are
+  compromised. Hosted KVM/WHP mode may be used for development, compatibility,
+  and performance measurement, but it must never be presented as protecting
+  guest confidentiality, integrity, keys, verified boot, or CUDA results from
+  that host. Production security must root in measured bare-metal MRML code;
+  secrets and signing authority must not be entrusted to a hosted VMM.
 - Measure performance-sensitive changes against an appropriate existing
   baseline. Any security or performance regression is rejected and must be
   corrected and retested before the change is reconsidered; do not waive a
@@ -107,6 +113,11 @@ image, service VMs, and bare-metal validation remain unfinished.
 The successful `ExitBootServices` call is a one-way boundary: memory-map
 normalization, handoff construction, and launch failures after it halt locally
 and can never return into terminated firmware services.
+Under the mandatory compromised-host threat model, the current KVM and WHP
+launchers are test harnesses, not security boundaries. Their host can inspect
+or modify guest RAM and the entropy-derived queue key. Authenticated queues
+still test canonical protocol enforcement and isolate ordinary peer guests,
+but they cannot authenticate a host that owns both endpoints.
 
 ### Secure mediated CUDA design
 

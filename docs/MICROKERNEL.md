@@ -7,6 +7,33 @@ adapted.
 
 ## Security boundary
 
+MRML assumes a conventional Windows or Linux host and its VMM process may be
+fully compromised. Consequently, hosted KVM/WHP execution is a development,
+compatibility, and benchmark mode only: such a host controls guest memory,
+page tables, scheduling, device emulation, launch evidence, and the current
+host CUDA service. Cryptographic framing cannot protect a key that the host can
+read from guest RAM or derive from a handoff it created. No hosted-mode result
+establishes confidentiality, integrity, verified boot, or correct GPU execution
+against that host.
+
+The production architecture is therefore a bare-metal type-1
+microkernel/monitor launched by measured UEFI. The kernel contains only
+mechanisms: address spaces, scheduling, interrupt/IOMMU control, capabilities,
+IPC, and VM entry/exit. A small, networkless management service owns policy and
+domain lifecycle but receives no direct memory authority over ordinary service
+VMs. Networking, storage, display composition, tools, model loading, and GPU
+mediation run in mutually isolated least-authority service VMs. The GPU service
+must run as an MRML-controlled domain, not as a process owned by an untrusted
+Windows/Linux host.
+
+The compartment model is also retained inside hosted MRML for defense in depth:
+it can contain a compromised tool or model service from peer domains when the
+host remains honest. It does not create a nested security boundary against a
+malicious outer host. Hardware confidential-VM facilities could optionally
+reduce that trust in the future, but MRML makes no such claim without measured
+launch attestation, encrypted/integrity-protected memory, protected interrupt
+and I/O paths, rollback protection, and an audited confidential-GPU channel.
+
 The privileged kernel will contain only scheduling, address-space and interrupt
 mechanisms, capability enforcement, IPC, and the minimum early console/timer
 code needed to recover. Filesystems, networking, storage, GPU, CUDA mediation,
@@ -36,9 +63,11 @@ the topology is incomplete.
 
 ### MRML virtual GPU
 
-For Hyper-V systems where the host must retain the GPU, MRML uses an original
+For compatibility systems where the host retains the GPU, MRML uses an original
 paravirtual interface rather than forwarding CUDA or NVIDIA driver APIs. An
-isolated host GPU service owns the CUDA context. A guest receives opaque,
+isolated GPU service owns the CUDA context. In hosted KVM/WHP mode that service
+is controlled by the untrusted host and provides no host-resistance; in the
+production design it is a capability-confined MRML service domain. A guest receives opaque,
 generational buffer IDs under a fixed byte quota and may dispatch only the 28
 MRML kernels embedded in the same measured build. Requests contain checked
 buffer ranges and bounded grid, block, and shared-memory values. They contain no
