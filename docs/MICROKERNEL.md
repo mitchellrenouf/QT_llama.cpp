@@ -264,6 +264,10 @@ completion sequence space before calling the backend. Once synchronization
 succeeds, it retires the identities and produces ordered authenticated success
 frames. Clean rejection cancels all identities; uncertain errors leave all
 identities live for deadline or reset handling.
+Deadline expiry emits authenticated `TimedOut` frames in stable slot order;
+device recovery emits authenticated `DeviceReset` frames for every remaining
+entry. Both paths reserve completion sequence space before invalidating any
+generational identity, preventing partial retirement on sequence exhaustion.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
 registry alone cannot make it executable. All embedded kernel schemas,
 including the proof-bearing MoE variants, are integrated with the concrete CUDA

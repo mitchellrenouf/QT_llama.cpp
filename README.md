@@ -233,6 +233,10 @@ completion-sequence capacity before execution. After the barrier succeeds it
 retires each generational identity and emits one ordered, session-bound success
 frame; rejection cancels the batch, while uncertain execution retains it for
 timeout or reset recovery.
+Watchdog expiry and device reset likewise produce ordered authenticated status
+frames while invalidating the corresponding generational IDs. Completion
+sequence exhaustion is checked before mutation, so recovery cannot silently
+retire work that the guest was not told about.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject

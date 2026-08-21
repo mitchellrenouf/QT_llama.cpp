@@ -168,6 +168,67 @@ impl<const N: usize> DispatchTable<N> {
         count
     }
 
+    /// Retires expired work and emits authenticated timeout completions in
+    /// stable slot order. Sequence capacity is checked before any ID changes.
+    pub fn expire_with_completions(
+        &mut self,
+        now: u64,
+        sender: &mut GpuCompletionSender,
+        outputs: &mut [[u8; GPU_QUEUE_MESSAGE_BYTES]; N],
+    ) -> Result<usize, GpuError> {
+        let count = self
+            .entries
+            .iter()
+            .filter(|entry| entry.occupied && entry.deadline <= now)
+            .count();
+        sender.ensure_capacity(count)?;
+        let mut output_index = 0;
+        for (slot, entry) in self.entries.iter_mut().enumerate() {
+            if entry.occupied && entry.deadline <= now {
+                let dispatch = DispatchId {
+                    slot: slot as u32,
+                    generation: entry.generation,
+                };
+                let request_id = entry.request_id;
+                let completion =
+                    GpuCompletion::new(request_id, dispatch, GpuCompletionStatus::TimedOut)?;
+                sender.encode(completion, &mut outputs[output_index])?;
+                invalidate_dispatch(entry);
+                output_index += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Retires all in-flight work after device reset and emits authenticated
+    /// reset completions. Sequence capacity is checked before mutation.
+    pub fn reset_with_completions(
+        &mut self,
+        sender: &mut GpuCompletionSender,
+        outputs: &mut [[u8; GPU_QUEUE_MESSAGE_BYTES]; N],
+    ) -> Result<usize, GpuError> {
+        let count = self.entries.iter().filter(|entry| entry.occupied).count();
+        sender.ensure_capacity(count)?;
+        let mut output_index = 0;
+        for (slot, entry) in self.entries.iter_mut().enumerate() {
+            if entry.occupied {
+                let dispatch = DispatchId {
+                    slot: slot as u32,
+                    generation: entry.generation,
+                };
+                let completion = GpuCompletion::new(
+                    entry.request_id,
+                    dispatch,
+                    GpuCompletionStatus::DeviceReset,
+                )?;
+                sender.encode(completion, &mut outputs[output_index])?;
+                invalidate_dispatch(entry);
+                output_index += 1;
+            }
+        }
+        Ok(count)
+    }
+
     pub fn contains(&self, id: DispatchId) -> bool {
         self.entries
             .get(id.slot as usize)
@@ -696,6 +757,13 @@ impl GpuCompletionSender {
         output[48..].copy_from_slice(&tag);
         self.next_sequence = next;
         Ok(())
+    }
+
+    fn ensure_capacity(&self, count: usize) -> Result<(), GpuError> {
+        self.next_sequence
+            .checked_add(count as u64)
+            .map(|_| ())
+            .ok_or(GpuError::SequenceExhausted)
     }
 }
 
@@ -1917,9 +1985,8 @@ where
         }
     }
     sender
-        .next_sequence
-        .checked_add(batch.len() as u64)
-        .ok_or(GpuLifecycleError::InvalidState(GpuError::SequenceExhausted))?;
+        .ensure_capacity(batch.len())
+        .map_err(GpuLifecycleError::InvalidState)?;
 
     match executor.submit(batch) {
         Ok(false) => {
@@ -5292,5 +5359,46 @@ mod tests {
         assert_eq!(table.cancel(second), Ok(42));
         assert_eq!(table.complete(second), Err(GpuError::InvalidDispatch));
         assert_eq!(table.complete(replacement), Ok(43));
+    }
+
+    #[test]
+    fn watchdog_recovery_emits_authenticated_timeout_and_reset_completions() {
+        let key = [0x35; 32];
+        let mut sender = GpuCompletionSender::new(91, key).unwrap();
+        let mut receiver = GpuCompletionReceiver::new(91, key).unwrap();
+        let mut table = DispatchTable::<2>::new();
+        let expired = table.begin(51, 100, 120).unwrap();
+        let reset = table.begin(52, 100, 140).unwrap();
+
+        let mut frames = [[0; GPU_QUEUE_MESSAGE_BYTES]; 2];
+        assert_eq!(
+            table.expire_with_completions(120, &mut sender, &mut frames),
+            Ok(1)
+        );
+        assert_eq!(
+            receiver.decode(&frames[0]).unwrap(),
+            GpuCompletion::new(51, expired, GpuCompletionStatus::TimedOut).unwrap()
+        );
+        assert!(!table.contains(expired));
+        assert!(table.contains(reset));
+
+        frames.fill([0; GPU_QUEUE_MESSAGE_BYTES]);
+        assert_eq!(
+            table.reset_with_completions(&mut sender, &mut frames),
+            Ok(1)
+        );
+        assert_eq!(
+            receiver.decode(&frames[0]).unwrap(),
+            GpuCompletion::new(52, reset, GpuCompletionStatus::DeviceReset).unwrap()
+        );
+        assert!(!table.contains(reset));
+
+        let live = table.begin(53, 200, 210).unwrap();
+        sender.next_sequence = u64::MAX;
+        assert_eq!(
+            table.expire_with_completions(210, &mut sender, &mut frames),
+            Err(GpuError::SequenceExhausted)
+        );
+        assert!(table.contains(live));
     }
 }
