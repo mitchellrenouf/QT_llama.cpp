@@ -1700,6 +1700,7 @@ impl Dispatch {
             4 => self.validate_quantized_gemv_schema(34, 8, 128),
             7 | 9 | 10 => self.validate_three_f32_elementwise_schema(),
             8 => self.validate_embedding_f32_schema(),
+            12 => self.validate_rms_norm_f32_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
     }
@@ -1890,6 +1891,62 @@ impl Dispatch {
         Ok(ValidatedKernelLaunch {
             dispatch: *self,
             element_count: dimension,
+        })
+    }
+
+    fn validate_rms_norm_f32_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if !(self.access_count == 2 || self.access_count == 3)
+            || self.scalar_count != 3
+            || self.shared_memory != 0
+            || self.block != [256, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let input = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let (weight, output) = if self.access_count == 3 {
+            (
+                Some(self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?),
+                self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?,
+            )
+        } else {
+            (None, self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?)
+        };
+        let dimension = self.positive_i32_scalar(0)?;
+        let batch = self.positive_i32_scalar(1)?;
+        let epsilon_arg = self.scalars[2].ok_or(GpuError::InvalidKernelSchema)?;
+        let epsilon = f32::from_bits(epsilon_arg.bits);
+        if epsilon_arg.kind != ScalarKind::F32 || !epsilon.is_finite() || epsilon <= 0.0 {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let elements = dimension
+            .checked_mul(batch)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let tensor_bytes = u64::from(elements)
+            .checked_mul(4)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let weight_bytes = u64::from(dimension)
+            .checked_mul(4)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        if input.mode != BufferMode::Read
+            || output.mode != BufferMode::Write
+            || input.offset % 4 != 0
+            || output.offset % 4 != 0
+            || input.length != tensor_bytes
+            || output.length != tensor_bytes
+            || self.grid != [batch, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        if let Some(weight) = weight
+            && (weight.mode != BufferMode::Read
+                || weight.offset % 4 != 0
+                || weight.length != weight_bytes)
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: elements,
         })
     }
 
@@ -2403,6 +2460,93 @@ mod tests {
         .unwrap();
         assert_eq!(
             wrong_output.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn executor_validates_weighted_and_unweighted_rms_norm() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let scalars = [
+            ScalarArg::i32(128),
+            ScalarArg::i32(2),
+            ScalarArg::f32_bits(1.0e-6f32.to_bits()),
+        ];
+        let unweighted_accesses = [
+            BufferAccess::new(id(0), 0, 1024, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 1024, BufferMode::Write),
+        ];
+        let unweighted = Dispatch::new_with_scalars(
+            KernelId::new(12).unwrap(),
+            [2, 1, 1],
+            [256, 1, 1],
+            0,
+            &unweighted_accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            unweighted
+                .validate_executor_schema()
+                .unwrap()
+                .element_count(),
+            256
+        );
+
+        let weighted_accesses = [
+            unweighted_accesses[0],
+            BufferAccess::new(id(1), 0, 512, BufferMode::Read),
+            unweighted_accesses[1],
+        ];
+        let weighted = Dispatch::new_with_scalars(
+            KernelId::new(12).unwrap(),
+            [2, 1, 1],
+            [256, 1, 1],
+            0,
+            &weighted_accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert!(weighted.validate_executor_schema().is_ok());
+
+        let invalid_epsilon = [
+            scalars[0],
+            scalars[1],
+            ScalarArg::f32_bits(f32::NAN.to_bits()),
+        ];
+        let invalid_epsilon = Dispatch::new_with_scalars(
+            KernelId::new(12).unwrap(),
+            [2, 1, 1],
+            [256, 1, 1],
+            0,
+            &weighted_accesses,
+            &invalid_epsilon,
+        )
+        .unwrap();
+        assert_eq!(
+            invalid_epsilon.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let short_weight = [
+            unweighted_accesses[0],
+            BufferAccess::new(id(1), 0, 508, BufferMode::Read),
+            unweighted_accesses[1],
+        ];
+        let short_weight = Dispatch::new_with_scalars(
+            KernelId::new(12).unwrap(),
+            [2, 1, 1],
+            [256, 1, 1],
+            0,
+            &short_weight,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            short_weight.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
     }

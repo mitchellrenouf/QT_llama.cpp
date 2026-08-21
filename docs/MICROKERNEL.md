@@ -161,8 +161,13 @@ ID 7. Kernel ID 8 validates a nonnegative signed token against the actual f32
 embedding-table row count and binds the dimension, output bytes, alignment,
 permissions, block width, and derived grid. A token at the row count is already
 out of bounds and fails before launch.
+Kernel ID 12 supports weighted and unweighted RMS normalization without a raw
+nullable pointer: two accesses mean input/output and three mean
+input/weight/output. Dimension and batch must exactly determine tensor and
+weight bytes, while epsilon must be a typed, finite, positive f32. Grid,
+alignment, permissions, and absence of dynamic shared memory are also fixed.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 21 schemas and the
+registry alone cannot make it executable. The remaining 20 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
