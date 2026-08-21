@@ -1,4 +1,5 @@
 use mrml_crypto::Sha256;
+use mrml_runtime::Vector;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthenticodeError {
@@ -8,6 +9,106 @@ pub enum AuthenticodeError {
     InvalidCertificateTable,
     InvalidSection,
     Overflow,
+    AlreadySigned,
+    UnalignedImage,
+    EmptyCertificate,
+    Allocation,
+}
+
+pub fn attach_pkcs7(image: &[u8], certificate: &[u8]) -> Result<Vector<u8>, AuthenticodeError> {
+    if certificate.is_empty() {
+        return Err(AuthenticodeError::EmptyCertificate);
+    }
+    if image.len() % 8 != 0 {
+        return Err(AuthenticodeError::UnalignedImage);
+    }
+    // Full parsing also rejects overlays, malformed sections, and existing
+    // non-terminal certificate tables before any output is allocated.
+    let digest_before = sha256(image)?;
+    let security_directory = security_directory_offset(image)?;
+    if read_u32(image, security_directory)? != 0 || read_u32(image, security_directory + 4)? != 0 {
+        return Err(AuthenticodeError::AlreadySigned);
+    }
+    let certificate_length = 8usize
+        .checked_add(certificate.len())
+        .ok_or(AuthenticodeError::Overflow)?;
+    let padded_length = certificate_length
+        .checked_add(7)
+        .map(|length| length & !7)
+        .ok_or(AuthenticodeError::Overflow)?;
+    let final_length = image
+        .len()
+        .checked_add(padded_length)
+        .ok_or(AuthenticodeError::Overflow)?;
+    if certificate_length > u32::MAX as usize
+        || padded_length > u32::MAX as usize
+        || image.len() > u32::MAX as usize
+    {
+        return Err(AuthenticodeError::Overflow);
+    }
+    let mut output = Vector::new();
+    output
+        .try_extend_from_slice(image)
+        .and_then(|_| output.try_resize(final_length, 0))
+        .map_err(|_| AuthenticodeError::Allocation)?;
+    output[security_directory..security_directory + 4]
+        .copy_from_slice(&(image.len() as u32).to_le_bytes());
+    output[security_directory + 4..security_directory + 8]
+        .copy_from_slice(&(padded_length as u32).to_le_bytes());
+    let certificate_at = image.len();
+    output[certificate_at..certificate_at + 4]
+        .copy_from_slice(&(certificate_length as u32).to_le_bytes());
+    output[certificate_at + 4..certificate_at + 6].copy_from_slice(&0x0200u16.to_le_bytes());
+    output[certificate_at + 6..certificate_at + 8].copy_from_slice(&0x0002u16.to_le_bytes());
+    output[certificate_at + 8..certificate_at + certificate_length].copy_from_slice(certificate);
+    write_checksum(&mut output)?;
+    if sha256(&output)? != digest_before {
+        return Err(AuthenticodeError::InvalidCertificateTable);
+    }
+    Ok(output)
+}
+
+fn security_directory_offset(image: &[u8]) -> Result<usize, AuthenticodeError> {
+    if read_u16(image, 0)? != 0x5a4d {
+        return Err(AuthenticodeError::InvalidPe);
+    }
+    let pe = read_u32(image, 0x3c)? as usize;
+    if read_u32(image, pe)? != 0x0000_4550 {
+        return Err(AuthenticodeError::InvalidPe);
+    }
+    let optional = pe.checked_add(24).ok_or(AuthenticodeError::Overflow)?;
+    if read_u16(image, optional)? != 0x020b {
+        return Err(AuthenticodeError::InvalidPe);
+    }
+    optional.checked_add(144).ok_or(AuthenticodeError::Overflow)
+}
+
+fn write_checksum(image: &mut [u8]) -> Result<(), AuthenticodeError> {
+    let security = security_directory_offset(image)?;
+    let checksum = security
+        .checked_sub(80)
+        .ok_or(AuthenticodeError::InvalidPe)?;
+    image
+        .get_mut(checksum..checksum + 4)
+        .ok_or(AuthenticodeError::Truncated)?
+        .fill(0);
+    let mut sum = 0u64;
+    for (index, bytes) in image.chunks(2).enumerate() {
+        let at = index * 2;
+        if (checksum..checksum + 4).contains(&at) {
+            continue;
+        }
+        let word = u16::from_le_bytes([bytes[0], bytes.get(1).copied().unwrap_or(0)]);
+        sum = sum.wrapping_add(word as u64);
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    sum = (sum & 0xffff) + (sum >> 16);
+    sum = sum
+        .checked_add(image.len() as u64)
+        .ok_or(AuthenticodeError::Overflow)?;
+    let checksum_value = u32::try_from(sum).map_err(|_| AuthenticodeError::Overflow)?;
+    image[checksum..checksum + 4].copy_from_slice(&checksum_value.to_le_bytes());
+    Ok(())
 }
 
 pub fn sha256(image: &[u8]) -> Result<[u8; 32], AuthenticodeError> {
@@ -145,5 +246,23 @@ mod tests {
         assert_eq!(sha256(&changed), Ok(expected));
         changed[600] ^= 1;
         assert_ne!(sha256(&changed), Ok(expected));
+    }
+
+    #[test]
+    fn attaches_one_canonical_pkcs7_certificate_without_changing_digest() {
+        let original = image();
+        let expected = sha256(&original).unwrap();
+        let attached = attach_pkcs7(&original, &[0x30, 1, 0]).unwrap();
+        assert_eq!(attached.len(), 1040);
+        assert_eq!(&attached[0x128..0x12c], &1024u32.to_le_bytes());
+        assert_eq!(&attached[0x12c..0x130], &16u32.to_le_bytes());
+        assert_eq!(&attached[1024..1028], &11u32.to_le_bytes());
+        assert_eq!(&attached[1028..1030], &0x0200u16.to_le_bytes());
+        assert_eq!(&attached[1030..1032], &0x0002u16.to_le_bytes());
+        assert_eq!(sha256(&attached), Ok(expected));
+        assert!(matches!(
+            attach_pkcs7(&attached, &[1]),
+            Err(AuthenticodeError::AlreadySigned)
+        ));
     }
 }

@@ -238,6 +238,19 @@ RSA/PKCS#1 and CMS `SignedData` emission plus verification against an
 independent platform tool remain necessary before claiming firmware-compatible
 signing.
 
+`mrml-sign attach-authenticode IMAGE.efi SIGNATURE.p7b OUTPUT.efi` now performs
+the remaining PE container work for an externally generated CMS object. It
+requires an unsigned eight-byte-aligned canonical image, appends exactly one
+revision-2 `WIN_CERTIFICATE` of type PKCS signed data, zero-pads only the
+certificate entry, updates the security directory, calculates the final PE
+checksum while excluding its field, refuses overwrite or double attachment,
+and recomputes the Authenticode digest before returning. On the real standalone
+kernel PE, the digest remained
+`5269d33d3834f99bcb5ea31acf908749b7eff2456b91015ddca0092b85eae59b`
+before and after attachment on Windows. Certificate bytes are treated as an
+opaque CMS input and are not claimed valid until the CMS generator and an
+independent verifier accept them.
+
 The original fixed-storage RSA implementation now also emits deterministic
 PKCS#1 v1.5 SHA-256 signatures using the same constant-work exponent traversal
 as RSA-PSS. It constructs the complete DigestInfo and requires at least eight

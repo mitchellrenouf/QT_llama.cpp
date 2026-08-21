@@ -40,11 +40,27 @@ fn application_main() -> Result<()> {
         ),
         Some("key-digest") if args.len() == 3 => key_digest(&args[2]),
         Some("authenticode-digest") if args.len() == 3 => authenticode_digest(&args[2]),
+        Some("attach-authenticode") if args.len() == 5 => {
+            attach_authenticode(&args[2], &args[3], &args[4])
+        }
         Some("manifest") if args.len() == 10 => manifest(&args),
         _ => Err(anyhow!(
-            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign sign-bundle KIND VERSION ARTIFACT PRIVATE OUTPUT\n  mrml-sign key-digest PUBLIC\n  mrml-sign authenticode-digest IMAGE.efi\n  mrml-sign manifest VERSION OUTPUT NEXT_ROOT KERNEL VM SERVICE CUDA POLICY"
+            "usage:\n  mrml-sign keygen PRIVATE PUBLIC\n  mrml-sign sign KIND VERSION ARTIFACT PRIVATE SIGNATURE\n  mrml-sign sign-bundle KIND VERSION ARTIFACT PRIVATE OUTPUT\n  mrml-sign key-digest PUBLIC\n  mrml-sign authenticode-digest IMAGE.efi\n  mrml-sign attach-authenticode IMAGE.efi SIGNATURE.p7b OUTPUT.efi\n  mrml-sign manifest VERSION OUTPUT NEXT_ROOT KERNEL VM SERVICE CUDA POLICY"
         )),
     }
+}
+
+fn attach_authenticode(image_path: &str, certificate_path: &str, output_path: &str) -> Result<()> {
+    if mrml_runtime::path_exists(output_path) {
+        return Err(anyhow!("refusing to overwrite Authenticode output"));
+    }
+    let image = mrml_runtime::read_file_bounded(image_path, MAX_ARTIFACT)?;
+    let certificate = mrml_runtime::read_file_bounded(certificate_path, 16 * 1024 * 1024)?;
+    let output = authenticode::attach_pkcs7(&image, &certificate)
+        .map_err(|_| anyhow!("invalid PE image or PKCS#7 certificate attachment"))?;
+    mrml_runtime::write_file(output_path, &output)?;
+    println!("attached canonical PKCS#7 WIN_CERTIFICATE and finalized PE checksum");
+    Ok(())
 }
 
 fn authenticode_digest(path: &str) -> Result<()> {
