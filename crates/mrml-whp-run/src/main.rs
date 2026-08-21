@@ -36,6 +36,10 @@ const SERVICE_PROBE_PORT: u16 = 0x4d58;
 #[cfg(target_os = "windows")]
 const SERVICE_CALL_PORT: u16 = 0x4d5a;
 #[cfg(target_os = "windows")]
+const TIMER_READY_PORT: u16 = 0x4d54;
+#[cfg(target_os = "windows")]
+const TIMER_TICK_PORT: u16 = 0x4d55;
+#[cfg(target_os = "windows")]
 const SERVICE_PHYSICAL: u64 = 0x0060_0000;
 #[cfg(target_os = "windows")]
 const SERVICE_VIRTUAL: u64 = 0x0000_0001_4000_0000;
@@ -62,9 +66,10 @@ fn application_main() -> Result<()> {
         return Ok(());
     }
     let service_mode = arguments.len() == 8 && arguments[4] == "service-probe";
-    if arguments.len() != 7 && !service_mode {
+    let timer_mode = arguments.len() == 5 && arguments[4] == "timer-probe";
+    if arguments.len() != 7 && !service_mode && !timer_mode {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -127,7 +132,7 @@ fn application_main() -> Result<()> {
         (None, None) => None,
         _ => return Err(anyhow!("incomplete service verification inputs")),
     };
-    let cuda_bundle = if service_mode {
+    let cuda_bundle = if service_mode || timer_mode {
         None
     } else {
         Some(verify_cuda_bundle(
@@ -163,10 +168,11 @@ fn application_main() -> Result<()> {
     let system = WhpSystem::open()
         .map_err(|error| anyhow!("Windows Hypervisor Platform is unavailable: {:?}", error))?;
     let preparation_started = Instant::now();
-    let mut guest = if service_mode {
-        system.prepare_isolated_service_kernel(&executable, &handoff, layout)
-    } else {
-        system.prepare_kernel_gpu_guest(&executable, &handoff, layout, queue)
+    let mut guest = match (service_mode, timer_mode) {
+        (true, false) => system.prepare_isolated_service_kernel(&executable, &handoff, layout),
+        (false, true) => system.prepare_timer_kernel(&executable, &handoff, layout),
+        (false, false) => system.prepare_kernel_gpu_guest(&executable, &handoff, layout, queue),
+        (true, true) => return Err(anyhow!("launch mode is ambiguous")),
     }
     .map_err(|error| anyhow!("verified WHP kernel preparation failed: {:?}", error))?;
     if service_mode {
@@ -246,6 +252,50 @@ fn application_main() -> Result<()> {
             physical,
             instruction
         ));
+    }
+    if timer_mode {
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!("WHP timer did not initialize: {:?}", exit));
+        }
+        let exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("WHP local APIC counter wait failed: {:?}", error))?;
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 2,
+            })
+        {
+            return Err(anyhow!("WHP local APIC counter did not elapse: {:?}", exit));
+        }
+        let exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("WHP local APIC delivery failed: {:?}", error))?;
+        if exit
+            != (VmExit::Io {
+                port: TIMER_TICK_PORT,
+                size: 4,
+                write: true,
+                value: 1,
+            })
+        {
+            return Err(anyhow!("WHP scheduler timer tick mismatch: {:?}", exit));
+        }
+        println!(
+            "verified local-APIC scheduler tick under WHP: verify={}us prepare={}us execute={}us total={}us",
+            verification_micros,
+            preparation_micros,
+            execution_started.elapsed().as_micros(),
+            total_started.elapsed().as_micros()
+        );
+        return Ok(());
     }
     if service_mode {
         if exit

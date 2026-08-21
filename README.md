@@ -202,8 +202,11 @@ available; it does not use host interrupt injection. The APIC-specific KVM
 configuration is confined to timer guests so ordinary proof guests preserve
 their host-visible halt behavior. The latest signed run completed in 1,856
 microseconds (`verify=744us`, `prepare=10296us`, `total=15834us`) under nested
-KVM. A corresponding live WHP timer proof and multi-task timer preemption proof
-remain unfinished. Validated generational ring-three context
+KVM. The corresponding live WHP timer proof is also complete: the freshly
+signed identical kernel reached the scheduler
+tick under WHP in 8,232 microseconds (`verify=758us`, `prepare=2971us`,
+`total=13998us`). Multi-task timer preemption remains unfinished. Validated
+generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A

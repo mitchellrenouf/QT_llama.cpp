@@ -11,6 +11,16 @@ use crate::{GuestRange, MapPermissions, WhpError};
 
 use super::{PreparedWhpPartition, WhpSystem};
 
+const XAPIC_BASE: u64 = 0xfee0_0000;
+
+#[derive(Clone, Copy)]
+struct KernelDevices {
+    framebuffer: bool,
+    local_apic: bool,
+    gpu_queue: Option<GpuSharedQueueLayout>,
+    intercept_breakpoint: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WhpLaunchLayout {
     table_physical: u64,
@@ -222,8 +232,7 @@ impl PreparedWhpGuest<'_> {
             || table_pages < 4
             || service_virtual == 0
             || service_virtual >= 1 << 47
-            || stack_virtual < PAGE_SIZE
-            || stack_virtual >= 1 << 47
+            || !(PAGE_SIZE..1 << 47).contains(&stack_virtual)
             || [
                 service_physical,
                 service_virtual,
@@ -371,7 +380,17 @@ impl WhpSystem {
         handoff: &[u8],
         layout: WhpLaunchLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, false, None, true)
+        self.prepare_guest_inner(
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: false,
+                local_apic: false,
+                gpu_queue: None,
+                intercept_breakpoint: true,
+            },
+        )
     }
 
     /// Prepares a standalone kernel whose architectural exceptions are
@@ -382,7 +401,37 @@ impl WhpSystem {
         handoff: &[u8],
         layout: WhpLaunchLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, false, None, false)
+        self.prepare_guest_inner(
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: false,
+                local_apic: false,
+                gpu_queue: None,
+                intercept_breakpoint: false,
+            },
+        )
+    }
+
+    /// Prepares a kernel with its framebuffer and supervisor-only local APIC.
+    pub fn prepare_timer_kernel<'system>(
+        &'system self,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: WhpLaunchLayout,
+    ) -> Result<PreparedWhpGuest<'system>, WhpError> {
+        self.prepare_guest_inner(
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: true,
+                gpu_queue: None,
+                intercept_breakpoint: true,
+            },
+        )
     }
 
     /// Prepares a signed guest with mediated GPU rings in its initial address
@@ -395,7 +444,17 @@ impl WhpSystem {
         layout: WhpLaunchLayout,
         queue: GpuSharedQueueLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, false, Some(queue), true)
+        self.prepare_guest_inner(
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: false,
+                local_apic: false,
+                gpu_queue: Some(queue),
+                intercept_breakpoint: true,
+            },
+        )
     }
 
     /// Prepares the standalone kernel with its authenticated framebuffer and
@@ -407,7 +466,17 @@ impl WhpSystem {
         layout: WhpLaunchLayout,
         queue: GpuSharedQueueLayout,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
-        self.prepare_guest_inner(executable, handoff, layout, true, Some(queue), true)
+        self.prepare_guest_inner(
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: false,
+                gpu_queue: Some(queue),
+                intercept_breakpoint: true,
+            },
+        )
     }
 
     fn prepare_guest_inner<'system>(
@@ -415,10 +484,10 @@ impl WhpSystem {
         executable: &VerifiedExecutable<'_>,
         handoff: &[u8],
         layout: WhpLaunchLayout,
-        map_framebuffer: bool,
-        queue: Option<GpuSharedQueueLayout>,
-        intercept_breakpoint: bool,
+        devices: KernelDevices,
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
+        let map_framebuffer = devices.framebuffer;
+        let queue = devices.gpu_queue;
         let decoded = BootHandoff::decode(handoff, |_| {}).map_err(WhpError::Handoff)?;
         let image_bytes = page_bytes(executable.image().image_size() as u64)?;
         let handoff_bytes = page_bytes(handoff.len() as u64)?;
@@ -479,7 +548,8 @@ impl WhpSystem {
         }
         validate_ranges(&virtual_ranges[..virtual_count])?;
 
-        let mut partition = self.prepare_partition_with_breakpoint_exit(intercept_breakpoint)?;
+        let mut partition =
+            self.prepare_partition_with_breakpoint_exit(devices.intercept_breakpoint)?;
         partition.map_zeroed(range(
             layout.table_physical,
             table_bytes,
@@ -544,6 +614,7 @@ impl WhpSystem {
             layout,
             handoff_bytes,
             map_framebuffer.then_some((framebuffer.base().get(), framebuffer_bytes)),
+            devices.local_apic,
             queue,
         )?;
         partition.configure_long_mode(
@@ -570,6 +641,7 @@ fn build_page_tables(
     layout: WhpLaunchLayout,
     handoff_bytes: u64,
     framebuffer: Option<(u64, u64)>,
+    local_apic: bool,
     queue: Option<GpuSharedQueueLayout>,
 ) -> Result<PhysAddr, WhpError> {
     partition.write_guest(layout.table_physical, &0u64.to_le_bytes())?;
@@ -616,6 +688,15 @@ fn build_page_tables(
                     PagePermissions::KERNEL_MMIO_READ_WRITE,
                 )
                 .map_err(|_| WhpError::InvalidMapping)?,
+            )
+            .map_err(|_| WhpError::PageTable)?;
+    }
+    if local_apic {
+        tables
+            .map_page(
+                VirtAddr::new(XAPIC_BASE).map_err(|_| WhpError::InvalidMapping)?,
+                PhysAddr::new(XAPIC_BASE).map_err(|_| WhpError::InvalidMapping)?,
+                PagePermissions::KERNEL_MMIO_READ_WRITE,
             )
             .map_err(|_| WhpError::PageTable)?;
     }

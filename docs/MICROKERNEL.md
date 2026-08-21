@@ -574,8 +574,11 @@ supervisor-only when x2APIC is unavailable. No host interrupt injection is used.
 This APIC setup is restricted to timer guests so it cannot change halt behavior
 for other launch modes. A freshly signed nested-KVM run completed guest
 execution in 1,856 microseconds (`verify=744us`, `prepare=10296us`,
-`total=15834us`). The corresponding WHP proof and a live timer-driven switch
-between two isolated user contexts remain incomplete.
+`total=15834us`). The corresponding WHP proof uses Hyper-V's xAPIC emulation
+and the same supervisor-only page-table policy;
+the freshly signed identical kernel reached its tick in 8,232 microseconds
+(`verify=758us`, `prepare=2971us`, `total=13998us`). A live timer-driven switch
+between two isolated user contexts remains incomplete.
 
 The `user-probe` diagnostic now gives the context and TSS work a live privilege-
 transition proof. Its signed PE is relocated into a bounded lower-half layout;
@@ -1294,8 +1297,8 @@ a stale handle. Windows and Linux tests cover preemption, idle wakeup, task
 termination, stale identities, and invalid timer policies. A separate release
 microbenchmark now measures tick accounting. Validated x2APIC/xAPIC timer
 programming and acknowledgement primitives now execute in the signed KVM guest;
-WHP controller integration and timer-driven restoration of a second isolated
-user context remain the next integration gates.
+the same primitives also execute in the signed WHP guest. Timer-driven
+restoration of a second isolated user context remains the next integration gate.
 
 The x86_64 architecture layer now defines a fixed user-context record and a
 generational task-to-context table. New contexts require a nonzero page-aligned
