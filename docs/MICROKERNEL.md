@@ -93,6 +93,11 @@ an exact-length `MRGB` header followed by one to 32 existing canonical dispatch
 records. It contains no pointers or offsets, preserves order and independent
 request IDs, rejects trailing/truncated/reserved encodings, and revalidates all
 session resources while decoding. The service-side executor remains pending.
+Before executor handoff, the dispatch watchdog now admits the entire batch
+transactionally. Each request receives a generational `DispatchId`; capacity,
+deadline, or duplicate failures cancel every ID minted by that attempt. A
+service rejection can likewise cancel all still-live prepared entries, while
+already completed identities remain invalid and are never revived.
 The KVM adapter now consumes the common layout and registers two dedicated
 memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining

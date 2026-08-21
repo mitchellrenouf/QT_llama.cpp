@@ -63,8 +63,8 @@ pub use virtual_gpu::{
     GpuCompletionReceiver, GpuCompletionSender, GpuCompletionStatus, GpuDispatchBatch, GpuError,
     GpuQueueReceiver, GpuQueueSender, GpuRingConsumer, GpuRingProducer, GpuRingTicket,
     GpuSharedQueueLayout, GpuSharedRingIndices, KernelId, MAX_BATCH_DISPATCHES,
-    MAX_DISPATCH_BUFFERS, MAX_GPU_CONTROL_BYTES, MAX_GPU_QUEUE_SLOTS, ResourceCommand,
-    VirtualGpuSession,
+    MAX_DISPATCH_BUFFERS, MAX_GPU_CONTROL_BYTES, MAX_GPU_QUEUE_SLOTS, PreparedGpuBatch,
+    PreparedGpuDispatch, ResourceCommand, VirtualGpuSession,
 };
 pub use vm::{
     GuestAccess, GuestMappingId, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall,

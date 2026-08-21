@@ -1158,6 +1158,53 @@ pub struct BatchedDispatch {
     dispatch: Dispatch,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedGpuDispatch {
+    request_id: u64,
+    dispatch_id: DispatchId,
+    dispatch: Dispatch,
+}
+
+impl PreparedGpuDispatch {
+    pub const fn request_id(self) -> u64 {
+        self.request_id
+    }
+
+    pub const fn dispatch_id(self) -> DispatchId {
+        self.dispatch_id
+    }
+
+    pub const fn dispatch(&self) -> &Dispatch {
+        &self.dispatch
+    }
+}
+
+pub struct PreparedGpuBatch<const N: usize> {
+    entries: [Option<PreparedGpuDispatch>; N],
+    count: usize,
+}
+
+impl<const N: usize> PreparedGpuBatch<N> {
+    fn new() -> Self {
+        Self {
+            entries: [None; N],
+            count: 0,
+        }
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = PreparedGpuDispatch> + '_ {
+        self.entries[..self.count].iter().flatten().copied()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
 impl BatchedDispatch {
     pub const fn request_id(self) -> u64 {
         self.request_id
@@ -1308,6 +1355,49 @@ impl<const N: usize> GpuDispatchBatch<N> {
             batch.push(request_id, dispatch, session)?;
         }
         Ok((batch_id, batch))
+    }
+}
+
+impl<const N: usize> DispatchTable<N> {
+    /// Mints watchdog identities for an entire validated batch. Admission is
+    /// transactional: any failure invalidates every identity minted during
+    /// this call before returning an error.
+    pub fn begin_batch<const M: usize>(
+        &mut self,
+        batch: &GpuDispatchBatch<M>,
+        now: u64,
+        deadline: u64,
+    ) -> Result<PreparedGpuBatch<M>, GpuError> {
+        batch.validate_ready()?;
+        let mut prepared = PreparedGpuBatch::new();
+        for entry in batch.entries() {
+            let dispatch_id = match self.begin(entry.request_id, now, deadline) {
+                Ok(id) => id,
+                Err(error) => {
+                    for admitted in prepared.entries() {
+                        let _ = self.cancel(admitted.dispatch_id);
+                    }
+                    return Err(error);
+                }
+            };
+            prepared.entries[prepared.count] = Some(PreparedGpuDispatch {
+                request_id: entry.request_id,
+                dispatch_id,
+                dispatch: entry.dispatch,
+            });
+            prepared.count += 1;
+        }
+        Ok(prepared)
+    }
+
+    /// Cancels all still-live identities when a service rejects a prepared
+    /// graph before accepting ownership. Already completed IDs are ignored.
+    pub fn cancel_batch<const M: usize>(&mut self, batch: &PreparedGpuBatch<M>) {
+        for entry in batch.entries() {
+            if self.contains(entry.dispatch_id) {
+                let _ = self.cancel(entry.dispatch_id);
+            }
+        }
     }
 }
 
@@ -1854,6 +1944,25 @@ mod tests {
         let mut controls = ControlBufferTable::<1>::new();
         let control = controls.seal(&wire).unwrap();
         assert!(controls.verify(control, &wire).is_ok());
+
+        let mut too_small = DispatchTable::<1>::new();
+        assert!(matches!(
+            too_small.begin_batch(&batch, 100, 200),
+            Err(GpuError::DispatchTableFull)
+        ));
+        let recovered = too_small.begin(99, 100, 200).unwrap();
+        assert!(too_small.contains(recovered));
+
+        let mut watchdog = DispatchTable::<2>::new();
+        let prepared = watchdog.begin_batch(&batch, 100, 200).unwrap();
+        assert_eq!(prepared.len(), 2);
+        for entry in prepared.entries() {
+            assert!(watchdog.contains(entry.dispatch_id()));
+        }
+        watchdog.cancel_batch(&prepared);
+        for entry in prepared.entries() {
+            assert!(!watchdog.contains(entry.dispatch_id()));
+        }
 
         session.free(buffer).unwrap();
         let mut stale_batch = GpuDispatchBatch::<1>::new().unwrap();
