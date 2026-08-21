@@ -1702,6 +1702,7 @@ impl Dispatch {
             8 => self.validate_embedding_f32_schema(),
             11 => self.validate_rope_f32_schema(),
             12 => self.validate_rms_norm_f32_schema(),
+            27 => self.validate_embedding_q8_0_schema(),
             _ => Err(GpuError::UnsupportedKernelSchema),
         }
     }
@@ -1884,6 +1885,46 @@ impl Dispatch {
             || table.length == 0
             || table.length % row_bytes != 0
             || output.length != row_bytes
+            || u64::from(token) >= table.length / row_bytes
+            || self.grid != [dimension.div_ceil(256), 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: dimension,
+        })
+    }
+
+    fn validate_embedding_q8_0_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 2
+            || self.scalar_count != 3
+            || self.shared_memory != 0
+            || self.block != [256, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let table = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let output = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let token = self.nonnegative_i32_scalar(0)?;
+        let dimension = self.positive_i32_scalar(1)?;
+        self.positive_f32_scalar(2)?;
+        if dimension % 32 != 0 {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let row_bytes = u64::from(dimension / 32)
+            .checked_mul(34)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let output_bytes = u64::from(dimension)
+            .checked_mul(4)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        if table.mode != BufferMode::Read
+            || output.mode != BufferMode::Write
+            || table.offset % 2 != 0
+            || output.offset % 4 != 0
+            || table.length == 0
+            || table.length % row_bytes != 0
+            || output.length != output_bytes
             || u64::from(token) >= table.length / row_bytes
             || self.grid != [dimension.div_ceil(256), 1, 1]
         {
@@ -2665,6 +2706,72 @@ mod tests {
             invalid_frequency.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
+    }
+
+    #[test]
+    fn executor_bounds_q8_embedding_rows_and_scale() {
+        let accesses = [
+            BufferAccess::new(
+                BufferId {
+                    slot: 0,
+                    generation: 1,
+                },
+                0,
+                680,
+                BufferMode::Read,
+            ),
+            BufferAccess::new(
+                BufferId {
+                    slot: 1,
+                    generation: 1,
+                },
+                0,
+                256,
+                BufferMode::Write,
+            ),
+        ];
+        let scalars = [
+            ScalarArg::i32(9),
+            ScalarArg::i32(64),
+            ScalarArg::f32_bits(8.0f32.to_bits()),
+        ];
+        let dispatch = Dispatch::new_with_scalars(
+            KernelId::new(27).unwrap(),
+            [1, 1, 1],
+            [256, 1, 1],
+            0,
+            &accesses,
+            &scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            dispatch.validate_executor_schema().unwrap().element_count(),
+            64
+        );
+
+        for invalid in [
+            [ScalarArg::i32(10), scalars[1], scalars[2]],
+            [scalars[0], ScalarArg::i32(63), scalars[2]],
+            [
+                scalars[0],
+                scalars[1],
+                ScalarArg::f32_bits(0.0f32.to_bits()),
+            ],
+        ] {
+            let invalid = Dispatch::new_with_scalars(
+                KernelId::new(27).unwrap(),
+                [1, 1, 1],
+                [256, 1, 1],
+                0,
+                &accesses,
+                &invalid,
+            )
+            .unwrap();
+            assert_eq!(
+                invalid.validate_executor_schema(),
+                Err(GpuError::InvalidKernelSchema)
+            );
+        }
     }
 
     #[test]

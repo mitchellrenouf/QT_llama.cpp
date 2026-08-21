@@ -171,8 +171,13 @@ integer; head dimension is positive and even; head count is positive; frequency
 base and scale are finite positive f32 values. Their product determines the
 exact read/write buffer length, while head count and half-head width determine
 the only accepted grid and block geometry.
+Kernel ID 27 validates Q8_0 embedding rows using the kernel's exact 34-byte
+storage per 32 values. Dimension must be divisible by 32, token must be inside
+the row count derived from the table range, output must be one exact f32 row,
+and output scale must be finite and positive. Alignment, permissions, grid,
+block size, and shared-memory policy are fixed.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 19 schemas and the
+registry alone cannot make it executable. The remaining 18 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot

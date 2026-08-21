@@ -156,6 +156,8 @@ enforcing their distinct 18-byte and 34-byte quantized blocks and launch tiles.
 SwiGLU and GeGLU reuse the exact three-f32-buffer elementwise proof. The f32
 embedding schema additionally proves that the signed nonnegative token is
 inside the table row count and that its dimension equals the exact output row.
+The Q8_0 embedding variant additionally requires dimensions divisible by 32,
+34-byte quantized blocks, and a finite positive output scale.
 RMS normalization represents an absent optional weight structurally rather
 than with a guest pointer, binds dimensions to exact tensor lengths, and
 requires epsilon to be a finite positive f32.
@@ -172,7 +174,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 19
+guest execution. Platform cache-coherence validation, the remaining 18
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML
