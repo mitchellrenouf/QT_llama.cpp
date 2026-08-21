@@ -23,6 +23,8 @@ type DeleteVirtualProcessor = unsafe extern "system" fn(Handle, u32) -> Hresult;
 type RunVirtualProcessor = unsafe extern "system" fn(Handle, u32, *mut c_void, u32) -> Hresult;
 type SetVirtualProcessorRegisters =
     unsafe extern "system" fn(Handle, u32, *const u32, u32, *const RegisterValue) -> Hresult;
+type GetVirtualProcessorRegisters =
+    unsafe extern "system" fn(Handle, u32, *const u32, u32, *mut RegisterValue) -> Hresult;
 type RequestInterrupt = unsafe extern "system" fn(Handle, *const InterruptControl, u32) -> Hresult;
 
 const PROCESSOR_COUNT: u32 = 0x1fff;
@@ -42,13 +44,17 @@ const REG_ES: u32 = 0x12;
 const REG_CS: u32 = 0x13;
 const REG_SS: u32 = 0x14;
 const REG_DS: u32 = 0x15;
+const REG_GDTR: u32 = 0x1b;
 const REG_CR0: u32 = 0x1000;
 const REG_CR3: u32 = 0x1002;
 const REG_CR4: u32 = 0x1003;
 const REG_EFER: u32 = 0x2001;
+const REG_PAT: u32 = 0x2004;
 const CR0_LONG_MODE: u64 = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 16) | (1 << 31);
 const CR4_PAE: u64 = 1 << 5;
-const EFER_LONG_MODE_NX: u64 = (1 << 8) | (1 << 11);
+const EFER_ENABLE_LONG_MODE_NX: u64 = (1 << 8) | (1 << 11);
+const EFER_ACTIVE_LONG_MODE_NX: u64 = EFER_ENABLE_LONG_MODE_NX | (1 << 10);
+const RESET_PAT: u64 = 0x0007_0406_0007_0406;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -87,6 +93,7 @@ struct Api {
     delete_vp: DeleteVirtualProcessor,
     run_vp: RunVirtualProcessor,
     set_registers: SetVirtualProcessorRegisters,
+    get_registers: GetVirtualProcessorRegisters,
     request_interrupt: RequestInterrupt,
 }
 
@@ -115,6 +122,7 @@ impl WhpSystem {
                 delete_vp: resolve(module, b"WHvDeleteVirtualProcessor\0")?,
                 run_vp: resolve(module, b"WHvRunVirtualProcessor\0")?,
                 set_registers: resolve(module, b"WHvSetVirtualProcessorRegisters\0")?,
+                get_registers: resolve(module, b"WHvGetVirtualProcessorRegisters\0")?,
                 request_interrupt: resolve(module, b"WHvRequestInterrupt\0")?,
             }
         };
@@ -371,6 +379,7 @@ impl PreparedWhpPartition<'_> {
         entry: u64,
         stack_pointer: u64,
         page_table: u64,
+        descriptor_table: u64,
         handoff: u64,
         handoff_bytes: u64,
     ) -> Result<(), WhpError> {
@@ -378,6 +387,8 @@ impl PreparedWhpPartition<'_> {
             || !canonical(stack_pointer)
             || !canonical(handoff)
             || !page_table.is_multiple_of(4096)
+            || !descriptor_table.is_multiple_of(4096)
+            || !canonical(descriptor_table)
             || stack_pointer & 0xf != 8
             || handoff_bytes == 0
             || handoff.checked_add(handoff_bytes).is_none()
@@ -385,23 +396,25 @@ impl PreparedWhpPartition<'_> {
             return Err(WhpError::InvalidRegisterState);
         }
         let names = [
-            REG_RIP, REG_RSP, REG_RFLAGS, REG_RCX, REG_RDX, REG_CR0, REG_CR3, REG_CR4, REG_EFER,
-            REG_CS, REG_SS, REG_DS, REG_ES,
+            REG_RIP, REG_RSP, REG_RFLAGS, REG_RCX, REG_RDX, REG_CS, REG_SS, REG_DS, REG_ES,
+            REG_GDTR, REG_CR0, REG_CR3, REG_CR4, REG_EFER, REG_PAT,
         ];
-        let mut values = [RegisterValue::zero(); 13];
+        let mut values = [RegisterValue::zero(); 15];
         values[0] = RegisterValue::scalar(entry);
         values[1] = RegisterValue::scalar(stack_pointer);
         values[2] = RegisterValue::scalar(2);
         values[3] = RegisterValue::scalar(handoff);
         values[4] = RegisterValue::scalar(handoff_bytes);
-        values[5] = RegisterValue::scalar(CR0_LONG_MODE);
-        values[6] = RegisterValue::scalar(page_table);
-        values[7] = RegisterValue::scalar(CR4_PAE);
-        values[8] = RegisterValue::scalar(EFER_LONG_MODE_NX);
-        values[9] = RegisterValue::segment(0x8, 0xa09b);
-        for value in &mut values[10..] {
+        values[5] = RegisterValue::segment(0x8, 0xa09b);
+        for value in &mut values[6..9] {
             *value = RegisterValue::segment(0x10, 0xc093);
         }
+        values[9] = RegisterValue::table(descriptor_table, 15);
+        values[10] = RegisterValue::scalar(CR0_LONG_MODE);
+        values[11] = RegisterValue::scalar(page_table);
+        values[12] = RegisterValue::scalar(CR4_PAE);
+        values[13] = RegisterValue::scalar(EFER_ACTIVE_LONG_MODE_NX);
+        values[14] = RegisterValue::scalar(RESET_PAT);
         check(unsafe {
             (self.api.set_registers)(
                 self.partition.as_ptr(),
@@ -410,7 +423,34 @@ impl PreparedWhpPartition<'_> {
                 names.len() as u32,
                 values.as_ptr(),
             )
-        })
+        })?;
+        let observed = self.read_registers(names)?;
+        let mut expected = values;
+        expected[13] = observed[13];
+        if observed[13].low & EFER_ENABLE_LONG_MODE_NX != EFER_ENABLE_LONG_MODE_NX
+            || observed[13].low & !EFER_ACTIVE_LONG_MODE_NX != 0
+            || observed != expected
+        {
+            return Err(WhpError::InvalidRegisterState);
+        }
+        Ok(())
+    }
+
+    fn read_registers<const N: usize>(
+        &self,
+        names: [u32; N],
+    ) -> Result<[RegisterValue; N], WhpError> {
+        let mut values = [RegisterValue::zero(); N];
+        check(unsafe {
+            (self.api.get_registers)(
+                self.partition.as_ptr(),
+                0,
+                names.as_ptr(),
+                N as u32,
+                values.as_mut_ptr(),
+            )
+        })?;
+        Ok(values)
     }
 }
 
@@ -453,7 +493,7 @@ struct OwnedMapping {
 }
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct RegisterValue {
     low: u64,
     high: u64,
@@ -483,6 +523,13 @@ impl RegisterValue {
         Self {
             low: 0,
             high: 0xfffff | ((selector as u64) << 32) | ((attributes as u64) << 48),
+        }
+    }
+
+    const fn table(base: u64, limit: u16) -> Self {
+        Self {
+            low: (limit as u64) << 48,
+            high: base,
         }
     }
 }
@@ -579,6 +626,9 @@ mod tests {
                 partition.inject_interrupt(255),
                 Err(WhpError::InvalidInterrupt)
             );
+            partition
+                .configure_long_mode(0x20_0000, 0x30_0ff8, 0x10_0000, 0x11_0000, 0x40_0000, 240)
+                .unwrap();
         }
     }
 }

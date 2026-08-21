@@ -39,7 +39,7 @@ impl WhpLaunchLayout {
         stack_pages: u64,
         user: bool,
     ) -> Result<Self, WhpError> {
-        if table_pages < 4
+        if table_pages < 5
             || stack_pages == 0
             || [
                 table_physical,
@@ -145,6 +145,7 @@ impl WhpSystem {
             (layout.stack_physical, stack_bytes),
         ])?;
         validate_ranges(&[
+            (layout.table_physical, PAGE_SIZE),
             (layout.image_virtual, image_bytes),
             (layout.handoff_virtual, handoff_bytes),
             (layout.stack_virtual, stack_bytes),
@@ -194,6 +195,7 @@ impl WhpSystem {
             entry,
             stack,
             root.get(),
+            layout.table_physical,
             layout.handoff_virtual,
             handoff.len() as u64,
         )?;
@@ -211,7 +213,16 @@ fn build_page_tables(
     layout: WhpLaunchLayout,
     handoff_bytes: u64,
 ) -> Result<PhysAddr, WhpError> {
-    let store = WhpPageTableStore::new(partition, layout.table_physical, layout.table_pages)?;
+    partition.write_guest(layout.table_physical, &0u64.to_le_bytes())?;
+    partition.write_guest(
+        layout.table_physical + 8,
+        &0x00af_9b00_0000_ffffu64.to_le_bytes(),
+    )?;
+    let table_start = layout
+        .table_physical
+        .checked_add(PAGE_SIZE)
+        .ok_or(WhpError::MemoryOverflow)?;
+    let store = WhpPageTableStore::new(partition, table_start, layout.table_pages - 1)?;
     let mut tables = PageTableBuilder::new(store).map_err(|_| WhpError::InvalidRegisterState)?;
     map_pe(
         &mut tables,
@@ -234,6 +245,17 @@ fn build_page_tables(
                 handoff_permissions,
             )
             .map_err(|_| WhpError::InvalidMapping)?,
+        )
+        .map_err(|_| WhpError::PageTable)?;
+    tables
+        .map_page(
+            VirtAddr::new(layout.table_physical).map_err(|_| WhpError::InvalidMapping)?,
+            PhysAddr::new(layout.table_physical).map_err(|_| WhpError::InvalidMapping)?,
+            if layout.user {
+                PagePermissions::USER_READ
+            } else {
+                PagePermissions::KERNEL_READ
+            },
         )
         .map_err(|_| WhpError::PageTable)?;
     let stack_permissions = if layout.user {

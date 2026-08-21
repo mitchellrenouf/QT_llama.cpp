@@ -546,9 +546,15 @@ are rejected before the host call. `PreparedWhpGuest` now implements the same
 `VmBackend` run, bounded-copy, and interrupt contract as KVM and rejects every
 vCPU identity except its single configured vCPU. Long-mode state also sets the
 architectural MP, ET, and NE control bits and a 32/64-bit data-segment stack
-width instead of relying on reset-state defaults. A direct execution probe
-currently exits on a low guest-memory access before reaching its test `HLT`;
-that result is retained as a blocker rather than being reported as a boot.
+width instead of relying on reset-state defaults. Launch now reserves a fifth
+isolated page for a canonical two-entry GDT, maps that descriptor page read-only
+and NX, supplies GDTR and the reset PAT value, and reads back all fifteen
+critical general, segment, table, control, and MSR values after WHP accepts the
+state. The readback tolerates only WHP's documented derivation of EFER.LMA;
+every requested bit and all other values must match exactly. A direct execution
+probe still exits on the real-mode exception-13 vector address (`0x34`) before
+reaching its test `HLT`; that result is retained as a blocker rather than being
+reported as a boot.
 A successful signed guest execution therefore remains pending, and this
 milestone does not claim Hyper-V bootability.
 
