@@ -1,3 +1,5 @@
+use crate::{FrameAllocator, MemoryError, PhysAddr};
+
 const DOS_MAGIC: u16 = 0x5a4d;
 const PE_SIGNATURE: u32 = 0x0000_4550;
 const MACHINE_X86_64: u16 = 0x8664;
@@ -40,6 +42,28 @@ pub struct PeLoadRegion {
     readable: bool,
     writable: bool,
     executable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeAllocatedRegion {
+    load: PeLoadRegion,
+    physical_start: PhysAddr,
+}
+
+impl PeAllocatedRegion {
+    pub const fn load(self) -> PeLoadRegion {
+        self.load
+    }
+    pub const fn physical_start(self) -> PhysAddr {
+        self.physical_start
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeAllocationError {
+    InvalidPlan(PeError),
+    Memory(MemoryError),
+    OutputTooSmall,
 }
 
 impl PeLoadRegion {
@@ -280,6 +304,33 @@ impl<'a> PeImage<'a> {
             writable: section.writable(),
             executable: section.executable(),
         })
+    }
+    /// Reserves physical backing for every header/section run. Any allocation
+    /// failure is boot-fatal because the monotonic early allocator deliberately
+    /// does not roll back or reuse partially reserved frames.
+    pub fn allocate_load_regions(
+        &self,
+        allocator: &mut FrameAllocator<'_>,
+        output: &mut [Option<PeAllocatedRegion>],
+    ) -> Result<usize, PeAllocationError> {
+        let count = self.load_region_count();
+        if output.len() < count {
+            return Err(PeAllocationError::OutputTooSmall);
+        }
+        output.fill(None);
+        for (index, slot) in output[..count].iter_mut().enumerate() {
+            let load = self
+                .load_region(index)
+                .map_err(PeAllocationError::InvalidPlan)?;
+            let physical_start = allocator
+                .allocate_contiguous(load.pages as u64, 1)
+                .map_err(PeAllocationError::Memory)?;
+            *slot = Some(PeAllocatedRegion {
+                load,
+                physical_start,
+            });
+        }
+        Ok(count)
     }
     /// Materializes the preferred-base image without allocation. The buffer
     /// must be exactly `SizeOfImage`; exact sizing prevents stale adjacent
@@ -547,6 +598,7 @@ fn read_u64(bytes: &[u8], at: usize) -> Result<u64, PeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MemoryKind, MemoryMap, MemoryRegion};
 
     fn valid_pe() -> [u8; 1024] {
         let mut pe = [0u8; 1024];
@@ -695,6 +747,25 @@ mod tests {
         assert_eq!(
             fixed.materialize_at(&mut loaded[..0x2000], 0x0000_0001_4001_0000),
             Err(PeError::RelocationsRequired)
+        );
+    }
+
+    #[test]
+    fn allocates_one_contiguous_run_per_load_region() {
+        let encoded = valid_pe();
+        let image = PeImage::parse(&encoded).unwrap();
+        let memory = [MemoryRegion::new(PhysAddr::new(0).unwrap(), 4, MemoryKind::Free).unwrap()];
+        let mut allocator = FrameAllocator::new(MemoryMap::new(&memory).unwrap());
+        let mut output = [None; MAX_PE_SECTIONS + 1];
+        assert_eq!(
+            image.allocate_load_regions(&mut allocator, &mut output),
+            Ok(2)
+        );
+        assert_eq!(output[0].unwrap().physical_start().get(), 0);
+        assert_eq!(output[1].unwrap().physical_start().get(), 0x1000);
+        assert_eq!(
+            image.allocate_load_regions(&mut allocator, &mut output[..1]),
+            Err(PeAllocationError::OutputTooSmall)
         );
     }
 }

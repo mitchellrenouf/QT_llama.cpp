@@ -177,8 +177,16 @@ validated before loading, capped at 65,536 entries, and accept only padding and
 x86-64 `DIR64` relocations; malformed blocks, unsupported relocation types,
 out-of-image targets, arithmetic overflow, and rebasing a fixed image fail
 closed. PE imports are rejected because they are not part of the standalone
-MRML ABI. Page allocation, page-table installation, and transfer to a
-separately loaded image remain pending.
+MRML ABI. Page-table installation and transfer to a separately loaded image
+remain pending.
+
+The early frame allocator now reserves aligned physically contiguous runs
+without crossing normalized firmware regions. PE admission can consume that
+allocator to produce a fixed-capacity physical load plan containing one run for
+the read-only NX headers and one run per section. Alignment padding and partial
+allocations are never recycled during boot, preventing stale-frame aliasing;
+failure is therefore fatal rather than rolled back. Actual architecture page-
+table installation and the final control transfer remain pending.
 
 Host timing/output code moved to the `mrml-kernel-bench` crate. The UEFI target
 dependency graph is now only `mrml-uefi -> mrml-kernel -> mrml-crypto`.

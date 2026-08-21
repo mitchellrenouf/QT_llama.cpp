@@ -130,6 +130,50 @@ impl<'a> FrameAllocator<'a> {
         }
         Err(MemoryError::OutOfMemory)
     }
+
+    /// Allocates one physically contiguous run without crossing a normalized
+    /// firmware region. Skipped alignment padding is intentionally consumed:
+    /// early boot never frees or reuses frames, preventing alias ambiguity.
+    pub fn allocate_contiguous(
+        &mut self,
+        pages: u64,
+        alignment_pages: u64,
+    ) -> Result<PhysAddr, MemoryError> {
+        if pages == 0 {
+            return Err(MemoryError::InvalidLength);
+        }
+        if alignment_pages == 0 || !alignment_pages.is_power_of_two() {
+            return Err(MemoryError::Unaligned);
+        }
+        while let Some(region) = self.map.regions.get(self.region_index).copied() {
+            if region.kind != MemoryKind::Free {
+                self.region_index += 1;
+                self.page_index = 0;
+                continue;
+            }
+            let aligned = self
+                .page_index
+                .checked_add(alignment_pages - 1)
+                .map(|value| value & !(alignment_pages - 1))
+                .ok_or(MemoryError::Overflow)?;
+            let end = aligned.checked_add(pages).ok_or(MemoryError::Overflow)?;
+            if end <= region.pages {
+                let offset = aligned
+                    .checked_mul(PAGE_SIZE)
+                    .ok_or(MemoryError::Overflow)?;
+                let address = region
+                    .start
+                    .get()
+                    .checked_add(offset)
+                    .ok_or(MemoryError::Overflow)?;
+                self.page_index = end;
+                return PhysAddr::new(address);
+            }
+            self.region_index += 1;
+            self.page_index = 0;
+        }
+        Err(MemoryError::OutOfMemory)
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +219,26 @@ mod tests {
         assert_eq!(allocator.allocate().unwrap().get(), 0x3000);
         assert_eq!(allocator.allocate().unwrap().get(), 0x5000);
         assert_eq!(allocator.allocate(), Err(MemoryError::OutOfMemory));
+    }
+
+    #[test]
+    fn contiguous_allocator_aligns_and_never_crosses_regions() {
+        let regions = [
+            region(0, 3, MemoryKind::Free),
+            region(0x3000, 1, MemoryKind::Reserved),
+            region(0x4000, 8, MemoryKind::Free),
+        ];
+        let mut allocator = FrameAllocator::new(MemoryMap::new(&regions).unwrap());
+        assert_eq!(allocator.allocate().unwrap().get(), 0);
+        assert_eq!(allocator.allocate_contiguous(3, 2).unwrap().get(), 0x4000);
+        assert_eq!(allocator.allocate_contiguous(2, 4).unwrap().get(), 0x8000);
+        assert_eq!(
+            allocator.allocate_contiguous(1, 3),
+            Err(MemoryError::Unaligned)
+        );
+        assert_eq!(
+            allocator.allocate_contiguous(8, 1),
+            Err(MemoryError::OutOfMemory)
+        );
     }
 }

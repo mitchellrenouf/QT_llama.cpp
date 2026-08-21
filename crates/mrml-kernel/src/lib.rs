@@ -44,8 +44,8 @@ pub use memory::{
     FrameAllocator, MemoryError, MemoryKind, MemoryMap, MemoryRegion, PAGE_SIZE, PhysAddr,
 };
 pub use pe::{
-    MAX_PE_IMAGE_BYTES, MAX_PE_RELOCATIONS, MAX_PE_SECTIONS, PeError, PeImage, PeLoadRegion,
-    PeSection,
+    MAX_PE_IMAGE_BYTES, MAX_PE_RELOCATIONS, MAX_PE_SECTIONS, PeAllocatedRegion, PeAllocationError,
+    PeError, PeImage, PeLoadRegion, PeSection,
 };
 pub use platform::{Architecture, Hypervisor, IsolationClass, VmRole};
 pub use policy::{
