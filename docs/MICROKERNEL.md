@@ -132,7 +132,14 @@ read-only view of its build-embedded PTX and a bounded ID-to-symbol lookup for
 all 28 compiled kernels. A non-hardware regression proves every accepted ID is
 unique, nonempty, NUL-free, and identical to the runtime's fast lookup table,
 while ID 28 and arbitrary names are rejected. This closes registry drift; it
-does not yet implement the service-side argument schemas or graph launcher.
+does not by itself implement the service-side argument schemas or graph launcher.
+The first typed executor schema is implemented for kernel ID 7 (`add_f32`). It
+derives the scalar element count from three equal nonempty f32 buffer ranges,
+requires read/read/write permissions and four-byte alignment, fixes the block
+to 256 threads, verifies the corresponding grid, and forbids shared memory.
+All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
+registry alone cannot make it executable. The remaining 27 schemas and the
+actual CUDA launch adapter are pending.
 
 ## Portability and boot
 

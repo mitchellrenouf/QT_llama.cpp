@@ -140,14 +140,19 @@ whose digest exactly matches the PTX embedded in the service. Wrong artifact
 types or changed PTX fail closed. The native CUDA runtime now exposes that
 compiled PTX only as a read-only byte slice for hashing and exposes the exact
 28-entry kernel registry only through bounded numeric lookup. It does not add
-an arbitrary module loader or guest-controlled symbol lookup. Also implemented
-are the dispatch watchdog and adversarial unit tests. The cross-VM
+an arbitrary module loader or guest-controlled symbol lookup. A fail-closed
+executor ABI validator is implemented for `add_f32`: it requires exactly three
+equal, nonempty, four-byte-aligned ranges with read/read/write rights, fixed
+launch geometry, and no dynamic shared memory. The other kernel schemas remain
+disabled until specified. Also implemented are the dispatch watchdog and
+adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, host CUDA executor,
-service-side queue execution, CUDA graph lowering, IOMMU plumbing,
+guest execution. Platform cache-coherence validation, the remaining 27
+executor schemas, host CUDA executor, service-side queue execution, CUDA graph
+lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
 to approach it for long-running LLM inference by avoiding copies, per-kernel VM

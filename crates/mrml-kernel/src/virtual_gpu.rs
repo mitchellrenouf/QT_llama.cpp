@@ -50,6 +50,8 @@ pub enum GpuError {
     InvalidControlBuffer,
     ControlBufferChanged,
     UntrustedKernelBundle,
+    UnsupportedKernelSchema,
+    InvalidKernelSchema,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1193,6 +1195,25 @@ pub struct Dispatch {
     access_count: u8,
 }
 
+/// Proof that a dispatch matches a kernel-specific executor ABI. Construction
+/// is deliberately fail-closed: kernels without a complete schema cannot be
+/// handed to the host CUDA launcher.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedKernelLaunch {
+    dispatch: Dispatch,
+    element_count: u32,
+}
+
+impl ValidatedKernelLaunch {
+    pub const fn dispatch(&self) -> &Dispatch {
+        &self.dispatch
+    }
+
+    pub const fn element_count(&self) -> u32 {
+        self.element_count
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BatchedDispatch {
     request_id: u64,
@@ -1534,6 +1555,48 @@ impl Dispatch {
             .copied()
     }
 
+    /// Validate the pointer-free dispatch against the exact ABI and launch
+    /// geometry supported by the service executor. Schemas are enabled one at
+    /// a time; an otherwise valid kernel ID is not sufficient for execution.
+    pub fn validate_executor_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        match self.kernel.get() {
+            7 => self.validate_add_f32_schema(),
+            _ => Err(GpuError::UnsupportedKernelSchema),
+        }
+    }
+
+    fn validate_add_f32_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 3 || self.shared_memory != 0 || self.block != [256, 1, 1] {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let a = self.accesses[0].ok_or(GpuError::InvalidKernelSchema)?;
+        let b = self.accesses[1].ok_or(GpuError::InvalidKernelSchema)?;
+        let output = self.accesses[2].ok_or(GpuError::InvalidKernelSchema)?;
+        if a.mode != BufferMode::Read
+            || b.mode != BufferMode::Read
+            || output.mode != BufferMode::Write
+            || a.length == 0
+            || a.length != b.length
+            || a.length != output.length
+            || a.offset % 4 != 0
+            || b.offset % 4 != 0
+            || output.offset % 4 != 0
+            || a.length % 4 != 0
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let elements = a.length / 4;
+        let element_count = u32::try_from(elements).map_err(|_| GpuError::InvalidKernelSchema)?;
+        let blocks = element_count.div_ceil(256).max(1);
+        if self.grid != [blocks, 1, 1] {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count,
+        })
+    }
+
     /// Canonical fixed-size dispatch representation. Unused access slots and
     /// all reserved bytes are zero, preventing alternate encodings from
     /// reaching the host CUDA executor.
@@ -1703,6 +1766,73 @@ mod tests {
             Dispatch::new(kernel, [1, 1, 1], [32, 1, 1], MAX_SHARED_MEMORY + 1, &[]),
             Err(GpuError::ExcessiveSharedMemory)
         ));
+    }
+
+    #[test]
+    fn executor_accepts_only_the_exact_add_f32_abi() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let accesses = [
+            BufferAccess::new(id(0), 0, 4096, BufferMode::Read),
+            BufferAccess::new(id(1), 0, 4096, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 4096, BufferMode::Write),
+        ];
+        let dispatch = Dispatch::new(
+            KernelId::new(7).unwrap(),
+            [4, 1, 1],
+            [256, 1, 1],
+            0,
+            &accesses,
+        )
+        .unwrap();
+        let launch = dispatch.validate_executor_schema().unwrap();
+        assert_eq!(launch.element_count(), 1024);
+        assert_eq!(launch.dispatch(), &dispatch);
+
+        let wrong_mode = [
+            accesses[0],
+            accesses[1],
+            BufferAccess::new(id(2), 0, 4096, BufferMode::ReadWrite),
+        ];
+        let wrong_mode = Dispatch::new(
+            KernelId::new(7).unwrap(),
+            [4, 1, 1],
+            [256, 1, 1],
+            0,
+            &wrong_mode,
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_mode.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let wrong_grid = Dispatch::new(
+            KernelId::new(7).unwrap(),
+            [5, 1, 1],
+            [256, 1, 1],
+            0,
+            &accesses,
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_grid.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+        let unsupported = Dispatch::new(
+            KernelId::new(0).unwrap(),
+            [1, 1, 1],
+            [128, 1, 1],
+            0,
+            &accesses,
+        )
+        .unwrap();
+        assert_eq!(
+            unsupported.validate_executor_schema(),
+            Err(GpuError::UnsupportedKernelSchema)
+        );
     }
 
     #[test]
