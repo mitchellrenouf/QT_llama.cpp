@@ -523,7 +523,9 @@ deterministic fail-stop handling, not yet recoverable fault dispatch. A signed
 kernel handler while retaining the loader-created CR3 and kernel GDT/IDT bases.
 Descriptor construction now lives in the reusable x86_64 architecture module
 rather than being duplicated in the PE image. It validates canonical handler
-addresses, ring-zero long-mode selectors, IST indices, and gate privilege.
+addresses and table ranges, a ring-zero GDT selector that names an existing
+entry, the exact 256-gate IDT size, 16-bit descriptor limits, IST indices, and
+gate privilege before writing memory or executing `LGDT` or `LIDT`.
 The architecture module now also defines the exact 176-byte trap-frame contract
 for the forthcoming assembly entry stubs. Its fail-closed dispatcher validates
 the exception vector, privilege transition, canonical RIP and user RSP, fixed
@@ -544,11 +546,23 @@ dispatcher's exact vector-6 proof through diagnostic port `0x4d53`, resumed,
 and halted cleanly in 156 microseconds. This proves the new IDT gate, assembly
 normalization, and checked Rust dispatch path execute in the booted kernel; it
 does not yet prove task recovery.
-and table ranges, a ring-zero GDT selector that names an existing entry, the
-exact 256-gate IDT size, and 16-bit descriptor limits before writing memory or
-executing `LGDT` or `LIDT`. Unit tests check the exact 16-byte gate encoding and
-prove malformed pointers, sizes, handlers, and selectors fail before privileged
-instructions. The kernel image treats any installation error as a fail-stop.
+
+The image-owned GDT now also contains ring-three code and data descriptors and
+an exact 104-byte x86-64 task-state segment. Initialization validates canonical,
+nonzero, 16-byte-aligned `RSP0` and IST1 stack tops, writes the two-slot available
+TSS descriptor before loading the GDT, loads `TR`, and disables the TSS I/O
+bitmap by placing its base immediately beyond the segment limit. Vector 8 alone
+uses IST1, so a double fault does not depend on the interrupted stack. Windows
+and Linux unit tests verify the packed offsets and descriptor encoding. A fresh
+signed nested-KVM `fault-probe` reached its expected vector-6 halt after `LTR`
+in 157 microseconds (`verify=694us`, `prepare=1156us`, `total=4830us`). The
+current 16 KiB entry and double-fault stacks are page-aligned static bring-up
+storage but do not yet have unmapped guard pages; they must be replaced with
+guarded per-CPU allocations before user execution or production claims.
+
+Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
+sizes, handlers, and selectors fail before privileged instructions. The kernel
+image treats any installation error as a fail-stop.
 Nested KVM initially reported a triple fault after `UD2`. A bounded post-exit
 snapshot and four-level hardware page walk proved that CR2 named the valid,
 present GDT code descriptor and that the vector-6 gate was exact. The descriptor

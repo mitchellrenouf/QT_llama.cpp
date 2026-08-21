@@ -9,12 +9,115 @@ pub enum DescriptorError {
     InvalidSelectorDescriptor,
     InvalidIst,
     InvalidPrivilege,
+    InvalidTaskState,
 }
 
 #[repr(C, packed)]
 struct DescriptorPointer {
     limit: u16,
     base: u64,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C, packed)]
+pub struct TaskStateSegment {
+    reserved0: u32,
+    rsp: [u64; 3],
+    reserved1: u64,
+    ist: [u64; 7],
+    reserved2: u64,
+    reserved3: u16,
+    io_map_base: u16,
+}
+
+#[repr(C, align(16))]
+pub struct AlignedTaskState(pub TaskStateSegment);
+
+impl TaskStateSegment {
+    pub fn new(rsp0: u64, double_fault_stack: u64) -> Result<Self, DescriptorError> {
+        if !valid_stack(rsp0) || !valid_stack(double_fault_stack) {
+            return Err(DescriptorError::InvalidTaskState);
+        }
+        Ok(Self {
+            reserved0: 0,
+            rsp: [rsp0, 0, 0],
+            reserved1: 0,
+            ist: [double_fault_stack, 0, 0, 0, 0, 0, 0],
+            reserved2: 0,
+            reserved3: 0,
+            io_map_base: core::mem::size_of::<Self>() as u16,
+        })
+    }
+
+    pub const fn zeroed() -> Self {
+        Self {
+            reserved0: 0,
+            rsp: [0; 3],
+            reserved1: 0,
+            ist: [0; 7],
+            reserved2: 0,
+            reserved3: 0,
+            io_map_base: core::mem::size_of::<Self>() as u16,
+        }
+    }
+}
+
+impl AlignedTaskState {
+    pub const fn zeroed() -> Self {
+        Self(TaskStateSegment::zeroed())
+    }
+}
+
+pub fn task_state_descriptor(task_state: &TaskStateSegment) -> Result<[u64; 2], DescriptorError> {
+    let base = task_state as *const TaskStateSegment as u64;
+    if !canonical(base) {
+        return Err(DescriptorError::InvalidTaskState);
+    }
+    let limit = (core::mem::size_of::<TaskStateSegment>() - 1) as u64;
+    let low = (limit & 0xffff)
+        | ((base & 0x00ff_ffff) << 16)
+        | (0x89 << 40)
+        | (((limit >> 16) & 0xf) << 48)
+        | (((base >> 24) & 0xff) << 56);
+    Ok([low, base >> 32])
+}
+
+/// Writes a validated two-slot 64-bit TSS descriptor before the GDT is loaded.
+///
+/// # Safety
+///
+/// `gdt` must reference `gdt_entries` writable entries and must not be live on
+/// another CPU while it is modified.
+pub unsafe fn write_task_state_descriptor(
+    gdt: *mut u64,
+    gdt_entries: usize,
+    selector: u16,
+    task_state: &TaskStateSegment,
+) -> Result<(), DescriptorError> {
+    let slot = usize::from(selector >> 3);
+    if gdt.is_null() || selector == 0 || selector & 7 != 0 || slot + 1 >= gdt_entries {
+        return Err(DescriptorError::InvalidTaskState);
+    }
+    let descriptor = task_state_descriptor(task_state)?;
+    unsafe {
+        gdt.add(slot).write(descriptor[0]);
+        gdt.add(slot + 1).write(descriptor[1]);
+    }
+    Ok(())
+}
+
+/// Loads a previously validated available 64-bit TSS descriptor.
+///
+/// # Safety
+///
+/// The current GDT must contain the live descriptor at `selector` and the
+/// referenced TSS and its stacks must remain mapped and writable.
+pub unsafe fn load_task_register(selector: u16) -> Result<(), DescriptorError> {
+    if selector == 0 || selector & 7 != 0 {
+        return Err(DescriptorError::InvalidTaskState);
+    }
+    unsafe { asm!("ltr {0:x}", in(reg) selector, options(nostack, preserves_flags)) };
+    Ok(())
 }
 
 #[repr(C)]
@@ -175,7 +278,8 @@ pub unsafe fn install_exception_tables(
     let mut exceptions = [InterruptGate::MISSING; 32];
     for (vector, handler) in handlers.iter().copied().enumerate() {
         let privilege = u8::from(vector == 3 || vector == 4) * 3;
-        exceptions[vector] = InterruptGate::interrupt(handler, selector, 0, privilege)?;
+        let ist = u8::from(vector == 8);
+        exceptions[vector] = InterruptGate::interrupt(handler, selector, ist, privilege)?;
     }
     for (vector, gate) in exceptions.iter().copied().enumerate() {
         unsafe { idt.add(vector).write(gate) };
@@ -252,6 +356,10 @@ unsafe fn load_tables(
 
 const fn canonical(address: u64) -> bool {
     ((address << 16) as i64 >> 16) as u64 == address
+}
+
+const fn valid_stack(address: u64) -> bool {
+    address != 0 && address.is_multiple_of(16) && canonical(address)
 }
 
 const fn valid_long_mode_code_descriptor(descriptor: u64) -> bool {
@@ -374,5 +482,39 @@ mod tests {
             Err(DescriptorError::InvalidHandler)
         );
         assert!(idt.iter().all(|gate| *gate == InterruptGate::MISSING));
+    }
+
+    #[test]
+    fn task_state_layout_and_descriptor_are_exact() {
+        assert_eq!(core::mem::size_of::<TaskStateSegment>(), 104);
+        assert_eq!(core::mem::offset_of!(TaskStateSegment, rsp), 4);
+        assert_eq!(core::mem::offset_of!(TaskStateSegment, ist), 36);
+        assert_eq!(core::mem::offset_of!(TaskStateSegment, io_map_base), 102);
+        assert_eq!(core::mem::align_of::<AlignedTaskState>(), 16);
+        assert_eq!(
+            TaskStateSegment::new(0, 0x1000).err(),
+            Some(DescriptorError::InvalidTaskState)
+        );
+        assert_eq!(
+            TaskStateSegment::new(0x1008, 0x2000).err(),
+            Some(DescriptorError::InvalidTaskState)
+        );
+        let task = TaskStateSegment::new(0x1000, 0x2000).unwrap();
+        let descriptor = task_state_descriptor(&task).unwrap();
+        let base = &task as *const TaskStateSegment as u64;
+        assert_eq!(descriptor[0] & 0xffff, 103);
+        assert_eq!((descriptor[0] >> 40) & 0xff, 0x89);
+        assert_eq!(descriptor[1], base >> 32);
+    }
+
+    #[test]
+    fn task_state_descriptor_write_rejects_aliasing_slots() {
+        let task = TaskStateSegment::new(0x1000, 0x2000).unwrap();
+        let mut gdt = [0u64; 2];
+        assert_eq!(
+            unsafe { write_task_state_descriptor(gdt.as_mut_ptr(), gdt.len(), 0x08, &task) },
+            Err(DescriptorError::InvalidTaskState)
+        );
+        assert_eq!(gdt, [0; 2]);
     }
 }

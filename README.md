@@ -142,7 +142,12 @@ dispatch proof. User-task revocation and task-switch integration remain unfinish
 Bounded timer-driven scheduler policy and faulted-task retirement are
 implemented, but hardware timer interrupts and context restoration in the
 standalone image remain unfinished. Validated generational ring-three context
-storage is implemented; GDT/TSS installation, CR3 switching, and live `iretq`
+storage is implemented. The live image now installs ring-three code/data
+descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
+supplies `RSP0`, and routes double fault through a dedicated IST stack. A
+freshly signed nested-KVM exception probe ran successfully after this setup.
+The two 16 KiB privilege stacks are currently static bring-up allocations
+without guard pages; guarded per-CPU stacks, CR3 switching, and live `iretq`
 entry remain unfinished. Service VMs and bare-metal validation also remain
 unfinished.
 The successful `ExitBootServices` call is a one-way boundary: memory-map

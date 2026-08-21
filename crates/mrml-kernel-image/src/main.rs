@@ -4,7 +4,10 @@
 use core::arch::{asm, global_asm};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
-use mrml_kernel::arch::x86_64::{HardwareTrapFrame, InterruptGate, install_exception_tables};
+use mrml_kernel::arch::x86_64::{
+    AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
+    load_task_register, write_task_state_descriptor,
+};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, Color, EarlyKernelContext, FramebufferSurface, HANDOFF_HEADER_BYTES,
@@ -30,17 +33,28 @@ const GPU_BENCHMARK_ITERATIONS: u32 = 1_000;
 #[cfg(feature = "fault-probe")]
 const EXCEPTION_PROBE_PORT: u16 = 0x4d53;
 
-static GDT: [u64; 8] = [
+const GDT_ENTRIES: usize = 8;
+const TSS_SELECTOR: u16 = 0x08;
+const PRIVILEGE_STACK_BYTES: usize = 16 * 1024;
+
+static mut GDT: [u64; GDT_ENTRIES] = [
     0,
     0,
     0,
-    0,
-    0,
+    0x00cf_f300_0000_ffff,
+    0x00af_fb00_0000_ffff,
     0,
     0x00cf_9300_0000_ffff,
     0x00af_9b00_0000_ffff,
 ];
 static mut IDT: [InterruptGate; 256] = [InterruptGate::MISSING; 256];
+static mut TSS: AlignedTaskState = AlignedTaskState::zeroed();
+
+#[repr(C, align(4096))]
+struct PrivilegeStack([u8; PRIVILEGE_STACK_BYTES]);
+
+static mut KERNEL_ENTRY_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_BYTES]);
+static mut DOUBLE_FAULT_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_BYTES]);
 
 global_asm!(
     r#"
@@ -394,10 +408,32 @@ fn embedded_minimum_version() -> Option<u64> {
 unsafe fn install_descriptor_tables() {
     let fallback = mrml_exception_fail_stop as *const () as usize as u64;
     let handlers = unsafe { &mrml_exception_table };
+    let kernel_stack =
+        core::ptr::addr_of!(KERNEL_ENTRY_STACK) as u64 + PRIVILEGE_STACK_BYTES as u64;
+    let double_fault_stack =
+        core::ptr::addr_of!(DOUBLE_FAULT_STACK) as u64 + PRIVILEGE_STACK_BYTES as u64;
+    let task_state = match TaskStateSegment::new(kernel_stack, double_fault_stack) {
+        Ok(task_state) => task_state,
+        Err(_) => halt(),
+    };
+    let task_state_pointer = unsafe { core::ptr::addr_of_mut!(TSS.0) };
+    unsafe { task_state_pointer.write(task_state) };
+    if unsafe {
+        write_task_state_descriptor(
+            core::ptr::addr_of_mut!(GDT).cast::<u64>(),
+            GDT_ENTRIES,
+            TSS_SELECTOR,
+            &*task_state_pointer,
+        )
+    }
+    .is_err()
+    {
+        halt();
+    }
     if unsafe {
         install_exception_tables(
             core::ptr::addr_of!(GDT).cast::<u64>(),
-            GDT.len(),
+            GDT_ENTRIES,
             core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
             256,
             handlers,
@@ -407,6 +443,9 @@ unsafe fn install_descriptor_tables() {
     }
     .is_err()
     {
+        halt();
+    }
+    if unsafe { load_task_register(TSS_SELECTOR) }.is_err() {
         halt();
     }
 }

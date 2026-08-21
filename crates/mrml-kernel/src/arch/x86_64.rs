@@ -12,7 +12,9 @@ pub use context::{
     UserContextTable,
 };
 pub use descriptors::{
-    DescriptorError, InterruptGate, install_exception_tables, install_fail_stop_tables,
+    AlignedTaskState, DescriptorError, InterruptGate, TaskStateSegment, install_exception_tables,
+    install_fail_stop_tables, load_task_register, task_state_descriptor,
+    write_task_state_descriptor,
 };
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
