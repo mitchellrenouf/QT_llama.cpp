@@ -193,12 +193,17 @@ existing recovery path restores its replacement. The two-root service probe
 additionally proves blocking receive, wakeup, cross-root scheduling, and
 syscall-visible message delivery.
 Bounded timer-driven scheduler policy and faulted-task retirement are
-implemented. A signed nested-KVM probe now proves external vector 32 enters the
-booted kernel and advances that scheduler by exactly one tick. This currently
-uses capability-controlled VMM interrupt injection. A bounded architecture
-layer now validates periodic timer vectors, counts, and divisors and implements
-ordered x2APIC or xAPIC programming plus EOI, but platform controller/mapping
-setup and live standalone hookup remain unfinished. Validated generational ring-three context
+implemented. A signed nested-KVM probe now proves the booted kernel enables its
+local APIC, programs a periodic timer, observes the hardware counter wrap,
+accepts vector 32 only after enabling interrupts, advances its scheduler by
+exactly one tick, and acknowledges EOI. The timer path uses a KVM in-kernel
+interrupt controller and a supervisor-only xAPIC mapping when x2APIC is not
+available; it does not use host interrupt injection. The APIC-specific KVM
+configuration is confined to timer guests so ordinary proof guests preserve
+their host-visible halt behavior. The latest signed run completed in 1,856
+microseconds (`verify=744us`, `prepare=10296us`, `total=15834us`) under nested
+KVM. A corresponding live WHP timer proof and multi-task timer preemption proof
+remain unfinished. Validated generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A

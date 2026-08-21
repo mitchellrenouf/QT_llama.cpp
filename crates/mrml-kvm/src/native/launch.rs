@@ -6,6 +6,15 @@ use mrml_kernel::{
 
 use super::{KvmBackend, KvmError, KvmSystem, KvmVcpuSnapshot, map_loaded_handoff, map_loaded_pe};
 
+const XAPIC_BASE: u64 = 0xfee0_0000;
+
+#[derive(Clone, Copy)]
+struct KernelDevices {
+    framebuffer: bool,
+    local_apic: bool,
+    gpu_queue: Option<GpuSharedQueueLayout>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KvmLaunchLayout {
     table_physical: u64,
@@ -209,8 +218,7 @@ impl<const N: usize> PreparedKvmGuest<N> {
             || table_pages < 4
             || service_virtual == 0
             || service_virtual >= 1 << 47
-            || stack_virtual < PAGE_SIZE
-            || stack_virtual >= 1 << 47
+            || !(PAGE_SIZE..1 << 47).contains(&stack_virtual)
             || [
                 service_physical,
                 stack_physical,
@@ -334,7 +342,17 @@ impl KvmSystem {
         handoff: &[u8],
         layout: KvmLaunchLayout,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
-        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, false, None)
+        self.prepare_guest_inner(
+            vcpu_id,
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: false,
+                local_apic: false,
+                gpu_queue: None,
+            },
+        )
     }
 
     /// Prepares a kernel guest and maps the authenticated handoff framebuffer
@@ -346,7 +364,38 @@ impl KvmSystem {
         handoff: &[u8],
         layout: KvmLaunchLayout,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
-        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, true, None)
+        self.prepare_guest_inner(
+            vcpu_id,
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: false,
+                gpu_queue: None,
+            },
+        )
+    }
+
+    /// Prepares a kernel guest with an in-kernel local APIC and its MMIO page.
+    pub fn prepare_timer_kernel_guest<const N: usize>(
+        &self,
+        vcpu_id: u32,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: KvmLaunchLayout,
+    ) -> Result<PreparedKvmGuest<N>, KvmError> {
+        self.prepare_guest_inner(
+            vcpu_id,
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: true,
+                gpu_queue: None,
+            },
+        )
     }
 
     /// Prepares a kernel guest with its authenticated framebuffer and mediated
@@ -360,7 +409,17 @@ impl KvmSystem {
         layout: KvmLaunchLayout,
         queue: GpuSharedQueueLayout,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
-        self.prepare_guest_inner(vcpu_id, executable, handoff, layout, true, Some(queue))
+        self.prepare_guest_inner(
+            vcpu_id,
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: false,
+                gpu_queue: Some(queue),
+            },
+        )
     }
 
     fn prepare_guest_inner<const N: usize>(
@@ -369,9 +428,11 @@ impl KvmSystem {
         executable: &VerifiedExecutable<'_>,
         handoff: &[u8],
         layout: KvmLaunchLayout,
-        map_framebuffer: bool,
-        queue: Option<GpuSharedQueueLayout>,
+        devices: KernelDevices,
     ) -> Result<PreparedKvmGuest<N>, KvmError> {
+        let map_framebuffer = devices.framebuffer;
+        let local_apic = devices.local_apic;
+        let queue = devices.gpu_queue;
         if N < 4 + usize::from(map_framebuffer) + usize::from(queue.is_some()) * 2 {
             return Err(KvmError::MemoryTableFull);
         }
@@ -418,7 +479,11 @@ impl KvmSystem {
         ];
         validate_ranges(&virtual_ranges[..3 + usize::from(queue.is_some()) * 2])?;
 
-        let mut backend = self.create_backend::<N>(vcpu_id)?;
+        let mut backend = if local_apic {
+            self.create_apic_backend::<N>(vcpu_id)?
+        } else {
+            self.create_backend::<N>(vcpu_id)?
+        };
         backend.map_memory(layout.table_physical, table_bytes as usize, false)?;
         backend.map_memory(layout.image_physical, image_bytes as usize, false)?;
         backend.map_memory(layout.handoff_physical, handoff_bytes as usize, false)?;
@@ -475,6 +540,19 @@ impl KvmSystem {
                 .map_err(|_| KvmError::InvalidMapping)?,
             )
             .map_err(|_| KvmError::PageTable)?;
+        if local_apic {
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(XAPIC_BASE).map_err(|_| KvmError::InvalidMapping)?,
+                        PhysAddr::new(XAPIC_BASE).map_err(|_| KvmError::InvalidMapping)?,
+                        1,
+                        PagePermissions::KERNEL_MMIO_READ_WRITE,
+                    )
+                    .map_err(|_| KvmError::InvalidMapping)?,
+                )
+                .map_err(|_| KvmError::PageTable)?;
+        }
         if map_framebuffer {
             tables
                 .map(

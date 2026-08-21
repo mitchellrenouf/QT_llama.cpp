@@ -27,7 +27,9 @@ const KVM_GET_API_VERSION: c_ulong = 0xae00;
 const KVM_CREATE_VM: c_ulong = 0xae01;
 const KVM_CHECK_EXTENSION: c_ulong = 0xae03;
 const KVM_GET_VCPU_MMAP_SIZE: c_ulong = 0xae04;
+const KVM_GET_SUPPORTED_CPUID: c_ulong = 0xc008_ae05;
 const KVM_CREATE_VCPU: c_ulong = 0xae41;
+const KVM_CREATE_IRQCHIP: c_ulong = 0xae60;
 const KVM_SET_USER_MEMORY_REGION: c_ulong = 0x4020_ae46;
 const KVM_RUN: c_ulong = 0xae80;
 const KVM_GET_REGS: c_ulong = 0x8090_ae81;
@@ -35,11 +37,44 @@ const KVM_GET_SREGS: c_ulong = 0x8138_ae83;
 const KVM_SET_REGS: c_ulong = 0x4090_ae82;
 const KVM_SET_SREGS: c_ulong = 0x4138_ae84;
 const KVM_INTERRUPT: c_ulong = 0x4004_ae86;
+const KVM_SET_CPUID2: c_ulong = 0x4008_ae90;
 const MIN_RUN_BYTES: usize = 88;
 const MAX_RUN_BYTES: usize = 1024 * 1024;
 const KVM_CAP_USER_MEMORY: u32 = 3;
 const KVM_CAP_NR_MEMSLOTS: u32 = 10;
 const REQUIRED_MEMORY_SLOTS: i32 = 5;
+const MAX_CPUID_ENTRIES: usize = 128;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct KvmCpuidEntry2 {
+    function: u32,
+    index: u32,
+    flags: u32,
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+    padding: [u32; 3],
+}
+
+const EMPTY_CPUID_ENTRY: KvmCpuidEntry2 = KvmCpuidEntry2 {
+    function: 0,
+    index: 0,
+    flags: 0,
+    eax: 0,
+    ebx: 0,
+    ecx: 0,
+    edx: 0,
+    padding: [0; 3],
+};
+
+#[repr(C)]
+struct KvmCpuidSet {
+    count: u32,
+    padding: u32,
+    entries: [KvmCpuidEntry2; MAX_CPUID_ENTRIES],
+}
 
 #[link(name = "c")]
 unsafe extern "C" {
@@ -70,6 +105,7 @@ impl Drop for OwnedFd {
 pub struct KvmSystem {
     file: OwnedFd,
     run_bytes: usize,
+    cpuid: KvmCpuidSet,
 }
 
 impl KvmSystem {
@@ -94,9 +130,21 @@ impl KvmSystem {
         if run_bytes < MIN_RUN_BYTES as c_int || run_bytes as usize > MAX_RUN_BYTES {
             return Err(KvmError::InvalidRunSize(run_bytes));
         }
+        let mut cpuid = KvmCpuidSet {
+            count: MAX_CPUID_ENTRIES as u32,
+            padding: 0,
+            entries: [EMPTY_CPUID_ENTRY; MAX_CPUID_ENTRIES],
+        };
+        if unsafe { ioctl(file.0, KVM_GET_SUPPORTED_CPUID, &mut cpuid) } < 0
+            || cpuid.count == 0
+            || cpuid.count as usize > MAX_CPUID_ENTRIES
+        {
+            return Err(KvmError::SystemCall);
+        }
         Ok(Self {
             file,
             run_bytes: run_bytes as usize,
+            cpuid,
         })
     }
 
@@ -124,6 +172,22 @@ impl KvmSystem {
             vcpu_id,
         })
     }
+
+    pub(crate) fn create_apic_backend<const N: usize>(
+        &self,
+        vcpu_id: u32,
+    ) -> Result<KvmBackend<N>, KvmError> {
+        let vm = self.create_vm()?;
+        vm.create_irqchip()?;
+        let vcpu = vm.create_vcpu(vcpu_id)?;
+        vcpu.set_cpuid(&self.cpuid)?;
+        Ok(KvmBackend {
+            vcpu,
+            memory: KvmGuestMemory::new(),
+            vm,
+            vcpu_id,
+        })
+    }
 }
 
 fn validate_capabilities(user_memory: c_int, memory_slots: c_int) -> Result<(), KvmError> {
@@ -142,6 +206,13 @@ pub(crate) struct KvmVm {
 }
 
 impl KvmVm {
+    pub(crate) fn create_irqchip(&self) -> Result<(), KvmError> {
+        if unsafe { ioctl(self.file.0, KVM_CREATE_IRQCHIP, 0 as c_ulong) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(())
+    }
+
     pub(crate) fn register_memory(&self, region: KvmMemoryRegion) -> Result<(), KvmError> {
         let encoded = region.encode();
         if unsafe { ioctl(self.file.0, KVM_SET_USER_MEMORY_REGION, encoded.as_ptr()) } < 0 {
@@ -185,6 +256,16 @@ pub(crate) struct KvmVcpu {
 }
 
 impl KvmVcpu {
+    fn set_cpuid(&self, cpuid: &KvmCpuidSet) -> Result<(), KvmError> {
+        if cpuid.count == 0 || cpuid.count as usize > MAX_CPUID_ENTRIES {
+            return Err(KvmError::InvalidRegisterState);
+        }
+        if unsafe { ioctl(self.file.0, KVM_SET_CPUID2, cpuid) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(())
+    }
+
     pub(crate) fn run(&mut self) -> Result<VmExit, KvmError> {
         if unsafe { ioctl(self.file.0, KVM_RUN, 0 as c_ulong) } < 0 {
             return Err(KvmError::SystemCall);
@@ -1081,13 +1162,18 @@ mod tests {
         assert_eq!(KVM_GET_API_VERSION, 0xae00);
         assert_eq!(KVM_CREATE_VM, 0xae01);
         assert_eq!(KVM_CHECK_EXTENSION, 0xae03);
+        assert_eq!(KVM_GET_SUPPORTED_CPUID, 0xc008_ae05);
         assert_eq!(KVM_SET_USER_MEMORY_REGION, 0x4020_ae46);
         assert_eq!(KVM_CREATE_VCPU, 0xae41);
+        assert_eq!(KVM_CREATE_IRQCHIP, 0xae60);
         assert_eq!(KVM_RUN, 0xae80);
         assert_eq!(KVM_GET_REGS, 0x8090_ae81);
         assert_eq!(KVM_GET_SREGS, 0x8138_ae83);
         assert_eq!(KVM_SET_REGS, 0x4090_ae82);
         assert_eq!(KVM_SET_SREGS, 0x4138_ae84);
+        assert_eq!(KVM_SET_CPUID2, 0x4008_ae90);
+        assert_eq!(core::mem::size_of::<KvmCpuidEntry2>(), 40);
+        assert_eq!(core::mem::size_of::<KvmCpuidSet>(), 5_128);
         assert_eq!(core::mem::size_of::<KvmRegisters>(), 144);
         assert_eq!(core::mem::size_of::<KvmSegment>(), 24);
         assert_eq!(core::mem::size_of::<KvmSpecialRegisters>(), 312);

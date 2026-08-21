@@ -21,6 +21,8 @@ use mrml_kernel::arch::x86_64::{
     AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
     load_task_register, write_task_state_descriptor,
 };
+#[cfg(feature = "timer-probe")]
+use mrml_kernel::arch::x86_64::{LocalApicTimer, TimerDivide};
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::arch::x86_64::{TrapDisposition, UserContext};
 #[cfg(not(feature = "fault-probe"))]
@@ -453,6 +455,7 @@ unsafe extern "sysv64" fn mrml_timer_dispatch() -> ! {
         if scheduler.timer_tick().is_err() || scheduler.ticks() != 1 {
             halt();
         }
+        LocalApicTimer::acknowledge();
         asm!(
             "out dx, eax",
             in("dx") TIMER_TICK_PORT,
@@ -762,14 +765,33 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             halt();
         }
         core::ptr::addr_of_mut!(TIMER_SCHEDULER).write(Some(scheduler));
+        let timer = LocalApicTimer::periodic(TIMER_VECTOR, 100_000, TimerDivide::By16)
+            .unwrap_or_else(|_| halt());
+        timer.enable().unwrap_or_else(|_| halt());
         asm!(
             "out dx, eax",
-            "sti",
-            "hlt",
-            "cli",
             in("dx") TIMER_READY_PORT,
             in("eax") 1u32,
             options(nomem, nostack)
+        );
+        let mut previous = LocalApicTimer::current_count();
+        loop {
+            let current = LocalApicTimer::current_count();
+            if current > previous {
+                break;
+            }
+            previous = current;
+            core::hint::spin_loop();
+        }
+        asm!(
+            "out dx, eax",
+            "sti",
+            "2:",
+            "pause",
+            "jmp 2b",
+            in("dx") TIMER_READY_PORT,
+            in("eax") 2u32,
+            options(noreturn, nomem, nostack)
         );
     }
     #[cfg(all(

@@ -2,19 +2,27 @@ use core::arch::{asm, x86_64::__cpuid};
 
 const IA32_APIC_BASE: u32 = 0x1b;
 const X2APIC_EOI: u32 = 0x80b;
+const X2APIC_TASK_PRIORITY: u32 = 0x808;
+const X2APIC_SPURIOUS_VECTOR: u32 = 0x80f;
 const X2APIC_LVT_TIMER: u32 = 0x832;
 const X2APIC_INITIAL_COUNT: u32 = 0x838;
+const X2APIC_CURRENT_COUNT: u32 = 0x839;
 const X2APIC_DIVIDE_CONFIGURATION: u32 = 0x83e;
 const XAPIC_BASE: usize = 0xfee0_0000;
 const XAPIC_EOI: usize = 0x0b0;
+const XAPIC_TASK_PRIORITY: usize = 0x080;
+const XAPIC_SPURIOUS_VECTOR: usize = 0x0f0;
 const XAPIC_LVT_TIMER: usize = 0x320;
 const XAPIC_INITIAL_COUNT: usize = 0x380;
+const XAPIC_CURRENT_COUNT: usize = 0x390;
 const XAPIC_DIVIDE_CONFIGURATION: usize = 0x3e0;
 const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
 const X2APIC_ENABLE: u64 = 1 << 10;
 const APIC_BASE_MASK: u64 = 0xffff_f000;
 const LVT_MASKED: u64 = 1 << 16;
 const LVT_PERIODIC: u64 = 1 << 17;
+const APIC_SOFTWARE_ENABLE: u64 = 1 << 8;
+const SPURIOUS_VECTOR: u64 = 0xff;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalApicError {
@@ -98,6 +106,13 @@ impl LocalApicTimer {
         let base = unsafe { read_msr(IA32_APIC_BASE) };
         if features.ecx & (1 << 21) != 0 {
             unsafe { write_msr(IA32_APIC_BASE, base | APIC_GLOBAL_ENABLE | X2APIC_ENABLE) };
+            unsafe {
+                write_msr(
+                    X2APIC_SPURIOUS_VECTOR,
+                    APIC_SOFTWARE_ENABLE | SPURIOUS_VECTOR,
+                )
+            };
+            unsafe { write_msr(X2APIC_TASK_PRIORITY, 0) };
             unsafe { write_msr(X2APIC_LVT_TIMER, LVT_MASKED | u64::from(self.vector)) };
             unsafe { write_msr(X2APIC_DIVIDE_CONFIGURATION, self.divide.register()) };
             unsafe { write_msr(X2APIC_INITIAL_COUNT, u64::from(self.initial_count)) };
@@ -107,6 +122,13 @@ impl LocalApicTimer {
                 return Err(LocalApicError::Unsupported);
             }
             unsafe { write_msr(IA32_APIC_BASE, (base | APIC_GLOBAL_ENABLE) & !X2APIC_ENABLE) };
+            unsafe {
+                write_xapic(
+                    XAPIC_SPURIOUS_VECTOR,
+                    APIC_SOFTWARE_ENABLE | SPURIOUS_VECTOR,
+                )
+            };
+            unsafe { write_xapic(XAPIC_TASK_PRIORITY, 0) };
             unsafe { write_xapic(XAPIC_LVT_TIMER, LVT_MASKED | u64::from(self.vector)) };
             unsafe { write_xapic(XAPIC_DIVIDE_CONFIGURATION, self.divide.register()) };
             unsafe { write_xapic(XAPIC_INITIAL_COUNT, u64::from(self.initial_count)) };
@@ -127,6 +149,20 @@ impl LocalApicTimer {
             unsafe { write_msr(X2APIC_EOI, 0) }
         } else {
             unsafe { write_xapic(XAPIC_EOI, 0) }
+        }
+    }
+
+    /// Reads the live timer countdown for diagnostics and calibration.
+    ///
+    /// # Safety
+    ///
+    /// The local APIC and, when needed, its xAPIC page must satisfy the same
+    /// requirements as [`Self::enable`].
+    pub unsafe fn current_count() -> u32 {
+        if unsafe { read_msr(IA32_APIC_BASE) } & X2APIC_ENABLE != 0 {
+            unsafe { read_msr(X2APIC_CURRENT_COUNT) as u32 }
+        } else {
+            unsafe { read_xapic(XAPIC_CURRENT_COUNT) }
         }
     }
 }
@@ -154,6 +190,10 @@ unsafe fn write_msr(register: u32, value: u64) {
 
 unsafe fn write_xapic(offset: usize, value: u64) {
     unsafe { ((XAPIC_BASE + offset) as *mut u32).write_volatile(value as u32) }
+}
+
+unsafe fn read_xapic(offset: usize) -> u32 {
+    unsafe { ((XAPIC_BASE + offset) as *const u32).read_volatile() }
 }
 
 #[cfg(test)]

@@ -562,19 +562,20 @@ guarded per-CPU allocations before user execution or production claims.
 
 External vector installation is now a separate validated operation restricted
 to vectors 32--254 and performed only while interrupts are disabled. The
-`timer-probe` image constructs one runnable scheduler task, emits its readiness
-marker, executes `STI; HLT`, and accepts vector 32 only after KVM has observed
-the IF-enabled halt. Its assembly entry preserves all general registers before
-calling the Rust handler. The handler advances `KernelScheduler` exactly one
-tick, emits a distinct proof, and fails closed. A freshly signed nested-KVM run
-completed this path in 145 microseconds (`verify=724us`, `prepare=1030us`,
-`total=4621us`). KVM exit errors now retain the exact numeric reason; this
-exposed and prevented an invalid early injection while IF was clear. This is a
-live external-interrupt/scheduler proof. A bounded architecture layer now
-validates periodic vectors, nonzero counts, and every architectural divisor;
-it masks the LVT while programming x2APIC or xAPIC state and exposes an exact
-EOI operation. Controller/mapping setup and a live resumable timer switch are
-not yet complete.
+`timer-probe` image constructs one runnable scheduler task, enables the local
+APIC software bit, lowers task priority, masks the LVT while programming a
+periodic vector/count/divisor, and observes a real counter wrap while IF is
+clear. It then emits a second marker and enables interrupts. Its assembly entry
+preserves all general registers before calling the Rust handler. The handler
+advances `KernelScheduler` exactly one tick, acknowledges EOI, emits a distinct
+proof, and fails closed. KVM creates its in-kernel interrupt controller before
+the vCPU, installs the bounded supported CPUID set, and maps the xAPIC page
+supervisor-only when x2APIC is unavailable. No host interrupt injection is used.
+This APIC setup is restricted to timer guests so it cannot change halt behavior
+for other launch modes. A freshly signed nested-KVM run completed guest
+execution in 1,856 microseconds (`verify=744us`, `prepare=10296us`,
+`total=15834us`). The corresponding WHP proof and a live timer-driven switch
+between two isolated user contexts remain incomplete.
 
 The `user-probe` diagnostic now gives the context and TSS work a live privilege-
 transition proof. Its signed PE is relocated into a bounded lower-half layout;
@@ -1292,9 +1293,9 @@ advances its generation so a faulted task can never be woken or resumed through
 a stale handle. Windows and Linux tests cover preemption, idle wakeup, task
 termination, stale identities, and invalid timer policies. A separate release
 microbenchmark now measures tick accounting. Validated x2APIC/xAPIC timer
-programming and acknowledgement primitives now exist; platform controller and
-mapping setup, saved-context installation, and live `iretq` remain the next
-integration gate.
+programming and acknowledgement primitives now execute in the signed KVM guest;
+WHP controller integration and timer-driven restoration of a second isolated
+user context remain the next integration gates.
 
 The x86_64 architecture layer now defines a fixed user-context record and a
 generational task-to-context table. New contexts require a nonzero page-aligned

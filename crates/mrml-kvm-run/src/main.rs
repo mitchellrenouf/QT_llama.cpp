@@ -34,8 +34,6 @@ const TIMER_READY_PORT: u16 = 0x4d54;
 #[cfg(target_os = "linux")]
 const TIMER_TICK_PORT: u16 = 0x4d55;
 #[cfg(target_os = "linux")]
-const TIMER_VECTOR: u8 = 32;
-#[cfg(target_os = "linux")]
 const USER_PROBE_PORT: u16 = 0x4d56;
 #[cfg(target_os = "linux")]
 const USER_CALL_PROBE_PORT: u16 = 0x4d57;
@@ -222,6 +220,9 @@ fn application_main() -> Result<()> {
         LaunchMode::GpuBenchmark => {
             system.prepare_kernel_gpu_guest::<13>(0, &executable, &handoff, layout, queue_layout)
         }
+        LaunchMode::TimerProbe => {
+            system.prepare_timer_kernel_guest::<13>(0, &executable, &handoff, layout)
+        }
         _ => system.prepare_kernel_guest::<13>(0, &executable, &handoff, layout),
     }
     .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
@@ -315,18 +316,24 @@ fn application_main() -> Result<()> {
                 exit
             ));
         }
-        exit = VmBackend::run(&mut guest, 0)
-            .map_err(|error| anyhow!("KVM execution entering timer wait failed: {:?}", error))?;
-        if exit != VmExit::Halted {
-            return Err(anyhow!(
-                "timer probe did not halt with interrupts enabled: {:?}",
-                exit
-            ));
+        exit = VmBackend::run(&mut guest, 0).map_err(|error| {
+            anyhow!(
+                "KVM execution waiting for local counter failed: {:?}",
+                error
+            )
+        })?;
+        if exit
+            != (VmExit::Io {
+                port: TIMER_READY_PORT,
+                size: 4,
+                write: true,
+                value: 2,
+            })
+        {
+            return Err(anyhow!("local APIC counter did not elapse: {:?}", exit));
         }
-        VmBackend::inject_interrupt(&mut guest, 0, TIMER_VECTOR)
-            .map_err(|error| anyhow!("timer interrupt injection failed: {:?}", error))?;
         exit = VmBackend::run(&mut guest, 0)
-            .map_err(|error| anyhow!("KVM execution after timer injection failed: {:?}", error))?;
+            .map_err(|error| anyhow!("KVM execution delivering local timer failed: {:?}", error))?;
         if exit
             != (VmExit::Io {
                 port: TIMER_TICK_PORT,
@@ -340,8 +347,10 @@ fn application_main() -> Result<()> {
                 exit
             ));
         }
-        exit = VmBackend::run(&mut guest, 0)
-            .map_err(|error| anyhow!("KVM execution after timer proof failed: {:?}", error))?;
+        // The authenticated timer output is the terminal proof. A KVM guest
+        // with an in-kernel interrupt controller can remain blocked in HLT,
+        // so do not require a subsequent host-visible halt exit.
+        exit = VmExit::Halted;
     } else if mode == LaunchMode::UserProbe {
         if exit
             != (VmExit::Io {
