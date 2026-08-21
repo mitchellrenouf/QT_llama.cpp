@@ -118,6 +118,9 @@ pub fn decode_exit_context(input: &[u8]) -> Result<VmExit, WhpError> {
     if input.len() < 8 {
         return Err(WhpError::TruncatedExit);
     }
+    if u32_at(input, 4)? != 0 {
+        return Err(WhpError::MalformedExit);
+    }
     match u32_at(input, 0)? {
         EXIT_HALT => Ok(VmExit::Halted),
         EXIT_CANCELED | EXIT_INTERRUPT_WINDOW => Ok(VmExit::Interrupted),
@@ -135,6 +138,7 @@ pub fn decode_exit_context(input: &[u8]) -> Result<VmExit, WhpError> {
 }
 
 fn decode_exception(input: &[u8]) -> Result<VmExit, WhpError> {
+    validate_vp_context(input)?;
     let info = u32_at(input, 68)?;
     if info & !3 != 0 {
         return Err(WhpError::MalformedExit);
@@ -148,14 +152,8 @@ fn decode_exception(input: &[u8]) -> Result<VmExit, WhpError> {
 fn decode_memory(input: &[u8]) -> Result<VmExit, WhpError> {
     // 8-byte exit prefix + 40-byte VP context. MemoryAccessInfo is a 32-bit bitfield,
     // followed by instruction bytes, GPA, and GVA.
-    let instruction_bytes = *input.get(48).ok_or(WhpError::TruncatedExit)?;
-    let instruction_reserved = input.get(49..52).ok_or(WhpError::TruncatedExit)?;
-    if instruction_bytes > 16 || instruction_reserved.iter().any(|byte| *byte != 0) {
-        return Err(WhpError::MalformedExit);
-    }
-    input
-        .get(52..52 + instruction_bytes as usize)
-        .ok_or(WhpError::TruncatedExit)?;
+    validate_vp_context(input)?;
+    validate_instruction_context(input)?;
     let info = u32_at(input, 68)?;
     let access = info & 3;
     let access = match access {
@@ -184,8 +182,10 @@ fn decode_memory(input: &[u8]) -> Result<VmExit, WhpError> {
 
 fn decode_io(input: &[u8]) -> Result<VmExit, WhpError> {
     // The I/O context uses a 32-bit access-info bitfield, port, and RAX value.
+    validate_vp_context(input)?;
+    validate_instruction_context(input)?;
     let info = u32_at(input, 68)?;
-    if info & !0x3f != 0 {
+    if info & !0x3f != 0 || info & ((1 << 4) | (1 << 5)) != 0 {
         return Err(WhpError::MalformedExit);
     }
     let write = info & 1 != 0;
@@ -194,13 +194,50 @@ fn decode_io(input: &[u8]) -> Result<VmExit, WhpError> {
         return Err(WhpError::MalformedExit);
     }
     let port = u16_at(input, 72)?;
-    let value = u64_at(input, 80)? as u32;
+    if input
+        .get(74..80)
+        .ok_or(WhpError::TruncatedExit)?
+        .iter()
+        .any(|byte| *byte != 0)
+    {
+        return Err(WhpError::MalformedExit);
+    }
+    let mask = match size {
+        1 => 0xff,
+        2 => 0xffff,
+        4 => u32::MAX,
+        _ => unreachable!(),
+    };
+    let value = u64_at(input, 80)? as u32 & mask;
     Ok(VmExit::Io {
         port,
         size,
         write,
         value,
     })
+}
+
+fn validate_vp_context(input: &[u8]) -> Result<(), WhpError> {
+    let execution = u16_at(input, 8)?;
+    if execution & !0x107f != 0
+        || *input.get(11).ok_or(WhpError::TruncatedExit)? != 0
+        || u32_at(input, 12)? != 0
+    {
+        return Err(WhpError::MalformedExit);
+    }
+    Ok(())
+}
+
+fn validate_instruction_context(input: &[u8]) -> Result<(), WhpError> {
+    let instruction_bytes = *input.get(48).ok_or(WhpError::TruncatedExit)?;
+    let reserved = input.get(49..52).ok_or(WhpError::TruncatedExit)?;
+    if instruction_bytes > 16 || reserved.iter().any(|byte| *byte != 0) {
+        return Err(WhpError::MalformedExit);
+    }
+    input
+        .get(52..52 + instruction_bytes as usize)
+        .ok_or(WhpError::TruncatedExit)?;
+    Ok(())
 }
 
 fn u16_at(input: &[u8], at: usize) -> Result<u16, WhpError> {
@@ -273,6 +310,8 @@ mod tests {
             decode_exit_context(&bytes),
             Err(WhpError::UnsupportedExit(0xdead_beef))
         );
+        bytes[4] = 1;
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
     }
 
     #[test]
@@ -314,6 +353,35 @@ mod tests {
         assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
         bytes[49] = 0;
         bytes[80..88].copy_from_slice(&0x0000_8000_0000_0000u64.to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+    }
+
+    #[test]
+    fn scalar_io_rejects_unrepresented_string_state_and_masks_rax() {
+        let mut bytes = [0u8; 88];
+        bytes[..4].copy_from_slice(&EXIT_IO_PORT_ACCESS.to_ne_bytes());
+        bytes[48] = 1;
+        bytes[52] = 0xee;
+        bytes[68..72].copy_from_slice(&(1u32 | (1 << 1)).to_ne_bytes());
+        bytes[72..74].copy_from_slice(&0x3f8u16.to_ne_bytes());
+        bytes[80..88].copy_from_slice(&0xffff_ffff_ffff_12a5u64.to_ne_bytes());
+        assert_eq!(
+            decode_exit_context(&bytes),
+            Ok(VmExit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: true,
+                value: 0xa5,
+            })
+        );
+
+        bytes[68..72].copy_from_slice(&(1u32 | (1 << 1) | (1 << 4)).to_ne_bytes());
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[68..72].copy_from_slice(&(1u32 | (1 << 1)).to_ne_bytes());
+        bytes[74] = 1;
+        assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
+        bytes[74] = 0;
+        bytes[8..10].copy_from_slice(&0x8000u16.to_ne_bytes());
         assert_eq!(decode_exit_context(&bytes), Err(WhpError::MalformedExit));
     }
 }

@@ -571,6 +571,13 @@ page is immutable after sealing, enters long mode at the signed entry point,
 executes `INT3`, and observes the expected breakpoint vector. This demonstrates
 the complete verified-artifact-to-native-execution boundary on Hyper-V;
 end-to-end UEFI-to-kernel boot remains a separate pending integration gate.
+The WHP exit decoder validates the common x86 VP prefix before consuming any
+exit union, including execution-state and reserved fields. Memory and port-I/O
+exits bound the captured instruction length and require all ABI-reserved bytes
+to remain zero. A claimed valid GVA must be canonical. Port-I/O forwarding is
+limited to scalar 1-, 2-, or 4-byte operations; string and REP forms fail closed
+because the backend-neutral exit type does not carry their RCX/RSI/RDI state,
+and scalar RAX data is masked to the declared width before policy sees it.
 
 Interrupt injection is a separate capability-authorized path. The caller must
 hold `SIGNAL` authority for the VM's dedicated interrupt object and the vector
