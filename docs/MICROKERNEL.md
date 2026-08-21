@@ -50,7 +50,11 @@ sequence and carries an HMAC tag under a per-session key; tampering, replay,
 cross-session substitution, noncanonical encoding, and zero keys are rejected
 before resource state changes. HMAC-SHA-256 provides 128-bit generic quantum
 collision security and is used only for ephemeral queue authentication, not
-artifact signing. The Hyper-V transport, host CUDA executor, kernel-specific argument schemas,
+artifact signing. Dispatches also have one fixed-size canonical encoding: they
+contain an embedded kernel ID, bounded launch geometry, and up to 16 opaque
+generational buffer ranges with explicit access modes. Unused slots must be
+zero and there is no representation for PTX, pointers, driver calls, or
+variable argument blobs. The Hyper-V transport, host CUDA executor, kernel-specific argument schemas,
 copy staging, cancellation, watchdog reset, and end-to-end inference benchmarks
 remain pending. Until those pieces exist and are audited, this is not a working
 shared-CUDA Hyper-V device. It is intentionally MRML-specific instead of a

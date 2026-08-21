@@ -396,6 +396,8 @@ pub struct Dispatch {
 }
 
 impl Dispatch {
+    pub const WIRE_LENGTH: usize = 48 + MAX_DISPATCH_BUFFERS * 32;
+
     pub fn new(
         kernel: KernelId,
         grid: [u32; 3],
@@ -451,6 +453,118 @@ impl Dispatch {
             .flatten()
             .copied()
     }
+
+    /// Canonical fixed-size dispatch representation. Unused access slots and
+    /// all reserved bytes are zero, preventing alternate encodings from
+    /// reaching the host CUDA executor.
+    pub fn encode(&self, request_id: u64, output: &mut [u8]) -> Result<(), GpuError> {
+        if request_id == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        let output = output
+            .get_mut(..Self::WIRE_LENGTH)
+            .ok_or(GpuError::CommandBufferTooSmall)?;
+        output.fill(0);
+        output[..4].copy_from_slice(b"MRGD");
+        output[4] = 1;
+        output[5] = self.kernel.get();
+        output[6] = self.access_count;
+        output[8..16].copy_from_slice(&request_id.to_le_bytes());
+        for axis in 0..3 {
+            let grid_offset = 16 + axis * 4;
+            let block_offset = 28 + axis * 4;
+            output[grid_offset..grid_offset + 4].copy_from_slice(&self.grid[axis].to_le_bytes());
+            output[block_offset..block_offset + 4].copy_from_slice(&self.block[axis].to_le_bytes());
+        }
+        output[40..44].copy_from_slice(&self.shared_memory.to_le_bytes());
+        for (index, access) in self.accesses().enumerate() {
+            let offset = 48 + index * 32;
+            output[offset..offset + 8].copy_from_slice(&access.buffer.token().to_le_bytes());
+            output[offset + 8..offset + 16].copy_from_slice(&access.offset.to_le_bytes());
+            output[offset + 16..offset + 24].copy_from_slice(&access.length.to_le_bytes());
+            output[offset + 24] = match access.mode {
+                BufferMode::Read => 1,
+                BufferMode::Write => 2,
+                BufferMode::ReadWrite => 3,
+            };
+        }
+        Ok(())
+    }
+
+    pub fn decode(input: &[u8]) -> Result<(u64, Self), GpuError> {
+        if input.len() != Self::WIRE_LENGTH
+            || &input[..4] != b"MRGD"
+            || input[4] != 1
+            || input[7] != 0
+            || input[44..48].iter().any(|byte| *byte != 0)
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let request_id = u64::from_le_bytes(input[8..16].try_into().unwrap());
+        let access_count = input[6] as usize;
+        if request_id == 0 || access_count > MAX_DISPATCH_BUFFERS {
+            return Err(GpuError::MalformedCommand);
+        }
+        let kernel = KernelId::new(input[5])?;
+        let grid = core::array::from_fn(|axis| read_u32(input, 16 + axis * 4));
+        let block = core::array::from_fn(|axis| read_u32(input, 28 + axis * 4));
+        let shared_memory = read_u32(input, 40);
+        let mut accesses = [None; MAX_DISPATCH_BUFFERS];
+        for (index, slot) in accesses[..access_count].iter_mut().enumerate() {
+            let offset = 48 + index * 32;
+            if input[offset + 25..offset + 32]
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                return Err(GpuError::MalformedCommand);
+            }
+            let mode = match input[offset + 24] {
+                1 => BufferMode::Read,
+                2 => BufferMode::Write,
+                3 => BufferMode::ReadWrite,
+                _ => return Err(GpuError::MalformedCommand),
+            };
+            *slot = Some(BufferAccess::new(
+                BufferId::from_token(read_u64(input, offset))?,
+                read_u64(input, offset + 8),
+                read_u64(input, offset + 16),
+                mode,
+            ));
+        }
+        if input[48 + access_count * 32..]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let access_values = core::array::from_fn::<_, MAX_DISPATCH_BUFFERS, _>(|index| {
+            accesses[index].unwrap_or(BufferAccess::new(
+                BufferId {
+                    slot: 0,
+                    generation: 1,
+                },
+                0,
+                0,
+                BufferMode::Read,
+            ))
+        });
+        let dispatch = Self::new(
+            kernel,
+            grid,
+            block,
+            shared_memory,
+            &access_values[..access_count],
+        )?;
+        Ok((request_id, dispatch))
+    }
+}
+
+fn read_u32(input: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(input[offset..offset + 4].try_into().unwrap())
+}
+
+fn read_u64(input: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(input[offset..offset + 8].try_into().unwrap())
 }
 
 #[cfg(test)]
@@ -544,5 +658,68 @@ mod tests {
             GpuQueueSender::new(11, [0; 32]),
             Err(GpuError::InvalidQueueKey)
         ));
+    }
+
+    #[test]
+    fn dispatch_wire_is_canonical_bounded_and_pointer_free() {
+        let accesses = [
+            BufferAccess::new(
+                BufferId {
+                    slot: 2,
+                    generation: 4,
+                },
+                64,
+                128,
+                BufferMode::Read,
+            ),
+            BufferAccess::new(
+                BufferId {
+                    slot: 3,
+                    generation: 5,
+                },
+                0,
+                256,
+                BufferMode::Write,
+            ),
+        ];
+        let dispatch = Dispatch::new(
+            KernelId::new(7).unwrap(),
+            [2, 3, 4],
+            [32, 2, 1],
+            1024,
+            &accesses,
+        )
+        .unwrap();
+        let mut wire = [0u8; Dispatch::WIRE_LENGTH];
+        dispatch.encode(19, &mut wire).unwrap();
+        let (request, decoded) = Dispatch::decode(&wire).unwrap();
+        assert_eq!(request, 19);
+        assert_eq!(decoded.kernel(), KernelId::new(7).unwrap());
+        assert_eq!(decoded.grid(), [2, 3, 4]);
+        assert_eq!(decoded.block(), [32, 2, 1]);
+        let mut decoded_accesses = decoded.accesses();
+        assert_eq!(decoded_accesses.next(), Some(accesses[0]));
+        assert_eq!(decoded_accesses.next(), Some(accesses[1]));
+        assert_eq!(decoded_accesses.next(), None);
+
+        wire[48 + 25] = 1;
+        assert_eq!(
+            Dispatch::decode(&wire).err(),
+            Some(GpuError::MalformedCommand)
+        );
+        let mut wire = [0u8; Dispatch::WIRE_LENGTH];
+        dispatch.encode(19, &mut wire).unwrap();
+        wire[48 + 24] = 0;
+        assert_eq!(
+            Dispatch::decode(&wire).err(),
+            Some(GpuError::MalformedCommand)
+        );
+        let mut wire = [0u8; Dispatch::WIRE_LENGTH];
+        dispatch.encode(19, &mut wire).unwrap();
+        wire[48 + 2 * 32] = 1;
+        assert_eq!(
+            Dispatch::decode(&wire).err(),
+            Some(GpuError::MalformedCommand)
+        );
     }
 }
