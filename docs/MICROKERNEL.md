@@ -438,6 +438,13 @@ mapping. Backend-owned pointers never enter the policy core. The common
 interrupt injection; concrete KVM and Hyper-V adapters and shared-memory data
 queues remain pending, so this is not yet a runnable hosted VM.
 
+VM instances are tracked in a fixed-capacity lifecycle table with generational
+identities. Only created images may become loaded, only loaded or cleanly
+stopped VMs may run, and destroyed identifiers cannot control a replacement in
+the same slot. Every run receives an explicit exit budget. Exceeding it moves
+the VM to a failed state, bounding denial-of-service through pathological exit
+storms and requiring an explicit destroy/recreate recovery path.
+
 ## Performance policy
 
 Fast IPC alone is insufficient. MRML will measure call frequency, duplicate
@@ -502,10 +509,10 @@ recorded baseline.
 Baseline recorded 2026-08-20 on the current development host, one million
 iterations per sample:
 
-| Environment | Capability authorization | Scheduler selection |
-| --- | ---: | ---: |
-| Windows `x86_64-pc-windows-gnullvm` | 559,400 ns total (559 ps/op) | 1,843,600 ns total (1,843 ps/op) |
-| Arch Linux under WSL2 | 547,204 ns total (547 ps/op) | 1,841,754 ns total (1,841 ps/op) |
+| Environment | Capability authorization | Scheduler selection | VM exit accounting |
+| --- | ---: | ---: | ---: |
+| Windows `x86_64-pc-windows-gnullvm` | 548,200 ns total (548 ps/op) | 1,859,500 ns total (1,859 ps/op) | 729,600 ns total (729 ps/op) |
+| Arch Linux under WSL2 | 552,195 ns total (552 ps/op) | 1,824,970 ns total (1,824 ps/op) | 876,643 ns total (876 ps/op) |
 
 These measure optimized in-process policy operations, not VM exits, page-table
 changes, context switches, or end-to-end IPC. Sub-nanosecond averages can result

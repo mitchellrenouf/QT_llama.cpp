@@ -20,6 +20,170 @@ pub enum VmError {
     SequenceExhausted,
     Capability(CapabilityError),
     WrongObject,
+    VmTableFull,
+    StaleVm,
+    InvalidVmState,
+    ExitBudgetExceeded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VmId(u64);
+
+impl VmId {
+    const fn new(index: u32, generation: u32) -> Self {
+        Self(((generation as u64) << 32) | index as u64)
+    }
+
+    pub const fn token(self) -> u64 {
+        self.0
+    }
+    const fn index(self) -> usize {
+        self.0 as u32 as usize
+    }
+    const fn generation(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VmState {
+    Created,
+    Loaded,
+    Running,
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Copy)]
+struct VmSlot {
+    generation: u32,
+    state: VmState,
+    exits: u64,
+    exit_budget: u64,
+}
+
+/// Fixed-capacity VM lifecycle table. IDs include a nonzero generation so a
+/// handle retained after destruction cannot address a newly created VM.
+pub struct VmTable<const N: usize> {
+    slots: [Option<VmSlot>; N],
+    generations: [u32; N],
+}
+
+impl<const N: usize> VmTable<N> {
+    pub const fn new() -> Self {
+        Self {
+            slots: [None; N],
+            generations: [0; N],
+        }
+    }
+
+    pub fn create(&mut self, exit_budget: u64) -> Result<VmId, VmError> {
+        if exit_budget == 0 {
+            return Err(VmError::ExitBudgetExceeded);
+        }
+        let index = self
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or(VmError::VmTableFull)?;
+        let generation = self.generations[index]
+            .checked_add(1)
+            .ok_or(VmError::SequenceExhausted)?;
+        self.generations[index] = generation;
+        self.slots[index] = Some(VmSlot {
+            generation,
+            state: VmState::Created,
+            exits: 0,
+            exit_budget,
+        });
+        Ok(VmId::new(index as u32, generation))
+    }
+
+    pub fn state(&self, id: VmId) -> Result<VmState, VmError> {
+        Ok(self.slot(id)?.state)
+    }
+
+    pub fn mark_loaded(&mut self, id: VmId) -> Result<(), VmError> {
+        self.transition(id, VmState::Created, VmState::Loaded)
+    }
+
+    pub fn start(&mut self, id: VmId) -> Result<(), VmError> {
+        let slot = self.slot_mut(id)?;
+        if !matches!(slot.state, VmState::Loaded | VmState::Stopped) {
+            return Err(VmError::InvalidVmState);
+        }
+        slot.exits = 0;
+        slot.state = VmState::Running;
+        Ok(())
+    }
+
+    pub fn account_exit(&mut self, id: VmId) -> Result<u64, VmError> {
+        let slot = self.slot_mut(id)?;
+        if slot.state != VmState::Running {
+            return Err(VmError::InvalidVmState);
+        }
+        slot.exits = slot
+            .exits
+            .checked_add(1)
+            .ok_or(VmError::ExitBudgetExceeded)?;
+        if slot.exits > slot.exit_budget {
+            slot.state = VmState::Failed;
+            return Err(VmError::ExitBudgetExceeded);
+        }
+        Ok(slot.exit_budget - slot.exits)
+    }
+
+    pub fn stop(&mut self, id: VmId) -> Result<(), VmError> {
+        self.transition(id, VmState::Running, VmState::Stopped)
+    }
+
+    pub fn fail(&mut self, id: VmId) -> Result<(), VmError> {
+        self.slot_mut(id)?.state = VmState::Failed;
+        Ok(())
+    }
+
+    pub fn destroy(&mut self, id: VmId) -> Result<(), VmError> {
+        self.slot(id)?;
+        self.slots[id.index()] = None;
+        Ok(())
+    }
+
+    fn transition(&mut self, id: VmId, from: VmState, to: VmState) -> Result<(), VmError> {
+        let slot = self.slot_mut(id)?;
+        if slot.state != from {
+            return Err(VmError::InvalidVmState);
+        }
+        slot.state = to;
+        Ok(())
+    }
+
+    fn slot(&self, id: VmId) -> Result<&VmSlot, VmError> {
+        let slot = self
+            .slots
+            .get(id.index())
+            .and_then(Option::as_ref)
+            .ok_or(VmError::StaleVm)?;
+        (slot.generation == id.generation())
+            .then_some(slot)
+            .ok_or(VmError::StaleVm)
+    }
+
+    fn slot_mut(&mut self, id: VmId) -> Result<&mut VmSlot, VmError> {
+        let slot = self
+            .slots
+            .get_mut(id.index())
+            .and_then(Option::as_mut)
+            .ok_or(VmError::StaleVm)?;
+        (slot.generation == id.generation())
+            .then_some(slot)
+            .ok_or(VmError::StaleVm)
+    }
+}
+
+impl<const N: usize> Default for VmTable<N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -657,5 +821,32 @@ mod tests {
             ),
             Err(VmRunError::Backend(()))
         );
+    }
+
+    #[test]
+    fn lifecycle_rejects_stale_ids_and_invalid_transitions() {
+        let mut table = VmTable::<1>::new();
+        let first = table.create(2).unwrap();
+        assert_eq!(table.start(first), Err(VmError::InvalidVmState));
+        table.mark_loaded(first).unwrap();
+        table.start(first).unwrap();
+        assert_eq!(table.account_exit(first), Ok(1));
+        table.stop(first).unwrap();
+        table.destroy(first).unwrap();
+        let replacement = table.create(1).unwrap();
+        assert_ne!(first.token(), replacement.token());
+        assert_eq!(table.state(first), Err(VmError::StaleVm));
+    }
+
+    #[test]
+    fn exit_budget_fail_stops_a_running_vm() {
+        let mut table = VmTable::<1>::new();
+        let id = table.create(1).unwrap();
+        table.mark_loaded(id).unwrap();
+        table.start(id).unwrap();
+        assert_eq!(table.account_exit(id), Ok(0));
+        assert_eq!(table.account_exit(id), Err(VmError::ExitBudgetExceeded));
+        assert_eq!(table.state(id), Ok(VmState::Failed));
+        assert_eq!(table.start(id), Err(VmError::InvalidVmState));
     }
 }

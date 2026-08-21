@@ -63,5 +63,5 @@ pub use virtual_gpu::{
 pub use vm::{
     GuestAccess, GuestMemory, GuestRegion, HYPERCALL_BYTES, Hypercall, HypercallOperation,
     HypercallRouter, MAX_GUEST_REGIONS, RoutedHypercall, VmBackend, VmError, VmExit, VmRunError,
-    decode_hypercall_exit,
+    VmId, VmState, VmTable, decode_hypercall_exit,
 };

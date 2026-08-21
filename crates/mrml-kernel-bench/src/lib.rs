@@ -7,8 +7,8 @@
 #[cfg(test)]
 mod tests {
     use core::hint::black_box;
-    use mrml_kernel::{CapabilitySpace, ObjectId, Priority, Rights, Scheduler};
-    use mrml_runtime::{Instant, mrml_println};
+    use mrml_kernel::{CapabilitySpace, ObjectId, Priority, Rights, Scheduler, VmTable};
+    use mrml_runtime::{mrml_println, Instant};
 
     const ITERATIONS: u64 = 1_000_000;
     const MAX_NANOSECONDS_PER_OPERATION: u128 = 10_000;
@@ -59,6 +59,29 @@ mod tests {
         let picoseconds = elapsed.saturating_mul(1000) / ITERATIONS as u128;
         mrml_println!(
             "MRML_KERNEL_BENCH scheduler_select_total_ns={} scheduler_select_ps={} iterations={}",
+            elapsed,
+            picoseconds,
+            ITERATIONS
+        );
+        assert!(per_operation < MAX_NANOSECONDS_PER_OPERATION);
+    }
+
+    #[test]
+    #[ignore = "manual release-mode performance gate"]
+    fn vm_exit_accounting_budget() {
+        let mut table = VmTable::<8>::new();
+        let id = table.create(ITERATIONS).unwrap();
+        table.mark_loaded(id).unwrap();
+        table.start(id).unwrap();
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            black_box(table.account_exit(black_box(id)).unwrap());
+        }
+        let elapsed = start.elapsed().as_nanos();
+        let per_operation = elapsed / ITERATIONS as u128;
+        let picoseconds = elapsed.saturating_mul(1000) / ITERATIONS as u128;
+        mrml_println!(
+            "MRML_KERNEL_BENCH vm_exit_account_total_ns={} vm_exit_account_ps={} iterations={}",
             elapsed,
             picoseconds,
             ITERATIONS
