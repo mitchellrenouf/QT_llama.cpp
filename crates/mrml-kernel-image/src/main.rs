@@ -82,7 +82,7 @@ static mut DOUBLE_FAULT_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STA
 #[cfg(feature = "timer-probe")]
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 #[cfg(feature = "user-probe")]
-static mut USER_RUNTIME: Option<TaskRuntime<1, 1>> = None;
+static mut USER_RUNTIME: Option<TaskRuntime<2, 1>> = None;
 
 global_asm!(
     r#"
@@ -192,6 +192,12 @@ mrml_user_probe:
 1:
     jmp 1b
 
+    .global mrml_user_replacement_probe
+mrml_user_replacement_probe:
+    int3
+2:
+    jmp 2b
+
     .section .rdata
     .balign 8
     .global mrml_exception_table
@@ -213,6 +219,8 @@ unsafe extern "C" {
     fn mrml_timer_interrupt() -> !;
     #[cfg(feature = "user-probe")]
     fn mrml_user_probe() -> !;
+    #[cfg(feature = "user-probe")]
+    fn mrml_user_replacement_probe() -> !;
     static mrml_exception_table: [u64; 32];
 }
 
@@ -273,12 +281,7 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
         )
     };
     #[cfg(feature = "user-probe")]
-    if _disposition
-        == (TrapDisposition::TerminateUser {
-            vector: 6,
-            address: None,
-        })
-    {
+    if matches!(_disposition, TrapDisposition::TerminateUser { .. }) {
         let runtime = unsafe {
             match (*core::ptr::addr_of_mut!(USER_RUNTIME)).as_mut() {
                 Some(runtime) => runtime,
@@ -289,14 +292,22 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
             Ok(retired) => retired,
             Err(_) => halt(),
         };
-        if retired.next != ScheduleOutcome::Idle {
-            halt();
+        match retired.next {
+            ScheduleOutcome::Switch { to, .. } if retired.vector == 6 => {
+                let context = match runtime.context(to) {
+                    Ok(context) => context as *const UserContext,
+                    Err(_) => halt(),
+                };
+                unsafe { enter_user_probe_context(&*context) };
+            }
+            ScheduleOutcome::Idle if retired.vector == 3 => {}
+            _ => halt(),
         }
         unsafe {
             asm!(
                 "out dx, eax",
                 in("dx") USER_PROBE_PORT,
-                in("eax") 6u32,
+                in("eax") 3u32,
                 options(nomem, nostack)
             )
         };
@@ -387,7 +398,17 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             Ok(context) => context,
             Err(_) => halt(),
         };
-        let mut runtime = match TaskRuntime::<1, 1>::new(1_000, 1) {
+        let replacement_context = match UserContext::new(
+            page_table,
+            mrml_user_replacement_probe as *const () as usize as u64,
+            (user_stack & !0xf)
+                .checked_sub(4096)
+                .unwrap_or_else(|| halt()),
+        ) {
+            Ok(context) => context,
+            Err(_) => halt(),
+        };
+        let mut runtime = match TaskRuntime::<2, 1>::new(1_000, 1) {
             Ok(runtime) => runtime,
             Err(_) => halt(),
         };
@@ -395,6 +416,12 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             Ok(task) => task,
             Err(_) => halt(),
         };
+        if runtime
+            .create(Priority::NORMAL, replacement_context)
+            .is_err()
+        {
+            halt();
+        }
         if !matches!(
             runtime.start(),
             ScheduleOutcome::Switch { from: None, to } if to == task

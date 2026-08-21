@@ -612,10 +612,15 @@ fault dispositions cannot enter this path, and generation changes prevent the
 retired task identity from addressing a reused slot. Windows and Linux pass 115
 kernel tests, including fail-closed retirement ordering. The signed CPL3 probe
 now creates a real runtime task and emits success only after vector 6 has removed
-its domain and the scheduler has reached `Idle`; nested KVM completed that path
-in 196 microseconds (`verify=777us`, `prepare=1100us`, `total=6696us`). A live
-two-task exception return is still required before replacement restoration is
-claimed.
+its domain. The probe now contains a second runtime task with a distinct entry
+and stack. After the first task raises `#UD`, the exception handler revokes it,
+selects the second identity, and calls the same full CR3/register/`IRETQ`
+transition directly from the exception stack. The replacement executes `INT3`;
+only its checked vector-3 retirement reaching `Idle` emits success. A freshly
+signed nested-KVM run completed both CPL3 entries and recoveries in 179
+microseconds (`verify=821us`, `prepare=1032us`, `total=6465us`). Both tasks still
+share the deliberately permissive diagnostic PE mapping, so this proves live
+replacement mechanics but not cross-address-space service isolation.
 
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel

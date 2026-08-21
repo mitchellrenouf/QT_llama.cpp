@@ -237,7 +237,7 @@ fn application_main() -> Result<()> {
                 port: USER_PROBE_PORT,
                 size: 4,
                 write: true,
-                value: 6,
+                value: 3,
             })
         {
             return Err(anyhow!(
