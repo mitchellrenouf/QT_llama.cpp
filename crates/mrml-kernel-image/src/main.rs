@@ -4,6 +4,8 @@
 use core::arch::{asm, global_asm};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
+#[cfg(feature = "user-probe")]
+use mrml_kernel::arch::x86_64::TrapDisposition;
 #[cfg(feature = "timer-probe")]
 use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
 use mrml_kernel::arch::x86_64::{
@@ -15,7 +17,11 @@ use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
     MemoryRegion, PhysAddr,
 };
-#[cfg(all(not(feature = "fault-probe"), not(feature = "timer-probe")))]
+#[cfg(all(
+    not(feature = "fault-probe"),
+    not(feature = "timer-probe"),
+    not(feature = "user-probe")
+))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
 use mrml_kernel::{
@@ -44,6 +50,8 @@ const TIMER_READY_PORT: u16 = 0x4d54;
 const TIMER_TICK_PORT: u16 = 0x4d55;
 #[cfg(feature = "timer-probe")]
 const TIMER_VECTOR: u8 = 32;
+#[cfg(feature = "user-probe")]
+const USER_PROBE_PORT: u16 = 0x4d56;
 
 const GDT_ENTRIES: usize = 8;
 const TSS_SELECTOR: u16 = 0x08;
@@ -172,6 +180,12 @@ mrml_timer_interrupt:
     call mrml_timer_dispatch
     ud2
 
+    .global mrml_user_probe
+mrml_user_probe:
+    ud2
+1:
+    jmp 1b
+
     .section .rdata
     .balign 8
     .global mrml_exception_table
@@ -191,6 +205,8 @@ unsafe extern "C" {
     fn mrml_exception_fail_stop() -> !;
     #[cfg(feature = "timer-probe")]
     fn mrml_timer_interrupt() -> !;
+    #[cfg(feature = "user-probe")]
+    fn mrml_user_probe() -> !;
     static mrml_exception_table: [u64; 32];
 }
 
@@ -237,9 +253,10 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
     } else {
         None
     };
-    if normalized.disposition(fault_address).is_err() {
-        halt();
-    }
+    let _disposition = match normalized.disposition(fault_address) {
+        Ok(disposition) => disposition,
+        Err(_) => halt(),
+    };
     #[cfg(feature = "fault-probe")]
     unsafe {
         asm!(
@@ -249,6 +266,22 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
             options(nomem, nostack)
         )
     };
+    #[cfg(feature = "user-probe")]
+    if _disposition
+        == (TrapDisposition::TerminateUser {
+            vector: 6,
+            address: None,
+        })
+    {
+        unsafe {
+            asm!(
+                "out dx, eax",
+                in("dx") USER_PROBE_PORT,
+                in("eax") 6u32,
+                options(nomem, nostack)
+            )
+        };
+    }
     halt()
 }
 
@@ -317,6 +350,25 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     if region_count != handoff.region_count() {
         halt();
     }
+    #[cfg(feature = "user-probe")]
+    unsafe {
+        let user_stack: u64;
+        asm!("mov {}, rsp", out(reg) user_stack, options(nomem, nostack, preserves_flags));
+        let user_stack = user_stack & !0xf;
+        asm!(
+            "mov ax, 0x1b",
+            "mov ds, ax",
+            "mov es, ax",
+            "push 0x1b",
+            "push {stack}",
+            "push 0x202",
+            "push 0x23",
+            "push {entry}",
+            "iretq",
+            stack = in(reg) user_stack,
+            entry = in(reg) mrml_user_probe as *const () as usize as u64,
+        );
+    }
     #[cfg(feature = "timer-probe")]
     unsafe {
         let mut scheduler = match KernelScheduler::<1>::new(1_000, 1) {
@@ -339,7 +391,7 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             options(nomem, nostack)
         );
     }
-    #[cfg(not(feature = "timer-probe"))]
+    #[cfg(all(not(feature = "timer-probe"), not(feature = "user-probe")))]
     {
         #[cfg(feature = "production-policy")]
         {

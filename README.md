@@ -150,9 +150,14 @@ descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A
 freshly signed nested-KVM exception probe ran successfully after this setup.
 The two 16 KiB privilege stacks are currently static bring-up allocations
-without guard pages; guarded per-CPU stacks, CR3 switching, and live `iretq`
-entry remain unfinished. Service VMs and bare-metal validation also remain
-unfinished.
+without guard pages. A separate signed diagnostic build now performs a live
+`iretq` transition to CPL3, executes an invalid opcode, returns through TSS
+`RSP0`, validates the privilege-transition frame, and reaches user-task
+termination policy under nested KVM. That proof temporarily maps the entire
+diagnostic PE in the lower half with user permissions and is therefore not an
+acceptable service isolation design. Guarded per-CPU stacks, separate signed
+user mappings, and CR3 switching remain unfinished. Service VMs and bare-metal
+validation also remain unfinished.
 The successful `ExitBootServices` call is a one-way boundary: memory-map
 normalization, handoff construction, and launch failures after it halt locally
 and can never return into terminated firmware services.

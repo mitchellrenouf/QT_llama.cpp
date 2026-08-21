@@ -35,6 +35,8 @@ const TIMER_READY_PORT: u16 = 0x4d54;
 const TIMER_TICK_PORT: u16 = 0x4d55;
 #[cfg(target_os = "linux")]
 const TIMER_VECTOR: u8 = 32;
+#[cfg(target_os = "linux")]
+const USER_PROBE_PORT: u16 = 0x4d56;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg(any(test, target_os = "linux"))]
@@ -42,6 +44,7 @@ enum LaunchMode {
     Boot,
     FaultProbe,
     TimerProbe,
+    UserProbe,
     GpuBenchmark,
 }
 
@@ -52,9 +55,10 @@ impl LaunchMode {
             "boot" => Ok(Self::Boot),
             "fault-probe" => Ok(Self::FaultProbe),
             "timer-probe" => Ok(Self::TimerProbe),
+            "user-probe" => Ok(Self::UserProbe),
             "gpu-benchmark" => Ok(Self::GpuBenchmark),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, or gpu-benchmark"
+                "mode must be boot, fault-probe, timer-probe, user-probe, or gpu-benchmark"
             )),
         }
     }
@@ -119,17 +123,27 @@ fn application_main() -> Result<()> {
         entropy,
         *executable.artifact().digest(),
     )?;
+    let user_probe = mode == LaunchMode::UserProbe;
+    let (image_virtual, handoff_virtual, stack_virtual) = if user_probe {
+        (0x0040_0000, 0x0200_0000, 0x0300_0000)
+    } else {
+        (
+            0xffff_8001_4000_0000,
+            0xffff_8001_5000_0000,
+            0xffff_8001_6000_0000,
+        )
+    };
     let layout = KvmLaunchLayout::new(
         0x10_0000,
         32,
         0x20_0000,
-        0xffff_8001_4000_0000,
+        image_virtual,
         0x30_0000,
-        0xffff_8001_5000_0000,
+        handoff_virtual,
         0x40_0000,
-        0xffff_8001_6000_0000,
+        stack_virtual,
         8,
-        false,
+        user_probe,
     )
     .map_err(|_| anyhow!("invalid fixed kernel launch layout"))?;
     let system = KvmSystem::open()
@@ -217,6 +231,22 @@ fn application_main() -> Result<()> {
         }
         exit = VmBackend::run(&mut guest, 0)
             .map_err(|error| anyhow!("KVM execution after timer proof failed: {:?}", error))?;
+    } else if mode == LaunchMode::UserProbe {
+        if exit
+            != (VmExit::Io {
+                port: USER_PROBE_PORT,
+                size: 4,
+                write: true,
+                value: 6,
+            })
+        {
+            return Err(anyhow!(
+                "user probe did not return through the checked ring-three fault path: {:?}",
+                exit
+            ));
+        }
+        exit = VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution after user proof failed: {:?}", error))?;
     }
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
@@ -283,6 +313,9 @@ fn application_main() -> Result<()> {
         }
         LaunchMode::TimerProbe if marker != [0; 4] => {
             return Err(anyhow!("timer probe unexpectedly modified the framebuffer"));
+        }
+        LaunchMode::UserProbe if marker != [0; 4] => {
+            return Err(anyhow!("user probe unexpectedly modified the framebuffer"));
         }
         LaunchMode::GpuBenchmark if marker != [0x78, 0xe0, 0x46, 0] => {
             return Err(anyhow!(
@@ -533,6 +566,10 @@ mod tests {
         assert_eq!(
             LaunchMode::parse("timer-probe").unwrap(),
             LaunchMode::TimerProbe
+        );
+        assert_eq!(
+            LaunchMode::parse("user-probe").unwrap(),
+            LaunchMode::UserProbe
         );
         assert!(LaunchMode::parse("diagnostic").is_err());
         assert_eq!(

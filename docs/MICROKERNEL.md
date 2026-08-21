@@ -573,6 +573,21 @@ exposed and prevented an invalid early injection while IF was clear. This is a
 live external-interrupt/scheduler proof, not yet a local-APIC timer, end-of-
 interrupt acknowledgement, or resumable context switch.
 
+The `user-probe` diagnostic now gives the context and TSS work a live privilege-
+transition proof. Its signed PE is relocated into a bounded lower-half layout;
+the kernel loads the ring-three data segments and an exact `SS:RSP`, RFLAGS,
+`CS:RIP` frame, then executes `IRETQ`. The embedded CPL3 instruction deliberately
+raises invalid opcode. Hardware switches to TSS `RSP0`, the vector-specific
+entry captures the user RSP/SS tail, and checked policy admits exactly
+`TerminateUser { vector: 6, address: None }` before emitting proof. A freshly
+signed nested-KVM run completed in 178 microseconds (`verify=758us`,
+`prepare=946us`, `total=4669us`). This diagnostic intentionally marks all PE
+sections and its stack user-accessible and halts at the first fault; it is not a
+security boundary and cannot ship as a service configuration. The production
+path still requires separately authenticated service pages, a private guarded
+user stack, a kernel-only higher-half mapping, CR3/PCID switching, and revocation
+before another context can run.
+
 Unit tests check the exact 16-byte gate encoding and prove malformed pointers,
 sizes, handlers, and selectors fail before privileged instructions. The kernel
 image treats any installation error as a fail-stop.
