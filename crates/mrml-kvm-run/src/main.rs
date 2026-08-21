@@ -89,7 +89,7 @@ fn application_main() -> Result<()> {
         .map_err(|error| anyhow!("KVM execution failed: {:?}", error))?;
     let execution_micros = execution_started.elapsed().as_micros();
     if exit != VmExit::Halted {
-        return Err(anyhow!("kernel returned an unexpected VM exit"));
+        return Err(anyhow!("kernel returned an unexpected VM exit: {:?}", exit));
     }
     let mut marker = [0u8; 4];
     VmBackend::read_guest(&guest, FRAMEBUFFER, &mut marker)

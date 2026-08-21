@@ -198,6 +198,12 @@ exact 256-gate IDT size, and 16-bit descriptor limits before writing memory or
 executing `LGDT` or `LIDT`. Unit tests check the exact 16-byte gate encoding and
 prove malformed pointers, sizes, handlers, and selectors fail before privileged
 instructions. The kernel image treats any installation error as a fail-stop.
+The equivalent relocated probe is not yet accepted as a KVM success: nested KVM
+reports shutdown reason 8 after `UD2`, indicating a triple fault instead of the
+expected handler `HLT`. The runner now includes the exact decoded exit in its
+failure message. This remains an explicit interrupt-state defect; normal signed
+kernel boot continues to pass, and no diagnostic-only relocation or address
+space exception was retained to hide the failure.
 
 Before materialization, the loader can now use the packed, raw
 `EFI_TCG2_PROTOCOL` ABI to hash the already authenticated kernel PE into PCR 11
