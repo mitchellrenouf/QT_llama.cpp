@@ -188,6 +188,11 @@ Q4_0 caches with their exact layouts and no dynamic shared memory. Variant
 selection is exclusive: a dispatch eligible for bounded shared F16 attention
 cannot be relabeled as streaming. The mediated interface currently keeps the
 streaming subset power-of-two and even-width for conservative cache indexing.
+FFN preparation binds two full input tensors, four normalization vectors, and
+four separate outputs to the same checked dimension and batch. FFN completion
+requires the MoE accumulator to be read/write, keeps the dense branch
+read-only, validates three normalization vectors and the output, and rejects a
+non-finite layer scale.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject
@@ -198,7 +203,7 @@ queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
 KVM and Hyper-V/WHP now attach both ranges independently, make the completion
 ring guest-read-only, and have live backend regressions that preserve verified
-guest execution. Platform cache-coherence validation, the remaining 7
+guest execution. Platform cache-coherence validation, the remaining 5
 executor schemas, host CUDA executor, service-side queue execution, CUDA graph
 lowering, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML

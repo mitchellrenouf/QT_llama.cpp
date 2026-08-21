@@ -1708,6 +1708,8 @@ impl Dispatch {
             12 => self.validate_rms_norm_f32_schema(),
             13 => self.validate_router_logits_schema(),
             14 => self.validate_router_top8_schema(),
+            15 => self.validate_prepare_ffn_schema(),
+            16 => self.validate_finish_ffn_schema(),
             17 => self.validate_vocab_topk_schema(false),
             18 => self.validate_vocab_topk_schema(true),
             19 => self.validate_qkv_postprocess_schema(),
@@ -2400,6 +2402,109 @@ impl Dispatch {
         })
     }
 
+    fn validate_prepare_ffn_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 10
+            || self.scalar_count != 2
+            || self.shared_memory != 0
+            || self.block != [512, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let dimension = self.positive_i32_scalar(0)?;
+        let batch = self.positive_i32_scalar(1)?;
+        let elements = dimension
+            .checked_mul(batch)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let tensor_bytes = u64::from(elements) * 4;
+        let vector_bytes = u64::from(dimension) * 4;
+        for index in 0..2 {
+            if !valid_f32_access(
+                self.accesses[index].ok_or(GpuError::InvalidKernelSchema)?,
+                tensor_bytes,
+                BufferMode::Read,
+            ) {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+        }
+        for index in 2..6 {
+            if !valid_f32_access(
+                self.accesses[index].ok_or(GpuError::InvalidKernelSchema)?,
+                vector_bytes,
+                BufferMode::Read,
+            ) {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+        }
+        for index in 6..10 {
+            if !valid_f32_access(
+                self.accesses[index].ok_or(GpuError::InvalidKernelSchema)?,
+                tensor_bytes,
+                BufferMode::Write,
+            ) {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+        }
+        if self.grid != [batch, 1, 1] {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: elements,
+        })
+    }
+
+    fn validate_finish_ffn_schema(&self) -> Result<ValidatedKernelLaunch, GpuError> {
+        if self.access_count != 7
+            || self.scalar_count != 3
+            || self.shared_memory != 0
+            || self.block != [512, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let scale = self.scalars[0].ok_or(GpuError::InvalidKernelSchema)?;
+        if scale.kind != ScalarKind::F32 || !f32::from_bits(scale.bits).is_finite() {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        let dimension = self.positive_i32_scalar(1)?;
+        let batch = self.positive_i32_scalar(2)?;
+        let elements = dimension
+            .checked_mul(batch)
+            .ok_or(GpuError::InvalidKernelSchema)?;
+        let tensor_bytes = u64::from(elements) * 4;
+        let vector_bytes = u64::from(dimension) * 4;
+        let modes = [BufferMode::Read, BufferMode::Read, BufferMode::ReadWrite];
+        for (index, mode) in modes.into_iter().enumerate() {
+            if !valid_f32_access(
+                self.accesses[index].ok_or(GpuError::InvalidKernelSchema)?,
+                tensor_bytes,
+                mode,
+            ) {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+        }
+        for index in 3..6 {
+            if !valid_f32_access(
+                self.accesses[index].ok_or(GpuError::InvalidKernelSchema)?,
+                vector_bytes,
+                BufferMode::Read,
+            ) {
+                return Err(GpuError::InvalidKernelSchema);
+            }
+        }
+        if !valid_f32_access(
+            self.accesses[6].ok_or(GpuError::InvalidKernelSchema)?,
+            tensor_bytes,
+            BufferMode::Write,
+        ) || self.grid != [batch, 1, 1]
+        {
+            return Err(GpuError::InvalidKernelSchema);
+        }
+        Ok(ValidatedKernelLaunch {
+            dispatch: *self,
+            element_count: elements,
+        })
+    }
+
     fn validate_vocab_topk_schema(&self, generic: bool) -> Result<ValidatedKernelLaunch, GpuError> {
         let expected_block = if generic { 1 } else { 256 };
         if self.access_count != 5
@@ -2747,7 +2852,7 @@ mod tests {
             Err(GpuError::InvalidKernelSchema)
         );
         let unsupported = Dispatch::new(
-            KernelId::new(15).unwrap(),
+            KernelId::new(22).unwrap(),
             [1, 1, 1],
             [128, 1, 1],
             0,
@@ -3482,6 +3587,100 @@ mod tests {
         .unwrap();
         assert_eq!(
             wrong_variant.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+    }
+
+    #[test]
+    fn executor_binds_ffn_preparation_and_completion_tensors() {
+        let id = |slot| BufferId {
+            slot,
+            generation: 1,
+        };
+        let prepare_accesses = [
+            BufferAccess::new(id(0), 0, 512, BufferMode::Read),
+            BufferAccess::new(id(1), 0, 512, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(3), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(4), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(5), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(6), 0, 512, BufferMode::Write),
+            BufferAccess::new(id(7), 0, 512, BufferMode::Write),
+            BufferAccess::new(id(8), 0, 512, BufferMode::Write),
+            BufferAccess::new(id(9), 0, 512, BufferMode::Write),
+        ];
+        let dimensions = [ScalarArg::i32(64), ScalarArg::i32(2)];
+        let prepare = Dispatch::new_with_scalars(
+            KernelId::new(15).unwrap(),
+            [2, 1, 1],
+            [512, 1, 1],
+            0,
+            &prepare_accesses,
+            &dimensions,
+        )
+        .unwrap();
+        assert_eq!(
+            prepare.validate_executor_schema().unwrap().element_count(),
+            128
+        );
+
+        let finish_accesses = [
+            BufferAccess::new(id(0), 0, 512, BufferMode::Read),
+            BufferAccess::new(id(1), 0, 512, BufferMode::Read),
+            BufferAccess::new(id(2), 0, 512, BufferMode::ReadWrite),
+            BufferAccess::new(id(3), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(4), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(5), 0, 256, BufferMode::Read),
+            BufferAccess::new(id(6), 0, 512, BufferMode::Write),
+        ];
+        let finish_scalars = [
+            ScalarArg::f32_bits(1.0_f32.to_bits()),
+            dimensions[0],
+            dimensions[1],
+        ];
+        let finish = Dispatch::new_with_scalars(
+            KernelId::new(16).unwrap(),
+            [2, 1, 1],
+            [512, 1, 1],
+            0,
+            &finish_accesses,
+            &finish_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            finish.validate_executor_schema().unwrap().element_count(),
+            128
+        );
+
+        let mut wrong_mode = finish_accesses;
+        wrong_mode[2] = BufferAccess::new(id(2), 0, 512, BufferMode::Write);
+        let invalid = Dispatch::new_with_scalars(
+            KernelId::new(16).unwrap(),
+            [2, 1, 1],
+            [512, 1, 1],
+            0,
+            &wrong_mode,
+            &finish_scalars,
+        )
+        .unwrap();
+        assert_eq!(
+            invalid.validate_executor_schema(),
+            Err(GpuError::InvalidKernelSchema)
+        );
+
+        let mut nonfinite = finish_scalars;
+        nonfinite[0] = ScalarArg::f32_bits(f32::NAN.to_bits());
+        let invalid = Dispatch::new_with_scalars(
+            KernelId::new(16).unwrap(),
+            [2, 1, 1],
+            [512, 1, 1],
+            0,
+            &finish_accesses,
+            &nonfinite,
+        )
+        .unwrap();
+        assert_eq!(
+            invalid.validate_executor_schema(),
             Err(GpuError::InvalidKernelSchema)
         );
     }

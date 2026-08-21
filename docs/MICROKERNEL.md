@@ -216,8 +216,14 @@ independently. Quantized widths must use complete 32-value blocks. Variant
 selection is exclusive, so a dispatch eligible for ID 20 cannot be relabeled
 as ID 21. The mediated subset conservatively retains power-of-two cache
 capacity and even head width.
+Kernel ID 15 binds FFN preparation's two full f32 input tensors, four
+dimension-sized normalization vectors, and four distinct writable tensors to
+one checked dimension/batch product and one block per token. Kernel ID 16 binds
+the residual and dense inputs, read/write MoE accumulator, three normalization
+vectors, and final output to the same geometry; its layer scale must be a typed
+finite f32. Both require fixed 512-thread blocks and no dynamic shared memory.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
-registry alone cannot make it executable. The remaining 7 schemas and the
+registry alone cannot make it executable. The remaining 5 schemas and the
 actual CUDA launch adapter are pending.
 
 ## Portability and boot
