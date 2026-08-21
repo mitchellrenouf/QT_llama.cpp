@@ -913,6 +913,10 @@ fn completion_tag(key: &[u8; 32], authenticated: &[u8]) -> [u8; 32] {
     hmac_sha256(key, &[b"MRML-VGPU-COMPLETION-v1\0", authenticated])
 }
 
+fn resource_response_tag(key: &[u8; 32], authenticated: &[u8]) -> [u8; 32] {
+    hmac_sha256(key, &[b"MRML-VGPU-RESOURCE-RESPONSE-v1\0", authenticated])
+}
+
 fn constant_time_equal(expected: &[u8; 32], candidate: &[u8]) -> bool {
     if candidate.len() != expected.len() {
         return false;
@@ -1254,6 +1258,146 @@ pub enum GpuResourceOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuResourceResponse {
+    Allocated { request_id: u64, buffer: BufferId },
+    Freed { request_id: u64, bytes: u64 },
+}
+
+impl GpuResourceResponse {
+    fn from_outcome(outcome: GpuResourceOutcome) -> Result<Self, GpuError> {
+        match outcome {
+            GpuResourceOutcome::Allocated { request_id, buffer } => {
+                Ok(Self::Allocated { request_id, buffer })
+            }
+            GpuResourceOutcome::Freed { request_id, bytes } => {
+                Ok(Self::Freed { request_id, bytes })
+            }
+            GpuResourceOutcome::SubmitBatch { .. } => Err(GpuError::UnsupportedCommand),
+        }
+    }
+
+    pub const fn request_id(self) -> u64 {
+        match self {
+            Self::Allocated { request_id, .. } | Self::Freed { request_id, .. } => request_id,
+        }
+    }
+}
+
+pub struct GpuResourceResponseSender {
+    session: u64,
+    next_sequence: u64,
+    key: [u8; 32],
+}
+
+impl GpuResourceResponseSender {
+    pub fn new(session: u64, key: [u8; 32]) -> Result<Self, GpuError> {
+        validate_queue_identity(session, &key)?;
+        Ok(Self {
+            session,
+            next_sequence: 1,
+            key,
+        })
+    }
+
+    pub fn encode(
+        &mut self,
+        response: GpuResourceResponse,
+        output: &mut [u8],
+    ) -> Result<(), GpuError> {
+        let output = output
+            .get_mut(..GPU_QUEUE_MESSAGE_BYTES)
+            .ok_or(GpuError::CommandBufferTooSmall)?;
+        let sequence = self.next_sequence;
+        let next = sequence.checked_add(1).ok_or(GpuError::SequenceExhausted)?;
+        output.fill(0);
+        output[..4].copy_from_slice(b"MRGR");
+        output[4] = 1;
+        output[5] = match response {
+            GpuResourceResponse::Allocated { .. } => 1,
+            GpuResourceResponse::Freed { .. } => 2,
+        };
+        output[8..16].copy_from_slice(&self.session.to_le_bytes());
+        output[16..24].copy_from_slice(&sequence.to_le_bytes());
+        output[24..32].copy_from_slice(&response.request_id().to_le_bytes());
+        let value = match response {
+            GpuResourceResponse::Allocated { buffer, .. } => buffer.token(),
+            GpuResourceResponse::Freed { bytes, .. } => bytes,
+        };
+        output[32..40].copy_from_slice(&value.to_le_bytes());
+        let tag = resource_response_tag(&self.key, &output[..GPU_QUEUE_AUTHENTICATED_BYTES]);
+        output[48..].copy_from_slice(&tag);
+        self.next_sequence = next;
+        Ok(())
+    }
+
+    fn ensure_capacity(&self) -> Result<(), GpuError> {
+        self.next_sequence
+            .checked_add(1)
+            .map(|_| ())
+            .ok_or(GpuError::SequenceExhausted)
+    }
+}
+
+pub struct GpuResourceResponseReceiver {
+    session: u64,
+    next_sequence: u64,
+    key: [u8; 32],
+}
+
+impl GpuResourceResponseReceiver {
+    pub fn new(session: u64, key: [u8; 32]) -> Result<Self, GpuError> {
+        validate_queue_identity(session, &key)?;
+        Ok(Self {
+            session,
+            next_sequence: 1,
+            key,
+        })
+    }
+
+    pub fn decode(&mut self, input: &[u8]) -> Result<GpuResourceResponse, GpuError> {
+        if input.len() != GPU_QUEUE_MESSAGE_BYTES
+            || &input[..4] != b"MRGR"
+            || input[4] != 1
+            || input[6..8].iter().any(|byte| *byte != 0)
+            || input[40..48].iter().any(|byte| *byte != 0)
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let expected = resource_response_tag(&self.key, &input[..GPU_QUEUE_AUTHENTICATED_BYTES]);
+        if !constant_time_equal(&expected, &input[48..]) {
+            return Err(GpuError::AuthenticationFailed);
+        }
+        if read_u64(input, 8) != self.session {
+            return Err(GpuError::WrongSession);
+        }
+        if read_u64(input, 16) != self.next_sequence {
+            return Err(GpuError::Replay);
+        }
+        let request_id = read_u64(input, 24);
+        let value = read_u64(input, 32);
+        if request_id == 0 || value == 0 {
+            return Err(GpuError::MalformedCommand);
+        }
+        let response = match input[5] {
+            1 => GpuResourceResponse::Allocated {
+                request_id,
+                buffer: BufferId::from_token(value)?,
+            },
+            2 => GpuResourceResponse::Freed {
+                request_id,
+                bytes: value,
+            },
+            _ => return Err(GpuError::MalformedCommand),
+        };
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(GpuError::SequenceExhausted)?;
+        Ok(response)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GpuCommandServiceError<E> {
     Protocol(GpuError),
     Backend(E),
@@ -1287,6 +1431,39 @@ pub fn process_gpu_resource_command<B: GpuResourceBackend, const RING: usize>(
             control,
         }),
     }
+}
+
+/// Processes one command while guaranteeing that successful allocation/free
+/// state changes have space and sequence capacity for an authenticated guest
+/// response. `SubmitBatch` is returned for the separate completion lifecycle.
+pub fn process_gpu_resource_command_with_response<
+    B: GpuResourceBackend,
+    const COMMANDS: usize,
+    const RESPONSES: usize,
+>(
+    commands: &mut GpuCommandRing<COMMANDS>,
+    receiver: &mut GpuQueueReceiver,
+    backend: &mut B,
+    response_sender: &mut GpuResourceResponseSender,
+    responses: &mut GpuCompletionRing<RESPONSES>,
+) -> Result<GpuResourceOutcome, GpuCommandServiceError<B::Error>> {
+    responses
+        .ensure_capacity(1)
+        .map_err(GpuCommandServiceError::Protocol)?;
+    response_sender
+        .ensure_capacity()
+        .map_err(GpuCommandServiceError::Protocol)?;
+    let outcome = process_gpu_resource_command(commands, receiver, backend)?;
+    if let Ok(response) = GpuResourceResponse::from_outcome(outcome) {
+        let mut encoded = [[0; GPU_QUEUE_MESSAGE_BYTES]; 1];
+        response_sender
+            .encode(response, &mut encoded[0])
+            .map_err(GpuCommandServiceError::Protocol)?;
+        responses
+            .enqueue_batch(&encoded, 1)
+            .map_err(GpuCommandServiceError::Protocol)?;
+    }
+    Ok(outcome)
 }
 
 impl ResourceCommand {
@@ -5273,7 +5450,10 @@ mod tests {
         let key = [0x2d; 32];
         let mut sender = GpuQueueSender::new(31, key).unwrap();
         let mut receiver = GpuQueueReceiver::new(31, key).unwrap();
+        let mut response_sender = GpuResourceResponseSender::new(31, key).unwrap();
+        let mut response_receiver = GpuResourceResponseReceiver::new(31, key).unwrap();
         let mut ring = GpuCommandRing::<2>::new().unwrap();
+        let mut response_ring = GpuCompletionRing::<1>::new().unwrap();
         let mut session = VirtualGpuSession::<1>::new(4096);
         let mut wire = [0; GPU_QUEUE_MESSAGE_BYTES];
 
@@ -5284,7 +5464,13 @@ mod tests {
         tampered[48] ^= 1;
         ring.enqueue(&tampered).unwrap();
         assert_eq!(
-            process_gpu_resource_command(&mut ring, &mut receiver, &mut session),
+            process_gpu_resource_command_with_response(
+                &mut ring,
+                &mut receiver,
+                &mut session,
+                &mut response_sender,
+                &mut response_ring,
+            ),
             Err(GpuCommandServiceError::Protocol(
                 GpuError::AuthenticationFailed
             ))
@@ -5292,9 +5478,32 @@ mod tests {
         assert!(ring.is_empty());
         assert_eq!(session.allocated_bytes(), 0);
 
+        response_ring
+            .enqueue_batch(&[[0; GPU_QUEUE_MESSAGE_BYTES]; 1], 1)
+            .unwrap();
         ring.enqueue(&wire).unwrap();
-        let allocated =
-            process_gpu_resource_command(&mut ring, &mut receiver, &mut session).unwrap();
+        assert_eq!(
+            process_gpu_resource_command_with_response(
+                &mut ring,
+                &mut receiver,
+                &mut session,
+                &mut response_sender,
+                &mut response_ring,
+            ),
+            Err(GpuCommandServiceError::Protocol(GpuError::QueueFull))
+        );
+        assert_eq!(ring.len(), 1);
+        assert_eq!(session.allocated_bytes(), 0);
+        let mut response_wire = [0; GPU_QUEUE_MESSAGE_BYTES];
+        response_ring.dequeue(&mut response_wire).unwrap();
+        let allocated = process_gpu_resource_command_with_response(
+            &mut ring,
+            &mut receiver,
+            &mut session,
+            &mut response_sender,
+            &mut response_ring,
+        )
+        .unwrap();
         let buffer = match allocated {
             GpuResourceOutcome::Allocated { request_id, buffer } => {
                 assert_eq!(request_id, 81);
@@ -5302,13 +5511,41 @@ mod tests {
             }
             _ => panic!("unexpected resource outcome"),
         };
+        response_ring.dequeue(&mut response_wire).unwrap();
+        let mut tampered_response = response_wire;
+        tampered_response[32] ^= 1;
+        assert_eq!(
+            response_receiver.decode(&tampered_response),
+            Err(GpuError::AuthenticationFailed)
+        );
+        assert_eq!(
+            response_receiver.decode(&response_wire),
+            Ok(GpuResourceResponse::Allocated {
+                request_id: 81,
+                buffer,
+            })
+        );
         sender
             .encode(82, ResourceCommand::Free { buffer }, &mut wire)
             .unwrap();
         ring.enqueue(&wire).unwrap();
         assert_eq!(
-            process_gpu_resource_command(&mut ring, &mut receiver, &mut session),
+            process_gpu_resource_command_with_response(
+                &mut ring,
+                &mut receiver,
+                &mut session,
+                &mut response_sender,
+                &mut response_ring,
+            ),
             Ok(GpuResourceOutcome::Freed {
+                request_id: 82,
+                bytes: 4096,
+            })
+        );
+        response_ring.dequeue(&mut response_wire).unwrap();
+        assert_eq!(
+            response_receiver.decode(&response_wire),
+            Ok(GpuResourceResponse::Freed {
                 request_id: 82,
                 bytes: 4096,
             })
@@ -5323,12 +5560,19 @@ mod tests {
             .unwrap();
         ring.enqueue(&wire).unwrap();
         assert_eq!(
-            process_gpu_resource_command(&mut ring, &mut receiver, &mut session),
+            process_gpu_resource_command_with_response(
+                &mut ring,
+                &mut receiver,
+                &mut session,
+                &mut response_sender,
+                &mut response_ring,
+            ),
             Ok(GpuResourceOutcome::SubmitBatch {
                 request_id: 83,
                 control,
             })
         );
+        assert!(response_ring.is_empty());
     }
 
     #[test]

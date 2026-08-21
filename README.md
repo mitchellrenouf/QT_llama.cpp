@@ -257,9 +257,13 @@ The resource service consumes one kernel-owned ring slot, authenticates it,
 executes allocation/free through the transactional CUDA resource backend, or
 returns a typed sealed-batch request. Invalid authenticated input is consumed
 without changing resource state, preventing a poisoned head from wedging the
-queue. Platform cache-coherence validation, guest-visible allocation response
-publication, CUDA graph lowering, IOMMU plumbing, and end-to-end performance
-measurements are still pending. Consequently MRML
+queue. Successful allocation/free commands now produce a distinct `MRGR`
+response authenticated under its own HMAC domain, session, and monotonic
+sequence. Response-ring and sequence capacity are checked before command
+consumption, so resource state cannot change without publication capacity.
+Platform cache-coherence validation, rejected-resource response publication,
+CUDA graph lowering, IOMMU plumbing, and end-to-end performance measurements
+are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
 to approach it for long-running LLM inference by avoiding copies, per-kernel VM
 exits, and repeated context setup; arbitrary CUDA applications are out of scope.
