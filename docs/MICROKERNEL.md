@@ -48,8 +48,9 @@ The resource/session validator and authenticated queue wire format are
 implemented. Each fixed-size command is bound to a nonzero session and strict
 sequence and carries an HMAC tag under a per-session key; tampering, replay,
 cross-session substitution, noncanonical encoding, and zero keys are rejected
-before resource state changes. HMAC-SHA-256 provides 128-bit generic quantum
-collision security and is used only for ephemeral queue authentication, not
+before resource state changes. HMAC-SHA-256 is conservatively treated as a
+128-bit generic quantum-search target and is used only for ephemeral queue
+authentication, not
 artifact signing. Dispatches also have one fixed-size canonical encoding: they
 contain an embedded kernel ID, bounded launch geometry, and up to 16 opaque
 generational buffer ranges with explicit access modes. Unused slots must be
