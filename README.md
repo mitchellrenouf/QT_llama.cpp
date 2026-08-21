@@ -277,6 +277,10 @@ page tables as identity-mapped NX memory: commands are writable and
 completions are read-only. A separate `GpuVmmMemory` authority lets only the
 isolated host service update read-only completion backing; ordinary guest-write
 APIs continue to reject that operation.
+WHP now provides the same initial queue mapping and an independently inspected
+x86-64 page walk. Its live Hyper-V test proves command writable/NX and
+completion read-only/NX translations, preserves guest write denial, and proves
+that the isolated service authority can still publish completion bytes.
 The `SubmitBatch` service path now joins sealed-control revalidation, canonical
 decode, current buffer-generation checks, transactional watchdog admission,
 signed schema validation, execution, and completion publication in one API.

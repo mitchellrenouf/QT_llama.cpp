@@ -146,6 +146,10 @@ space rather than attaching unreachable GPAs after CR3 setup. Command pages are
 writable/NX, completion pages are read-only/NX, and both resolve to their
 dedicated identity GPAs. Host completion publication uses a separate
 service-memory capability that does not weaken the guest-facing write check.
+WHP applies the identical initial page-table policy and exposes a bounded
+four-level diagnostic walk for verification. The live Windows test checks both
+leaf translations and permission bits, guest write denial, service-only
+completion publication, and continued execution of the signed PE.
 Platform cache-coherence validation, CUDA graph capture, IOMMU plumbing, the
 platform-specific physical
 device-reset callback, and end-to-end inference benchmarks remain pending.
