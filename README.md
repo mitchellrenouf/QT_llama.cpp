@@ -126,8 +126,10 @@ publication indices with acquire/release ordering, embedded-kernel allowlist,
 launch validation, dispatch watchdog, and adversarial unit tests. The cross-VM
 queue layout is also implemented: command and completion rings occupy separate,
 page-aligned, overflow-checked physical ranges sized from a bounded slot count.
-Actual KVM/Hyper-V shared-page attachment and platform cache-coherence validation,
-host CUDA executor, operation-graph batching, completion queue, IOMMU plumbing,
+KVM now attaches both ranges as dedicated memory slots, makes the completion
+ring guest-read-only, and has a live nested-KVM boot regression. Hyper-V
+attachment, platform cache-coherence validation, host CUDA executor,
+operation-graph batching, completion processing, IOMMU plumbing,
 and end-to-end performance measurements are still pending. Consequently MRML
 does not yet claim passthrough-equivalent VM CUDA performance. The design aims
 to approach it for long-running LLM inference by avoiding copies, per-kernel VM

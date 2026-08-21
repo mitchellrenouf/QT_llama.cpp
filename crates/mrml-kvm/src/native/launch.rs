@@ -1,5 +1,7 @@
 use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, VirtAddr};
-use mrml_kernel::{BootHandoff, PAGE_SIZE, PhysAddr, VerifiedExecutable, VmBackend, VmExit};
+use mrml_kernel::{
+    BootHandoff, GpuSharedQueueLayout, PAGE_SIZE, PhysAddr, VerifiedExecutable, VmBackend, VmExit,
+};
 
 use super::{KvmBackend, KvmError, KvmSystem, KvmVcpuSnapshot, map_loaded_handoff, map_loaded_pe};
 
@@ -106,6 +108,27 @@ impl<const N: usize> PreparedKvmGuest<N> {
             table = entry & 0x000f_ffff_ffff_f000;
         }
         Ok(KvmPageWalk { entries, levels })
+    }
+
+    /// Registers the two validated mediated-GPU rings as dedicated KVM memory
+    /// slots. The command ring is guest-writable; the completion ring is KVM
+    /// read-only to the guest and remains writable by the isolated host GPU
+    /// service. Consuming `self` makes failure transactional from the caller's
+    /// perspective: a partially attached VM is dropped and cannot be run.
+    pub fn attach_gpu_queue_memory(
+        mut self,
+        layout: GpuSharedQueueLayout,
+    ) -> Result<Self, KvmError> {
+        let bytes = layout
+            .pages_per_ring()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(KvmError::MemoryOverflow)?;
+        let bytes = usize::try_from(bytes).map_err(|_| KvmError::MemoryOverflow)?;
+        self.backend
+            .map_memory(layout.command_base(), bytes, false)?;
+        self.backend
+            .map_memory(layout.completion_base(), bytes, true)?;
+        Ok(self)
     }
 }
 
@@ -488,8 +511,11 @@ mod tests {
             false,
         )
         .unwrap();
+        let queue_layout = GpuSharedQueueLayout::new(0x50_0000, 0x50_2000, 64).unwrap();
         let mut guest = system
-            .prepare_kernel_guest::<5>(0, &executable, &valid_handoff(), layout)
+            .prepare_kernel_guest::<7>(0, &executable, &valid_handoff(), layout)
+            .unwrap()
+            .attach_gpu_queue_memory(queue_layout)
             .unwrap();
         assert_eq!(guest.entry(), 0xffff_8001_4000_1000);
         let walk = guest.page_walk(guest.entry()).unwrap();
@@ -503,6 +529,11 @@ mod tests {
         let mut opcode = [0u8; 1];
         VmBackend::read_guest(&guest, 0x20_1000, &mut opcode).unwrap();
         assert_eq!(opcode, [0x48]);
+        VmBackend::write_guest(&mut guest, queue_layout.command_base(), &[1]).unwrap();
+        assert_eq!(
+            VmBackend::write_guest(&mut guest, queue_layout.completion_base(), &[1]),
+            Err(KvmError::ReadOnlyMemory)
+        );
         assert_eq!(VmBackend::run(&mut guest, 0), Ok(VmExit::Halted));
         let mut pixel = [0u8; 4];
         VmBackend::read_guest(&guest, 0xa0000, &mut pixel).unwrap();

@@ -74,7 +74,13 @@ variable argument blobs. In-flight work uses a fixed-capacity watchdog table
 with unique request IDs, kernel-minted generational dispatch IDs, explicit
 cancellation, and deadline expiry. Expiry invalidates an ID before requesting
 host recovery, so a late completion cannot affect a reused slot. The Hyper-V
-KVM/Hyper-V shared-page attachment and platform cache-coherence validation, host CUDA executor,
+The KVM adapter now consumes the common layout and registers two dedicated
+memory slots transactionally from the caller's perspective: command memory is
+guest-writable and completion memory uses KVM's read-only flag while remaining
+host-service writable. A nested-KVM regression attaches both rings to the
+signed high-half kernel guest, verifies directional writes, and still reaches
+the authenticated framebuffer marker. Hyper-V shared-page attachment and
+platform cache-coherence validation, host CUDA executor,
 kernel-specific argument schemas, operation-graph batching, completion queue,
 IOMMU plumbing, the platform-specific device-reset callback, and end-to-end
 inference benchmarks remain pending. Until those pieces exist and are audited, this is not a working
