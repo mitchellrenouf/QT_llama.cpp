@@ -54,6 +54,12 @@ pub const TCG2_PROTOCOL_GUID: Guid = Guid {
     data3: 0x42be,
     data4: [0x93, 0x0b, 0xe4, 0xd7, 0x6d, 0xb2, 0x72, 0x0f],
 };
+pub const GLOBAL_VARIABLE_GUID: Guid = Guid {
+    data1: 0x8be4_df61,
+    data2: 0x93ca,
+    data3: 0x11d2,
+    data4: [0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c],
+};
 pub const ACPI_20_TABLE_GUID: Guid = Guid {
     data1: 0x8868_e871,
     data2: 0xe4f1,
@@ -178,6 +184,23 @@ pub struct BootServices {
     pub locate_protocol: LocateProtocol,
 }
 
+pub type GetVariable =
+    unsafe extern "efiapi" fn(*const u16, *const Guid, *mut u32, *mut usize, *mut c_void) -> Status;
+
+#[repr(C)]
+pub struct RuntimeServices {
+    pub header: TableHeader,
+    pub get_time: usize,
+    pub set_time: usize,
+    pub get_wakeup_time: usize,
+    pub set_wakeup_time: usize,
+    pub set_virtual_address_map: usize,
+    pub convert_pointer: usize,
+    pub get_variable: GetVariable,
+    pub get_next_variable_name: usize,
+    pub set_variable: usize,
+}
+
 #[repr(C)]
 pub struct LoadedImageProtocol {
     pub revision: u32,
@@ -239,7 +262,7 @@ pub struct SystemTable {
     pub con_out: *mut c_void,
     pub standard_error_handle: Handle,
     pub std_err: *mut c_void,
-    pub runtime_services: *mut c_void,
+    pub runtime_services: *mut RuntimeServices,
     pub boot_services: *mut BootServices,
     pub table_entry_count: usize,
     pub configuration_table: *mut ConfigurationTable,
@@ -628,6 +651,8 @@ mod tests {
         assert_eq!(core::mem::offset_of!(Tcg2Event, header), 4);
         assert_eq!(core::mem::offset_of!(Tcg2Event, event), 18);
         assert_eq!(core::mem::size_of::<Tcg2Protocol>(), 56);
+        assert_eq!(core::mem::offset_of!(RuntimeServices, get_variable), 72);
+        assert_eq!(core::mem::size_of::<RuntimeServices>(), 96);
         assert_eq!(
             core::mem::offset_of!(LoadedImageProtocol, device_handle),
             24

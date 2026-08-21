@@ -142,6 +142,10 @@ pub unsafe extern "efiapi" fn efi_main(image: Handle, table: *mut SystemTable) -
 unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     let system = unsafe { table.as_mut() }.ok_or(LOAD_ERROR)?;
     let services = unsafe { system.boot_services.as_mut() }.ok_or(LOAD_ERROR)?;
+    let secure_boot = detect_secure_boot(system.runtime_services)?;
+    if require_secure_boot() && !secure_boot {
+        return Err(LOAD_ERROR);
+    }
 
     let mut gop_pointer = core::ptr::null_mut();
     check(unsafe {
@@ -257,6 +261,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         kernel_version,
         kernel_measurement,
         measured_boot,
+        secure_boot,
         entropy,
         acpi_root,
         framebuffer,
@@ -275,6 +280,44 @@ fn embedded_minimum_version() -> Option<u64> {
 
 fn require_tpm_measurement() -> bool {
     matches!(option_env!("MRML_REQUIRE_TPM"), Some("1"))
+}
+
+fn require_secure_boot() -> bool {
+    matches!(option_env!("MRML_REQUIRE_SECURE_BOOT"), Some("1"))
+}
+
+fn detect_secure_boot(runtime: *mut RuntimeServices) -> Result<bool, Status> {
+    const SECURE_BOOT: &[u16] = &[83, 101, 99, 117, 114, 101, 66, 111, 111, 116, 0];
+    const SETUP_MODE: &[u16] = &[83, 101, 116, 117, 112, 77, 111, 100, 101, 0];
+    let runtime = unsafe { runtime.as_ref() }.ok_or(LOAD_ERROR)?;
+    Ok(read_boolean_variable(runtime, SECURE_BOOT)? == Some(true)
+        && read_boolean_variable(runtime, SETUP_MODE)? == Some(false))
+}
+
+fn read_boolean_variable(runtime: &RuntimeServices, name: &[u16]) -> Result<Option<bool>, Status> {
+    if name.last().copied() != Some(0) {
+        return Err(LOAD_ERROR);
+    }
+    let mut attributes = 0u32;
+    let mut size = 1usize;
+    let mut value = 0u8;
+    let status = unsafe {
+        (runtime.get_variable)(
+            name.as_ptr(),
+            &GLOBAL_VARIABLE_GUID,
+            &mut attributes,
+            &mut size,
+            (&mut value as *mut u8).cast(),
+        )
+    };
+    if status == NOT_FOUND {
+        return Ok(None);
+    }
+    check(status)?;
+    if size != 1 || value > 1 {
+        return Err(LOAD_ERROR);
+    }
+    Ok(Some(value == 1))
 }
 
 fn measure_kernel(services: &BootServices, payload: &[u8]) -> Result<bool, Status> {
@@ -431,6 +474,7 @@ fn enter_kernel(
     kernel_version: u64,
     kernel_measurement: [u8; 64],
     measured_boot: bool,
+    secure_boot: bool,
     entropy: [u8; 32],
     acpi_root: u64,
     framebuffer: Framebuffer,
@@ -478,7 +522,7 @@ fn enter_kernel(
         kernel_version,
         entropy,
         kernel_measurement,
-        false,
+        secure_boot,
         measured_boot,
         acpi_root,
         framebuffer_info,

@@ -204,6 +204,16 @@ an event log, but is not a monotonic counter. TPM NV provisioning,
 authorization, atomic version advancement, and recovery remain separate work
 and no rollback-resistance claim is made yet.
 
+The loader also reads the standard global `SecureBoot` and `SetupMode`
+variables through its original raw runtime-services ABI. It reports secure boot
+only when `SecureBoot` is exactly one and `SetupMode` is exactly zero; absent,
+malformed, or contradictory values never become positive evidence. Set
+`MRML_REQUIRE_SECURE_BOOT=1` to reject any other state. This verifies firmware
+enforcement state but does not itself create an Authenticode signature. The
+platform-compatible RSA/CMS signing path remains an optional build-tool task;
+the inner hash-based MRML signature remains mandatory regardless of firmware
+mode.
+
 ### OS executable format
 
 PE32+ is the sole executable binary format for MRML on x86-64. The kernel, VM
