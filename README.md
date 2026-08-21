@@ -213,6 +213,12 @@ two-phase submission. It preflights every MoE proof before making any launch
 GPU-visible, rejects mutation with zero launches, then submits validated entries
 in their original order through a narrow trusted backend. Backend failure after
 the launch phase starts remains uncertain and uses watchdog/reset recovery.
+The CUDA runtime implements that backend with a fixed-capacity generational
+binding table. It rejects stale IDs and range overflow, rereads sealed MoE
+controls from device memory, and lowers resolved addresses plus typed scalar
+bits to the exact embedded ID-to-symbol entry with validated launch geometry.
+Unsafe raw binding requires retained allocation ownership; device addresses
+never enter the guest protocol.
 The executor trait accepts only a `ValidatedGpuBatch`. That type can be created
 only by combining watchdog-bound identities, the verified embedded-bundle
 token, and successful ABI validation of every dispatch; mixed batches reject

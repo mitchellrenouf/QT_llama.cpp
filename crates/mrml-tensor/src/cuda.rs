@@ -7,6 +7,10 @@ use core::marker::PhantomData;
 use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use mrml_kernel::{
+    BufferAccess, BufferId, GpuHostBackend, MAX_DISPATCH_BUFFERS, MAX_DISPATCH_SCALARS,
+    MAX_GPU_CONTROL_BYTES, PreparedGpuDispatch, ValidatedExpertSelection, ValidatedKernelLaunch,
+};
 use mrml_runtime::{OnceCell, OrderedMap, Shared, SpinMutex, Text, Vector};
 
 #[cfg(unix)]
@@ -1513,6 +1517,207 @@ pub struct CudaDevice {
     stream: CudaStream,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediatedCudaError {
+    InvalidBinding,
+    RangeOverflow,
+    Driver(i32),
+    LaunchFailed,
+}
+
+#[derive(Clone, Copy)]
+struct MediatedCudaBinding {
+    generation: u32,
+    address: u64,
+    bytes: u64,
+}
+
+impl MediatedCudaBinding {
+    const EMPTY: Option<Self> = None;
+}
+
+/// Concrete CUDA implementation of the microkernel's trusted GPU backend.
+/// Device addresses never enter the guest ABI and are resolved only from
+/// generational buffer IDs after the kernel has validated every range.
+pub struct MediatedCudaBackend<const N: usize> {
+    device_id: i32,
+    stream: CudaStream,
+    bindings: [Option<MediatedCudaBinding>; N],
+}
+
+impl<const N: usize> MediatedCudaBackend<N> {
+    pub const fn new(device_id: i32, stream: CudaStream) -> Self {
+        Self {
+            device_id,
+            stream,
+            bindings: [MediatedCudaBinding::EMPTY; N],
+        }
+    }
+
+    /// Bind an opaque session buffer to an allocation owned by the isolated
+    /// CUDA service.
+    ///
+    /// # Safety
+    /// `address..address + bytes` must remain a live allocation on `device_id`
+    /// until this binding is replaced or removed, and may not alias a binding
+    /// with conflicting ownership.
+    pub unsafe fn bind_device_range(
+        &mut self,
+        id: BufferId,
+        address: u64,
+        bytes: u64,
+    ) -> Result<(), MediatedCudaError> {
+        if address == 0 || bytes == 0 {
+            return Err(MediatedCudaError::InvalidBinding);
+        }
+        let end = address
+            .checked_add(bytes)
+            .ok_or(MediatedCudaError::RangeOverflow)?;
+        if self.bindings.iter().flatten().any(|binding| {
+            binding.address < end
+                && address
+                    < binding
+                        .address
+                        .checked_add(binding.bytes)
+                        .unwrap_or(u64::MAX)
+        }) {
+            return Err(MediatedCudaError::InvalidBinding);
+        }
+        let slot = self
+            .bindings
+            .get_mut(id.slot() as usize)
+            .ok_or(MediatedCudaError::InvalidBinding)?;
+        if slot.is_some() {
+            return Err(MediatedCudaError::InvalidBinding);
+        }
+        *slot = Some(MediatedCudaBinding {
+            generation: id.generation(),
+            address,
+            bytes,
+        });
+        Ok(())
+    }
+
+    pub fn unbind(&mut self, id: BufferId) -> Result<(), MediatedCudaError> {
+        let slot = self
+            .bindings
+            .get_mut(id.slot() as usize)
+            .ok_or(MediatedCudaError::InvalidBinding)?;
+        if slot.is_none_or(|binding| binding.generation != id.generation()) {
+            return Err(MediatedCudaError::InvalidBinding);
+        }
+        *slot = None;
+        Ok(())
+    }
+
+    fn resolve(&self, access: BufferAccess) -> Result<u64, MediatedCudaError> {
+        let binding = self
+            .bindings
+            .get(access.buffer().slot() as usize)
+            .and_then(|value| *value)
+            .filter(|binding| binding.generation == access.buffer().generation())
+            .ok_or(MediatedCudaError::InvalidBinding)?;
+        let end = access
+            .offset()
+            .checked_add(access.length())
+            .ok_or(MediatedCudaError::RangeOverflow)?;
+        if end > binding.bytes {
+            return Err(MediatedCudaError::InvalidBinding);
+        }
+        binding
+            .address
+            .checked_add(access.offset())
+            .ok_or(MediatedCudaError::RangeOverflow)
+    }
+
+    fn copy_from_device(
+        &self,
+        access: BufferAccess,
+        output: &mut [u8],
+    ) -> Result<(), MediatedCudaError> {
+        if access.length() != output.len() as u64 {
+            return Err(MediatedCudaError::InvalidBinding);
+        }
+        let address = self.resolve(access)?;
+        let status = unsafe {
+            cudaSetDevice(self.device_id);
+            cudaMemcpy(
+                output.as_mut_ptr().cast(),
+                address as usize as *const c_void,
+                output.len(),
+                CudaMemcpyKind::DeviceToHost,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(MediatedCudaError::Driver(status))
+        }
+    }
+}
+
+impl<const N: usize> GpuHostBackend for MediatedCudaBackend<N> {
+    type Error = MediatedCudaError;
+
+    fn reverify_expert_selection(
+        &mut self,
+        selection: &ValidatedExpertSelection,
+    ) -> Result<bool, Self::Error> {
+        let id_length = usize::try_from(selection.ids().length())
+            .map_err(|_| MediatedCudaError::InvalidBinding)?;
+        let weight_length = usize::try_from(selection.weights().length())
+            .map_err(|_| MediatedCudaError::InvalidBinding)?;
+        if id_length > MAX_GPU_CONTROL_BYTES || weight_length > MAX_GPU_CONTROL_BYTES {
+            return Err(MediatedCudaError::InvalidBinding);
+        }
+        let mut ids = [0u8; MAX_GPU_CONTROL_BYTES];
+        let mut weights = [0u8; MAX_GPU_CONTROL_BYTES];
+        self.copy_from_device(selection.ids(), &mut ids[..id_length])?;
+        self.copy_from_device(selection.weights(), &mut weights[..weight_length])?;
+        Ok(selection
+            .verify(&ids[..id_length], &weights[..weight_length])
+            .is_ok())
+    }
+
+    fn launch(
+        &mut self,
+        _: PreparedGpuDispatch,
+        launch: ValidatedKernelLaunch,
+    ) -> Result<(), Self::Error> {
+        let dispatch = launch.dispatch();
+        let mut addresses = [0u64; MAX_DISPATCH_BUFFERS];
+        let mut scalars = [0u32; MAX_DISPATCH_SCALARS];
+        let mut arguments = [ptr::null_mut(); MAX_DISPATCH_BUFFERS + MAX_DISPATCH_SCALARS];
+        let mut count = 0;
+        for (index, access) in dispatch.accesses().enumerate() {
+            addresses[index] = self.resolve(access)?;
+            arguments[count] = (&mut addresses[index] as *mut u64).cast();
+            count += 1;
+        }
+        for (index, scalar) in dispatch.scalars().enumerate() {
+            scalars[index] = scalar.bits();
+            arguments[count] = (&mut scalars[index] as *mut u32).cast();
+            count += 1;
+        }
+        let name =
+            embedded_kernel_name(dispatch.kernel().get()).ok_or(MediatedCudaError::LaunchFailed)?;
+        let grid = dispatch.grid();
+        let block = dispatch.block();
+        unsafe {
+            cudaSetDevice(self.device_id);
+            launch_rust_kernel_shared(
+                name,
+                (grid[0], grid[1], grid[2]),
+                (block[0], block[1], block[2]),
+                dispatch.shared_memory(),
+                self.stream,
+                &mut arguments[..count],
+            )
+        }
+        .map_err(|_| MediatedCudaError::LaunchFailed)
+    }
+}
+
 pub struct CudaGraphExec {
     handle: CudaGraphExecHandle,
     device_id: i32,
@@ -1760,7 +1965,6 @@ impl CudaDevice {
         }
         Ok(Self { device_id, stream })
     }
-
 
     pub fn sync(&self) -> Result<()> {
         unsafe { cudaSetDevice(self.device_id) };
@@ -2825,6 +3029,32 @@ mod tests {
         }
         assert_eq!(embedded_kernel_name(28), None);
         assert_eq!(rust_kernel_index("guest_selected_kernel"), None);
+    }
+
+    #[test]
+    fn mediated_cuda_bindings_are_generational_and_range_checked() {
+        let mut session = mrml_kernel::VirtualGpuSession::<2>::new(128);
+        let id = session.allocate(64).unwrap();
+        let other = session.allocate(64).unwrap();
+        let mut backend = MediatedCudaBackend::<2>::new(0, ptr::null_mut());
+        unsafe { backend.bind_device_range(id, 0x1000, 64) }.unwrap();
+        assert_eq!(
+            unsafe { backend.bind_device_range(other, 0x1020, 64) },
+            Err(MediatedCudaError::InvalidBinding)
+        );
+        assert_eq!(
+            backend.resolve(BufferAccess::new(id, 16, 32, mrml_kernel::BufferMode::Read,)),
+            Ok(0x1010)
+        );
+        assert_eq!(
+            backend.resolve(BufferAccess::new(id, 48, 17, mrml_kernel::BufferMode::Read,)),
+            Err(MediatedCudaError::InvalidBinding)
+        );
+        backend.unbind(id).unwrap();
+        assert_eq!(
+            backend.resolve(BufferAccess::new(id, 0, 1, mrml_kernel::BufferMode::Read,)),
+            Err(MediatedCudaError::InvalidBinding)
+        );
     }
 
     #[test]

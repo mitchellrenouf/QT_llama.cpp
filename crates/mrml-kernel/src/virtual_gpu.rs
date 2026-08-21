@@ -995,6 +995,7 @@ fn validate_expert_selection(
         || weights.length != bytes as u64
         || id_bytes.len() != bytes
         || weight_bytes.len() != bytes
+        || bytes > MAX_GPU_CONTROL_BYTES
     {
         return Err(GpuError::InvalidExpertSelection);
     }
@@ -1059,6 +1060,14 @@ pub struct BufferId {
 }
 
 impl BufferId {
+    pub const fn slot(self) -> u32 {
+        self.slot
+    }
+
+    pub const fn generation(self) -> u32 {
+        self.generation
+    }
+
     const fn token(self) -> u64 {
         ((self.generation as u64) << 32) | self.slot as u64
     }

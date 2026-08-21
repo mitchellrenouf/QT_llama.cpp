@@ -244,6 +244,12 @@ The first asks the trusted isolated-memory backend to re-read and verify every
 retained expert selection; any mismatch rejects before a launch. Only after the
 entire preflight succeeds does the second pass lower validated entries in order.
 Backend errors during that pass retain uncertain-acceptance watchdog semantics.
+`MediatedCudaBackend` is the concrete CUDA adapter. Its fixed-capacity table
+maps generational IDs to service-owned device allocations, checks every range,
+rereads bounded MoE proof bytes, and constructs driver arguments only from
+resolved addresses and typed scalar bits. The validated kernel ID selects the
+build-embedded symbol and all geometry comes from the validated dispatch. Raw
+binding is unsafe with explicit lifetime and non-aliasing obligations.
 All other IDs return `UnsupportedKernelSchema`, so adding an ID to the signed
 registry alone cannot make it executable. Contextual batch integration of the 5 MoE schemas and the
 actual CUDA launch adapter are pending.
