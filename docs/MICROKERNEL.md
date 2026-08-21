@@ -73,7 +73,11 @@ zero and there is no representation for PTX, pointers, driver calls, or
 variable argument blobs. In-flight work uses a fixed-capacity watchdog table
 with unique request IDs, kernel-minted generational dispatch IDs, explicit
 cancellation, and deadline expiry. Expiry invalidates an ID before requesting
-host recovery, so a late completion cannot affect a reused slot. The Hyper-V
+host recovery, so a late completion cannot affect a reused slot. The
+completion direction has its own HMAC domain, fixed status encoding, session
+and sequence state, and binds the original request ID to the exact generational
+dispatch ID. It rejects tampering, replay, cross-direction substitution,
+reserved bytes, unknown status, and stale handles before watchdog completion.
 The KVM adapter now consumes the common layout and registers two dedicated
 memory slots transactionally from the caller's perspective: command memory is
 guest-writable and completion memory uses KVM's read-only flag while remaining

@@ -48,6 +48,16 @@ pub struct DispatchId {
     generation: u32,
 }
 
+impl DispatchId {
+    pub const fn slot(self) -> u32 {
+        self.slot
+    }
+
+    pub const fn generation(self) -> u32 {
+        self.generation
+    }
+}
+
 #[derive(Clone, Copy)]
 struct InFlightDispatch {
     generation: u32,
@@ -584,6 +594,153 @@ impl GpuQueueReceiver {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GpuCompletionStatus {
+    Success,
+    Rejected,
+    TimedOut,
+    DeviceReset,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuCompletion {
+    request_id: u64,
+    dispatch: DispatchId,
+    status: GpuCompletionStatus,
+}
+
+impl GpuCompletion {
+    pub fn new(
+        request_id: u64,
+        dispatch: DispatchId,
+        status: GpuCompletionStatus,
+    ) -> Result<Self, GpuError> {
+        if request_id == 0 || dispatch.generation == 0 {
+            return Err(GpuError::InvalidDispatch);
+        }
+        Ok(Self {
+            request_id,
+            dispatch,
+            status,
+        })
+    }
+
+    pub const fn request_id(self) -> u64 {
+        self.request_id
+    }
+
+    pub const fn dispatch(self) -> DispatchId {
+        self.dispatch
+    }
+
+    pub const fn status(self) -> GpuCompletionStatus {
+        self.status
+    }
+}
+
+/// GPU-service producer for the independently authenticated completion ring.
+pub struct GpuCompletionSender {
+    session: u64,
+    next_sequence: u64,
+    key: [u8; 32],
+}
+
+impl GpuCompletionSender {
+    pub fn new(session: u64, key: [u8; 32]) -> Result<Self, GpuError> {
+        validate_queue_identity(session, &key)?;
+        Ok(Self {
+            session,
+            next_sequence: 1,
+            key,
+        })
+    }
+
+    pub fn encode(&mut self, completion: GpuCompletion, output: &mut [u8]) -> Result<(), GpuError> {
+        let output = output
+            .get_mut(..GPU_QUEUE_MESSAGE_BYTES)
+            .ok_or(GpuError::CommandBufferTooSmall)?;
+        let sequence = self.next_sequence;
+        let next = sequence.checked_add(1).ok_or(GpuError::SequenceExhausted)?;
+        output.fill(0);
+        output[..4].copy_from_slice(b"MRGC");
+        output[4] = 1;
+        output[5] = match completion.status {
+            GpuCompletionStatus::Success => 1,
+            GpuCompletionStatus::Rejected => 2,
+            GpuCompletionStatus::TimedOut => 3,
+            GpuCompletionStatus::DeviceReset => 4,
+        };
+        output[8..16].copy_from_slice(&self.session.to_le_bytes());
+        output[16..24].copy_from_slice(&sequence.to_le_bytes());
+        output[24..32].copy_from_slice(&completion.request_id.to_le_bytes());
+        output[32..36].copy_from_slice(&completion.dispatch.slot.to_le_bytes());
+        output[36..40].copy_from_slice(&completion.dispatch.generation.to_le_bytes());
+        let tag = completion_tag(&self.key, &output[..GPU_QUEUE_AUTHENTICATED_BYTES]);
+        output[48..].copy_from_slice(&tag);
+        self.next_sequence = next;
+        Ok(())
+    }
+}
+
+/// Guest-facing consumer for authenticated, strictly ordered completions.
+pub struct GpuCompletionReceiver {
+    session: u64,
+    next_sequence: u64,
+    key: [u8; 32],
+}
+
+impl GpuCompletionReceiver {
+    pub fn new(session: u64, key: [u8; 32]) -> Result<Self, GpuError> {
+        validate_queue_identity(session, &key)?;
+        Ok(Self {
+            session,
+            next_sequence: 1,
+            key,
+        })
+    }
+
+    pub fn decode(&mut self, input: &[u8]) -> Result<GpuCompletion, GpuError> {
+        if input.len() != GPU_QUEUE_MESSAGE_BYTES
+            || &input[..4] != b"MRGC"
+            || input[4] != 1
+            || input[6..8].iter().any(|byte| *byte != 0)
+            || input[40..48].iter().any(|byte| *byte != 0)
+        {
+            return Err(GpuError::MalformedCommand);
+        }
+        let expected_tag = completion_tag(&self.key, &input[..GPU_QUEUE_AUTHENTICATED_BYTES]);
+        if !constant_time_equal(&expected_tag, &input[48..]) {
+            return Err(GpuError::AuthenticationFailed);
+        }
+        if read_u64(input, 8) != self.session {
+            return Err(GpuError::WrongSession);
+        }
+        if read_u64(input, 16) != self.next_sequence {
+            return Err(GpuError::Replay);
+        }
+        let status = match input[5] {
+            1 => GpuCompletionStatus::Success,
+            2 => GpuCompletionStatus::Rejected,
+            3 => GpuCompletionStatus::TimedOut,
+            4 => GpuCompletionStatus::DeviceReset,
+            _ => return Err(GpuError::MalformedCommand),
+        };
+        let completion = GpuCompletion::new(
+            read_u64(input, 24),
+            DispatchId {
+                slot: read_u32(input, 32),
+                generation: read_u32(input, 36),
+            },
+            status,
+        )?;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(GpuError::SequenceExhausted)?;
+        Ok(completion)
+    }
+}
+
 fn validate_queue_identity(session: u64, key: &[u8; 32]) -> Result<(), GpuError> {
     if session == 0 || key.iter().all(|byte| *byte == 0) {
         return Err(GpuError::InvalidQueueKey);
@@ -593,6 +750,10 @@ fn validate_queue_identity(session: u64, key: &[u8; 32]) -> Result<(), GpuError>
 
 fn queue_tag(key: &[u8; 32], authenticated: &[u8]) -> [u8; 32] {
     hmac_sha256(key, &[b"MRML-VGPU-QUEUE-v1\0", authenticated])
+}
+
+fn completion_tag(key: &[u8; 32], authenticated: &[u8]) -> [u8; 32] {
+    hmac_sha256(key, &[b"MRML-VGPU-COMPLETION-v1\0", authenticated])
 }
 
 fn constant_time_equal(expected: &[u8; 32], candidate: &[u8]) -> bool {
@@ -1262,6 +1423,54 @@ mod tests {
             GpuQueueSender::new(11, [0; 32]),
             Err(GpuError::InvalidQueueKey)
         ));
+    }
+
+    #[test]
+    fn completion_queue_binds_dispatch_and_rejects_replay_and_cross_direction() {
+        let key = [9; 32];
+        let mut dispatches = DispatchTable::<2>::new();
+        let dispatch = dispatches.begin(44, 100, 200).unwrap();
+        let completion = GpuCompletion::new(44, dispatch, GpuCompletionStatus::Success).unwrap();
+        let mut sender = GpuCompletionSender::new(17, key).unwrap();
+        let mut receiver = GpuCompletionReceiver::new(17, key).unwrap();
+        let mut wire = [0u8; GPU_QUEUE_MESSAGE_BYTES];
+        sender.encode(completion, &mut wire).unwrap();
+
+        let mut tampered = wire;
+        tampered[24] ^= 1;
+        assert_eq!(
+            receiver.decode(&tampered),
+            Err(GpuError::AuthenticationFailed)
+        );
+        let decoded = receiver.decode(&wire).unwrap();
+        assert_eq!(decoded, completion);
+        assert_eq!(dispatches.complete(decoded.dispatch()), Ok(44));
+        assert_eq!(receiver.decode(&wire), Err(GpuError::Replay));
+
+        let mut command_receiver = GpuQueueReceiver::new(17, key).unwrap();
+        assert_eq!(
+            command_receiver.decode(&wire),
+            Err(GpuError::MalformedCommand)
+        );
+        let mut command_sender = GpuQueueSender::new(17, key).unwrap();
+        command_sender
+            .encode(1, ResourceCommand::Allocate { bytes: 1 }, &mut wire)
+            .unwrap();
+        let mut completion_receiver = GpuCompletionReceiver::new(17, key).unwrap();
+        assert_eq!(
+            completion_receiver.decode(&wire),
+            Err(GpuError::MalformedCommand)
+        );
+
+        let invalid = GpuCompletion::new(
+            44,
+            DispatchId {
+                slot: 0,
+                generation: 0,
+            },
+            GpuCompletionStatus::Success,
+        );
+        assert_eq!(invalid, Err(GpuError::InvalidDispatch));
     }
 
     #[test]

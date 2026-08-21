@@ -59,7 +59,8 @@ pub use policy::{
 pub use scheduler::{Priority, Scheduler, SchedulerError, TaskId, TaskState};
 pub use virtual_gpu::{
     BufferAccess, BufferId, BufferMode, Dispatch, DispatchId, DispatchTable,
-    GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuError, GpuQueueReceiver, GpuQueueSender,
+    GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuCompletion, GpuCompletionReceiver,
+    GpuCompletionSender, GpuCompletionStatus, GpuError, GpuQueueReceiver, GpuQueueSender,
     GpuRingConsumer, GpuRingProducer, GpuRingTicket, GpuSharedQueueLayout, GpuSharedRingIndices,
     KernelId, MAX_DISPATCH_BUFFERS, MAX_GPU_QUEUE_SLOTS, ResourceCommand, VirtualGpuSession,
 };
