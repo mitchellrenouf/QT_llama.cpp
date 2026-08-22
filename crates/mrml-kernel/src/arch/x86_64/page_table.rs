@@ -16,6 +16,29 @@ pub enum PageTableBuildError {
     Page(PageError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActiveLeaf {
+    physical: PhysAddr,
+    writable: bool,
+    executable: bool,
+    user: bool,
+}
+
+impl ActiveLeaf {
+    pub const fn physical(self) -> PhysAddr {
+        self.physical
+    }
+    pub const fn writable(self) -> bool {
+        self.writable
+    }
+    pub const fn executable(self) -> bool {
+        self.executable
+    }
+    pub const fn user(self) -> bool {
+        self.user
+    }
+}
+
 /// Minimal storage contract for physical 4 KiB page-table frames. A platform
 /// implementation must return a new zeroed frame on every allocation and make
 /// reads/writes address the direct physical table contents.
@@ -133,6 +156,29 @@ impl<S: PageTableStore> PageTableBuilder<S> {
         Ok(())
     }
 
+    pub fn unmap_exact(&mut self, expected: Mapping) -> Result<(), PageTableBuildError> {
+        for page in 0..expected.pages() {
+            let (virtual_address, physical_address) = mapping_page(expected, page)?;
+            let (table, index) = self.leaf_location(virtual_address)?;
+            let current = self.store.read(table, index)?;
+            if current & 1 == 0 {
+                return Err(PageTableBuildError::NotMapped);
+            }
+            let wanted = PageTableEntry::leaf(physical_address, expected.permissions())
+                .map_err(PageTableBuildError::Page)?
+                .bits();
+            if current & !LEAF_ACCESSED_DIRTY != wanted {
+                return Err(PageTableBuildError::MappingMismatch);
+            }
+        }
+        for page in 0..expected.pages() {
+            let (virtual_address, _) = mapping_page(expected, page)?;
+            let (table, index) = self.leaf_location(virtual_address)?;
+            self.store.write(table, index, 0)?;
+        }
+        Ok(())
+    }
+
     fn leaf_location(
         &self,
         virtual_address: VirtAddr,
@@ -233,6 +279,27 @@ impl ActivePageTables {
         self.root
     }
 
+    pub fn leaf(&self, address: VirtAddr) -> Result<Option<ActiveLeaf>, PageTableBuildError> {
+        let tables = PageTableBuilder::from_existing_root(IdentityMappedPageTables, self.root);
+        let (table, index) = tables.leaf_location(address)?;
+        let bits = tables.store.read(table, index)?;
+        if bits & 1 == 0 {
+            return Ok(None);
+        }
+        let allowed = ADDRESS_MASK | (1 << 63) | LEAF_ACCESSED_DIRTY | 0b111;
+        if bits & !allowed != 0 {
+            return Err(PageTableBuildError::MappingMismatch);
+        }
+        let physical =
+            PhysAddr::new(bits & ADDRESS_MASK).map_err(|_| PageTableBuildError::MappingMismatch)?;
+        Ok(Some(ActiveLeaf {
+            physical,
+            writable: bits & (1 << 1) != 0,
+            executable: bits & (1 << 63) == 0,
+            user: bits & (1 << 2) != 0,
+        }))
+    }
+
     /// Applies an exact-match permission transition and invalidates every
     /// affected local translation before returning.
     ///
@@ -260,6 +327,35 @@ impl ActivePageTables {
         }
         Ok(())
     }
+
+    /// Removes only the exact expected mapping and invalidates its local TLB
+    /// entries. The safety requirements from [`Self::current`] apply.
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own all affected leaf entries, ensure the
+    /// complete active hierarchy is identity mapped, and prevent concurrent
+    /// page-table mutation for the duration of this operation.
+    pub unsafe fn unmap_exact(&mut self, expected: Mapping) -> Result<(), PageTableBuildError> {
+        let mut tables = PageTableBuilder::from_existing_root(IdentityMappedPageTables, self.root);
+        tables.unmap_exact(expected)?;
+        invalidate_mapping(expected)
+    }
+}
+
+fn invalidate_mapping(mapping: Mapping) -> Result<(), PageTableBuildError> {
+    for page in 0..mapping.pages() {
+        let address = mapping
+            .virtual_start()
+            .get()
+            .checked_add(
+                page.checked_mul(PAGE_SIZE)
+                    .ok_or(PageTableBuildError::AddressOverflow)?,
+            )
+            .ok_or(PageTableBuildError::AddressOverflow)?;
+        unsafe { asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags)) };
+    }
+    Ok(())
 }
 
 fn mapping_page(mapping: Mapping, page: u64) -> Result<(VirtAddr, PhysAddr), PageTableBuildError> {
@@ -424,6 +520,11 @@ mod tests {
         assert_eq!(
             builder.protect(executable, PagePermissions::KERNEL_MMIO_READ_WRITE),
             Ok(())
+        );
+        assert_eq!(builder.unmap_exact(mapping), Ok(()));
+        assert_eq!(
+            builder.unmap_exact(mapping),
+            Err(PageTableBuildError::NotMapped)
         );
     }
 }

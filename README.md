@@ -320,8 +320,14 @@ it supervisor-RW/NX, and identity-maps every page-table frame actually allocated
 can perform the checked seal. An `ActivePageTables` view opens CR3 without
 allocating, applies the same exact-match transition through identity-mapped
 frames, preserves hardware Accessed/Dirty state, and invalidates every affected
-TLB entry before publication. Completing the in-kernel UEFI adapter and KVM
-page backend, per-CPU interrupt routing, and a live
+TLB entry before publication. The in-kernel adapter now inspects the actual
+active leaf, accepts only the
+exact identity-mapped supervisor RW/NX page, copies only in that state, seals
+it RX through the checked transition, and on a failed installation reverses
+RX, zeroes the page, unmaps the exact leaf, invalidates it, and verifies that
+the mapping is absent. Wiring that adapter to a relocated AP entry with
+firmware-provisioned AP-private stacks, the KVM page backend, per-CPU interrupt
+routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of

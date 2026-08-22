@@ -1,4 +1,6 @@
-use super::PAGE_SIZE;
+use core::sync::atomic::{Ordering, compiler_fence};
+
+use super::{ActivePageTables, Mapping, PAGE_SIZE, PagePermissions, PhysAddr, VirtAddr};
 
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
 const LONG_MODE_OFFSET: usize = 80;
@@ -32,6 +34,131 @@ pub trait ApTrampolinePage {
     fn write_page(&mut self, physical: u64, bytes: &[u8; PAGE_BYTES]) -> bool;
     fn protect_read_execute(&mut self, physical: u64) -> bool;
     fn revoke_and_zero(&mut self, physical: u64) -> bool;
+}
+
+pub struct ActiveApTrampolinePage {
+    tables: ActivePageTables,
+    physical: u64,
+}
+
+impl ActiveApTrampolinePage {
+    /// Opens the current root for one identity-mapped low trampoline page.
+    ///
+    /// # Safety
+    ///
+    /// The safety contract of [`ActivePageTables::current`] applies, and
+    /// `physical` must name an exclusively owned page whose initial active leaf
+    /// is supervisor read/write and NX.
+    pub unsafe fn current(physical: u64) -> Result<Self, ApTrampolineError> {
+        if !(PAGE_SIZE..0x10_0000).contains(&physical) || !physical.is_multiple_of(PAGE_SIZE) {
+            return Err(ApTrampolineError::InvalidPhysicalPage);
+        }
+        let tables = unsafe { ActivePageTables::current() }
+            .map_err(|_| ApTrampolineError::UnsafePermissions)?;
+        Ok(Self { tables, physical })
+    }
+
+    fn mapping(&self, permissions: PagePermissions) -> Option<Mapping> {
+        Mapping::new(
+            VirtAddr::new(self.physical).ok()?,
+            PhysAddr::new(self.physical).ok()?,
+            1,
+            permissions,
+        )
+        .ok()
+    }
+}
+
+impl ApTrampolinePage for ActiveApTrampolinePage {
+    fn permissions(&self, physical: u64) -> Option<TrampolinePermissions> {
+        if physical != self.physical {
+            return None;
+        }
+        let leaf = self.tables.leaf(VirtAddr::new(physical).ok()?).ok()??;
+        if leaf.physical().get() != physical || leaf.user() {
+            return None;
+        }
+        Some(TrampolinePermissions {
+            readable: true,
+            writable: leaf.writable(),
+            executable: leaf.executable(),
+        })
+    }
+
+    fn write_page(&mut self, physical: u64, bytes: &[u8; PAGE_BYTES]) -> bool {
+        if self.permissions(physical)
+            != Some(TrampolinePermissions {
+                readable: true,
+                writable: true,
+                executable: false,
+            })
+        {
+            return false;
+        }
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), physical as *mut u8, PAGE_BYTES) };
+        compiler_fence(Ordering::SeqCst);
+        true
+    }
+
+    fn protect_read_execute(&mut self, physical: u64) -> bool {
+        if physical != self.physical {
+            return false;
+        }
+        let Some(expected) = self.mapping(PagePermissions::KERNEL_LOW_READ_WRITE) else {
+            return false;
+        };
+        unsafe {
+            self.tables
+                .protect(expected, PagePermissions::KERNEL_LOW_READ_EXECUTE)
+                .is_ok()
+        }
+    }
+
+    fn revoke_and_zero(&mut self, physical: u64) -> bool {
+        if physical != self.physical {
+            return false;
+        }
+        let permissions = self.permissions(physical);
+        if permissions
+            == Some(TrampolinePermissions {
+                readable: true,
+                writable: false,
+                executable: true,
+            })
+        {
+            let Some(executable) = self.mapping(PagePermissions::KERNEL_LOW_READ_EXECUTE) else {
+                return false;
+            };
+            if unsafe {
+                self.tables
+                    .protect(executable, PagePermissions::KERNEL_LOW_READ_WRITE)
+            }
+            .is_err()
+            {
+                return false;
+            }
+        } else if permissions
+            != Some(TrampolinePermissions {
+                readable: true,
+                writable: true,
+                executable: false,
+            })
+        {
+            return false;
+        }
+        unsafe { core::ptr::write_bytes(physical as *mut u8, 0, PAGE_BYTES) };
+        compiler_fence(Ordering::SeqCst);
+        let Some(writable) = self.mapping(PagePermissions::KERNEL_LOW_READ_WRITE) else {
+            return false;
+        };
+        if unsafe { self.tables.unmap_exact(writable) }.is_err() {
+            return false;
+        }
+        let Ok(address) = VirtAddr::new(physical) else {
+            return false;
+        };
+        self.tables.leaf(address).is_ok_and(|leaf| leaf.is_none())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

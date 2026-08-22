@@ -15,8 +15,8 @@ mod trap;
 pub use acpi::{AcpiError, AcpiMemory, copy_madt};
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
 pub use ap_trampoline::{
-    ApTrampolineError, ApTrampolineImage, ApTrampolinePage, InstalledApTrampoline,
-    TrampolinePermissions,
+    ActiveApTrampolinePage, ApTrampolineError, ApTrampolineImage, ApTrampolinePage,
+    InstalledApTrampoline, TrampolinePermissions,
 };
 pub use context::{
     ContextError, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_INITIAL_RFLAGS, UserContext,
@@ -29,7 +29,9 @@ pub use descriptors::{
     write_task_state_descriptor,
 };
 pub use local_apic::{ApStartupTiming, ApicIpi, LocalApicError, LocalApicTimer, TimerDivide};
-pub use page_table::{ActivePageTables, PageTableBuildError, PageTableBuilder, PageTableStore};
+pub use page_table::{
+    ActiveLeaf, ActivePageTables, PageTableBuildError, PageTableBuilder, PageTableStore,
+};
 pub use pe_mapping::{PeMappingError, map_pe_image};
 pub use privilege_stack::{
     CpuPrivilegeStacks, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES, PerCpuPrivilegeStacks,
@@ -85,6 +87,7 @@ impl PagePermissions {
     pub const KERNEL_READ: Self = Self(0);
     pub const KERNEL_READ_WRITE: Self = Self(1 << 0);
     pub const KERNEL_READ_EXECUTE: Self = Self(1 << 1);
+    pub const KERNEL_LOW_READ_WRITE: Self = Self((1 << 0) | (1 << 3));
     pub const KERNEL_LOW_READ_EXECUTE: Self = Self((1 << 1) | (1 << 3));
     pub const KERNEL_SHARED_READ: Self = Self(1 << 3);
     pub const KERNEL_SHARED_READ_WRITE: Self = Self((1 << 0) | (1 << 3));

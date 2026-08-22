@@ -1447,7 +1447,12 @@ frames created during that operation are included without mapping unrelated
 loader storage. A no-allocation active-CR3 view applies exact-match changes,
 accepts and preserves only hardware Accessed/Dirty leaf changes, and issues
 `invlpg` for every transitioned address. The in-kernel adapter still needs to
-apply the final seal.
+apply the final seal. The active adapter is now implemented: it requires the
+exact identity-mapped supervisor RW/NX leaf before copying, seals through the
+checked RX transition, and on a later failure changes RX back to NX, zeroes the
+page, removes only the expected leaf, invalidates it, and verifies absence.
+Kernel entry does not invoke it yet because firmware-provisioned AP-private
+stacks and the relocated AP entry remain unfinished.
 Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
