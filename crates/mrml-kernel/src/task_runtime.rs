@@ -3,7 +3,8 @@ use core::array;
 use crate::arch::x86_64::{TrapDisposition, UserContext};
 use crate::{
     Capability, CapabilitySpace, DetachedTask, Endpoint, IpcError, KernelScheduleError,
-    KernelScheduler, Message, Priority, Rights, ScheduleOutcome, TaskId, TaskMigration,
+    KernelScheduler, Message, Priority, Rights, ScheduleOutcome, SchedulerLoad, TaskId,
+    TaskMigration,
 };
 
 pub const TASK_INBOX_MESSAGES: usize = 2;
@@ -183,6 +184,23 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
                 Err(TaskRuntimeError::Scheduler(error))
             }
         }
+    }
+
+    pub fn detach_domain_for_rebalance(
+        &mut self,
+        destination: SchedulerLoad,
+    ) -> Result<Option<DetachedTaskDomain<CAPS>>, TaskRuntimeError> {
+        let Some(candidate) = self
+            .scheduler
+            .rebalance_candidate(destination)
+            .map_err(TaskRuntimeError::Scheduler)?
+        else {
+            return Ok(None);
+        };
+        if self.domain(candidate).is_none() {
+            return Err(TaskRuntimeError::IntegrityFailure);
+        }
+        self.detach_domain(candidate).map(Some)
     }
 
     /// Admits a complete migrated user domain under a fresh local scheduler
@@ -871,5 +889,38 @@ mod tests {
             PhysAddr::new(0x20_0000).unwrap()
         );
         assert!(mailbox.take().is_none());
+    }
+
+    #[test]
+    fn runtime_rebalance_selects_only_an_identity_with_a_complete_domain() {
+        let mut source = TaskRuntime::<3, 1>::new(1_000, 1).unwrap();
+        let mut destination = TaskRuntime::<2, 1>::new(1_000, 1).unwrap();
+        let current = source
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        source
+            .create(Priority::RESPONSIVE, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        source
+            .create(Priority::BACKGROUND, context(0x40_0000, 0x60_0000))
+            .unwrap();
+        destination
+            .create(Priority::NORMAL, context(0x50_0000, 0x70_0000))
+            .unwrap();
+        source.start();
+
+        let mut ticket = source
+            .detach_domain_for_rebalance(destination.scheduler.load())
+            .unwrap();
+        let migration = destination.attach_domain(&mut ticket).unwrap();
+        assert_ne!(migration.source(), current);
+        assert_eq!(migration.priority(), Priority::RESPONSIVE);
+        assert_eq!(
+            destination
+                .context(migration.destination())
+                .unwrap()
+                .instruction_pointer(),
+            0x50_0000
+        );
     }
 }

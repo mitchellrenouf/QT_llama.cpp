@@ -584,17 +584,28 @@ impl<const TASKS: usize> KernelScheduler<TASKS> {
         &mut self,
         destination: SchedulerLoad,
     ) -> Result<Option<DetachedTask>, KernelScheduleError> {
+        match self.rebalance_candidate(destination)? {
+            Some(candidate) => self.detach(candidate).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Selects without mutating, allowing a higher-level runtime to verify its
+    /// complete domain exists before retiring the scheduler identity.
+    pub fn rebalance_candidate(
+        &self,
+        destination: SchedulerLoad,
+    ) -> Result<Option<TaskId>, KernelScheduleError> {
         let source = self.load();
         if destination.occupied == destination.capacity
             || source.runnable <= destination.runnable.saturating_add(1)
         {
             return Ok(None);
         }
-        let candidate = self
-            .scheduler
+        self.scheduler
             .migration_candidate(self.current)
-            .ok_or(KernelScheduleError::NoMigrationCandidate)?;
-        self.detach(candidate).map(Some)
+            .map(Some)
+            .ok_or(KernelScheduleError::NoMigrationCandidate)
     }
 
     /// Admits an exclusively owned migration ticket. Failure returns the same
