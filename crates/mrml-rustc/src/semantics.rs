@@ -1002,6 +1002,16 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                                         depth,
                                     )?;
                                 }
+                                crate::ConditionalAssignmentAction::Return(return_statement) => {
+                                    return Ok(Some(evaluate_const_return_statement(
+                                        context,
+                                        symbol_count,
+                                        return_statement,
+                                        return_type,
+                                        resolver,
+                                        depth,
+                                    )?));
+                                }
                             }
                         }
                         selected = true;
@@ -1028,6 +1038,16 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                                     resolver,
                                     depth,
                                 )?;
+                            }
+                            crate::ConditionalAssignmentAction::Return(return_statement) => {
+                                return Ok(Some(evaluate_const_return_statement(
+                                    context,
+                                    symbol_count,
+                                    return_statement,
+                                    return_type,
+                                    resolver,
+                                    depth,
+                                )?));
                             }
                         }
                     }
@@ -1139,6 +1159,38 @@ fn evaluate_const_expression_statement<
         )?;
     }
     Ok(())
+}
+
+fn evaluate_const_return_statement<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: usize>(
+    context: &ConstCallContext<'_, 'source, MAX_ITEMS, MAX_PARAMETERS>,
+    symbol_count: usize,
+    return_statement: &crate::LoopReturn<'source>,
+    return_type: ConstCallType,
+    resolver: &mut ConstCallResolver<'source>,
+    depth: ConstEvalDepth,
+) -> Result<u128, SemanticErrorKind> {
+    let value = return_statement
+        .parse_value::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
+        .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
+    match return_type {
+        ConstCallType::Bool => Ok(u128::from(evaluate_boolean_const_expression(
+            context,
+            symbol_count,
+            &value,
+            value.root(),
+            resolver,
+            depth,
+        )?)),
+        ConstCallType::Integer(ty) => evaluate_integer_const_expression(
+            context,
+            symbol_count,
+            &value,
+            value.root(),
+            ty,
+            resolver,
+            depth,
+        ),
+    }
 }
 
 fn evaluate_const_local<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: usize>(
@@ -2793,7 +2845,7 @@ mod tests {
     #[test]
     fn evaluates_conditional_const_assignments_lazily() {
         let module = Parser::new(
-            "const fn choose(value: u8) -> u8 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; } else if value == 1 { result = 40; 84 / value; result += 2; } else if value == 2 { result = 40; 42 / value; result += 2; } else { result = 40; value + 10; result += 2; } result } const FIRST: u8 = choose(0); const MIDDLE: u8 = choose(1); const LATER: u8 = choose(2); const FALLBACK: u8 = choose(3); const fn optional(value: u8) -> u8 { let mut result = 40; if value == 0 { result += 1; value + 1; result += 1; } else if value == 1 { result += 3; value + 1; result -= 1; } result } const UNSELECTED: u8 = optional(2);",
+            "const fn choose(value: u8) -> u8 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; return result; } else if value == 1 { result = 40; 84 / value; result += 2; return result; } else if value == 2 { result = 40; 42 / value; result += 2; return result; } else { result = 40; value + 10; result += 2; return result; } 1 / value } const FIRST: u8 = choose(0); const MIDDLE: u8 = choose(1); const LATER: u8 = choose(2); const FALLBACK: u8 = choose(3); const fn optional(value: u8) -> u8 { let mut result = 40; if value == 0 { result += 1; value + 1; result += 1; } else if value == 1 { result += 3; value + 1; result -= 1; } result } const UNSELECTED: u8 = optional(2);",
         )
         .parse_module::<8, 2>()
         .unwrap();

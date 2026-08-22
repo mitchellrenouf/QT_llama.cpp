@@ -127,6 +127,7 @@ pub struct Assignment<'source> {
 pub enum ConditionalAssignmentAction<'source> {
     Assignment(Assignment<'source>),
     Expression(ExpressionStatement<'source>),
+    Return(LoopReturn<'source>),
 }
 
 type ConditionalAssignmentBlock<'source> = (
@@ -809,6 +810,21 @@ impl<'source> BodyParser<'source> {
         }))
     }
 
+    fn return_record(&mut self) -> Result<Option<LoopReturn<'source>>, ParseError> {
+        if !self.peek()?.is_some_and(|token| token.text == "return") {
+            return Ok(None);
+        }
+        let mut probe = self.clone();
+        probe.take()?;
+        let (value, value_span) = match probe.return_value() {
+            Ok(value) => value,
+            Err(error) if error.kind == ParseErrorKind::ExpectedSemicolon => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        *self = probe;
+        Ok(Some(LoopReturn { value, value_span }))
+    }
+
     fn conditional_assignment_block(
         &mut self,
     ) -> Result<Option<ConditionalAssignmentBlock<'source>>, ParseError> {
@@ -830,6 +846,8 @@ impl<'source> BodyParser<'source> {
             let action = if let Some(assignment) = self.assignment_record()? {
                 saw_assignment = true;
                 ConditionalAssignmentAction::Assignment(assignment)
+            } else if let Some(return_statement) = self.return_record()? {
+                ConditionalAssignmentAction::Return(return_statement)
             } else if let Some(expression) = self.expression_statement_record()? {
                 ConditionalAssignmentAction::Expression(expression)
             } else {
@@ -2088,7 +2106,7 @@ mod tests {
     #[test]
     fn parses_bounded_conditional_assignments_in_body_order() {
         let module = Parser::new(
-            "fn choose(value: u8, select: bool) -> u8 { let mut result = value; if select { result += 1; value + 10; result ^= 3; } else if value == 1 { result -= 1; result + value; result += 2; } else if value == 2 { result = 42; } else { result *= 2; result == value; result += 1; } if result == 0 { result = 42; } result }",
+            "fn choose(value: u8, select: bool) -> u8 { let mut result = value; if select { result += 1; value + 10; result ^= 3; return result; } else if value == 1 { result -= 1; result + value; result += 2; return result; } else if value == 2 { result = 42; } else { result *= 2; result == value; result += 1; return result; } if result == 0 { result = 42; } result }",
         )
         .parse_module::<2, 2>()
         .unwrap();
@@ -2101,7 +2119,7 @@ mod tests {
         assert_eq!(first.branch_count(), 3);
         let first_branch = first.branches()[0].unwrap();
         assert_eq!(first_branch.condition, "select");
-        assert_eq!(first_branch.action_count(), 3);
+        assert_eq!(first_branch.action_count(), 4);
         let Some(ConditionalAssignmentAction::Assignment(first_assignment)) =
             first_branch.actions()[0]
         else {
@@ -2119,6 +2137,11 @@ mod tests {
             panic!("expected assignment")
         };
         assert_eq!(last_assignment.operator, AssignmentOperator::BitXor);
+        let Some(ConditionalAssignmentAction::Return(return_statement)) = first_branch.actions()[3]
+        else {
+            panic!("expected return")
+        };
+        assert_eq!(return_statement.value, "result");
         assert_eq!(first.branches()[1].unwrap().condition, "value == 1");
         let Some(ConditionalAssignmentAction::Assignment(assignment)) =
             first.branches()[1].unwrap().actions()[0]
@@ -2127,7 +2150,7 @@ mod tests {
         };
         assert_eq!(assignment.operator, AssignmentOperator::Subtract);
         assert_eq!(first.branches()[2].unwrap().condition, "value == 2");
-        assert_eq!(first.else_action_count(), 3);
+        assert_eq!(first.else_action_count(), 4);
         let Some(ConditionalAssignmentAction::Assignment(assignment)) = first.else_actions()[0]
         else {
             panic!("expected assignment")

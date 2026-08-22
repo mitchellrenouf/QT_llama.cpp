@@ -42,6 +42,7 @@
 // - tests/ui/consts/const-eval/issue-64970.rs
 // - tests/ui/binding/if-let.rs
 // - tests/ui/drop/dynamic-drop.rs
+// - tests/ui/structs-enums/class-impl-very-parameterized-trait.rs
 // - tests/ui/consts/const-fn-const-eval.rs
 // - tests/ui/consts/const-extern-fn/const-extern-fn.rs
 // - tests/ui/consts/const-negative.rs
@@ -116,6 +117,17 @@ fn rustc_weird_exprs_has_a_guarded_discarded_expression_replacement() {
     // contexts. This original scalar replacement covers their ordered,
     // value-discarding behavior inside selected conditional branches only.
     let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u32) -> u32 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; } else if value == 1 { result = 40; 84 / value; result += 2; } else { result = 40; value == 3; result += 2; } result }";
+    assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
+    assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
+fn rustc_parameterized_class_has_a_scalar_mutate_then_return_replacement() {
+    // The pinned method performs an expression, mutation, and return in each
+    // selected branch. This original replacement covers only the scalar action
+    // order; it does not claim structs, methods, generics, formatting, or
+    // ownership behavior.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: i32) -> bool { let mut hunger: i32 = value; if hunger > 0 { hunger + 10; hunger -= 2; return hunger == value - 2; } else { hunger - 10; hunger += 2; return hunger == value + 2; } false }";
     assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
     assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
 }

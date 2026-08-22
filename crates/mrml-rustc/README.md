@@ -575,7 +575,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 199 Windows library, conformance, rustc-nightly-replacement, and driver
+The 200 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1051,6 +1051,18 @@ dangerous assignment, but would divide by zero if a later branch's discarded
 expression leaked across selection. A selected discarded division-by-zero
 expression is separately rejected during const evaluation, proving these
 statements execute rather than disappear.
+Value-return actions now share that ordered branch stream. Native lowering
+checks each return against the declared function type and emits the normal
+frame epilogue; const evaluation immediately propagates the selected value.
+An original scalar replacement maps the expression/mutation/return order in
+pinned `tests/ui/structs-enums/class-impl-very-parameterized-trait.rs`; structs,
+methods, generics, formatting, and ownership are not claimed. The unchanged
+pinned run-pass test compiled and ran with the exact dated nightly on both
+hosts. MRML's 602-byte COFF and 992-byte ELF objects passed independent
+`no_std` callers through first, middle, later-return, and ordinary fallthrough
+paths. Passing zero would trap if either the unselected later expression or the
+post-conditional tail executed. A Boolean return in an integer function is
+rejected at native code generation.
 
 Linux used native Arch Linux WSL2 `x86_64-unknown-linux-gnu` with the identical
 nightly commit:
@@ -1066,7 +1078,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 199 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 200 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

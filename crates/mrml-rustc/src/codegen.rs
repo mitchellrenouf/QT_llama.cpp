@@ -595,6 +595,7 @@ pub fn compile_x86_64_function_with_options<
                 let conditional = body.conditional_assignments()[*index].unwrap();
                 emitter.emit_conditional_assignment::<MAX_EXPRESSION_NODES>(
                     &conditional,
+                    expected_type,
                     function.body_expression_span.start,
                 )?;
             }
@@ -977,6 +978,7 @@ pub fn compile_x86_64_function_with_options<
                 let conditional = body.conditional_assignments()[*index].unwrap();
                 emitter.emit_conditional_assignment::<MAX_EXPRESSION_NODES>(
                     &conditional,
+                    expected_type,
                     function.body_expression_span.start,
                 )?;
             }
@@ -2411,6 +2413,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     fn emit_conditional_assignment<const MAX_EXPRESSION_NODES: usize>(
         &mut self,
         conditional: &crate::ConditionalAssignment<'_>,
+        expected_type: RuntimeExpressionType,
         body_start: usize,
     ) -> Result<(), CodegenError> {
         let mut end_patches = [None; crate::MAX_CONDITIONAL_ASSIGNMENT_BRANCHES];
@@ -2454,6 +2457,13 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                             statement, body_start,
                         )?;
                     }
+                    crate::ConditionalAssignmentAction::Return(return_statement) => {
+                        self.emit_return::<MAX_EXPRESSION_NODES>(
+                            return_statement,
+                            expected_type,
+                            body_start,
+                        )?;
+                    }
                 }
             }
             end_patches[end_count] = Some(self.emit_unconditional_forward_branch()?);
@@ -2467,6 +2477,13 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 }
                 crate::ConditionalAssignmentAction::Expression(statement) => {
                     self.emit_expression_statement::<MAX_EXPRESSION_NODES>(statement, body_start)?;
+                }
+                crate::ConditionalAssignmentAction::Return(return_statement) => {
+                    self.emit_return::<MAX_EXPRESSION_NODES>(
+                        return_statement,
+                        expected_type,
+                        body_start,
+                    )?;
                 }
             }
         }
@@ -3582,7 +3599,7 @@ mod tests {
 
     #[test]
     fn emits_lazy_conditional_assignments() {
-        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn choose(value: u64) -> u64 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; } else if value == 1 { result = 40; 84 / value; result += 2; } else if value == 2 { result = 40; 42 / value; result += 2; } else { result = 40; value + 10; result += 2; } if value == 4 { result += 1; value * 3; result *= 2; } else if value == 5 { result += 2; value * 3; result *= 2; } result }";
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn choose(value: u64) -> u64 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; return result; } else if value == 1 { result = 40; 84 / value; result += 2; return result; } else if value == 2 { result = 40; 42 / value; result += 2; return result; } else { result = 40; value + 10; result += 2; return result; } 1 / value }";
         let module = Parser::new(source).parse_module::<2, 4>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")
@@ -3597,6 +3614,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn bad(value: u64, select: bool) -> u64 { let result = value; if select { result = 1; } result }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn bad(value: u64) -> u64 { let mut result = value; if value { result = 1; } result }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn bad(value: u64, select: bool) -> u64 { let mut result = value; if select { result = false; } result }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn bad(value: u64, select: bool) -> u64 { let mut result = value; if select { result += 1; return false; } result }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {
