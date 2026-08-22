@@ -533,8 +533,10 @@ pub fn coefficient_base_context(
     let class = tx_class(tx_type);
     let class_index = match class {
         TxClass::TwoDimensional => 0,
-        TxClass::Vertical => 1,
-        TxClass::Horizontal => 2,
+        // Section 3 assigns TX_CLASS_HORIZ=1 and TX_CLASS_VERT=2; the
+        // normative neighbor tables use that numeric order.
+        TxClass::Horizontal => 1,
+        TxClass::Vertical => 2,
     };
     let row = position / width;
     let column = position % width;
@@ -590,8 +592,8 @@ pub fn coefficient_br_context(
     let class = tx_class(tx_type);
     let class_index = match class {
         TxClass::TwoDimensional => 0,
-        TxClass::Vertical => 1,
-        TxClass::Horizontal => 2,
+        TxClass::Horizontal => 1,
+        TxClass::Vertical => 2,
     };
     let row = position / width;
     let column = position % width;
@@ -613,8 +615,8 @@ pub fn coefficient_br_context(
     } else {
         match class {
             TxClass::TwoDimensional if row < 2 && column < 2 => 7,
-            TxClass::Vertical if column == 0 => 7,
-            TxClass::Horizontal if row == 0 => 7,
+            TxClass::Horizontal if column == 0 => 7,
+            TxClass::Vertical if row == 0 => 7,
             _ => 14,
         }
     };
@@ -1416,6 +1418,40 @@ mod tests {
         assert_eq!(
             coefficient_br_context(&quantized, TxSize::Tx4x4, TxType::DctDct, 1),
             Ok(11)
+        );
+    }
+
+    #[test]
+    fn directional_context_tables_follow_normative_class_numbering() {
+        let mut quantized = [0i32; 64];
+        // Position 55 is two columns to the right of position 53, but there
+        // are no rows below it in a 16x4 transform. Horizontal class 1 sees
+        // that sample; vertical class 2 does not.
+        quantized[55] = 1;
+        assert_eq!(
+            coefficient_base_context(&quantized, TxSize::Tx16x4, TxType::VerticalFlipAdst, 53,),
+            Ok(36)
+        );
+        assert_eq!(
+            coefficient_base_context(&quantized, TxSize::Tx16x4, TxType::HorizontalFlipAdst, 53,),
+            Ok(37)
+        );
+        assert_eq!(
+            coefficient_br_context(&quantized, TxSize::Tx16x4, TxType::VerticalFlipAdst, 53,),
+            Ok(14)
+        );
+        assert_eq!(
+            coefficient_br_context(&quantized, TxSize::Tx16x4, TxType::HorizontalFlipAdst, 53,),
+            Ok(15)
+        );
+        let zeros = [0i32; 64];
+        assert_eq!(
+            coefficient_br_context(&zeros, TxSize::Tx16x4, TxType::VerticalFlipAdst, 48,),
+            Ok(14)
+        );
+        assert_eq!(
+            coefficient_br_context(&zeros, TxSize::Tx16x4, TxType::HorizontalFlipAdst, 48,),
+            Ok(7)
         );
     }
 

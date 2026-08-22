@@ -1189,6 +1189,13 @@ pub fn scan_temporal_motion_field(
                   stack: &mut MotionStack,
                   result: &mut TemporalScanResult|
      -> Result<(), Error> {
+        // Section 7.10.2.6 pessimistically sets this context for the origin
+        // sample before attempting the motion-field lookup. An unavailable
+        // origin therefore leaves the context at one; only a valid candidate
+        // close to the global motion resets it to zero.
+        if delta_row == 0 && delta_column == 0 {
+            result.zero_mv_context = 1;
+        }
         let row = (i64::from(config.block.row) + i64::from(delta_row)) | 1;
         let column = (i64::from(config.block.column) + i64::from(delta_column)) | 1;
         let (width8, height8) = field.dimensions();
@@ -3146,5 +3153,30 @@ mod tests {
             }
         );
         assert_eq!(stack.entries()[0].weight, 8);
+    }
+
+    #[test]
+    fn unavailable_temporal_origin_preserves_nonzero_zero_mv_context() {
+        use crate::partition::BlockSize;
+
+        let field = MotionField::new(16, 16).unwrap();
+        let mut stack = MotionStack::new().unwrap();
+        let result = scan_temporal_motion_field(
+            &field,
+            &mut stack,
+            TemporalScanConfig {
+                block: BlockRect::new(0, 0, BlockSize::Block16x16),
+                references: [1, -1],
+                compound: false,
+                force_integer: false,
+                allow_high_precision: false,
+                global_motion: [MotionVector::default(); 2],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.zero_mv_context, 1);
+        assert_eq!(result.samples_added, 0);
+        assert!(stack.entries().is_empty());
     }
 }
