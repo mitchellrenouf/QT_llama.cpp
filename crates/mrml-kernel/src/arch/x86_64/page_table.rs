@@ -53,6 +53,102 @@ pub trait PageTableStore {
     ) -> Result<(), PageTableBuildError>;
 }
 
+/// Monotonic page-table storage backed by a caller-owned, identity-mapped
+/// physical arena. This is used after firmware allocation is unavailable.
+pub struct PreallocatedPageTableStore {
+    base: PhysAddr,
+    capacity: usize,
+    allocated: usize,
+}
+
+impl PreallocatedPageTableStore {
+    /// Opens a zeroable arena for exclusive page-table construction.
+    ///
+    /// # Safety
+    ///
+    /// Every page in `[base, base + pages * PAGE_SIZE)` must be identity
+    /// mapped, supervisor-writable, exclusively owned by the caller, and not
+    /// observable by another CPU for the lifetime of this store.
+    pub unsafe fn new(base: PhysAddr, pages: u64) -> Result<Self, PageTableBuildError> {
+        let capacity = usize::try_from(pages).map_err(|_| PageTableBuildError::Storage)?;
+        if capacity == 0
+            || capacity > 256
+            || !base.get().is_multiple_of(PAGE_SIZE)
+            || pages
+                .checked_mul(PAGE_SIZE)
+                .and_then(|bytes| base.get().checked_add(bytes))
+                .is_none_or(|end| end >> 52 != 0)
+        {
+            return Err(PageTableBuildError::Storage);
+        }
+        Ok(Self {
+            base,
+            capacity,
+            allocated: 0,
+        })
+    }
+
+    pub const fn allocated_pages(&self) -> usize {
+        self.allocated
+    }
+
+    fn issued_table(&self, table: PhysAddr) -> Result<usize, PageTableBuildError> {
+        let offset = table
+            .get()
+            .checked_sub(self.base.get())
+            .ok_or(PageTableBuildError::Storage)?;
+        if !offset.is_multiple_of(PAGE_SIZE) {
+            return Err(PageTableBuildError::Storage);
+        }
+        let page = usize::try_from(offset / PAGE_SIZE).map_err(|_| PageTableBuildError::Storage)?;
+        if page >= self.allocated {
+            return Err(PageTableBuildError::Storage);
+        }
+        Ok(page)
+    }
+}
+
+impl PageTableStore for PreallocatedPageTableStore {
+    fn allocate_zeroed(&mut self) -> Result<PhysAddr, PageTableBuildError> {
+        if self.allocated == self.capacity {
+            return Err(PageTableBuildError::Storage);
+        }
+        let address = self
+            .base
+            .get()
+            .checked_add((self.allocated as u64) * PAGE_SIZE)
+            .ok_or(PageTableBuildError::Storage)?;
+        let frame = PhysAddr::new(address).map_err(|_| PageTableBuildError::Storage)?;
+        for index in 0..512 {
+            unsafe { (address as *mut u64).add(index).write_volatile(0) };
+        }
+        self.allocated += 1;
+        Ok(frame)
+    }
+
+    fn read(&self, table: PhysAddr, index: usize) -> Result<u64, PageTableBuildError> {
+        if index >= 512 {
+            return Err(PageTableBuildError::Storage);
+        }
+        self.issued_table(table)?;
+        Ok(unsafe { (table.get() as *const u64).add(index).read_volatile() })
+    }
+
+    fn write(
+        &mut self,
+        table: PhysAddr,
+        index: usize,
+        value: u64,
+    ) -> Result<(), PageTableBuildError> {
+        if index >= 512 {
+            return Err(PageTableBuildError::Storage);
+        }
+        self.issued_table(table)?;
+        unsafe { (table.get() as *mut u64).add(index).write_volatile(value) };
+        Ok(())
+    }
+}
+
 pub struct PageTableBuilder<S> {
     store: S,
     root: PhysAddr,
@@ -382,6 +478,9 @@ fn mapping_page(mapping: Mapping, page: u64) -> Result<(VirtAddr, PhysAddr), Pag
 mod tests {
     use super::*;
 
+    #[repr(C, align(4096))]
+    struct IdentityArena([[u64; 512]; 5]);
+
     struct Tables {
         pages: [[u64; 512]; 8],
         used: usize,
@@ -471,6 +570,34 @@ mod tests {
         assert_eq!(leaf & ADDRESS_MASK, 0x9000);
         assert_eq!(leaf & (1 << 63), 0);
         assert_eq!(leaf & (1 << 1), 0);
+    }
+
+    #[test]
+    fn preallocated_store_zeros_and_confines_issued_tables() {
+        let mut arena = IdentityArena([[u64::MAX; 512]; 5]);
+        let base = PhysAddr::new(arena.0.as_mut_ptr() as u64).unwrap();
+        let store = unsafe { PreallocatedPageTableStore::new(base, 4) }.unwrap();
+        let mut builder = PageTableBuilder::new(store).unwrap();
+        builder
+            .map_page(
+                VirtAddr::new(0x4000).unwrap(),
+                PhysAddr::new(0x20_0000).unwrap(),
+                PagePermissions::USER_READ_EXECUTE,
+            )
+            .unwrap();
+        assert_eq!(builder.store().allocated_pages(), 4);
+        assert_eq!(arena.0[0][511], 0);
+        assert_eq!(arena.0[4][0], u64::MAX);
+        let mut store = builder.into_store();
+        assert_eq!(store.allocate_zeroed(), Err(PageTableBuildError::Storage));
+        assert_eq!(
+            store.read(PhysAddr::new(base.get() + 4 * PAGE_SIZE).unwrap(), 0),
+            Err(PageTableBuildError::Storage)
+        );
+        assert_eq!(
+            store.write(PhysAddr::new(base.get() + 4 * PAGE_SIZE).unwrap(), 0, 0),
+            Err(PageTableBuildError::Storage)
+        );
     }
 
     #[test]

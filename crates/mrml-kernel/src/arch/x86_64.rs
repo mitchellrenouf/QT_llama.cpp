@@ -35,6 +35,7 @@ pub use local_apic::{
 };
 pub use page_table::{
     ActiveLeaf, ActivePageTables, PageTableBuildError, PageTableBuilder, PageTableStore,
+    PreallocatedPageTableStore,
 };
 pub use pe_mapping::{PeMappingError, map_pe_image};
 pub use privilege_stack::{
