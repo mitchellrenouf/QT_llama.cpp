@@ -3,7 +3,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use mrml_error::{Context, Result, anyhow};
-use mrml_git::{Change, Cli, MergeOutcome, NativeChangeKind, Repository, validate_positional};
+use mrml_git::{Change, Cli, MergeOutcome, NativeChangeKind, RebaseOutcome, Repository, validate_positional};
 use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println};
 use mrml_ssh::SshRemote;
 use mrml_terminal_style::Colorize;
@@ -542,7 +542,10 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "rebase" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &["rebase", "--", &tail[0]])
+            let name=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(||"MRML User".into());
+            let email=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(||"mrml@localhost".into());
+            let timestamp=mrml_runtime::unix_time_seconds().ok_or_else(||anyhow!("system time is unavailable"))?;
+            match native_repository(repository)?.rebase(&tail[0],&name,&email,timestamp).map_err(|error|anyhow!("{}",error))?{RebaseOutcome::UpToDate=>println!("Current branch is up to date."),RebaseOutcome::Rebased{count,head}=>println!("Rebased {} commit(s); HEAD is {}",count,&head.to_hex()[..12]),RebaseOutcome::Conflicts(count)=>println!("Rebase stopped with {} conflict(s)",count)}Ok(())
         }
         "cherry-pick" if tail.len() == 1 => {
             checked_positionals(tail)?;
@@ -564,7 +567,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
             Ok(())
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "rebase" => {
-            run_visible(repository, &["rebase", "--abort"])
+            let id=native_repository(repository)?.abort_rebase().map_err(|error|anyhow!("{}",error))?;println!("Aborted rebase; restored {}",&id.to_hex()[..12]);Ok(())
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "cherry-pick" => {
             let id=native_repository(repository)?.abort_cherry_pick().map_err(|error|anyhow!("{}",error))?;

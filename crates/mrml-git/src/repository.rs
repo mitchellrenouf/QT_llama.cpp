@@ -51,6 +51,13 @@ pub enum MergeOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RebaseOutcome {
+    UpToDate,
+    Rebased { count: usize, head: ObjectId },
+    Conflicts(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RepositoryError {
     File(FileError),
     Index(IndexError),
@@ -733,6 +740,30 @@ impl Repository {
 
     pub fn abort_cherry_pick(&self) -> Result<ObjectId, RepositoryError> {
         self.abort_operation("CHERRY_PICK_HEAD")
+    }
+
+    pub fn rebase(&self, revision: &str, committer_name: &str, committer_email: &str, timestamp: u64) -> Result<RebaseOutcome, RepositoryError> {
+        validate_identity(committer_name, committer_email)?;
+        if !self.changes()?.is_empty() { return Err(RepositoryError::WorktreeDirty); }
+        let original=self.head()?.ok_or(RepositoryError::ReferenceMissing)?;let target=self.resolve_revision(revision)?;
+        if self.is_ancestor(target,original)? { return Ok(RebaseOutcome::UpToDate); }
+        let base=self.merge_base(original,target)?;let mut commits=Vector::new();let mut cursor=original;
+        while cursor!=base {let commit=self.read_commit(cursor)?;if commit.parents.len()!=1{return Err(RepositoryError::MergeRequired);}commits.push(cursor);cursor=commit.parents[0];if commits.len()>1_000_000{return Err(RepositoryError::TooManyFiles);}}
+        commits.reverse();
+        write_file(&join_path(&self.git_dir,"REBASE_ORIG_HEAD"),mrml_runtime::mrml_format!("{original}\n").as_bytes())?;
+        let target_index=self.tree_index(self.read_commit(target)?.tree)?;self.materialize_index(&target_index)?;self.update_current_branch(target)?;
+        let mut head=target;
+        for(offset,commit)in commits.iter().enumerate(){write_file(&join_path(&self.git_dir,"REBASE_HEAD"),mrml_runtime::mrml_format!("{commit}\n").as_bytes())?;match self.cherry_pick(&commit.to_hex(),committer_name,committer_email,timestamp.saturating_add(offset as u64))?{MergeOutcome::Merged(id)=>head=id,MergeOutcome::Conflicts(count)=>return Ok(RebaseOutcome::Conflicts(count)),_=>return Err(RepositoryError::MergeRequired)}}
+        for name in ["REBASE_HEAD","REBASE_ORIG_HEAD"]{let path=join_path(&self.git_dir,name);if path_is_file(&path){mrml_runtime::remove_file(&path)?;}}
+        Ok(RebaseOutcome::Rebased{count:commits.len(),head})
+    }
+
+    pub fn abort_rebase(&self) -> Result<ObjectId, RepositoryError> {
+        let original_path=join_path(&self.git_dir,"REBASE_ORIG_HEAD");if !path_is_file(&original_path){return Err(RepositoryError::ReferenceMissing);}
+        let value=read_file_text_bounded(&original_path,4096)?;let original=ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
+        let index=self.tree_index(self.read_commit(original)?.tree)?;self.materialize_index(&index)?;self.update_current_branch(original)?;
+        for name in ["REBASE_HEAD","REBASE_ORIG_HEAD","CHERRY_PICK_HEAD","ORIG_HEAD"]{let path=join_path(&self.git_dir,name);if path_is_file(&path){mrml_runtime::remove_file(&path)?;}}
+        Ok(original)
     }
 
     fn abort_operation(&self, state: &str) -> Result<ObjectId, RepositoryError> {
@@ -2243,6 +2274,17 @@ mod tests {
         repository.switch_branch("main").unwrap();let own=join_path(&path,"own");write_file(&own,b"own").unwrap();repository.stage(&Vector::from([Text::from("own")])).unwrap();let parent=repository.commit("own","MRML","mrml@example.invalid",3).unwrap();
         let id=match repository.cherry_pick(&picked.to_hex(),"Committer","committer@example.invalid",4).unwrap(){MergeOutcome::Merged(id)=>id,other=>panic!("unexpected {other:?}")};
         let commit=repository.read_commit(id).unwrap();assert_eq!(&commit.parents[..],&[parent]);assert!(commit.author.starts_with("Original "));assert!(path_is_file(&added));assert!(path_is_file(&own));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn rebases_linear_commits_onto_target() {
+        let path=root("rebase");let repository=Repository::init(&path).unwrap();
+        let base=join_path(&path,"base");write_file(&base,b"base").unwrap();repository.stage(&Vector::from([Text::from("base")])).unwrap();repository.commit("base","MRML","mrml@example.invalid",1).unwrap();
+        repository.create_branch("topic",true).unwrap();let topic_file=join_path(&path,"topic");write_file(&topic_file,b"topic").unwrap();repository.stage(&Vector::from([Text::from("topic")])).unwrap();let topic=repository.commit("topic","Topic","topic@example.invalid",2).unwrap();
+        repository.switch_branch("main").unwrap();let main_file=join_path(&path,"main");write_file(&main_file,b"main").unwrap();repository.stage(&Vector::from([Text::from("main")])).unwrap();let original=repository.commit("main","Main","main@example.invalid",3).unwrap();
+        let head=match repository.rebase("topic","Committer","committer@example.invalid",4).unwrap(){RebaseOutcome::Rebased{count:1,head}=>head,other=>panic!("unexpected {other:?}")};
+        assert_ne!(head,original);assert_eq!(repository.read_commit(head).unwrap().parents[0],topic);assert!(path_is_file(&topic_file));assert!(path_is_file(&main_file));
         remove_dir_all(&path).unwrap();
     }
 }
