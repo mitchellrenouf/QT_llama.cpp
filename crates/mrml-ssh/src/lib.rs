@@ -2,6 +2,13 @@
 
 use mrml_runtime::Text;
 
+mod protocol;
+
+pub use protocol::{
+    AlgorithmProposal, BinaryReader, BinaryWriter, ExchangeKeys, Identification, ProtocolError,
+    derive_exchange_keys, negotiate, parse_identification,
+};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SshRemote {
     pub user: Option<Text>,
