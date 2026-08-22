@@ -1747,6 +1747,21 @@ fn rustc_fixed_length_packed_array_abi_reaches_native_objects() {
 }
 
 #[test]
+fn rustc_packed_fixed_array_local_slices_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8) -> u8 { let mut values = [input, 10, 20, 30]; let slice: &mut [u8] = &mut values[1..=2]; slice[1] += 2; values[2] + slice[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u16) -> u16 { let mut values = [input, 1000, 2000, 3000, 4000]; let slice: &mut [u16] = &mut values[1..4]; slice[1] += 2; values[2] + slice[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u32) -> u32 { let mut values = [input, 100000, 200000]; values = [input, values[1], values[2]]; let slice: &[u32] = &values[..2]; slice[0] + slice[1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: bool) -> bool { let mut values = [input, false, true]; let slice: &mut [bool] = &mut values[1..]; slice[0] ^= true; values[1] && slice[1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: char) -> char { let mut values = [input, 'x', 'y']; let slice: &mut [char] = &mut values[1..3]; slice[0] = 'z'; values[1] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_sixteen_element_fixed_arrays_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [u8; 16]) -> [u8; 16] { let mut copied = values; copied[15] += 1; copied }",

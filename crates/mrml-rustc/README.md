@@ -291,8 +291,10 @@ element in an unselected array arm, and materializes a selected default element
 as zero. A combined probe covering both branch orders and a semicolonless tail
 `break` emitted
 93-byte COFF and 488-byte ELF64 objects; independent pinned-nightly callers on
-both hosts observed 43. Immutable fixed-array locals now retain each of their
-up to sixteen scalar elements in a distinct stack slot. Both explicit
+both hosts observed 43. Immutable fixed-array locals now retain their up to
+sixteen scalar elements in contiguous stack backing. One-, two-, and four-byte
+elements are packed into their native layout; eight-byte elements occupy one
+slot apiece. Both explicit
 `[scalar; N]` annotations and inferred literal types are accepted, including a
 typed contextual default or loop-break array initializer. Constant indexes load
 the selected slot while preserving parameter offsets, surrounding scalar
@@ -351,8 +353,9 @@ unchanged on both hosts. Independent one-, two-, and three-word return probes
 emitted 137-, 167-, and 168-byte COFF objects and 528-, 544-, and 552-byte ELF64
 objects; pinned-nightly callers observed `[42]`, `[13, 14]`, and `[13, 42, 99]`
 on both hosts. Narrow integer, Boolean, and character arrays use their compact
-one-, two-, or four-byte element layout at the ABI boundary while retaining one
-auditable internal stack slot per element. Windows packs total sizes of one,
+one-, two-, or four-byte element layout at the ABI boundary and in fixed-array
+local backing. Array-expression temporaries remain independently auditable
+until local initialization packs them after left-to-right evaluation. Windows packs total sizes of one,
 two, four, or eight bytes into a direct integer argument/result and otherwise
 uses its indirect aggregate class. System V packs up to two eightbytes into
 registers and rolls the complete value back to its stack class when necessary.
@@ -408,9 +411,9 @@ bounds-checked constant or runtime indexing plus exact-width mutable element
 stores. Independent callers changed `[40usize, 10, 20, 30]` through a runtime
 index and observed `[40, 10, 22, 30]` plus the returned sum 62 through 237-byte
 COFF and 624-byte ELF64 objects. References can also target MRML's internal
-expanded fixed-array locals. Runtime metadata distinguishes their reversed
-eight-byte stack stride from native contiguous arrays and preserves it through
-typed copies and reborrows. Independent callers mutated indexes 0, 2, and 3
+fixed-array locals. Their contiguous positive-stride backing uses the element's
+native width and is preserved through typed copies and reborrows. Independent
+callers mutated indexes 0, 2, and 3
 and observed 42, 22, and 32 through 272-byte COFF and 656-byte ELF64 objects.
 Shared and mutable scalar-element slice parameters use their native two-word
 fat-pointer representation. The Windows prologue follows pinned rustc by
@@ -439,14 +442,19 @@ range forms. Each endpoint is evaluated once; inclusive-end overflow,
 callers selected elements 1 through 2 dynamically, observed length 2, changed
 20 to 22, and returned 34 through 422-byte COFF and 808-byte ELF64 objects. A
 reversed range produced Windows `0xC000001D` and Linux `SIGILL`. Ranges over
-eight-byte-element array locals use positive-stride contiguous stack backing,
-so shared and mutable slices preserve aliasing with the original local. Native
-callers dynamically selected elements 1 through 2, mutated 20 to 22 through
-the slice, then observed that value through the array and returned 34 through
-439-byte COFF and 832-byte ELF64 objects. Packed backing for narrower local
-elements and general aggregate ABI transport remain separate work. Array
-elements are still evaluated left to right; completed temporary slots are
-reordered only afterward when positive-stride local backing is required.
+fixed-array locals use positive-stride contiguous stack backing, so shared and
+mutable slices preserve aliasing with the original local. Native callers
+dynamically selected elements 1 through 2 from an eight-byte-element local,
+mutated 20 to 22 through the slice, then observed that value through the array
+and returned 34 through 439-byte COFF and 832-byte ELF64 objects. Packed one-,
+two-, and four-byte local probes additionally mutated through `u8` and `u16`
+slices and copied a `u32` array before slicing it. Independent Windows and Arch
+Linux callers observed 32, 3,002, and 100,007; their COFF objects were 641, 685,
+and 671 bytes and their ELF64 objects were 1,032, 1,072, and 1,064 bytes.
+Boolean and character local slices have object-emission regressions for their
+exact-width stores. Array elements are still evaluated left to right; completed
+temporary slots are packed or reordered only afterward when positive-stride
+local backing is required.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -946,7 +954,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 305 Windows library, conformance, rustc-nightly-replacement, and driver
+The 307 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer

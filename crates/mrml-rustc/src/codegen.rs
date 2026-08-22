@@ -1701,7 +1701,6 @@ enum RuntimeReferenceTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeReferenceArrayLayout {
     Native,
-    ExpandedStack,
 }
 
 fn runtime_reference_target_type(
@@ -1723,7 +1722,7 @@ fn runtime_reference_target_from_type(
         RuntimeExpressionType::Array { element, count } => Ok(RuntimeReferenceTarget::Array {
             element,
             count,
-            layout: RuntimeReferenceArrayLayout::ExpandedStack,
+            layout: RuntimeReferenceArrayLayout::Native,
         }),
         RuntimeExpressionType::Reference { .. } => {
             Err(CodegenErrorKind::RuntimeExpressionUnsupported)
@@ -1823,6 +1822,19 @@ fn runtime_type_stack_slots(ty: RuntimeExpressionType) -> usize {
         } => 2,
         _ => 1,
     }
+}
+
+fn runtime_local_stack_slots(ty: RuntimeExpressionType) -> usize {
+    let RuntimeExpressionType::Array { element, count } = ty else {
+        return runtime_type_stack_slots(ty);
+    };
+    let Some(element_bytes @ (1 | 2 | 4)) = runtime_array_element_bytes(element) else {
+        return count;
+    };
+    element_bytes
+        .checked_mul(count)
+        .and_then(|bytes| bytes.checked_add(7))
+        .map_or(count, |bytes| bytes / 8)
 }
 
 fn runtime_array_element_bytes(element: RuntimeArrayElementType) -> Option<usize> {
@@ -2700,9 +2712,6 @@ fn runtime_expression_type_with_locals<
                                 .rev()
                                 .find(|local| local.name == name)
                                 .ok_or(CodegenErrorKind::RuntimeTypeMismatch)?;
-                            if runtime_array_element_bytes(element) != Some(8) {
-                                return Err(CodegenErrorKind::UnsupportedRuntimeType);
-                            }
                             (element, count, local.mutable)
                         }
                         _ => return Err(CodegenErrorKind::RuntimeTypeMismatch),
@@ -3872,6 +3881,22 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     if index >= count {
                         return Err(self.error(CodegenErrorKind::ValueOutOfRange));
                     }
+                    let element_bytes = runtime_array_element_bytes(element)
+                        .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+                    if matches!(element_bytes, 1 | 2 | 4) {
+                        let slots = self
+                            .local_stack_slots_from(local_index + 1)?
+                            .checked_add(self.evaluation_depth)
+                            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+                        self.emit_stack_slot_address(slots)?;
+                        let offset = index
+                            .checked_mul(element_bytes)
+                            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+                        if offset != 0 {
+                            self.emit(&[0x48, 0x83, 0xc0, offset as u8])?;
+                        }
+                        return self.emit_reference_load(element);
+                    }
                     let slots = self
                         .local_stack_slots_from(local_index + 1)?
                         .checked_add(index)
@@ -4078,7 +4103,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let RuntimeReferenceTarget::Array {
             element,
             count,
-            layout,
+            layout: _,
         } = target
         else {
             return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
@@ -4100,16 +4125,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         }
         self.emit(&[0x48, 0x89, 0xc1, 0x58])?;
         self.evaluation_depth -= 1;
-        if layout == RuntimeReferenceArrayLayout::ExpandedStack {
-            self.emit(&[0x48, 0xc1, 0xe1, 0x03, 0x48, 0x01, 0xc8])?;
-        } else {
-            match element_bytes {
-                1 => self.emit(&[0x48, 0x01, 0xc8])?,
-                2 => self.emit(&[0x48, 0x8d, 0x04, 0x48])?,
-                4 => self.emit(&[0x48, 0x8d, 0x04, 0x88])?,
-                8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8])?,
-                _ => return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
-            }
+        match element_bytes {
+            1 => self.emit(&[0x48, 0x01, 0xc8])?,
+            2 => self.emit(&[0x48, 0x8d, 0x04, 0x48])?,
+            4 => self.emit(&[0x48, 0x8d, 0x04, 0x88])?,
+            8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8])?,
+            _ => return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
         }
         self.emit_reference_load(element)
     }
@@ -4380,9 +4401,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
                 };
-                if runtime_array_element_bytes(element) != Some(8) {
-                    return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType));
-                }
                 (element, count, Some(name))
             }
             _ => return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch)),
@@ -4701,10 +4719,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         } else {
             local_type
         };
-        let stack_slots = runtime_type_stack_slots(local_type);
-        if let RuntimeExpressionType::Array { count, .. } = local_type {
+        let stack_slots = runtime_local_stack_slots(local_type);
+        if let RuntimeExpressionType::Array { element, count } = local_type {
             self.emit_array_to_stack(&tree, tree.root(), count)?;
-            self.evaluation_depth -= count;
+            self.pack_temporary_array_for_local(element, count)?;
+            self.evaluation_depth -= stack_slots;
         } else if matches!(
             local_type,
             RuntimeExpressionType::Reference {
@@ -4918,14 +4937,14 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.value_span),
             });
         }
-        if let RuntimeExpressionType::Array { count, .. } = target.ty {
+        if let RuntimeExpressionType::Array { element, count } = target.ty {
             if assignment.operator != crate::AssignmentOperator::Assign {
                 return Err(CodegenError {
                     kind: CodegenErrorKind::UnsupportedRuntimeOperator,
                     span: translate_span(body_start, assignment.name_span),
                 });
             }
-            return self.emit_array_assignment(&tree, tree.root(), index, count);
+            return self.emit_array_assignment(&tree, tree.root(), index, element, count);
         }
         if assignment.operator == crate::AssignmentOperator::Assign {
             self.emit_expression(&tree, tree.root(), 0)?;
@@ -5163,41 +5182,33 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     fn emit_reference_array_address_from_stack_index(
         &mut self,
         element_bytes: usize,
-        layout: RuntimeReferenceArrayLayout,
+        _layout: RuntimeReferenceArrayLayout,
         index_slot: u8,
     ) -> Result<(), CodegenError> {
         self.emit(&[0x48, 0x8b, 0x4c, 0x24, index_slot * 8])?;
-        if layout == RuntimeReferenceArrayLayout::ExpandedStack {
-            self.emit(&[0x48, 0xc1, 0xe1, 0x03, 0x48, 0x01, 0xc8])
-        } else {
-            match element_bytes {
-                0 => Ok(()),
-                1 => self.emit(&[0x48, 0x01, 0xc8]),
-                2 => self.emit(&[0x48, 0x8d, 0x04, 0x48]),
-                4 => self.emit(&[0x48, 0x8d, 0x04, 0x88]),
-                8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8]),
-                _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
-            }
+        match element_bytes {
+            0 => Ok(()),
+            1 => self.emit(&[0x48, 0x01, 0xc8]),
+            2 => self.emit(&[0x48, 0x8d, 0x04, 0x48]),
+            4 => self.emit(&[0x48, 0x8d, 0x04, 0x88]),
+            8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8]),
+            _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
         }
     }
 
     fn emit_reference_array_store_address_from_stack_index(
         &mut self,
         element_bytes: usize,
-        layout: RuntimeReferenceArrayLayout,
+        _layout: RuntimeReferenceArrayLayout,
         index_slot: u8,
     ) -> Result<(), CodegenError> {
         self.emit(&[0x48, 0x8b, 0x4c, 0x24, index_slot * 8])?;
-        if layout == RuntimeReferenceArrayLayout::ExpandedStack {
-            self.emit(&[0x48, 0xc1, 0xe1, 0x03, 0x48, 0x01, 0xca])
-        } else {
-            match element_bytes {
-                1 => self.emit(&[0x48, 0x01, 0xca]),
-                2 => self.emit(&[0x48, 0x8d, 0x14, 0x4a]),
-                4 => self.emit(&[0x48, 0x8d, 0x14, 0x8a]),
-                8 => self.emit(&[0x48, 0x8d, 0x14, 0xca]),
-                _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
-            }
+        match element_bytes {
+            1 => self.emit(&[0x48, 0x01, 0xca]),
+            2 => self.emit(&[0x48, 0x8d, 0x14, 0x4a]),
+            4 => self.emit(&[0x48, 0x8d, 0x14, 0x8a]),
+            8 => self.emit(&[0x48, 0x8d, 0x14, 0xca]),
+            _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
         }
     }
 
@@ -5365,7 +5376,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         self.emit(&[0x50])?;
         self.evaluation_depth += 1;
         if assignment.operator != crate::AssignmentOperator::Assign {
-            self.emit_array_local_element(local_index, count, 0)?;
+            self.emit_array_local_element(local_index, element, count, 0)?;
             self.emit(&[0x50])?;
             self.evaluation_depth += 1;
         }
@@ -5382,7 +5393,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         }
         self.emit(&[0x50])?;
         self.evaluation_depth += 1;
-        self.emit_array_local_element_store(local_index, count, 1)?;
+        self.emit_array_local_element_store(local_index, element, count, 1)?;
         self.evaluation_depth -= 2;
         self.emit(&[0x48, 0x83, 0xc4, 16])
     }
@@ -5487,10 +5498,25 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     fn emit_array_local_element(
         &mut self,
         local_index: usize,
+        element: RuntimeArrayElementType,
         count: usize,
         index_slot: usize,
     ) -> Result<(), CodegenError> {
         let later_slots = self.local_stack_slots_from(local_index + 1)?;
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        if matches!(element_bytes, 1 | 2 | 4) {
+            self.emit_stack_slot(index_slot)?;
+            self.emit(&[0x48, 0x89, 0xc1])?;
+            self.emit_stack_slot_address(self.evaluation_depth + later_slots)?;
+            match element_bytes {
+                1 => self.emit(&[0x48, 0x01, 0xc8])?,
+                2 => self.emit(&[0x48, 0x8d, 0x04, 0x48])?,
+                4 => self.emit(&[0x48, 0x8d, 0x04, 0x88])?,
+                _ => unreachable!(),
+            }
+            return self.emit_reference_load(element);
+        }
         let mut end_patches = [0usize; crate::expression::MAX_ARRAY_ELEMENTS];
         for (candidate, end_patch) in end_patches[..count].iter_mut().enumerate() {
             self.emit_stack_slot(index_slot)?;
@@ -5510,10 +5536,27 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     fn emit_array_local_element_store(
         &mut self,
         local_index: usize,
+        element: RuntimeArrayElementType,
         count: usize,
         index_slot: usize,
     ) -> Result<(), CodegenError> {
         let later_slots = self.local_stack_slots_from(local_index + 1)?;
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        if matches!(element_bytes, 1 | 2 | 4) {
+            self.emit_stack_slot(index_slot)?;
+            self.emit(&[0x48, 0x89, 0xc1])?;
+            self.emit_stack_slot_address(self.evaluation_depth + later_slots)?;
+            self.emit(&[0x48, 0x89, 0xc2])?;
+            match element_bytes {
+                1 => self.emit(&[0x48, 0x01, 0xca])?,
+                2 => self.emit(&[0x48, 0x8d, 0x14, 0x4a])?,
+                4 => self.emit(&[0x48, 0x8d, 0x14, 0x8a])?,
+                _ => unreachable!(),
+            }
+            self.emit_stack_slot(0)?;
+            return self.emit_reference_store(element);
+        }
         let mut end_patches = [0usize; crate::expression::MAX_ARRAY_ELEMENTS];
         for (candidate, end_patch) in end_patches[..count].iter_mut().enumerate() {
             self.emit_stack_slot(index_slot)?;
@@ -5536,23 +5579,25 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         tree: &crate::ExpressionTree<'_, MAX_NODES>,
         root: crate::ExprId,
         local_index: usize,
+        element: RuntimeArrayElementType,
         count: usize,
     ) -> Result<(), CodegenError> {
         if count > crate::expression::MAX_ARRAY_ELEMENTS {
             return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
         }
         self.emit_array_to_stack(tree, root, count)?;
+        let stored_slots = self.pack_temporary_array_for_local(element, count)?;
         let later_slots = self.local_stack_slots_from(local_index + 1)?;
-        for element in 0..count {
-            self.emit_stack_slot(element)?;
-            let destination = count
+        for slot in 0..stored_slots {
+            self.emit_stack_slot(slot)?;
+            let destination = stored_slots
                 .checked_add(later_slots)
-                .and_then(|slots| slots.checked_add(element))
+                .and_then(|slots| slots.checked_add(slot))
                 .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
             self.emit_store_stack_slot(destination)?;
         }
-        self.evaluation_depth -= count;
-        let bytes = count
+        self.evaluation_depth -= stored_slots;
+        let bytes = stored_slots
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
         self.emit_stack_cleanup_bytes(bytes)?;
@@ -5604,6 +5649,36 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit_store_stack_slot(right)?;
         }
         Ok(())
+    }
+
+    fn pack_temporary_array_for_local(
+        &mut self,
+        element: RuntimeArrayElementType,
+        count: usize,
+    ) -> Result<usize, CodegenError> {
+        let local_slots =
+            runtime_local_stack_slots(RuntimeExpressionType::Array { element, count });
+        if local_slots == count {
+            return Ok(count);
+        }
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        for word in (0..local_slots).rev() {
+            self.emit_pack_array_word(element, count, element_bytes, word)?;
+            let destination = count
+                .checked_sub(local_slots)
+                .and_then(|slots| slots.checked_add(word))
+                .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+            self.emit_store_stack_slot(destination)?;
+        }
+        let removed_slots = count - local_slots;
+        self.evaluation_depth -= removed_slots;
+        self.emit_stack_cleanup_bytes(
+            removed_slots
+                .checked_mul(8)
+                .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?,
+        )?;
+        Ok(local_slots)
     }
 
     fn emit_conditional_return<const MAX_EXPRESSION_NODES: usize>(
@@ -7974,6 +8049,28 @@ mod tests {
             for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
                 let result =
                     compile_x86_64_function::<_, 2048, 8, 160>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn creates_slices_from_packed_fixed_array_locals() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let mut values = [input, 10, 20, 30]; let slice: &mut [u8] = &mut values[1..=2]; slice[1] += 2; values[2] + slice[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u16) -> u16 { let mut values = [input, 1000, 2000, 3000, 4000]; let slice: &mut [u16] = &mut values[1..4]; slice[1] += 2; values[2] + slice[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u32) -> u32 { let mut values = [input, 100000, 200000]; values = [input, values[1], values[2]]; let slice: &[u32] = &values[..2]; slice[0] + slice[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> bool { let mut values = [input, false, true]; let slice: &mut [bool] = &mut values[1..]; slice[0] ^= true; values[1] && slice[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: char) -> char { let mut values = [input, 'x', 'y']; let slice: &mut [char] = &mut values[1..3]; slice[0] = 'z'; values[1] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 8>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 3072, 8, 192>(&function, &NoConstants, abi);
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
