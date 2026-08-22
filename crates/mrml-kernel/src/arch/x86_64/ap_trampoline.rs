@@ -33,6 +33,7 @@ pub trait ApTrampolinePage {
     fn permissions(&self, physical: u64) -> Option<TrampolinePermissions>;
     fn write_page(&mut self, physical: u64, bytes: &[u8; PAGE_BYTES]) -> bool;
     fn protect_read_execute(&mut self, physical: u64) -> bool;
+    fn rearm_read_write_and_zero(&mut self, physical: u64) -> bool;
     fn revoke_and_zero(&mut self, physical: u64) -> bool;
 }
 
@@ -159,6 +160,38 @@ impl ApTrampolinePage for ActiveApTrampolinePage {
         };
         self.tables.leaf(address).is_ok_and(|leaf| leaf.is_none())
     }
+
+    fn rearm_read_write_and_zero(&mut self, physical: u64) -> bool {
+        if physical != self.physical
+            || self.permissions(physical)
+                != Some(TrampolinePermissions {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                })
+        {
+            return false;
+        }
+        let Some(executable) = self.mapping(PagePermissions::KERNEL_LOW_READ_EXECUTE) else {
+            return false;
+        };
+        if unsafe {
+            self.tables
+                .protect(executable, PagePermissions::KERNEL_LOW_READ_WRITE)
+        }
+        .is_err()
+        {
+            return false;
+        }
+        unsafe { core::ptr::write_bytes(physical as *mut u8, 0, PAGE_BYTES) };
+        compiler_fence(Ordering::SeqCst);
+        self.permissions(physical)
+            == Some(TrampolinePermissions {
+                readable: true,
+                writable: true,
+                executable: false,
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,6 +207,25 @@ impl InstalledApTrampoline {
 
     pub const fn startup_vector(self) -> u8 {
         self.startup_vector
+    }
+
+    /// Returns a successfully used SIPI page to a zeroed RW/NX staging state
+    /// so the BSP can bind the same low page to the next AP's private stack.
+    /// Callers must wait for the preceding AP to leave the trampoline first.
+    pub fn rearm<P: ApTrampolinePage>(self, page: &mut P) -> Result<(), ApTrampolineError> {
+        if !page.rearm_read_write_and_zero(self.physical) {
+            return Err(ApTrampolineError::RevocationFailed);
+        }
+        if page.permissions(self.physical)
+            != Some(TrampolinePermissions {
+                readable: true,
+                writable: true,
+                executable: false,
+            })
+        {
+            return Err(ApTrampolineError::UnsafePermissions);
+        }
+        Ok(())
     }
 }
 
@@ -470,6 +522,16 @@ mod tests {
             self.revoked = true;
             true
         }
+
+        fn rearm_read_write_and_zero(&mut self, _: u64) -> bool {
+            self.bytes.fill(0);
+            self.permissions = TrampolinePermissions {
+                readable: true,
+                writable: true,
+                executable: false,
+            };
+            true
+        }
     }
 
     #[test]
@@ -480,6 +542,10 @@ mod tests {
         assert_eq!(installed.physical(), 0x8000);
         assert_eq!(installed.startup_vector(), 8);
         assert_eq!(page.bytes, *image.bytes());
+        installed.rearm(&mut page).unwrap();
+        assert_eq!(page.bytes, [0; PAGE_BYTES]);
+        assert!(page.permissions.writable);
+        assert!(!page.permissions.executable);
 
         let mut failed = Page::writable();
         failed.fail_protection = true;

@@ -329,7 +329,11 @@ active leaf, accepts only the
 exact identity-mapped supervisor RW/NX page, copies only in that state, seals
 it RX through the checked transition, and on a failed installation reverses
 RX, zeroes the page, unmaps the exact leaf, invalidates it, and verifies that
-the mapping is absent. Wiring that adapter to a relocated AP entry with
+the mapping is absent. After an acknowledged AP has left the page, the opaque
+installed token can also transition that exact RX mapping back to RW/NX and
+zero it before binding the same scarce low page to the next AP. WHP exercises
+the complete seal, denied-write, zeroed-rearm, and restored-staging sequence
+against the live hypervisor. Wiring that adapter to a relocated AP entry with
 firmware-provisioned AP-private stacks, the KVM page backend, per-CPU interrupt
 routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim

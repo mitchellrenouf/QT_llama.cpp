@@ -538,6 +538,10 @@ mod tests {
             fn revoke_and_zero(&mut self, _: u64) -> bool {
                 true
             }
+            fn rearm_read_write_and_zero(&mut self, _: u64) -> bool {
+                self.0 = false;
+                true
+            }
         }
         let image =
             super::super::ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x4000, 1).unwrap();

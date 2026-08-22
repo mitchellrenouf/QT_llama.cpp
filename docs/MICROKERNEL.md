@@ -1455,6 +1455,10 @@ apply the final seal. The active adapter is now implemented: it requires the
 exact identity-mapped supervisor RW/NX leaf before copying, seals through the
 checked RX transition, and on a later failure changes RX back to NX, zeroes the
 page, removes only the expected leaf, invalidates it, and verifies absence.
+Because the image embeds one AP's CPU index and stack, startup is sequential:
+after that AP acknowledges leaving the trampoline, its opaque installed token
+can return only the exact RX leaf to a zeroed RW/NX staging state for the next
+AP. The WHP backend exercises this full transition against the live hypervisor.
 Kernel entry does not invoke it yet because firmware-provisioned AP-private
 stacks and the relocated AP entry remain unfinished.
 Platform-backed service page

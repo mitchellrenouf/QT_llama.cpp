@@ -255,6 +255,32 @@ impl PreparedWhpPartition<'_> {
             .map_err(|_| WhpError::InvalidPermissions)
     }
 
+    pub fn rearm_ap_trampoline(
+        &mut self,
+        installed: InstalledApTrampoline,
+    ) -> Result<(), WhpError> {
+        let physical = installed.physical();
+        let mapping =
+            self.mappings
+                .iter()
+                .position(|mapping| {
+                    mapping.as_ref().is_some_and(|mapping| {
+                        mapping.subranges.iter().flatten().any(|range| {
+                            range.guest_address() == physical && range.size() == PAGE_SIZE
+                        })
+                    })
+                })
+                .ok_or(WhpError::InvalidMapping)?;
+        let mut page = WhpTrampolinePage {
+            partition: self,
+            mapping,
+            physical,
+        };
+        installed
+            .rearm(&mut page)
+            .map_err(|_| WhpError::InvalidPermissions)
+    }
+
     pub(crate) fn map_zeroed_service_readonly(
         &mut self,
         range: GuestRange,
@@ -788,6 +814,34 @@ impl ApTrampolinePage for WhpTrampolinePage<'_, '_> {
         mapping.subranges.fill(None);
         true
     }
+
+    fn rearm_read_write_and_zero(&mut self, physical: u64) -> bool {
+        if physical != self.physical {
+            return false;
+        }
+        let Ok(range) = GuestRange::new(physical, PAGE_SIZE, MapPermissions::read_write()) else {
+            return false;
+        };
+        let mut staging_ranges = [const { None }; MAX_SUBMAPPINGS];
+        staging_ranges[0] = Some(range);
+        if self
+            .partition
+            .replace_subranges(self.mapping, staging_ranges)
+            .is_err()
+        {
+            return false;
+        }
+        let Some(mapping) = self
+            .partition
+            .mappings
+            .get_mut(self.mapping)
+            .and_then(Option::as_mut)
+        else {
+            return false;
+        };
+        unsafe { core::ptr::write_bytes(mapping.address.as_ptr(), 0, PAGE_SIZE as usize) };
+        true
+    }
 }
 
 struct OwnedMapping {
@@ -969,6 +1023,11 @@ mod tests {
             let mut copied = [0u8; PAGE_SIZE as usize];
             partition.read_guest(0x8000, &mut copied).unwrap();
             assert_eq!(&copied, image.bytes());
+            partition.rearm_ap_trampoline(installed).unwrap();
+            copied.fill(0xff);
+            partition.read_guest(0x8000, &mut copied).unwrap();
+            assert_eq!(copied, [0; PAGE_SIZE as usize]);
+            partition.write_guest(0x8000, &[0x5a]).unwrap();
         }
     }
 }
