@@ -580,10 +580,14 @@ pub fn compile_x86_64_function_with_options<
     };
     let mut integer_operand_type = None;
     for parameter in function.parameters().iter().flatten() {
-        if let Some(RuntimeExpressionType::Reference { pointee, .. }) =
+        if let Some(RuntimeExpressionType::Reference { target, .. }) =
             runtime_reference_type(parameter.ty.text)
         {
-            match pointee {
+            let element = match target {
+                RuntimeReferenceTarget::Scalar(element)
+                | RuntimeReferenceTarget::Array { element, .. } => element,
+            };
+            match element {
                 RuntimeArrayElementType::Bool if returns_bool => continue,
                 RuntimeArrayElementType::Char if operand_type == "char" => continue,
                 RuntimeArrayElementType::Integer(Some(pointee))
@@ -1662,7 +1666,7 @@ enum RuntimeExpressionType {
     Bool,
     Char,
     Reference {
-        pointee: RuntimeArrayElementType,
+        target: RuntimeReferenceTarget,
         mutable: bool,
     },
     Array {
@@ -1678,6 +1682,37 @@ enum RuntimeArrayElementType {
     Integer(Option<crate::IntegerType>),
     Bool,
     Char,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeReferenceTarget {
+    Scalar(RuntimeArrayElementType),
+    Array {
+        element: RuntimeArrayElementType,
+        count: usize,
+    },
+}
+
+fn runtime_reference_target_type(target: RuntimeReferenceTarget) -> RuntimeExpressionType {
+    match target {
+        RuntimeReferenceTarget::Scalar(element) => runtime_type_from_array_element(element),
+        RuntimeReferenceTarget::Array { element, count } => {
+            RuntimeExpressionType::Array { element, count }
+        }
+    }
+}
+
+fn runtime_reference_target_from_type(
+    ty: RuntimeExpressionType,
+) -> Result<RuntimeReferenceTarget, CodegenErrorKind> {
+    match ty {
+        RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference { .. } => {
+            Err(CodegenErrorKind::RuntimeExpressionUnsupported)
+        }
+        scalar => Ok(RuntimeReferenceTarget::Scalar(runtime_array_element_type(
+            scalar,
+        )?)),
+    }
 }
 
 fn runtime_array_element_type(
@@ -1730,16 +1765,21 @@ fn runtime_array_type(text: &str) -> Option<RuntimeExpressionType> {
 }
 
 fn runtime_reference_type(text: &str) -> Option<RuntimeExpressionType> {
-    let pointee = text.trim().strip_prefix('&')?.trim();
-    let (pointee, mutable) = pointee
+    let target = text.trim().strip_prefix('&')?.trim();
+    let (target, mutable) = target
         .strip_prefix("mut ")
-        .map_or((pointee, false), |pointee| (pointee.trim(), true));
-    let pointee = match pointee {
-        "bool" => RuntimeArrayElementType::Bool,
-        "char" => RuntimeArrayElementType::Char,
-        name => RuntimeArrayElementType::Integer(Some(crate::IntegerType::from_name(name)?)),
+        .map_or((target, false), |target| (target.trim(), true));
+    let target = match runtime_array_type(target) {
+        Some(RuntimeExpressionType::Array { element, count }) => {
+            RuntimeReferenceTarget::Array { element, count }
+        }
+        _ => RuntimeReferenceTarget::Scalar(match target {
+            "bool" => RuntimeArrayElementType::Bool,
+            "char" => RuntimeArrayElementType::Char,
+            name => RuntimeArrayElementType::Integer(Some(crate::IntegerType::from_name(name)?)),
+        }),
     };
-    Some(RuntimeExpressionType::Reference { pointee, mutable })
+    Some(RuntimeExpressionType::Reference { target, mutable })
 }
 
 fn runtime_type_stack_slots(ty: RuntimeExpressionType) -> usize {
@@ -1789,11 +1829,11 @@ fn runtime_types_compatible(left: RuntimeExpressionType, right: RuntimeExpressio
         (RuntimeExpressionType::Char, RuntimeExpressionType::Char) => true,
         (
             RuntimeExpressionType::Reference {
-                pointee: left,
+                target: left,
                 mutable: left_mutable,
             },
             RuntimeExpressionType::Reference {
-                pointee: right,
+                target: right,
                 mutable: right_mutable,
             },
         ) => left == right && left_mutable == right_mutable,
@@ -2147,16 +2187,21 @@ fn runtime_expression_type_with_locals<
             ) {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
-            let RuntimeExpressionType::Array { element, .. } = runtime_expression_type_with_locals(
+            let base_type = runtime_expression_type_with_locals(
                 function,
                 resolver,
                 locals,
                 tree,
                 base,
                 depth + 1,
-            )?
-            else {
-                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            )?;
+            let element = match base_type {
+                RuntimeExpressionType::Array { element, .. }
+                | RuntimeExpressionType::Reference {
+                    target: RuntimeReferenceTarget::Array { element, .. },
+                    ..
+                } => element,
+                _ => return Err(CodegenErrorKind::RuntimeTypeMismatch),
             };
             Ok(runtime_type_from_array_element(element))
         }
@@ -2374,10 +2419,10 @@ fn runtime_expression_type_with_locals<
                 operand,
                 depth + 1,
             )?;
-            let RuntimeExpressionType::Reference { pointee, .. } = operand_type else {
+            let RuntimeExpressionType::Reference { target, .. } = operand_type else {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             };
-            Ok(runtime_type_from_array_element(pointee))
+            Ok(runtime_reference_target_type(target))
         }
         ExprKind::Unary {
             operator:
@@ -2388,20 +2433,19 @@ fn runtime_expression_type_with_locals<
                 .expression(operand)
                 .map(|expression| expression.kind)
                 .ok_or(CodegenErrorKind::RuntimeExpressionUnsupported)?;
-            let pointee = match operand_kind {
+            let target = match operand_kind {
                 ExprKind::Identifier(name) => {
                     let local = locals
                         .iter()
                         .flatten()
                         .rev()
                         .find(|local| local.name == name);
-                    let operand_type = if let Some(local) = local {
+                    if let Some(local) = local {
                         if operator == crate::UnaryOperator::AddressOfMut && !local.mutable {
                             return Err(CodegenErrorKind::ImmutableAssignment);
                         }
-                        local.ty
                     } else {
-                        let parameter = function
+                        function
                             .parameters()
                             .iter()
                             .flatten()
@@ -2410,17 +2454,15 @@ fn runtime_expression_type_with_locals<
                         if operator == crate::UnaryOperator::AddressOfMut {
                             return Err(CodegenErrorKind::ImmutableAssignment);
                         }
-                        if parameter.ty.text == "bool" {
-                            RuntimeExpressionType::Bool
-                        } else if parameter.ty.text == "char" {
-                            RuntimeExpressionType::Char
-                        } else {
-                            RuntimeExpressionType::Integer(crate::IntegerType::from_name(
-                                parameter.ty.text,
-                            ))
-                        }
-                    };
-                    runtime_array_element_type(operand_type)?
+                    }
+                    runtime_reference_target_from_type(runtime_expression_type_with_locals(
+                        function,
+                        resolver,
+                        locals,
+                        tree,
+                        operand,
+                        depth + 1,
+                    )?)?
                 }
                 ExprKind::Unary {
                     operator: crate::UnaryOperator::Dereference,
@@ -2434,19 +2476,19 @@ fn runtime_expression_type_with_locals<
                         reference,
                         depth + 1,
                     )?;
-                    let RuntimeExpressionType::Reference { pointee, mutable } = reference_type
+                    let RuntimeExpressionType::Reference { target, mutable } = reference_type
                     else {
                         return Err(CodegenErrorKind::RuntimeTypeMismatch);
                     };
                     if operator == crate::UnaryOperator::AddressOfMut && !mutable {
                         return Err(CodegenErrorKind::ImmutableAssignment);
                     }
-                    pointee
+                    target
                 }
                 _ => return Err(CodegenErrorKind::RuntimeExpressionUnsupported),
             };
             Ok(RuntimeExpressionType::Reference {
-                pointee,
+                target,
                 mutable: operator == crate::UnaryOperator::AddressOfMut,
             })
         }
@@ -2980,54 +3022,107 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             ExprKind::Array { .. } | ExprKind::ArrayRepeat { .. } => {
                 return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
             }
-            ExprKind::Index { base, index } => match tree.evaluate_at(index, self.resolver) {
-                Ok(index) => {
-                    let index = usize::try_from(index)
-                        .map_err(|_| self.error(CodegenErrorKind::ValueOutOfRange))?;
-                    let RuntimeExpressionType::Array { count, .. } =
-                        runtime_expression_type_with_locals(
-                            self.function,
-                            self.resolver,
-                            &self.locals[..self.saved_locals],
-                            tree,
-                            base,
-                            depth + 1,
-                        )
-                        .map_err(|kind| self.error(kind))?
-                    else {
-                        return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
-                    };
-                    if index >= count {
+            ExprKind::Index { base, index } => {
+                let base_type = runtime_expression_type_with_locals(
+                    self.function,
+                    self.resolver,
+                    &self.locals[..self.saved_locals],
+                    tree,
+                    base,
+                    depth + 1,
+                )
+                .map_err(|kind| self.error(kind))?;
+                if let RuntimeExpressionType::Reference {
+                    target: RuntimeReferenceTarget::Array { element, count },
+                    ..
+                } = base_type
+                {
+                    match tree.evaluate_at(index, self.resolver) {
+                        Ok(index) => {
+                            let index = usize::try_from(index)
+                                .map_err(|_| self.error(CodegenErrorKind::ValueOutOfRange))?;
+                            if index >= count {
+                                return Err(self.error(CodegenErrorKind::Execution(
+                                    ExecutionError::Arithmetic(
+                                        crate::ConstEvalError::ArrayIndexOutOfBounds,
+                                    ),
+                                )));
+                            }
+                            self.emit_reference_array_constant_index(
+                                tree,
+                                base,
+                                element,
+                                index,
+                                depth + 1,
+                            )?;
+                        }
+                        Err(crate::ConstEvalError::UnknownIdentifier) => {
+                            self.emit_reference_array_runtime_index(
+                                tree,
+                                base,
+                                index,
+                                element,
+                                count,
+                                depth + 1,
+                            )?;
+                        }
+                        Err(error) => {
+                            return Err(self.error(CodegenErrorKind::Execution(
+                                ExecutionError::Arithmetic(error),
+                            )));
+                        }
+                    }
+                    return Ok(());
+                }
+                match tree.evaluate_at(index, self.resolver) {
+                    Ok(index) => {
+                        let index = usize::try_from(index)
+                            .map_err(|_| self.error(CodegenErrorKind::ValueOutOfRange))?;
+                        let RuntimeExpressionType::Array { count, .. } =
+                            runtime_expression_type_with_locals(
+                                self.function,
+                                self.resolver,
+                                &self.locals[..self.saved_locals],
+                                tree,
+                                base,
+                                depth + 1,
+                            )
+                            .map_err(|kind| self.error(kind))?
+                        else {
+                            return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+                        };
+                        if index >= count {
+                            return Err(self.error(CodegenErrorKind::Execution(
+                                ExecutionError::Arithmetic(
+                                    crate::ConstEvalError::ArrayIndexOutOfBounds,
+                                ),
+                            )));
+                        }
+                        self.emit_constant_array_index(tree, base, index, count, depth + 1)?;
+                    }
+                    Err(crate::ConstEvalError::UnknownIdentifier) => {
+                        let RuntimeExpressionType::Array { count, .. } =
+                            runtime_expression_type_with_locals(
+                                self.function,
+                                self.resolver,
+                                &self.locals[..self.saved_locals],
+                                tree,
+                                base,
+                                depth + 1,
+                            )
+                            .map_err(|kind| self.error(kind))?
+                        else {
+                            return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+                        };
+                        self.emit_runtime_array_index(tree, base, index, count, depth + 1)?;
+                    }
+                    Err(error) => {
                         return Err(self.error(CodegenErrorKind::Execution(
-                            ExecutionError::Arithmetic(
-                                crate::ConstEvalError::ArrayIndexOutOfBounds,
-                            ),
+                            ExecutionError::Arithmetic(error),
                         )));
                     }
-                    self.emit_constant_array_index(tree, base, index, count, depth + 1)?;
                 }
-                Err(crate::ConstEvalError::UnknownIdentifier) => {
-                    let RuntimeExpressionType::Array { count, .. } =
-                        runtime_expression_type_with_locals(
-                            self.function,
-                            self.resolver,
-                            &self.locals[..self.saved_locals],
-                            tree,
-                            base,
-                            depth + 1,
-                        )
-                        .map_err(|kind| self.error(kind))?
-                    else {
-                        return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
-                    };
-                    self.emit_runtime_array_index(tree, base, index, count, depth + 1)?;
-                }
-                Err(error) => {
-                    return Err(self.error(CodegenErrorKind::Execution(
-                        ExecutionError::Arithmetic(error),
-                    )));
-                }
-            },
+            }
             ExprKind::Integer(literal) => {
                 if literal.value > u128::from(self.width.maximum) {
                     return Err(self.error(CodegenErrorKind::ValueOutOfRange));
@@ -3166,8 +3261,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     0,
                 )
                 .map_err(|kind| self.error(kind))?;
-                let RuntimeExpressionType::Reference { pointee, .. } = operand_type else {
+                let RuntimeExpressionType::Reference { target, .. } = operand_type else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+                };
+                let RuntimeReferenceTarget::Scalar(pointee) = target else {
+                    return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
                 };
                 self.emit_expression(tree, operand, depth + 1)?;
                 self.emit_reference_load(pointee)?;
@@ -3489,6 +3587,75 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
         self.emit_stack_cleanup_bytes(bytes)
+    }
+
+    fn emit_reference_array_constant_index<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        base: crate::ExprId,
+        element: RuntimeArrayElementType,
+        index: usize,
+        depth: usize,
+    ) -> Result<(), CodegenError> {
+        self.emit_expression(tree, base, depth + 1)?;
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        let displacement = element_bytes
+            .checked_mul(index)
+            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+        if displacement != 0 {
+            if displacement <= i8::MAX as usize {
+                self.emit(&[0x48, 0x83, 0xc0, displacement as u8])?;
+            } else {
+                self.emit(&[0x48, 0x05])?;
+                self.emit(
+                    &u32::try_from(displacement)
+                        .map_err(|_| self.error(CodegenErrorKind::OutputTooSmall))?
+                        .to_le_bytes(),
+                )?;
+            }
+        }
+        if element_bytes == 0 {
+            self.emit(&[0x31, 0xc0])
+        } else {
+            self.emit_reference_load(element)
+        }
+    }
+
+    fn emit_reference_array_runtime_index<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        base: crate::ExprId,
+        index: crate::ExprId,
+        element: RuntimeArrayElementType,
+        count: usize,
+        depth: usize,
+    ) -> Result<(), CodegenError> {
+        self.emit_expression(tree, base, depth + 1)?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        self.emit_expression(tree, index, depth + 1)?;
+        self.emit(&[0x48, 0x83, 0xf8, count as u8])?;
+        let in_bounds = self.emit_forward_branch(0x82)?;
+        self.emit(&[0x0f, 0x0b])?;
+        self.patch_forward_branch(in_bounds)?;
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        if element_bytes == 0 {
+            self.emit(&[0x48, 0x83, 0xc4, 0x08, 0x31, 0xc0])?;
+            self.evaluation_depth -= 1;
+            return Ok(());
+        }
+        self.emit(&[0x48, 0x89, 0xc1, 0x58])?;
+        self.evaluation_depth -= 1;
+        match element_bytes {
+            1 => self.emit(&[0x48, 0x01, 0xc8])?,
+            2 => self.emit(&[0x48, 0x8d, 0x04, 0x48])?,
+            4 => self.emit(&[0x48, 0x8d, 0x04, 0x88])?,
+            8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8])?,
+            _ => return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+        }
+        self.emit_reference_load(element)
     }
 
     fn emit_constant_array_index<const MAX_NODES: usize>(
@@ -3977,6 +4144,31 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             return self
                 .emit_dereference_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start);
         }
+        if assignment.index().is_some() {
+            let target_type = self.locals[..self.saved_locals]
+                .iter()
+                .rev()
+                .flatten()
+                .find(|local| local.name == assignment.binding_name())
+                .map(|local| local.ty)
+                .or_else(|| {
+                    self.function
+                        .parameters()
+                        .iter()
+                        .flatten()
+                        .find(|parameter| parameter.name == assignment.binding_name())
+                        .and_then(|parameter| runtime_reference_type(parameter.ty.text))
+                });
+            if let Some(RuntimeExpressionType::Reference {
+                target: RuntimeReferenceTarget::Array { element, count },
+                mutable,
+            }) = target_type
+            {
+                return self.emit_reference_array_assignment::<MAX_EXPRESSION_NODES>(
+                    assignment, body_start, element, count, mutable,
+                );
+            }
+        }
         let index = self.locals[..self.saved_locals]
             .iter()
             .enumerate()
@@ -4071,6 +4263,115 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         self.emit_store_stack_slot(self.local_stack_slots_from(index + 1)?)
     }
 
+    fn emit_reference_array_assignment<const MAX_NODES: usize>(
+        &mut self,
+        assignment: &crate::Assignment<'_>,
+        body_start: usize,
+        element: RuntimeArrayElementType,
+        count: usize,
+        mutable: bool,
+    ) -> Result<(), CodegenError> {
+        if !mutable {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::ImmutableAssignment,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        let element_type = runtime_type_from_array_element(element);
+        if element_type == RuntimeExpressionType::Bool
+            && !matches!(
+                assignment.operator,
+                crate::AssignmentOperator::Assign
+                    | crate::AssignmentOperator::BitAnd
+                    | crate::AssignmentOperator::BitOr
+                    | crate::AssignmentOperator::BitXor
+            )
+        {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        if matches!(
+            element_type,
+            RuntimeExpressionType::Unit | RuntimeExpressionType::Char
+        ) && assignment.operator != crate::AssignmentOperator::Assign
+        {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        self.emit_indexed_assignment_index::<MAX_NODES>(assignment, body_start, count)?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        self.emit_identifier(assignment.binding_name())?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        if assignment.operator != crate::AssignmentOperator::Assign {
+            self.emit_reference_array_address_from_stack_index(element_bytes, 1)?;
+            if element_bytes == 0 {
+                self.emit(&[0x31, 0xc0])?;
+            } else {
+                self.emit_reference_load(element)?;
+            }
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+        }
+        self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
+        if assignment.operator != crate::AssignmentOperator::Assign {
+            self.evaluation_depth -= 1;
+            self.emit(&[0x59])?;
+            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                CodegenError {
+                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                    span: translate_span(body_start, assignment.name_span),
+                },
+            )?)?;
+        }
+        if element_bytes != 0 {
+            self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
+            self.emit_reference_array_store_address_from_stack_index(element_bytes, 1)?;
+            self.emit_reference_store(element)?;
+        }
+        self.emit(&[0x48, 0x83, 0xc4, 16])?;
+        self.evaluation_depth -= 2;
+        Ok(())
+    }
+
+    fn emit_reference_array_address_from_stack_index(
+        &mut self,
+        element_bytes: usize,
+        index_slot: u8,
+    ) -> Result<(), CodegenError> {
+        self.emit(&[0x48, 0x8b, 0x4c, 0x24, index_slot * 8])?;
+        match element_bytes {
+            0 => Ok(()),
+            1 => self.emit(&[0x48, 0x01, 0xc8]),
+            2 => self.emit(&[0x48, 0x8d, 0x04, 0x48]),
+            4 => self.emit(&[0x48, 0x8d, 0x04, 0x88]),
+            8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8]),
+            _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+        }
+    }
+
+    fn emit_reference_array_store_address_from_stack_index(
+        &mut self,
+        element_bytes: usize,
+        index_slot: u8,
+    ) -> Result<(), CodegenError> {
+        self.emit(&[0x48, 0x8b, 0x4c, 0x24, index_slot * 8])?;
+        match element_bytes {
+            1 => self.emit(&[0x48, 0x01, 0xca]),
+            2 => self.emit(&[0x48, 0x8d, 0x14, 0x4a]),
+            4 => self.emit(&[0x48, 0x8d, 0x14, 0x8a]),
+            8 => self.emit(&[0x48, 0x8d, 0x14, 0xca]),
+            _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+        }
+    }
+
     fn emit_dereference_assignment<const MAX_EXPRESSION_NODES: usize>(
         &mut self,
         assignment: &crate::Assignment<'_>,
@@ -4101,7 +4402,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 kind: CodegenErrorKind::UnknownRuntimeName,
                 span: translate_span(body_start, assignment.name_span),
             })?;
-        let RuntimeExpressionType::Reference { pointee, mutable } = target_type else {
+        let RuntimeExpressionType::Reference { target, mutable } = target_type else {
             return Err(CodegenError {
                 kind: CodegenErrorKind::RuntimeTypeMismatch,
                 span: translate_span(body_start, assignment.name_span),
@@ -4113,6 +4414,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.name_span),
             });
         }
+        let RuntimeReferenceTarget::Scalar(pointee) = target else {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        };
         let value_type = runtime_type_from_array_element(pointee);
         if value_type == RuntimeExpressionType::Bool
             && !matches!(
@@ -6625,6 +6932,42 @@ mod tests {
 
         let module = Parser::new(
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let reference: &mut u64 = &mut input; *reference }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 256, 2, 32>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::ImmutableAssignment,
+        );
+    }
+
+    #[test]
+    fn indexes_and_mutates_fixed_array_references() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &[usize; 4], index: usize) -> usize { let copied: &[usize; 4] = values; copied[index] + copied[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [usize; 4], index: usize) -> usize { let copied: &mut [usize; 4] = &mut *values; copied[index] += 2; values[index] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [i16; 3]) -> i16 { values[1] = -12; values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [bool; 3]) -> bool { values[2] ^= true; values[2] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [char; 2]) -> char { values[1] = 'z'; values[1] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result = compile_x86_64_function::<_, 768, 4, 64>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let module = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &[u64; 2]) -> u64 { values[0] = 42; values[0] }",
         )
         .parse_module::<2, 2>()
         .unwrap();

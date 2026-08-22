@@ -1813,6 +1813,21 @@ fn rustc_scalar_reference_creation_and_reborrows_reach_native_objects() {
 }
 
 #[test]
+fn rustc_fixed_array_references_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize; 4], index: usize) -> usize { let copied: &[usize; 4] = values; copied[index] + copied[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [usize; 4], index: usize) -> usize { let copied: &mut [usize; 4] = &mut *values; copied[index] += 2; values[index] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [i16; 3]) -> i16 { values[1] = -12; values[1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [bool; 3]) -> bool { values[2] ^= true; values[2] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [char; 2]) -> char { values[1] = 'z'; values[1] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",
