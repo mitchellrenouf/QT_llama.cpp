@@ -545,9 +545,7 @@ pub fn compile_x86_64_function_with_options<
                 RuntimeArrayElementType::Bool
                     | RuntimeArrayElementType::Char
                     | RuntimeArrayElementType::Integer(Some(_))
-            )
-            || (count > 1
-                && !matches!(element, RuntimeArrayElementType::Integer(Some(ty)) if ty.bits(64) == Some(64))))
+            ))
     {
         return Err(CodegenError {
             kind: CodegenErrorKind::UnsupportedReturnType,
@@ -580,12 +578,17 @@ pub fn compile_x86_64_function_with_options<
         if let Some(RuntimeExpressionType::Array { element, count }) =
             runtime_array_type(parameter.ty.text)
         {
+            if count == 0 {
+                return Err(CodegenError {
+                    kind: CodegenErrorKind::UnsupportedParameterType,
+                    span: parameter.ty.span,
+                });
+            }
             match element {
-                RuntimeArrayElementType::Bool if count == 1 => continue,
-                RuntimeArrayElementType::Char if count == 1 && operand_type == "char" => continue,
+                RuntimeArrayElementType::Bool => continue,
+                RuntimeArrayElementType::Char if operand_type == "char" => continue,
                 RuntimeArrayElementType::Integer(Some(element))
                     if (returns_unit || returns_boolean_like || element.name() == operand_type)
-                        && (count == 1 || element.bits(64) == Some(64))
                         && integer_operand_type
                             .is_none_or(|existing| existing == element.name()) =>
                 {
@@ -634,13 +637,11 @@ pub fn compile_x86_64_function_with_options<
         kind: CodegenErrorKind::UnsupportedRuntimeType,
         span: function.name_span,
     })?;
-    let uses_sret = matches!(
-        return_array,
-        Some(RuntimeExpressionType::Array { count, .. })
-            if match abi {
-                X86_64Abi::Windows => count > 1,
-                X86_64Abi::SystemV => count > 2,
-            }
+    let uses_sret = return_array.and_then(runtime_array_abi_layout).is_some_and(
+        |(_, bytes, words)| match abi {
+            X86_64Abi::Windows => !matches!(bytes, 1 | 2 | 4 | 8),
+            X86_64Abi::SystemV => words > 2,
+        },
     );
     let saved_parameter_slots = function
         .parameters()
@@ -1700,6 +1701,38 @@ fn runtime_type_stack_slots(ty: RuntimeExpressionType) -> usize {
     }
 }
 
+fn runtime_array_element_bytes(element: RuntimeArrayElementType) -> Option<usize> {
+    match element {
+        RuntimeArrayElementType::Unit | RuntimeArrayElementType::Default => Some(0),
+        RuntimeArrayElementType::Bool => Some(1),
+        RuntimeArrayElementType::Char => Some(4),
+        RuntimeArrayElementType::Integer(Some(ty)) => Some(usize::from(ty.bits(64)?) / 8),
+        RuntimeArrayElementType::Integer(None) => None,
+    }
+}
+
+fn runtime_array_abi_layout(ty: RuntimeExpressionType) -> Option<(usize, usize, usize)> {
+    let RuntimeExpressionType::Array { element, count } = ty else {
+        return None;
+    };
+    let element_bytes = runtime_array_element_bytes(element)?;
+    let total_bytes = element_bytes.checked_mul(count)?;
+    let words = total_bytes.checked_add(7)? / 8;
+    Some((element_bytes, total_bytes, words))
+}
+
+fn runtime_array_elements_in_word(ty: RuntimeExpressionType, word: usize) -> Option<usize> {
+    let RuntimeExpressionType::Array { element, count } = ty else {
+        return None;
+    };
+    let element_bytes = runtime_array_element_bytes(element)?;
+    Some(
+        (0..count)
+            .filter(|index| index * element_bytes / 8 == word)
+            .count(),
+    )
+}
+
 fn runtime_types_compatible(left: RuntimeExpressionType, right: RuntimeExpressionType) -> bool {
     match (left, right) {
         (RuntimeExpressionType::Default, _) | (_, RuntimeExpressionType::Default) => true,
@@ -2458,17 +2491,28 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 }
                 for (index, parameter) in self.function.parameters().iter().flatten().enumerate() {
                     let abi_index = index + usize::from(self.uses_sret);
-                    let count =
-                        runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
-                    if count <= 1 {
+                    if let Some(array) = runtime_array_type(parameter.ty.text) {
+                        let (_, bytes, _) = runtime_array_abi_layout(array)
+                            .ok_or(self.error(CodegenErrorKind::UnsupportedParameterType))?;
+                        let RuntimeExpressionType::Array { count, .. } = array else {
+                            unreachable!()
+                        };
+                        if matches!(bytes, 1 | 2 | 4 | 8) {
+                            self.emit_parameter_register_or_stack_load(
+                                X86_64Abi::Windows,
+                                abi_index,
+                                40,
+                                pushed_slots,
+                            )?;
+                            self.emit_unpack_array_word(array, 0)?;
+                        } else {
+                            self.emit_windows_parameter_pointer(abi_index, pushed_slots)?;
+                            self.emit_compact_pointer_array_pushes(array)?;
+                        }
+                        pushed_slots += count;
+                    } else {
                         self.emit_windows_parameter_word(abi_index, pushed_slots)?;
                         pushed_slots += 1;
-                    } else {
-                        self.emit_windows_parameter_pointer(abi_index, pushed_slots)?;
-                        for element in 0..count {
-                            self.emit_pointer_element_push(element)?;
-                            pushed_slots += 1;
-                        }
                     }
                 }
             }
@@ -2480,27 +2524,45 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     self.emit(&[0x57])?;
                 }
                 for parameter in self.function.parameters().iter().flatten() {
-                    let count =
-                        runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
-                    if count <= 2 && register + count <= 6 {
-                        for _ in 0..count {
-                            self.emit(
-                                parameter_push_encoding(X86_64Abi::SystemV, register)
-                                    .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?,
-                            )?;
-                            register += 1;
-                            pushed_slots += 1;
-                        }
-                    } else {
-                        for element in 0..count {
-                            let original = stack_offset
-                                .checked_add(element * 8)
+                    if let Some(array) = runtime_array_type(parameter.ty.text) {
+                        let (_, _, words) = runtime_array_abi_layout(array)
+                            .ok_or(self.error(CodegenErrorKind::UnsupportedParameterType))?;
+                        if words <= 2 && register + words <= 6 {
+                            for word in 0..words {
+                                self.emit_parameter_register_load(X86_64Abi::SystemV, register)?;
+                                self.emit_unpack_array_word(array, word)?;
+                                pushed_slots += runtime_array_elements_in_word(array, word).ok_or(
+                                    self.error(CodegenErrorKind::UnsupportedParameterType),
+                                )?;
+                                register += 1;
+                            }
+                        } else {
+                            for word in 0..words {
+                                let original = stack_offset
+                                    .checked_add(word * 8)
+                                    .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
+                                self.emit_original_stack_word_load(original, pushed_slots)?;
+                                self.emit_unpack_array_word(array, word)?;
+                                pushed_slots += runtime_array_elements_in_word(array, word).ok_or(
+                                    self.error(CodegenErrorKind::UnsupportedParameterType),
+                                )?;
+                            }
+                            stack_offset = stack_offset
+                                .checked_add(words * 8)
                                 .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
-                            self.emit_original_stack_word_push(original, pushed_slots)?;
-                            pushed_slots += 1;
                         }
+                    } else if register < 6 {
+                        self.emit(
+                            parameter_push_encoding(X86_64Abi::SystemV, register)
+                                .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?,
+                        )?;
+                        register += 1;
+                        pushed_slots += 1;
+                    } else {
+                        self.emit_original_stack_word_push(stack_offset, pushed_slots)?;
+                        pushed_slots += 1;
                         stack_offset = stack_offset
-                            .checked_add(count * 8)
+                            .checked_add(8)
                             .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
                     }
                 }
@@ -2524,6 +2586,100 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         }
     }
 
+    fn emit_parameter_register_or_stack_load(
+        &mut self,
+        abi: X86_64Abi,
+        index: usize,
+        first_stack_offset: usize,
+        pushed_slots: usize,
+    ) -> Result<(), CodegenError> {
+        let register_count = match abi {
+            X86_64Abi::Windows => 4,
+            X86_64Abi::SystemV => 6,
+        };
+        if index < register_count {
+            return self.emit_parameter_register_load(abi, index);
+        }
+        let original = first_stack_offset
+            .checked_add((index - register_count) * 8)
+            .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
+        self.emit_original_stack_word_load(original, pushed_slots)
+    }
+
+    fn emit_parameter_register_load(
+        &mut self,
+        abi: X86_64Abi,
+        index: usize,
+    ) -> Result<(), CodegenError> {
+        let encoding: &[u8] = match (abi, index) {
+            (X86_64Abi::Windows, 0) | (X86_64Abi::SystemV, 3) => &[0x48, 0x89, 0xc8],
+            (X86_64Abi::Windows, 1) | (X86_64Abi::SystemV, 2) => &[0x48, 0x89, 0xd0],
+            (X86_64Abi::Windows, 2) | (X86_64Abi::SystemV, 4) => &[0x4c, 0x89, 0xc0],
+            (X86_64Abi::Windows, 3) | (X86_64Abi::SystemV, 5) => &[0x4c, 0x89, 0xc8],
+            (X86_64Abi::SystemV, 0) => &[0x48, 0x89, 0xf8],
+            (X86_64Abi::SystemV, 1) => &[0x48, 0x89, 0xf0],
+            _ => return Err(self.error(CodegenErrorKind::TooManyAbiParameters)),
+        };
+        self.emit(encoding)
+    }
+
+    fn emit_unpack_array_word(
+        &mut self,
+        array: RuntimeExpressionType,
+        word: usize,
+    ) -> Result<(), CodegenError> {
+        let RuntimeExpressionType::Array { element, count } = array else {
+            return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+        };
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedParameterType))?;
+        for index in 0..count {
+            let byte_offset = index * element_bytes;
+            if byte_offset / 8 != word {
+                continue;
+            }
+            self.emit(&[0x48, 0x89, 0xc2])?;
+            let shift = ((byte_offset % 8) * 8) as u8;
+            if shift != 0 {
+                self.emit(&[0x48, 0xc1, 0xea, shift])?;
+            }
+            match element_bytes {
+                1 => self.emit(&[0x0f, 0xb6, 0xd2])?,
+                2 => self.emit(&[0x0f, 0xb7, 0xd2])?,
+                4 => self.emit(&[0x89, 0xd2])?,
+                8 => {}
+                _ => return Err(self.error(CodegenErrorKind::UnsupportedParameterType)),
+            }
+            self.emit(&[0x52])?;
+        }
+        Ok(())
+    }
+
+    fn emit_compact_pointer_array_pushes(
+        &mut self,
+        array: RuntimeExpressionType,
+    ) -> Result<(), CodegenError> {
+        let RuntimeExpressionType::Array { element, count } = array else {
+            return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+        };
+        let element_bytes = runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedParameterType))?;
+        for index in 0..count {
+            let displacement = u8::try_from(index * element_bytes)
+                .map_err(|_| self.error(CodegenErrorKind::TooManyAbiParameters))?;
+            match element_bytes {
+                1 => self.emit(&[0x0f, 0xb6, 0x50, displacement])?,
+                2 => self.emit(&[0x0f, 0xb7, 0x50, displacement])?,
+                4 => self.emit(&[0x8b, 0x50, displacement])?,
+                8 if displacement == 0 => self.emit(&[0x48, 0x8b, 0x10])?,
+                8 => self.emit(&[0x48, 0x8b, 0x50, displacement])?,
+                _ => return Err(self.error(CodegenErrorKind::UnsupportedParameterType)),
+            }
+            self.emit(&[0x52])?;
+        }
+        Ok(())
+    }
+
     fn emit_windows_parameter_pointer(
         &mut self,
         index: usize,
@@ -2541,17 +2697,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 self.emit_original_stack_word_load(original, pushed_slots)
             }
         }
-    }
-
-    fn emit_pointer_element_push(&mut self, element: usize) -> Result<(), CodegenError> {
-        let displacement = u8::try_from(element * 8)
-            .map_err(|_| self.error(CodegenErrorKind::TooManyAbiParameters))?;
-        if displacement == 0 {
-            self.emit(&[0x48, 0x8b, 0x10])?;
-        } else {
-            self.emit(&[0x48, 0x8b, 0x50, displacement])?;
-        }
-        self.emit(&[0x52])
     }
 
     fn emit_original_stack_word_push(
@@ -4076,10 +4221,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         root: crate::ExprId,
         expected_type: RuntimeExpressionType,
     ) -> Result<(), CodegenError> {
-        let RuntimeExpressionType::Array { count, .. } = expected_type else {
+        let RuntimeExpressionType::Array { element, count } = expected_type else {
             self.emit_expression(tree, root, 0)?;
             return self.emit_epilogue();
         };
+        let (element_bytes, _, words) = runtime_array_abi_layout(expected_type)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedReturnType))?;
         self.emit_array_to_stack(tree, root, count)?;
         if self.uses_sret {
             let pointer_slot = self
@@ -4089,23 +4236,27 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
             self.emit_stack_slot(pointer_slot)?;
             self.emit(&[0x48, 0x89, 0xc2])?;
-            for element in 0..count {
-                self.emit_stack_slot(count - 1 - element)?;
-                let displacement = u8::try_from(element * 8)
+            for index in 0..count {
+                self.emit_stack_slot(count - 1 - index)?;
+                let displacement = u8::try_from(index * element_bytes)
                     .map_err(|_| self.error(CodegenErrorKind::OutputTooSmall))?;
-                if displacement == 0 {
-                    self.emit(&[0x48, 0x89, 0x02])?;
-                } else {
-                    self.emit(&[0x48, 0x89, 0x42, displacement])?;
+                match element_bytes {
+                    1 => self.emit(&[0x88, 0x42, displacement])?,
+                    2 => self.emit(&[0x66, 0x89, 0x42, displacement])?,
+                    4 => self.emit(&[0x89, 0x42, displacement])?,
+                    8 if displacement == 0 => self.emit(&[0x48, 0x89, 0x02])?,
+                    8 => self.emit(&[0x48, 0x89, 0x42, displacement])?,
+                    _ => return Err(self.error(CodegenErrorKind::UnsupportedReturnType)),
                 }
             }
             self.emit(&[0x48, 0x89, 0xd0])?;
-        } else if count == 1 {
-            self.emit_stack_slot(0)?;
-        } else if self.abi == X86_64Abi::SystemV && count == 2 {
-            self.emit_stack_slot(0)?;
-            self.emit(&[0x48, 0x89, 0xc2])?;
-            self.emit_stack_slot(1)?;
+        } else if words == 1 {
+            self.emit_pack_array_word(element, count, element_bytes, 0)?;
+        } else if self.abi == X86_64Abi::SystemV && words == 2 {
+            self.emit_pack_array_word(element, count, element_bytes, 1)?;
+            self.emit(&[0x48, 0x89, 0xc1])?;
+            self.emit_pack_array_word(element, count, element_bytes, 0)?;
+            self.emit(&[0x48, 0x89, 0xca])?;
         } else {
             return Err(self.error(CodegenErrorKind::UnsupportedReturnType));
         }
@@ -4117,6 +4268,36 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit(&[0x48, 0x83, 0xc4, bytes as u8])?;
         }
         self.emit_epilogue()
+    }
+
+    fn emit_pack_array_word(
+        &mut self,
+        _element: RuntimeArrayElementType,
+        count: usize,
+        element_bytes: usize,
+        word: usize,
+    ) -> Result<(), CodegenError> {
+        self.emit(&[0x31, 0xd2])?;
+        for index in 0..count {
+            let byte_offset = index * element_bytes;
+            if byte_offset / 8 != word {
+                continue;
+            }
+            self.emit_stack_slot(count - 1 - index)?;
+            match element_bytes {
+                1 => self.emit(&[0x0f, 0xb6, 0xc0])?,
+                2 => self.emit(&[0x0f, 0xb7, 0xc0])?,
+                4 => self.emit(&[0x89, 0xc0])?,
+                8 => {}
+                _ => return Err(self.error(CodegenErrorKind::UnsupportedReturnType)),
+            }
+            let shift = ((byte_offset % 8) * 8) as u8;
+            if shift != 0 {
+                self.emit(&[0x48, 0xc1, 0xe0, shift])?;
+            }
+            self.emit(&[0x48, 0x09, 0xc2])?;
+        }
+        self.emit(&[0x48, 0x89, 0xd0])
     }
 
     fn emit_conditional_return_else<const MAX_EXPRESSION_NODES: usize>(
@@ -5841,6 +6022,12 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u64; 2], after: u64) -> u64 { values[0] + values[1] + after }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(before: u64, values: [u64; 3], after: u64) -> u64 { before + values[0] + values[1] + values[2] + after }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(a: u64, b: u64, c: u64, d: u64, e: u64, values: [u64; 2], after: u64) -> u64 { a + b + c + d + e + values[0] + values[1] + after }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u8; 4]) -> u8 { values[0] + values[1] + values[2] + values[3] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u16; 5]) -> u16 { values[0] + values[4] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u32; 2]) -> u32 { values[0] + values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [i16; 3]) -> i16 { values[0] + values[2] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [char; 2]) -> char { values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [bool; 3]) -> bool { values[0] ^ values[2] }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 8>().unwrap();
@@ -5880,6 +6067,12 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> [u64; 3] { let values = [input, input + 1, input + 2]; return values; }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> [u64; 3] { if select { return [13u64, 42, 99]; } [1, 2, 3] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> [u64; 2] { if select { return [13u64, 42]; } else { return [1, 2]; } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> [u8; 4] { [input, input + 1, input + 2, input + 3] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u16) -> [u16; 5] { [input, 1, 2, 3, input + 4] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u32) -> [u32; 2] { [input, input + 1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: i16) -> [i16; 3] { [input, -2, input + 1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: char) -> [char; 2] { [input, 'z'] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> [bool; 3] { [input, false, true] }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();

@@ -1722,6 +1722,19 @@ fn rustc_block_expression_fixed_array_returns_reach_native_objects() {
 }
 
 #[test]
+fn rustc_fixed_length_packed_array_abi_reaches_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [u8; 4]) -> [u8; 4] { let mut copied = values; copied[1] += 1; copied }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [u16; 5]) -> [u16; 5] { let mut copied = values; copied[4] += 2; copied }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [bool; 3]) -> [bool; 3] { let mut copied = values; copied[1] ^= true; copied }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",

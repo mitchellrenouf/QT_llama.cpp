@@ -350,9 +350,19 @@ pinned nightly `tests/ui/parser/block-expr-statement-vs-expr.rs` compiled and ra
 unchanged on both hosts. Independent one-, two-, and three-word return probes
 emitted 137-, 167-, and 168-byte COFF objects and 528-, 544-, and 552-byte ELF64
 objects; pinned-nightly callers observed `[42]`, `[13, 14]`, and `[13, 42, 99]`
-on both hosts. Packed narrow-element multiword arrays, zero-sized array ABI
-classes, unconstrained array defaults, references, slices, and general aggregate
-ABI transport remain separate work.
+on both hosts. Narrow integer, Boolean, and character arrays use their compact
+one-, two-, or four-byte element layout at the ABI boundary while retaining one
+auditable internal stack slot per element. Windows packs total sizes of one,
+two, four, or eight bytes into a direct integer argument/result and otherwise
+uses its indirect aggregate class. System V packs up to two eightbytes into
+registers and rolls the complete value back to its stack class when necessary.
+The exact pinned nightly `tests/ui/array-slice-vec/vec-fixed-length.rs` compiled
+and ran unchanged on both hosts. Independent mutate-and-return callers passed a
+four-byte `[u8; 4]`, a ten-byte `[u16; 5]`, and a three-byte `[bool; 3]` on both
+ABIs. Their COFF objects were 553, 608, and 411 bytes; their ELF64 objects were
+944, 1,048, and 824 bytes. Zero-sized array ABI classes, unconstrained array
+defaults, references, slices, and general aggregate ABI transport remain
+separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -843,7 +853,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 275 Windows library, conformance, rustc-nightly-replacement, and driver
+The 276 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1517,7 +1527,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 275 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 276 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
