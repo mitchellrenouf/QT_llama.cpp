@@ -7,19 +7,132 @@ pub const HANDOFF_HEADER_BYTES: usize = 168;
 pub const HANDOFF_REGION_BYTES: usize = 24;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
 pub const MAX_HANDOFF_MADT_BYTES: usize = 8 * 1024;
-pub const MAX_HANDOFF_BYTES: usize =
-    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES + 16;
+pub const HANDOFF_SERVICE_BYTES: usize = 144;
+pub const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES
+    + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES
+    + MAX_HANDOFF_MADT_BYTES
+    + 16
+    + HANDOFF_SERVICE_BYTES;
 
 const FLAG_SECURE_BOOT: u16 = 1;
 const FLAG_MEASURED_BOOT: u16 = 1 << 1;
 const FLAG_ROLLBACK_PROTECTED: u16 = 1 << 2;
 const FLAG_MADT_SNAPSHOT: u16 = 1 << 3;
 const FLAG_AP_TRAMPOLINE: u16 = 1 << 4;
+const FLAG_SERVICE_IMAGE: u16 = 1 << 5;
 const KNOWN_FLAGS: u16 = FLAG_SECURE_BOOT
     | FLAG_MEASURED_BOOT
     | FLAG_ROLLBACK_PROTECTED
     | FLAG_MADT_SNAPSHOT
-    | FLAG_AP_TRAMPOLINE;
+    | FLAG_AP_TRAMPOLINE
+    | FLAG_SERVICE_IMAGE;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServiceLaunch {
+    image_physical: PhysAddr,
+    image_pages: u64,
+    image_virtual: u64,
+    entry: u64,
+    stack_physical: PhysAddr,
+    stack_pages: u64,
+    stack_top: u64,
+    table_physical: PhysAddr,
+    table_pages: u64,
+    version: u64,
+    measurement: [u8; 64],
+}
+
+impl ServiceLaunch {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        image_physical: PhysAddr,
+        image_pages: u64,
+        image_virtual: u64,
+        entry: u64,
+        stack_physical: PhysAddr,
+        stack_pages: u64,
+        stack_top: u64,
+        table_physical: PhysAddr,
+        table_pages: u64,
+        version: u64,
+        measurement: [u8; 64],
+    ) -> Result<Self, HandoffError> {
+        let image_bytes = checked_pages(image_physical, image_pages)?;
+        let stack_bytes = checked_pages(stack_physical, stack_pages)?;
+        let _ = checked_pages(table_physical, table_pages)?;
+        let image_end = image_virtual
+            .checked_add(image_bytes)
+            .ok_or(HandoffError::NonCanonical)?;
+        let stack_base = stack_top
+            .checked_sub(stack_bytes)
+            .ok_or(HandoffError::NonCanonical)?;
+        if image_pages > u64::from(crate::MAX_SERVICE_IMAGE_BYTES).div_ceil(crate::PAGE_SIZE)
+            || stack_pages > 256
+            || !(4..=256).contains(&table_pages)
+            || version == 0
+            || measurement.iter().all(|byte| *byte == 0)
+            || !user_page(image_virtual)
+            || !user_address(entry)
+            || entry < image_virtual
+            || entry >= image_end
+            || !user_page(stack_base)
+            || !user_address(stack_top.saturating_sub(1))
+            || ranges_overlap(image_virtual, image_end, stack_base, stack_top)
+            || physical_ranges_overlap(image_physical, image_pages, stack_physical, stack_pages)
+            || physical_ranges_overlap(image_physical, image_pages, table_physical, table_pages)
+            || physical_ranges_overlap(stack_physical, stack_pages, table_physical, table_pages)
+        {
+            return Err(HandoffError::NonCanonical);
+        }
+        Ok(Self {
+            image_physical,
+            image_pages,
+            image_virtual,
+            entry,
+            stack_physical,
+            stack_pages,
+            stack_top,
+            table_physical,
+            table_pages,
+            version,
+            measurement,
+        })
+    }
+
+    pub const fn image_physical(self) -> PhysAddr {
+        self.image_physical
+    }
+    pub const fn image_pages(self) -> u64 {
+        self.image_pages
+    }
+    pub const fn image_virtual(self) -> u64 {
+        self.image_virtual
+    }
+    pub const fn entry(self) -> u64 {
+        self.entry
+    }
+    pub const fn stack_physical(self) -> PhysAddr {
+        self.stack_physical
+    }
+    pub const fn stack_pages(self) -> u64 {
+        self.stack_pages
+    }
+    pub const fn stack_top(self) -> u64 {
+        self.stack_top
+    }
+    pub const fn table_physical(self) -> PhysAddr {
+        self.table_physical
+    }
+    pub const fn table_pages(self) -> u64 {
+        self.table_pages
+    }
+    pub const fn version(self) -> u64 {
+        self.version
+    }
+    pub const fn measurement(self) -> [u8; 64] {
+        self.measurement
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandoffError {
@@ -46,6 +159,7 @@ pub struct BootHandoff {
     madt_length: usize,
     ap_trampoline: Option<u64>,
     ap_stack_arena: Option<u64>,
+    service: Option<ServiceLaunch>,
 }
 
 impl BootHandoff {
@@ -76,6 +190,10 @@ impl BootHandoff {
 
     pub const fn ap_stack_arena(&self) -> Option<u64> {
         self.ap_stack_arena
+    }
+
+    pub const fn service(&self) -> Option<ServiceLaunch> {
+        self.service
     }
 
     /// Parses a bounded canonical handoff and emits validated regions in
@@ -119,8 +237,13 @@ impl BootHandoff {
         }
         // SMP resources are one indivisible pair: a low SIPI page followed by
         // the base of the bounded per-CPU privilege-stack arena.
+        let service_bytes = usize::from(flags & FLAG_SERVICE_IMAGE != 0) * HANDOFF_SERVICE_BYTES;
+        let service_offset = regions_end;
+        let trampoline_offset = service_offset
+            .checked_add(service_bytes)
+            .ok_or(HandoffError::NonCanonical)?;
         let trampoline_bytes = usize::from(flags & FLAG_AP_TRAMPOLINE != 0) * 16;
-        let madt_offset = regions_end
+        let madt_offset = trampoline_offset
             .checked_add(trampoline_bytes)
             .ok_or(HandoffError::NonCanonical)?;
         let expected_length = madt_offset
@@ -148,8 +271,8 @@ impl BootHandoff {
         }
         let acpi_root = acpi_address;
         let (ap_trampoline, ap_stack_arena) = if trampoline_bytes != 0 {
-            let physical = read_u64(input, regions_end);
-            let stack_arena = read_u64(input, regions_end + 8);
+            let physical = read_u64(input, trampoline_offset);
+            let stack_arena = read_u64(input, trampoline_offset + 8);
             if !(crate::PAGE_SIZE..0x10_0000).contains(&physical)
                 || !physical.is_multiple_of(crate::PAGE_SIZE)
                 || stack_arena == 0
@@ -161,6 +284,11 @@ impl BootHandoff {
             (Some(physical), Some(stack_arena))
         } else {
             (None, None)
+        };
+        let service = if service_bytes != 0 {
+            Some(decode_service(input, service_offset)?)
+        } else {
+            None
         };
         let pixel_format = match input[164] {
             0 => PixelFormat::RedGreenBlueReserved,
@@ -205,6 +333,25 @@ impl BootHandoff {
         if !framebuffer_is_mmio {
             return Err(HandoffError::FramebufferOutsideMmio);
         }
+        if let Some(service) = service {
+            for (start, pages) in [
+                (service.image_physical(), service.image_pages()),
+                (service.stack_physical(), service.stack_pages()),
+                (service.table_physical(), service.table_pages()),
+            ] {
+                let end = start.get() + pages * crate::PAGE_SIZE;
+                let contained = (0..region_count).any(|index| {
+                    decode_region(input, index).is_ok_and(|region| {
+                        matches!(region.kind(), MemoryKind::Kernel | MemoryKind::Reserved)
+                            && region.start().get() <= start.get()
+                            && region.end() >= end
+                    })
+                });
+                if !contained {
+                    return Err(HandoffError::NonCanonical);
+                }
+            }
+        }
 
         let evidence = BootEvidence::new(
             entropy,
@@ -227,6 +374,7 @@ impl BootHandoff {
             madt_length,
             ap_trampoline,
             ap_stack_arena,
+            service,
         })
     }
 }
@@ -256,6 +404,7 @@ pub fn encode_handoff(
         acpi_root,
         framebuffer,
         regions,
+        None,
         None,
         None,
         output,
@@ -294,6 +443,7 @@ pub fn encode_handoff_with_madt(
         framebuffer,
         regions,
         Some(madt),
+        None,
         None,
         output,
     )
@@ -339,6 +489,53 @@ pub fn encode_handoff_with_smp(
         regions,
         Some(madt),
         Some((ap_trampoline, ap_stack_arena)),
+        None,
+        output,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn encode_handoff_with_smp_and_service(
+    image_version: u64,
+    entropy: [u8; 32],
+    image_measurement: [u8; 64],
+    secure_boot: bool,
+    measured_boot: bool,
+    rollback_protected: bool,
+    acpi_root: u64,
+    framebuffer: FramebufferInfo,
+    regions: &[MemoryRegion],
+    ap_trampoline: u64,
+    ap_stack_arena: u64,
+    service: ServiceLaunch,
+    madt: &[u8],
+    output: &mut [u8],
+) -> Result<usize, HandoffError> {
+    if !(crate::PAGE_SIZE..0x10_0000).contains(&ap_trampoline)
+        || !ap_trampoline.is_multiple_of(crate::PAGE_SIZE)
+        || ap_stack_arena == 0
+        || !ap_stack_arena.is_multiple_of(crate::PAGE_SIZE)
+        || ap_stack_arena >> 52 != 0
+        || !(44..=MAX_HANDOFF_MADT_BYTES).contains(&madt.len())
+        || &madt[..4] != b"APIC"
+        || read_u32(madt, 4) as usize != madt.len()
+        || madt.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) != 0
+    {
+        return Err(HandoffError::NonCanonical);
+    }
+    encode_handoff_inner(
+        image_version,
+        entropy,
+        image_measurement,
+        secure_boot,
+        measured_boot,
+        rollback_protected,
+        acpi_root,
+        framebuffer,
+        regions,
+        Some(madt),
+        Some((ap_trampoline, ap_stack_arena)),
+        Some(service),
         output,
     )
 }
@@ -356,6 +553,7 @@ fn encode_handoff_inner(
     regions: &[MemoryRegion],
     madt: Option<&[u8]>,
     ap_resources: Option<(u64, u64)>,
+    service: Option<ServiceLaunch>,
     output: &mut [u8],
 ) -> Result<usize, HandoffError> {
     if regions.is_empty() || regions.len() > MAX_HANDOFF_REGIONS {
@@ -370,7 +568,12 @@ fn encode_handoff_inner(
         )
         .ok_or(HandoffError::NonCanonical)?;
     let madt_length = madt.map_or(0, <[u8]>::len);
-    let madt_offset = regions_end
+    let service_bytes = usize::from(service.is_some()) * HANDOFF_SERVICE_BYTES;
+    let service_offset = regions_end;
+    let trampoline_offset = service_offset
+        .checked_add(service_bytes)
+        .ok_or(HandoffError::NonCanonical)?;
+    let madt_offset = trampoline_offset
         .checked_add(usize::from(ap_resources.is_some()) * 16)
         .ok_or(HandoffError::NonCanonical)?;
     let length = madt_offset
@@ -386,6 +589,9 @@ fn encode_handoff_inner(
             && region.end() >= framebuffer.end()
     }) {
         return Err(HandoffError::FramebufferOutsideMmio);
+    }
+    if service.is_some_and(|service| !service_storage_is_reserved(service, regions)) {
+        return Err(HandoffError::NonCanonical);
     }
     BootEvidence::new(
         entropy,
@@ -404,7 +610,8 @@ fn encode_handoff_inner(
         | ((measured_boot as u16) * FLAG_MEASURED_BOOT)
         | ((rollback_protected as u16) * FLAG_ROLLBACK_PROTECTED)
         | ((madt.is_some() as u16) * FLAG_MADT_SNAPSHOT)
-        | ((ap_resources.is_some() as u16) * FLAG_AP_TRAMPOLINE);
+        | ((ap_resources.is_some() as u16) * FLAG_AP_TRAMPOLINE)
+        | ((service.is_some() as u16) * FLAG_SERVICE_IMAGE);
     output[22..24].copy_from_slice(&flags.to_le_bytes());
     output[24..32].copy_from_slice(&image_version.to_le_bytes());
     output[32..64].copy_from_slice(&entropy);
@@ -427,13 +634,104 @@ fn encode_handoff_inner(
         output[offset + 16] = region.kind() as u8;
     }
     if let Some((physical, stack_arena)) = ap_resources {
-        output[regions_end..regions_end + 8].copy_from_slice(&physical.to_le_bytes());
-        output[regions_end + 8..regions_end + 16].copy_from_slice(&stack_arena.to_le_bytes());
+        output[trampoline_offset..trampoline_offset + 8].copy_from_slice(&physical.to_le_bytes());
+        output[trampoline_offset + 8..trampoline_offset + 16]
+            .copy_from_slice(&stack_arena.to_le_bytes());
+    }
+    if let Some(service) = service {
+        encode_service(service, &mut output[service_offset..trampoline_offset]);
     }
     if let Some(madt) = madt {
         output[madt_offset..length].copy_from_slice(madt);
     }
     Ok(length)
+}
+
+fn encode_service(service: ServiceLaunch, output: &mut [u8]) {
+    let fields = [
+        service.image_physical().get(),
+        service.image_pages(),
+        service.image_virtual(),
+        service.entry(),
+        service.stack_physical().get(),
+        service.stack_pages(),
+        service.stack_top(),
+        service.table_physical().get(),
+        service.table_pages(),
+        service.version(),
+    ];
+    for (index, value) in fields.into_iter().enumerate() {
+        let offset = index * 8;
+        output[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    output[80..HANDOFF_SERVICE_BYTES].copy_from_slice(&service.measurement());
+}
+
+fn decode_service(input: &[u8], offset: usize) -> Result<ServiceLaunch, HandoffError> {
+    let measurement = input[offset + 80..offset + HANDOFF_SERVICE_BYTES]
+        .try_into()
+        .map_err(|_| HandoffError::NonCanonical)?;
+    ServiceLaunch::new(
+        PhysAddr::new(read_u64(input, offset)).map_err(HandoffError::InvalidMemoryMap)?,
+        read_u64(input, offset + 8),
+        read_u64(input, offset + 16),
+        read_u64(input, offset + 24),
+        PhysAddr::new(read_u64(input, offset + 32)).map_err(HandoffError::InvalidMemoryMap)?,
+        read_u64(input, offset + 40),
+        read_u64(input, offset + 48),
+        PhysAddr::new(read_u64(input, offset + 56)).map_err(HandoffError::InvalidMemoryMap)?,
+        read_u64(input, offset + 64),
+        read_u64(input, offset + 72),
+        measurement,
+    )
+}
+
+fn checked_pages(start: PhysAddr, pages: u64) -> Result<u64, HandoffError> {
+    if pages == 0 || pages > u64::MAX / crate::PAGE_SIZE {
+        return Err(HandoffError::NonCanonical);
+    }
+    let bytes = pages * crate::PAGE_SIZE;
+    start
+        .get()
+        .checked_add(bytes)
+        .filter(|end| *end >> 52 == 0)
+        .ok_or(HandoffError::NonCanonical)?;
+    Ok(bytes)
+}
+
+fn service_storage_is_reserved(service: ServiceLaunch, regions: &[MemoryRegion]) -> bool {
+    [
+        (service.image_physical(), service.image_pages()),
+        (service.stack_physical(), service.stack_pages()),
+        (service.table_physical(), service.table_pages()),
+    ]
+    .into_iter()
+    .all(|(start, pages)| {
+        let end = start.get() + pages * crate::PAGE_SIZE;
+        regions.iter().any(|region| {
+            matches!(region.kind(), MemoryKind::Kernel | MemoryKind::Reserved)
+                && region.start().get() <= start.get()
+                && region.end() >= end
+        })
+    })
+}
+
+const fn user_address(address: u64) -> bool {
+    address != 0 && address <= 0x0000_7fff_ffff_ffff
+}
+
+const fn user_page(address: u64) -> bool {
+    user_address(address) && address.is_multiple_of(crate::PAGE_SIZE)
+}
+
+const fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+    a_start < b_end && b_start < a_end
+}
+
+fn physical_ranges_overlap(a: PhysAddr, a_pages: u64, b: PhysAddr, b_pages: u64) -> bool {
+    let a_end = a.get() + a_pages * crate::PAGE_SIZE;
+    let b_end = b.get() + b_pages * crate::PAGE_SIZE;
+    ranges_overlap(a.get(), a_end, b.get(), b_end)
 }
 
 fn decode_region(input: &[u8], index: usize) -> Result<MemoryRegion, HandoffError> {
@@ -491,7 +789,8 @@ mod tests {
         encoded[16..20].copy_from_slice(&(THREE_REGION_BYTES as u32).to_le_bytes());
         encoded[20..22].copy_from_slice(&3u16.to_le_bytes());
         encoded[22..24].copy_from_slice(
-            &(KNOWN_FLAGS & !(FLAG_MADT_SNAPSHOT | FLAG_AP_TRAMPOLINE)).to_le_bytes(),
+            &(KNOWN_FLAGS & !(FLAG_MADT_SNAPSHOT | FLAG_AP_TRAMPOLINE | FLAG_SERVICE_IMAGE))
+                .to_le_bytes(),
         );
         encoded[24..32].copy_from_slice(&7u64.to_le_bytes());
         encoded[32..64].fill(1);
@@ -656,5 +955,78 @@ mod tests {
             BootHandoff::decode(&with_madt, |_| {}).err(),
             Some(HandoffError::NonCanonical)
         );
+    }
+
+    #[test]
+    fn authenticated_service_descriptor_round_trips_and_is_memory_bound() {
+        const LENGTH: usize =
+            HANDOFF_HEADER_BYTES + 2 * HANDOFF_REGION_BYTES + HANDOFF_SERVICE_BYTES + 16 + 52;
+        let regions = [
+            MemoryRegion::new(PhysAddr::new(0xa0000).unwrap(), 1, MemoryKind::Mmio).unwrap(),
+            MemoryRegion::new(PhysAddr::new(0x10_0000).unwrap(), 64, MemoryKind::Reserved).unwrap(),
+        ];
+        let framebuffer = FramebufferInfo::new(
+            0xa0000,
+            0x1000,
+            16,
+            16,
+            16,
+            PixelFormat::BlueGreenRedReserved,
+        )
+        .unwrap();
+        let service = ServiceLaunch::new(
+            PhysAddr::new(0x10_0000).unwrap(),
+            2,
+            0x1_4000_0000,
+            0x1_4000_0080,
+            PhysAddr::new(0x10_4000).unwrap(),
+            2,
+            0x2_0000_2000,
+            PhysAddr::new(0x10_8000).unwrap(),
+            4,
+            11,
+            [9; 64],
+        )
+        .unwrap();
+        let mut madt = [0u8; 52];
+        madt[..4].copy_from_slice(b"APIC");
+        madt[4..8].copy_from_slice(&52u32.to_le_bytes());
+        madt[36..40].copy_from_slice(&0xfee0_0000u32.to_le_bytes());
+        madt[44..].copy_from_slice(&[0, 8, 0, 1, 1, 0, 0, 0]);
+        madt[9] = 0u8.wrapping_sub(madt.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)));
+        let mut encoded = [0u8; LENGTH];
+        assert_eq!(
+            encode_handoff_with_smp_and_service(
+                7,
+                [1; 32],
+                [2; 64],
+                true,
+                true,
+                true,
+                0x9000,
+                framebuffer,
+                &regions,
+                0x8000,
+                0x40_0000,
+                service,
+                &madt,
+                &mut encoded,
+            ),
+            Ok(LENGTH)
+        );
+        let decoded = BootHandoff::decode(&encoded, |_| {}).unwrap();
+        assert_eq!(decoded.service(), Some(service));
+        assert_eq!(decoded.madt(&encoded), Some(madt.as_slice()));
+
+        // Moving the authenticated image into MMIO must invalidate the whole
+        // handoff before any memory region is emitted.
+        let service_offset = HANDOFF_HEADER_BYTES + 2 * HANDOFF_REGION_BYTES;
+        encoded[service_offset..service_offset + 8].copy_from_slice(&0xa0000u64.to_le_bytes());
+        let mut emitted = 0;
+        assert_eq!(
+            BootHandoff::decode(&encoded, |_| emitted += 1).err(),
+            Some(HandoffError::NonCanonical)
+        );
+        assert_eq!(emitted, 0);
     }
 }

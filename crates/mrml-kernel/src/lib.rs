@@ -40,9 +40,9 @@ pub use early::{EarlyKernelContext, EarlyKernelError};
 pub use framebuffer::{Color, FramebufferError, FramebufferInfo, FramebufferSurface, PixelFormat};
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
 pub use handoff::{
-    BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, HandoffError, MAX_HANDOFF_BYTES,
-    MAX_HANDOFF_MADT_BYTES, MAX_HANDOFF_REGIONS, encode_handoff, encode_handoff_with_madt,
-    encode_handoff_with_smp,
+    BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, HANDOFF_SERVICE_BYTES, HandoffError,
+    MAX_HANDOFF_BYTES, MAX_HANDOFF_MADT_BYTES, MAX_HANDOFF_REGIONS, ServiceLaunch, encode_handoff,
+    encode_handoff_with_madt, encode_handoff_with_smp, encode_handoff_with_smp_and_service,
 };
 pub use ipc::{
     Endpoint, IpcError, MAX_CAPABILITIES, MAX_INLINE_PAYLOAD, MAX_WIRE_MESSAGE, Message, Receiver,
