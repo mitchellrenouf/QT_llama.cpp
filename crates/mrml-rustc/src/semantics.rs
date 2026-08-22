@@ -1435,8 +1435,45 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 .and_then(|count| {
                                     count.checked_add(block.conditional_breaks().len())
                                 })
+                                .and_then(|count| {
+                                    count.checked_add(block.unconditional_controls().len())
+                                })
                                 .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
                             for control_order in 0..control_count {
+                                for ((control, action_index_for_control), stored_control_order) in
+                                    block
+                                        .unconditional_controls()
+                                        .iter()
+                                        .flatten()
+                                        .zip(block.unconditional_control_action_indices())
+                                        .zip(block.unconditional_control_orders())
+                                {
+                                    if action_index != *action_index_for_control
+                                        || control_order != *stored_control_order
+                                    {
+                                        continue;
+                                    }
+                                    match control {
+                                        crate::NestedLoopUnconditionalControl::Break => {
+                                            resolver.truncate(nested_checkpoint)?;
+                                            break 'nested;
+                                        }
+                                        crate::NestedLoopUnconditionalControl::Continue => {
+                                            resolver.truncate(nested_checkpoint)?;
+                                            continue 'nested;
+                                        }
+                                        crate::NestedLoopUnconditionalControl::Return(value) => {
+                                            return Ok(Some(evaluate_const_return_statement(
+                                                context,
+                                                symbol_count,
+                                                value,
+                                                return_type,
+                                                resolver,
+                                                depth,
+                                            )?));
+                                        }
+                                    }
+                                }
                                 for ((condition, break_action_index), break_control_order) in block
                                     .conditional_breaks()
                                     .iter()
@@ -1571,25 +1608,12 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 }
                             }
                         }
-                        if let Some(return_statement) = block.return_statement {
-                            return Ok(Some(evaluate_const_return_statement(
-                                context,
-                                symbol_count,
-                                &return_statement,
-                                return_type,
-                                resolver,
-                                depth,
-                            )?));
-                        }
-                        let should_break = block.unconditional_break
-                            || (block.entry_condition.is_none()
-                                && block.conditional_breaks().is_empty());
+                        let should_break = block.entry_condition.is_none()
+                            && block.conditional_breaks().is_empty()
+                            && block.unconditional_controls().is_empty();
                         resolver.truncate(nested_checkpoint)?;
                         if should_break {
                             break;
-                        }
-                        if block.unconditional_continue {
-                            continue 'nested;
                         }
                     }
                 }
@@ -3318,7 +3342,7 @@ mod tests {
     #[test]
     fn evaluates_unconditional_continue_inside_an_inner_while_loop() {
         let module = Parser::new(
-            "const fn count(limit: u8) -> u8 { let mut outer: u8 = 0; let mut inner: u8 = 0; while outer < limit { while inner < 3 { let selected: u8 = inner + 1; inner = selected; continue; } outer += 1; inner = 0; } outer } const ZERO: u8 = count(0); const ONE: u8 = count(1); const FIVE: u8 = count(5);",
+            "const fn count(limit: u8) -> u8 { let mut outer: u8 = 0; let mut inner: u8 = 0; while outer < limit { while inner < 3 { let selected: u8 = inner + 1; inner = selected; continue; let unreachable: u8 = 255 + 1; return unreachable; } outer += 1; inner = 0; } outer } const ZERO: u8 = count(0); const ONE: u8 = count(1); const FIVE: u8 = count(5);",
         )
         .parse_module::<5, 4>()
         .unwrap();

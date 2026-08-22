@@ -733,7 +733,9 @@ pub fn compile_x86_64_function_with_options<
                 } else {
                     None
                 };
-                let mut nested_exit_patches = [None; crate::MAX_NESTED_LOOP_CONDITIONAL_BREAKS];
+                let mut nested_exit_patches = [None;
+                    crate::MAX_NESTED_LOOP_CONDITIONAL_BREAKS
+                        + crate::MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS];
                 let mut nested_exit_count = 0usize;
                 for action_index in 0..=block.action_count() {
                     let control_count = block
@@ -741,11 +743,44 @@ pub fn compile_x86_64_function_with_options<
                         .len()
                         .checked_add(block.conditional_continues().len())
                         .and_then(|count| count.checked_add(block.conditional_breaks().len()))
+                        .and_then(|count| count.checked_add(block.unconditional_controls().len()))
                         .ok_or(CodegenError {
                             kind: CodegenErrorKind::OutputTooSmall,
                             span: function.body_expression_span,
                         })?;
                     for control_order in 0..control_count {
+                        for ((control, control_action_index), stored_control_order) in block
+                            .unconditional_controls()
+                            .iter()
+                            .flatten()
+                            .zip(block.unconditional_control_action_indices())
+                            .zip(block.unconditional_control_orders())
+                        {
+                            if action_index != *control_action_index
+                                || control_order != *stored_control_order
+                            {
+                                continue;
+                            }
+                            match control {
+                                crate::NestedLoopUnconditionalControl::Break => {
+                                    emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                                    nested_exit_patches[nested_exit_count] =
+                                        Some(emitter.emit_unconditional_forward_branch()?);
+                                    nested_exit_count += 1;
+                                }
+                                crate::NestedLoopUnconditionalControl::Continue => {
+                                    emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                                    emitter.emit_backward_branch(nested_start)?;
+                                }
+                                crate::NestedLoopUnconditionalControl::Return(value) => {
+                                    emitter.emit_return::<MAX_EXPRESSION_NODES>(
+                                        value,
+                                        expected_type,
+                                        function.body_expression_span.start,
+                                    )?;
+                                }
+                            }
+                        }
                         for ((condition, break_action_index), break_control_order) in block
                             .conditional_breaks()
                             .iter()
@@ -902,19 +937,10 @@ pub fn compile_x86_64_function_with_options<
                         }
                     }
                 }
-                if let Some(return_statement) = block.return_statement {
-                    emitter.emit_return::<MAX_EXPRESSION_NODES>(
-                        &return_statement,
-                        expected_type,
-                        function.body_expression_span.start,
-                    )?;
-                }
                 emitter.emit_stack_cleanup_to(nested_checkpoint)?;
                 emitter.truncate_scoped_locals(nested_checkpoint)?;
                 if (block.entry_condition.is_some() || nested_exit_count != 0)
-                    && !block.unconditional_break
-                    && block.return_statement.is_none()
-                    || block.unconditional_continue
+                    && block.unconditional_controls().is_empty()
                 {
                     emitter.emit_backward_branch(nested_start)?;
                 }
@@ -4216,7 +4242,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_continue_then_return(limit: u64, skip: u64, stop: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == skip { continue; } if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_multiple_continues(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { continue; } if inner == second { continue; } total += inner; } outer += 1; inner = 0; } total }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_multiple_breaks(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { break; } total += inner; if inner == second { break; } } outer += 1; inner = 0; } total }",
-            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_unconditional_continue(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; } outer += 1; inner = 0; } outer }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_unconditional_continue(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; let unreachable: u64 = 10 / 0; unreachable; } outer += 1; inner = 0; } outer }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {
@@ -4229,6 +4255,21 @@ mod tests {
                 );
             }
         }
+
+        let unreachable_type_error = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn bad(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; continue; let invalid: bool = 1; invalid; } outer += 1; inner = 0; } outer }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = unreachable_type_error.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 1536, 4, 48>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch
+        );
 
         let leaking = Parser::new(
             "#[unsafe(no_mangle)] pub extern \"C\" fn bad(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { let scoped: u64 = i; i += 1; } scoped }",

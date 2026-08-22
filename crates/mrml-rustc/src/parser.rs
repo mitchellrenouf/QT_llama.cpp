@@ -12,6 +12,7 @@ pub const MAX_NESTED_LOOP_BLOCKS: usize = 4;
 pub const MAX_NESTED_LOOP_CONDITIONAL_BREAKS: usize = 4;
 pub const MAX_NESTED_LOOP_CONDITIONAL_CONTINUES: usize = 4;
 pub const MAX_NESTED_LOOP_CONDITIONAL_RETURNS: usize = 4;
+pub const MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS: usize = 4;
 pub const MAX_BODY_STATEMENTS: usize = 32;
 pub const MAX_BODY_EXPRESSION_STATEMENTS: usize = 8;
 pub const MAX_BODY_RETURNS: usize = 8;
@@ -284,9 +285,11 @@ pub struct NestedLoopBlock<'source> {
     pub entry_condition: Option<ConditionalLoopControl<'source>>,
     actions: [Option<ConditionalLoopAction<'source>>; MAX_NESTED_LOOP_ACTIONS],
     action_count: usize,
-    pub unconditional_break: bool,
-    pub unconditional_continue: bool,
-    pub return_statement: Option<LoopReturn<'source>>,
+    unconditional_controls:
+        [Option<NestedLoopUnconditionalControl<'source>>; MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS],
+    unconditional_control_action_indices: [usize; MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS],
+    unconditional_control_orders: [usize; MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS],
+    unconditional_control_count: usize,
     conditional_breaks:
         [Option<ConditionalLoopControl<'source>>; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
     conditional_break_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
@@ -303,6 +306,13 @@ pub struct NestedLoopBlock<'source> {
     conditional_return_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NestedLoopUnconditionalControl<'source> {
+    Break,
+    Continue,
+    Return(LoopReturn<'source>),
+}
+
 impl<'source> NestedLoopBlock<'source> {
     pub fn actions(&self) -> &[Option<ConditionalLoopAction<'source>>] {
         &self.actions[..self.action_count]
@@ -310,6 +320,18 @@ impl<'source> NestedLoopBlock<'source> {
 
     pub const fn action_count(&self) -> usize {
         self.action_count
+    }
+
+    pub fn unconditional_controls(&self) -> &[Option<NestedLoopUnconditionalControl<'source>>] {
+        &self.unconditional_controls[..self.unconditional_control_count]
+    }
+
+    pub fn unconditional_control_action_indices(&self) -> &[usize] {
+        &self.unconditional_control_action_indices[..self.unconditional_control_count]
+    }
+
+    pub fn unconditional_control_orders(&self) -> &[usize] {
+        &self.unconditional_control_orders[..self.unconditional_control_count]
     }
 
     pub fn conditional_breaks(&self) -> &[Option<ConditionalLoopControl<'source>>] {
@@ -697,6 +719,7 @@ pub enum ParseErrorKind {
     TooManyNestedLoopConditionalBreaks,
     TooManyNestedLoopConditionalContinues,
     TooManyNestedLoopConditionalReturns,
+    TooManyNestedLoopUnconditionalControls,
     TooManyExpressionStatements,
     TooManyReturns,
     TooManyConditionalReturnBranches,
@@ -1546,17 +1569,20 @@ impl<'source> BodyParser<'source> {
                     let mut conditional_return_control_orders =
                         [0usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS];
                     let mut conditional_return_count = 0usize;
-                    let mut body_closed = false;
-                    let mut unconditional_break = false;
-                    let mut unconditional_continue = false;
-                    let mut return_statement = None;
+                    let mut unconditional_controls = [None; MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS];
+                    let mut unconditional_control_action_indices =
+                        [0usize; MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS];
+                    let mut unconditional_control_orders =
+                        [0usize; MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS];
+                    let mut unconditional_control_count = 0usize;
                     loop {
                         let next = probe.peek()?;
                         if next.is_some_and(|token| token.kind == TokenKind::CloseBrace)
-                            && (entry_condition.is_some() || conditional_break_count != 0)
+                            && (entry_condition.is_some()
+                                || conditional_break_count != 0
+                                || unconditional_control_count != 0)
                         {
                             probe.take()?;
-                            body_closed = true;
                             break;
                         }
                         if next.is_some_and(|token| token.text == "break") {
@@ -1567,8 +1593,22 @@ impl<'source> BodyParser<'source> {
                                     probe.error(ParseErrorKind::ExpectedSemicolon, semicolon)
                                 );
                             }
-                            unconditional_break = true;
-                            break;
+                            if unconditional_control_count == MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS
+                            {
+                                return Err(probe.error(
+                                    ParseErrorKind::TooManyNestedLoopUnconditionalControls,
+                                    next,
+                                ));
+                            }
+                            unconditional_controls[unconditional_control_count] =
+                                Some(NestedLoopUnconditionalControl::Break);
+                            unconditional_control_action_indices[unconditional_control_count] =
+                                action_count;
+                            unconditional_control_orders[unconditional_control_count] =
+                                control_order;
+                            unconditional_control_count += 1;
+                            control_order += 1;
+                            continue;
                         }
                         if next.is_some_and(|token| token.text == "continue") {
                             probe.take()?;
@@ -1578,14 +1618,45 @@ impl<'source> BodyParser<'source> {
                                     probe.error(ParseErrorKind::ExpectedSemicolon, semicolon)
                                 );
                             }
-                            unconditional_continue = true;
-                            break;
+                            if unconditional_control_count == MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS
+                            {
+                                return Err(probe.error(
+                                    ParseErrorKind::TooManyNestedLoopUnconditionalControls,
+                                    next,
+                                ));
+                            }
+                            unconditional_controls[unconditional_control_count] =
+                                Some(NestedLoopUnconditionalControl::Continue);
+                            unconditional_control_action_indices[unconditional_control_count] =
+                                action_count;
+                            unconditional_control_orders[unconditional_control_count] =
+                                control_order;
+                            unconditional_control_count += 1;
+                            control_order += 1;
+                            continue;
                         }
                         if next.is_some_and(|token| token.text == "return") {
                             probe.take()?;
                             let (value, value_span) = probe.return_value()?;
-                            return_statement = Some(LoopReturn { value, value_span });
-                            break;
+                            if unconditional_control_count == MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS
+                            {
+                                return Err(probe.error(
+                                    ParseErrorKind::TooManyNestedLoopUnconditionalControls,
+                                    next,
+                                ));
+                            }
+                            unconditional_controls[unconditional_control_count] =
+                                Some(NestedLoopUnconditionalControl::Return(LoopReturn {
+                                    value,
+                                    value_span,
+                                }));
+                            unconditional_control_action_indices[unconditional_control_count] =
+                                action_count;
+                            unconditional_control_orders[unconditional_control_count] =
+                                control_order;
+                            unconditional_control_count += 1;
+                            control_order += 1;
+                            continue;
                         }
                         if next.is_some_and(|token| token.text == "if") {
                             probe.take()?;
@@ -1704,19 +1775,14 @@ impl<'source> BodyParser<'source> {
                         actions[action_count] = Some(action);
                         action_count += 1;
                     }
-                    if !body_closed {
-                        let close = probe.take()?;
-                        if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
-                            return Err(
-                                probe.error(ParseErrorKind::UnexpectedClosingDelimiter, close)
-                            );
-                        }
-                    }
                     operations[operation_count] = Some(
                         if entry_condition.is_none()
                             && action_count == 0
-                            && return_statement.is_none()
-                            && !unconditional_continue
+                            && unconditional_control_count == 1
+                            && matches!(
+                                unconditional_controls[0],
+                                Some(NestedLoopUnconditionalControl::Break)
+                            )
                             && conditional_break_count == 0
                             && conditional_continue_count == 0
                             && conditional_return_count == 0
@@ -1733,9 +1799,10 @@ impl<'source> BodyParser<'source> {
                                 entry_condition,
                                 actions,
                                 action_count,
-                                unconditional_break,
-                                unconditional_continue,
-                                return_statement,
+                                unconditional_controls,
+                                unconditional_control_action_indices,
+                                unconditional_control_orders,
+                                unconditional_control_count,
                                 conditional_breaks,
                                 conditional_break_action_indices,
                                 conditional_break_control_orders,
@@ -3170,7 +3237,7 @@ mod tests {
         assert_eq!(inner.conditional_continue_control_orders(), &[0, 1]);
 
         let unconditional_continue = Parser::new(
-            "fn nested(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; } outer += 1; inner = 0; } outer }",
+            "fn nested(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; let unreachable: u64 = selected + 10; unreachable; } outer += 1; inner = 0; } outer }",
         )
         .parse_module::<2, 4>()
         .unwrap();
@@ -3183,9 +3250,25 @@ mod tests {
             panic!("expected nested while block")
         };
         let inner = outer.nested_blocks()[index].unwrap();
-        assert!(inner.unconditional_continue);
-        assert!(!inner.unconditional_break);
-        assert_eq!(inner.action_count(), 2);
+        assert_eq!(
+            inner.unconditional_controls(),
+            &[Some(NestedLoopUnconditionalControl::Continue)]
+        );
+        assert_eq!(inner.unconditional_control_action_indices(), &[2]);
+        assert_eq!(inner.action_count(), 4);
+
+        let crowded_unconditional = Parser::new(
+            "fn nested() { loop { loop { break; continue; return; break; continue; } } }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = crowded_unconditional.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            function.parse_body::<4>().unwrap_err().kind,
+            ParseErrorKind::TooManyNestedLoopUnconditionalControls
+        );
 
         let crowded_continues = Parser::new(
             "fn nested(a: bool, b: bool, c: bool, d: bool) { loop { loop { if a { continue; } if b { continue; } if c { continue; } if d { continue; } if true { continue; } } } }",

@@ -849,7 +849,7 @@ fn rustc_positioned_nested_breaks_have_an_executable_replacement() {
 fn rustc_unconditional_nested_continue_has_an_executable_replacement() {
     // Original scalar replacement for the unconditional inner continue edge in
     // pinned tests/ui/for-loop-while/loop-break-cont.rs.
-    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32) -> u32 { let mut outer: u32 = 0; let mut inner: u32 = 0; while outer < limit { while inner < 3 { let selected: u32 = inner + 1; inner = selected; continue; } outer += 1; inner = 0; } outer }";
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32) -> u32 { let mut outer: u32 = 0; let mut inner: u32 = 0; while outer < limit { while inner < 3 { let selected: u32 = inner + 1; inner = selected; continue; let unreachable: u32 = 10 / 0; unreachable; return unreachable; } outer += 1; inner = 0; } outer }";
     for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
         assert!(
             compile_source_function::<2048, 1536, 4, 4, 4, 64>(

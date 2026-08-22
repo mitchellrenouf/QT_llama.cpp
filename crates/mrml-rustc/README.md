@@ -284,6 +284,12 @@ An unconditional terminal `continue;` cleans the complete inner iteration
 scope and targets the nested loop's own head. For an inner `while`, the head
 condition is rechecked before the next iteration; it never skips the remaining
 operations of the containing loop.
+Unconditional inner `break`, `continue`, and function-return controls retain
+their exact position in the same bounded control stream. Source after a taken
+edge remains parsed and native-type-checked as unreachable Rust source, while
+const evaluation and emitted execution do not evaluate it. Up to four such
+controls are retained so later unreachable controls receive the same checking;
+a fifth produces a dedicated capacity diagnostic before lowering.
 Up to four conditional function returns may occur at ordered positions among
 the inner actions. Each false guard advances to the next operation without
 changing the inner scope; the first true guard returns after full-frame cleanup.
@@ -888,6 +894,13 @@ pinned `tests/ui/for-loop-while/loop-break-cont.rs`. Its 319-byte COFF and
 five, and 60,000 outer iterations while rechecking the inner `while` head and
 cleaning a scoped local before every backedge. Const evaluation produced the
 same bounded results.
+The ordered-unreachable-control extension retains a local, discarded division
+by zero, and return after that taken continue. Its 385-byte COFF and 776-byte
+ELF64 objects passed the same independent callers without evaluating the
+unreachable division, while a separate invalid Boolean local after the edge was
+still rejected during native type checking. Const evaluation likewise skipped
+the unreachable overflow and return; parser regressions cover the four-control
+capacity boundary.
 The nested-while replacement maps nested scalar while flow from pinned
 `tests/ui/for-loop-while/while.rs` and the nested targeting observed in
 `nested-loop-break-unit.rs`. Its 361-byte COFF and 752-byte ELF64 objects passed
