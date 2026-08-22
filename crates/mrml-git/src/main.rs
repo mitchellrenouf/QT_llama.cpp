@@ -363,15 +363,9 @@ fn dispatch(cli: &Cli) -> Result<()> {
             let staged = tail.first().is_some_and(|argument| argument == "--staged");
             let paths = if staged { &tail[1..] } else { tail };
             checked_positionals(paths)?;
-            let mut args = Vector::from(["diff", "--color=always"]);
-            if staged {
-                args.push("--cached");
-            }
-            if !paths.is_empty() {
-                args.push("--");
-                args.extend(paths.iter().map(Text::as_str));
-            }
-            run_visible(repository, &args)
+            let diffs = native_repository(repository)?.diff(staged, paths).map_err(|error| anyhow!("{}", error))?;
+            for diff in diffs { println!("{}", diff.unified()); }
+            Ok(())
         }
         "diff-ref" if !tail.is_empty() => {
             checked_positionals(tail)?;

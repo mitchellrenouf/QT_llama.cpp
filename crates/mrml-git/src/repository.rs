@@ -6,7 +6,7 @@ use mrml_runtime::{
 };
 
 use crate::{
-    Commit, Index, IndexEntry, IndexError, Object, ObjectError, ObjectId, ObjectKind,
+    Commit, FileDiff, Index, IndexEntry, IndexError, Object, ObjectError, ObjectId, ObjectKind,
     decode_loose_object, encode_loose_object, parse_tree,
 };
 
@@ -313,6 +313,38 @@ impl Repository {
             }
         }
         self.write_index(&index)
+    }
+
+    pub fn diff(&self, staged: bool, paths: &[Text]) -> Result<Vector<FileDiff>, RepositoryError> {
+        for path in paths { validate_worktree_path(path)?; }
+        let index = self.index()?;
+        let base = if staged {
+            match self.head()? { Some(id) => self.tree_index(self.read_commit(id)?.tree)?, None => Index::empty() }
+        } else { index.clone() };
+        let mut names: Vector<Text> = base.entries.iter().filter(|entry| entry.stage == 0).map(|entry| entry.path.clone()).collect();
+        if staged { for entry in &index.entries { if entry.stage == 0 && !names.iter().any(|name| name == &entry.path) { names.push(entry.path.clone()); } } }
+        names.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        let mut output = Vector::new();
+        for name in names {
+            if !paths.is_empty() && !paths.iter().any(|path| name.as_str() == path.as_str() || name.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('/'))) { continue; }
+            let old_entry = base.entry(&name);
+            let new_entry = if staged { index.entry(&name) } else { old_entry };
+            let old = match old_entry { Some(entry) => Some(self.read_blob(entry.id)?), None => None };
+            let new = if staged {
+                match new_entry { Some(entry) => Some(self.read_blob(entry.id)?), None => None }
+            } else {
+                let path = join_path(&self.worktree, &name);
+                if path_is_file(&path) { Some(read_file_bounded(&path, MAX_WORKTREE_FILE)?) } else { None }
+            };
+            if old != new { output.push(FileDiff { path: name, old, new }); }
+        }
+        Ok(output)
+    }
+
+    fn read_blob(&self, id: ObjectId) -> Result<Vector<u8>, RepositoryError> {
+        let object = self.read_object(id)?;
+        if object.kind != ObjectKind::Blob { return Err(RepositoryError::InvalidReference); }
+        Ok(object.contents)
     }
 
     pub fn branches(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {
@@ -994,6 +1026,20 @@ mod tests {
         repository.set_remote("origin", "ssh://git@example.invalid/other/repo.git", true).unwrap();
         assert_eq!(repository.remotes().unwrap()[0].1, "ssh://git@example.invalid/other/repo.git");
         assert!(repository.set_remote("missing", "git@example.invalid:x/y", true).is_err());
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn computes_staged_and_worktree_diffs_natively() {
+        let path = root("diff");
+        let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked");
+        let paths = Vector::from([Text::from("tracked")]);
+        write_file(&file, b"base\n").unwrap(); repository.stage(&paths).unwrap(); repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
+        write_file(&file, b"staged\n").unwrap(); repository.stage(&paths).unwrap();
+        assert_eq!(repository.diff(true, &[]).unwrap()[0].new.as_deref(), Some(&b"staged\n"[..]));
+        write_file(&file, b"worktree\n").unwrap();
+        assert_eq!(repository.diff(false, &[]).unwrap()[0].new.as_deref(), Some(&b"worktree\n"[..]));
         remove_dir_all(&path).unwrap();
     }
 }
