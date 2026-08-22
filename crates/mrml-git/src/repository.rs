@@ -13,36 +13,73 @@ const MAX_WORKTREE_ENTRIES: usize = 1_000_000;
 const MAX_DEPTH: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Repository { pub worktree: Text, pub git_dir: Text }
+pub struct Repository {
+    pub worktree: Text,
+    pub git_dir: Text,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeChangeKind { Modified, Deleted, Untracked }
+pub enum NativeChangeKind {
+    Modified,
+    Deleted,
+    Untracked,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeChange { pub path: Text, pub kind: NativeChangeKind }
+pub struct NativeChange {
+    pub path: Text,
+    pub kind: NativeChangeKind,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RepositoryError {
-    File(FileError), Index(IndexError), NotRepository, AlreadyExists, UnsupportedLayout,
-    InvalidHead, InvalidReference, TooManyFiles, TooDeep, UnsupportedFileType, FileTooLarge,
+    File(FileError),
+    Index(IndexError),
+    NotRepository,
+    AlreadyExists,
+    UnsupportedLayout,
+    InvalidHead,
+    InvalidReference,
+    TooManyFiles,
+    TooDeep,
+    UnsupportedFileType,
+    FileTooLarge,
     InvalidWorktreePath,
-    ConflictedIndex, DetachedHead, InvalidIdentity,
+    ConflictedIndex,
+    DetachedHead,
+    InvalidIdentity,
+    ReferenceExists,
+    ReferenceMissing,
+    CurrentBranch,
 }
 
 impl Repository {
     pub fn discover(start: &str) -> Result<Self, RepositoryError> {
         let resolved = canonical_path(start)?;
-        let mut current = if path_is_directory(&resolved) { resolved } else {
-            parent_path(&resolved).ok_or(RepositoryError::NotRepository)?.into()
+        let mut current = if path_is_directory(&resolved) {
+            resolved
+        } else {
+            parent_path(&resolved)
+                .ok_or(RepositoryError::NotRepository)?
+                .into()
         };
         loop {
             let marker = join_path(&current, ".git");
             if path_is_directory(&marker) {
-                return Ok(Self { worktree: current, git_dir: marker });
+                return Ok(Self {
+                    worktree: current,
+                    git_dir: marker,
+                });
             }
-            if path_exists(&marker) { return Err(RepositoryError::UnsupportedLayout); }
-            let Some(parent) = parent_path(&current) else { break };
-            if current == parent { break; }
+            if path_exists(&marker) {
+                return Err(RepositoryError::UnsupportedLayout);
+            }
+            let Some(parent) = parent_path(&current) else {
+                break;
+            };
+            if current == parent {
+                break;
+            }
             current = parent.into();
         }
         Err(RepositoryError::NotRepository)
@@ -52,14 +89,22 @@ impl Repository {
         create_dir_all(path)?;
         let worktree = canonical_path(path)?;
         let git_dir = join_path(&worktree, ".git");
-        if path_exists(&git_dir) { return Err(RepositoryError::AlreadyExists); }
+        if path_exists(&git_dir) {
+            return Err(RepositoryError::AlreadyExists);
+        }
         create_dir_all(&join_path(&git_dir, "objects/info"))?;
         create_dir_all(&join_path(&git_dir, "objects/pack"))?;
         create_dir_all(&join_path(&git_dir, "refs/heads"))?;
         create_dir_all(&join_path(&git_dir, "refs/tags"))?;
         write_file(&join_path(&git_dir, "HEAD"), b"ref: refs/heads/main\n")?;
-        write_file(&join_path(&git_dir, "config"), b"[core]\n\trepositoryformatversion = 0\n\tbare = false\n")?;
-        write_file(&join_path(&git_dir, "description"), b"Unnamed MRML repository\n")?;
+        write_file(
+            &join_path(&git_dir, "config"),
+            b"[core]\n\trepositoryformatversion = 0\n\tbare = false\n",
+        )?;
+        write_file(
+            &join_path(&git_dir, "description"),
+            b"Unnamed MRML repository\n",
+        )?;
         Ok(Self { worktree, git_dir })
     }
 
@@ -70,7 +115,9 @@ impl Repository {
             validate_reference(reference)?;
             return Ok(reference.strip_prefix("refs/heads/").map(Into::into));
         }
-        ObjectId::parse(head).map(|_| None).ok_or(RepositoryError::InvalidHead)
+        ObjectId::parse(head)
+            .map(|_| None)
+            .ok_or(RepositoryError::InvalidHead)
     }
 
     pub fn head(&self) -> Result<Option<ObjectId>, RepositoryError> {
@@ -79,20 +126,32 @@ impl Repository {
         if let Some(reference) = head.strip_prefix("ref: ") {
             validate_reference(reference)?;
             let path = join_path(&self.git_dir, reference);
-            if !path_is_file(&path) { return Ok(None); }
+            if !path_is_file(&path) {
+                return Ok(None);
+            }
             let value = read_file_text_bounded(&path, 4096)?;
-            return ObjectId::parse(value.trim()).map(Some).ok_or(RepositoryError::InvalidHead);
+            return ObjectId::parse(value.trim())
+                .map(Some)
+                .ok_or(RepositoryError::InvalidHead);
         }
-        ObjectId::parse(head).map(Some).ok_or(RepositoryError::InvalidHead)
+        ObjectId::parse(head)
+            .map(Some)
+            .ok_or(RepositoryError::InvalidHead)
     }
 
     pub fn index(&self) -> Result<Index, RepositoryError> {
         let path = join_path(&self.git_dir, "index");
-        if !path_is_file(&path) { return Ok(Index::empty()); }
+        if !path_is_file(&path) {
+            return Ok(Index::empty());
+        }
         Ok(Index::parse(&read_file_bounded(&path, MAX_INDEX_BYTES)?)?)
     }
 
-    pub fn write_object(&self, kind: ObjectKind, contents: &[u8]) -> Result<ObjectId, RepositoryError> {
+    pub fn write_object(
+        &self,
+        kind: ObjectKind,
+        contents: &[u8],
+    ) -> Result<ObjectId, RepositoryError> {
         let (id, encoded) = encode_loose_object(kind, contents);
         let hex = id.to_hex();
         let directory = join_path(&join_path(&self.git_dir, "objects"), &hex[..2]);
@@ -101,6 +160,103 @@ impl Repository {
             create_dir_all(&directory)?;
             write_file(&path, &encoded)?;
         }
+        Ok(id)
+    }
+
+    pub fn branches(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {
+        let mut branches = Vector::new();
+        let root = join_path(&self.git_dir, "refs/heads");
+        if path_is_directory(&root) {
+            self.collect_references(&root, "", &mut branches)?;
+        }
+        branches.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+        Ok(branches)
+    }
+
+    fn collect_references(
+        &self,
+        directory: &str,
+        prefix: &str,
+        output: &mut Vector<(Text, ObjectId)>,
+    ) -> Result<(), RepositoryError> {
+        for entry in read_directory(directory)? {
+            if entry.is_symlink {
+                return Err(RepositoryError::UnsupportedFileType);
+            }
+            let path = join_path(directory, &entry.name);
+            let name = if prefix.is_empty() {
+                entry.name.clone()
+            } else {
+                mrml_runtime::mrml_format!("{}/{}", prefix, entry.name)
+            };
+            if entry.is_directory {
+                self.collect_references(&path, &name, output)?;
+            } else {
+                let value = read_file_text_bounded(&path, 4096)?;
+                let id = ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
+                output.push((name, id));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn create_branch(&self, name: &str, switch: bool) -> Result<ObjectId, RepositoryError> {
+        let reference = mrml_runtime::mrml_format!("refs/heads/{name}");
+        validate_reference(&reference)?;
+        let id = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let path = join_path(&self.git_dir, &reference);
+        if path_exists(&path) {
+            return Err(RepositoryError::ReferenceExists);
+        }
+        if let Some(parent) = parent_path(&path) {
+            create_dir_all(parent)?;
+        }
+        write_file(&path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
+        if switch {
+            write_file(
+                &join_path(&self.git_dir, "HEAD"),
+                mrml_runtime::mrml_format!("ref: {reference}\n").as_bytes(),
+            )?;
+        }
+        Ok(id)
+    }
+
+    pub fn delete_branch(&self, name: &str) -> Result<(), RepositoryError> {
+        let reference = mrml_runtime::mrml_format!("refs/heads/{name}");
+        validate_reference(&reference)?;
+        if self.current_branch()?.as_deref() == Some(name) {
+            return Err(RepositoryError::CurrentBranch);
+        }
+        let path = join_path(&self.git_dir, &reference);
+        if !path_is_file(&path) {
+            return Err(RepositoryError::ReferenceMissing);
+        }
+        mrml_runtime::remove_file(&path)?;
+        Ok(())
+    }
+
+    pub fn tags(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {
+        let mut tags = Vector::new();
+        let root = join_path(&self.git_dir, "refs/tags");
+        if path_is_directory(&root) {
+            self.collect_references(&root, "", &mut tags)?;
+        }
+        tags.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+        Ok(tags)
+    }
+
+    pub fn create_tag(&self, name: &str) -> Result<ObjectId, RepositoryError> {
+        let reference = mrml_runtime::mrml_format!("refs/tags/{name}");
+        validate_reference(&reference)?;
+        let id = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let path = join_path(&self.git_dir, &reference);
+        if path_exists(&path) {
+            return Err(RepositoryError::ReferenceExists);
+        }
+        if let Some(parent) = parent_path(&path) {
+            create_dir_all(parent)?;
+        }
+        write_file(&path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
         Ok(id)
     }
 
@@ -113,16 +269,30 @@ impl Repository {
                 index.remove(relative);
                 continue;
             }
-            if !path_is_file(&disk_path) { return Err(RepositoryError::UnsupportedFileType); }
+            if !path_is_file(&disk_path) {
+                return Err(RepositoryError::UnsupportedFileType);
+            }
             let contents = read_file_bounded(&disk_path, MAX_WORKTREE_FILE).map_err(|error| {
-                if error == FileError::ReadFailed { RepositoryError::FileTooLarge } else { error.into() }
+                if error == FileError::ReadFailed {
+                    RepositoryError::FileTooLarge
+                } else {
+                    error.into()
+                }
             })?;
             let id = self.write_object(ObjectKind::Blob, &contents)?;
-            index.upsert(crate::IndexEntry { path: relative.clone(), id, mode: 0o100644, size: contents.len() as u32, stage: 0 });
+            index.upsert(crate::IndexEntry {
+                path: relative.clone(),
+                id,
+                mode: 0o100644,
+                size: contents.len() as u32,
+                stage: 0,
+            });
         }
         let encoded = index.encode()?;
         let temporary = join_path(&self.git_dir, "index.lock");
-        if path_exists(&temporary) { return Err(RepositoryError::AlreadyExists); }
+        if path_exists(&temporary) {
+            return Err(RepositoryError::AlreadyExists);
+        }
         write_file(&temporary, &encoded)?;
         mrml_runtime::rename_file(&temporary, &join_path(&self.git_dir, "index"))?;
         Ok(())
@@ -130,51 +300,97 @@ impl Repository {
 
     pub fn write_tree(&self) -> Result<ObjectId, RepositoryError> {
         let index = self.index()?;
-        if index.entries.iter().any(|entry| entry.stage != 0) { return Err(RepositoryError::ConflictedIndex); }
+        if index.entries.iter().any(|entry| entry.stage != 0) {
+            return Err(RepositoryError::ConflictedIndex);
+        }
         self.write_tree_prefix(&index, "")
     }
 
     fn write_tree_prefix(&self, index: &Index, prefix: &str) -> Result<ObjectId, RepositoryError> {
         let mut items: Vector<TreeItem> = Vector::new();
         for entry in &index.entries {
-            let Some(remainder) = entry.path.strip_prefix(prefix) else { continue };
+            let Some(remainder) = entry.path.strip_prefix(prefix) else {
+                continue;
+            };
             if let Some(split) = remainder.find('/') {
                 let name = &remainder[..split];
-                if items.iter().any(|item| item.directory && item.name == name) { continue; }
-                let mut child_prefix = Text::from(prefix); child_prefix.push_str(name); child_prefix.push('/');
+                if items.iter().any(|item| item.directory && item.name == name) {
+                    continue;
+                }
+                let mut child_prefix = Text::from(prefix);
+                child_prefix.push_str(name);
+                child_prefix.push('/');
                 let id = self.write_tree_prefix(index, &child_prefix)?;
-                items.push(TreeItem { name: name.into(), mode: 0o40000, id, directory: true });
+                items.push(TreeItem {
+                    name: name.into(),
+                    mode: 0o40000,
+                    id,
+                    directory: true,
+                });
             } else if !remainder.is_empty() {
-                items.push(TreeItem { name: remainder.into(), mode: entry.mode, id: entry.id, directory: false });
+                items.push(TreeItem {
+                    name: remainder.into(),
+                    mode: entry.mode,
+                    id: entry.id,
+                    directory: false,
+                });
             }
         }
         items.sort_unstable_by(|left, right| tree_name_cmp(left, right));
         let mut contents = Vector::new();
         for item in items {
             let mode = mrml_runtime::mrml_format!("{:o}", item.mode);
-            contents.extend(mode.as_bytes().iter().copied()); contents.push(b' ');
-            contents.extend(item.name.as_bytes().iter().copied()); contents.push(0); contents.extend(item.id.0);
+            contents.extend(mode.as_bytes().iter().copied());
+            contents.push(b' ');
+            contents.extend(item.name.as_bytes().iter().copied());
+            contents.push(0);
+            contents.extend(item.id.0);
         }
         self.write_object(ObjectKind::Tree, &contents)
     }
 
-    pub fn commit(&self, message: &str, name: &str, email: &str, timestamp: u64) -> Result<ObjectId, RepositoryError> {
+    pub fn commit(
+        &self,
+        message: &str,
+        name: &str,
+        email: &str,
+        timestamp: u64,
+    ) -> Result<ObjectId, RepositoryError> {
         validate_identity(name, email)?;
-        if message.trim().is_empty() || message.chars().any(|character| character == '\0') { return Err(RepositoryError::InvalidIdentity); }
-        let branch = self.current_branch()?.ok_or(RepositoryError::DetachedHead)?;
+        if message.trim().is_empty() || message.chars().any(|character| character == '\0') {
+            return Err(RepositoryError::InvalidIdentity);
+        }
+        let branch = self
+            .current_branch()?
+            .ok_or(RepositoryError::DetachedHead)?;
         let tree = self.write_tree()?;
         let parent = self.head()?;
         let mut contents = mrml_runtime::mrml_format!("tree {}\n", tree);
-        if let Some(parent) = parent { contents.push_str(&mrml_runtime::mrml_format!("parent {}\n", parent)); }
-        contents.push_str(&mrml_runtime::mrml_format!("author {} <{}> {} +0000\ncommitter {} <{}> {} +0000\n\n", name, email, timestamp, name, email, timestamp));
-        contents.push_str(message.trim()); contents.push('\n');
+        if let Some(parent) = parent {
+            contents.push_str(&mrml_runtime::mrml_format!("parent {}\n", parent));
+        }
+        contents.push_str(&mrml_runtime::mrml_format!(
+            "author {} <{}> {} +0000\ncommitter {} <{}> {} +0000\n\n",
+            name,
+            email,
+            timestamp,
+            name,
+            email,
+            timestamp
+        ));
+        contents.push_str(message.trim());
+        contents.push('\n');
         let id = self.write_object(ObjectKind::Commit, contents.as_bytes())?;
         let reference = mrml_runtime::mrml_format!("refs/heads/{}", branch);
         validate_reference(&reference)?;
         let path = join_path(&self.git_dir, &reference);
-        if let Some(parent) = parent_path(&path) { create_dir_all(parent)?; }
+        if let Some(parent) = parent_path(&path) {
+            create_dir_all(parent)?;
+        }
         let lock = mrml_runtime::mrml_format!("{}.lock", path);
-        if path_exists(&lock) { return Err(RepositoryError::AlreadyExists); }
+        if path_exists(&lock) {
+            return Err(RepositoryError::AlreadyExists);
+        }
         write_file(&lock, mrml_runtime::mrml_format!("{}\n", id).as_bytes())?;
         mrml_runtime::rename_file(&lock, &path)?;
         Ok(id)
@@ -186,15 +402,25 @@ impl Repository {
         for entry in index.entries.iter().filter(|entry| entry.stage == 0) {
             let path = join_path(&self.worktree, &entry.path);
             if !path_exists(&path) {
-                changes.push(NativeChange { path: entry.path.clone(), kind: NativeChangeKind::Deleted });
+                changes.push(NativeChange {
+                    path: entry.path.clone(),
+                    kind: NativeChangeKind::Deleted,
+                });
             } else if !path_is_file(&path) {
                 return Err(RepositoryError::UnsupportedFileType);
             } else {
                 let bytes = read_file_bounded(&path, MAX_WORKTREE_FILE).map_err(|error| {
-                    if error == FileError::ReadFailed { RepositoryError::FileTooLarge } else { error.into() }
+                    if error == FileError::ReadFailed {
+                        RepositoryError::FileTooLarge
+                    } else {
+                        error.into()
+                    }
                 })?;
                 if ObjectId::blob(&bytes) != entry.id {
-                    changes.push(NativeChange { path: entry.path.clone(), kind: NativeChangeKind::Modified });
+                    changes.push(NativeChange {
+                        path: entry.path.clone(),
+                        kind: NativeChangeKind::Modified,
+                    });
                 }
             }
         }
@@ -202,20 +428,43 @@ impl Repository {
         Ok(changes)
     }
 
-    fn collect_untracked(&self, index: &Index, directory: &str, prefix: &str, depth: usize, changes: &mut Vector<NativeChange>) -> Result<(), RepositoryError> {
-        if depth > MAX_DEPTH { return Err(RepositoryError::TooDeep); }
+    fn collect_untracked(
+        &self,
+        index: &Index,
+        directory: &str,
+        prefix: &str,
+        depth: usize,
+        changes: &mut Vector<NativeChange>,
+    ) -> Result<(), RepositoryError> {
+        if depth > MAX_DEPTH {
+            return Err(RepositoryError::TooDeep);
+        }
         for entry in read_directory(directory)? {
-            if depth == 0 && entry.name == ".git" { continue; }
-            if entry.is_symlink { return Err(RepositoryError::UnsupportedFileType); }
+            if depth == 0 && entry.name == ".git" {
+                continue;
+            }
+            if entry.is_symlink {
+                return Err(RepositoryError::UnsupportedFileType);
+            }
             let disk_path = join_path(directory, &entry.name);
-            let relative = if prefix.is_empty() { entry.name.clone() } else {
-                let mut value = Text::from(prefix); value.push('/'); value.push_str(&entry.name); value
+            let relative = if prefix.is_empty() {
+                entry.name.clone()
+            } else {
+                let mut value = Text::from(prefix);
+                value.push('/');
+                value.push_str(&entry.name);
+                value
             };
             if entry.is_directory {
                 self.collect_untracked(index, &disk_path, &relative, depth + 1, changes)?;
             } else if index.entry(&relative).is_none() {
-                if changes.len() >= MAX_WORKTREE_ENTRIES { return Err(RepositoryError::TooManyFiles); }
-                changes.push(NativeChange { path: relative, kind: NativeChangeKind::Untracked });
+                if changes.len() >= MAX_WORKTREE_ENTRIES {
+                    return Err(RepositoryError::TooManyFiles);
+                }
+                changes.push(NativeChange {
+                    path: relative,
+                    kind: NativeChangeKind::Untracked,
+                });
             }
         }
         Ok(())
@@ -223,27 +472,62 @@ impl Repository {
 }
 
 fn validate_reference(reference: &str) -> Result<(), RepositoryError> {
-    if !reference.starts_with("refs/") || reference.ends_with('/') || reference.contains("..")
-        || reference.contains("@{") || reference.contains(['\\', ' ', '~', '^', ':', '?', '*', '['])
-        || reference.split('/').any(|part| part.is_empty() || part.starts_with('.') || part.ends_with('.') || part.ends_with(".lock"))
+    if !reference.starts_with("refs/")
+        || reference.ends_with('/')
+        || reference.contains("..")
+        || reference.contains("@{")
+        || reference.contains(['\\', ' ', '~', '^', ':', '?', '*', '['])
+        || reference.split('/').any(|part| {
+            part.is_empty()
+                || part.starts_with('.')
+                || part.ends_with('.')
+                || part.ends_with(".lock")
+        })
         || reference.chars().any(char::is_control)
-    { Err(RepositoryError::InvalidReference) } else { Ok(()) }
+    {
+        Err(RepositoryError::InvalidReference)
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_worktree_path(path: &str) -> Result<(), RepositoryError> {
-    if path.is_empty() || mrml_runtime::path_is_absolute(path) || path.contains('\\')
-        || path.split('/').any(|part| part.is_empty() || matches!(part, "." | ".."))
+    if path.is_empty()
+        || mrml_runtime::path_is_absolute(path)
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
         || path.chars().any(char::is_control)
-    { Err(RepositoryError::InvalidWorktreePath) } else { Ok(()) }
+    {
+        Err(RepositoryError::InvalidWorktreePath)
+    } else {
+        Ok(())
+    }
 }
 
-struct TreeItem { name: Text, mode: u32, id: ObjectId, directory: bool }
+struct TreeItem {
+    name: Text,
+    mode: u32,
+    id: ObjectId,
+    directory: bool,
+}
 
 fn tree_name_cmp(left: &TreeItem, right: &TreeItem) -> core::cmp::Ordering {
     let mut index = 0;
     loop {
-        let left_byte = left.name.as_bytes().get(index).copied().or_else(|| left.directory.then_some(b'/'));
-        let right_byte = right.name.as_bytes().get(index).copied().or_else(|| right.directory.then_some(b'/'));
+        let left_byte = left
+            .name
+            .as_bytes()
+            .get(index)
+            .copied()
+            .or_else(|| left.directory.then_some(b'/'));
+        let right_byte = right
+            .name
+            .as_bytes()
+            .get(index)
+            .copied()
+            .or_else(|| right.directory.then_some(b'/'));
         match (left_byte, right_byte) {
             (Some(a), Some(b)) if a == b => index += 1,
             (Some(a), Some(b)) => return a.cmp(&b),
@@ -255,29 +539,59 @@ fn tree_name_cmp(left: &TreeItem, right: &TreeItem) -> core::cmp::Ordering {
 }
 
 fn validate_identity(name: &str, email: &str) -> Result<(), RepositoryError> {
-    if name.trim().is_empty() || email.trim().is_empty() || name.contains(['\n', '\r', '<', '>'])
+    if name.trim().is_empty()
+        || email.trim().is_empty()
+        || name.contains(['\n', '\r', '<', '>'])
         || email.contains(['\n', '\r', '<', '>'])
-    { Err(RepositoryError::InvalidIdentity) } else { Ok(()) }
+    {
+        Err(RepositoryError::InvalidIdentity)
+    } else {
+        Ok(())
+    }
 }
 
-impl From<FileError> for RepositoryError { fn from(value: FileError) -> Self { Self::File(value) } }
-impl From<IndexError> for RepositoryError { fn from(value: IndexError) -> Self { Self::Index(value) } }
+impl From<FileError> for RepositoryError {
+    fn from(value: FileError) -> Self {
+        Self::File(value)
+    }
+}
+impl From<IndexError> for RepositoryError {
+    fn from(value: IndexError) -> Self {
+        Self::Index(value)
+    }
+}
 
 impl fmt::Display for RepositoryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::File(error) => write!(formatter, "{error}"), Self::Index(error) => write!(formatter, "{error}"),
+            Self::File(error) => write!(formatter, "{error}"),
+            Self::Index(error) => write!(formatter, "{error}"),
             Self::NotRepository => formatter.write_str("not an MRML Git repository"),
             Self::AlreadyExists => formatter.write_str("repository metadata already exists"),
-            Self::UnsupportedLayout => formatter.write_str("linked worktrees and gitdir files are not supported yet"),
-            Self::InvalidHead => formatter.write_str("invalid HEAD"), Self::InvalidReference => formatter.write_str("unsafe or invalid reference"),
-            Self::TooManyFiles => formatter.write_str("working tree contains too many files"), Self::TooDeep => formatter.write_str("working tree is too deeply nested"),
-            Self::UnsupportedFileType => formatter.write_str("symbolic links and special files are not supported yet"),
-            Self::FileTooLarge => formatter.write_str("working-tree file exceeds the native status limit"),
+            Self::UnsupportedLayout => {
+                formatter.write_str("linked worktrees and gitdir files are not supported yet")
+            }
+            Self::InvalidHead => formatter.write_str("invalid HEAD"),
+            Self::InvalidReference => formatter.write_str("unsafe or invalid reference"),
+            Self::TooManyFiles => formatter.write_str("working tree contains too many files"),
+            Self::TooDeep => formatter.write_str("working tree is too deeply nested"),
+            Self::UnsupportedFileType => {
+                formatter.write_str("symbolic links and special files are not supported yet")
+            }
+            Self::FileTooLarge => {
+                formatter.write_str("working-tree file exceeds the native status limit")
+            }
             Self::InvalidWorktreePath => formatter.write_str("unsafe or invalid working-tree path"),
-            Self::ConflictedIndex => formatter.write_str("cannot write a tree from an unmerged index"),
+            Self::ConflictedIndex => {
+                formatter.write_str("cannot write a tree from an unmerged index")
+            }
             Self::DetachedHead => formatter.write_str("native commit requires a branch HEAD"),
             Self::InvalidIdentity => formatter.write_str("invalid commit identity or message"),
+            Self::ReferenceExists => formatter.write_str("reference already exists"),
+            Self::ReferenceMissing => {
+                formatter.write_str("reference or starting commit does not exist")
+            }
+            Self::CurrentBranch => formatter.write_str("cannot delete the current branch"),
         }
     }
 }
@@ -288,13 +602,21 @@ mod tests {
     use super::*;
     use mrml_runtime::{process_id, remove_dir_all, temporary_directory};
 
-    fn root(name: &str) -> Text { join_path(&temporary_directory(), &mrml_runtime::mrml_format!("mrml-git-{name}-{}", process_id())) }
+    fn root(name: &str) -> Text {
+        join_path(
+            &temporary_directory(),
+            &mrml_runtime::mrml_format!("mrml-git-{name}-{}", process_id()),
+        )
+    }
 
     #[test]
     fn initializes_and_discovers_without_a_git_process() {
         let path = root("init");
         let repository = Repository::init(&path).unwrap();
-        assert_eq!(repository.current_branch().unwrap().as_deref(), Some("main"));
+        assert_eq!(
+            repository.current_branch().unwrap().as_deref(),
+            Some("main")
+        );
         assert_eq!(repository.head().unwrap(), None);
         let nested = join_path(&path, "src/deep");
         create_dir_all(&nested).unwrap();
@@ -307,7 +629,13 @@ mod tests {
         let path = root("status");
         let repository = Repository::init(&path).unwrap();
         write_file(&join_path(&path, "hello.txt"), b"native").unwrap();
-        assert_eq!(repository.changes().unwrap(), Vector::from([NativeChange { path: "hello.txt".into(), kind: NativeChangeKind::Untracked }]));
+        assert_eq!(
+            repository.changes().unwrap(),
+            Vector::from([NativeChange {
+                path: "hello.txt".into(),
+                kind: NativeChangeKind::Untracked
+            }])
+        );
         remove_dir_all(&path).unwrap();
     }
 
@@ -316,8 +644,13 @@ mod tests {
         let path = root("stage");
         let repository = Repository::init(&path).unwrap();
         write_file(&join_path(&path, "hello.txt"), b"native").unwrap();
-        repository.stage(&Vector::from([Text::from("hello.txt")])).unwrap();
-        assert_eq!(repository.index().unwrap().entry("hello.txt").unwrap().id, ObjectId::blob(b"native"));
+        repository
+            .stage(&Vector::from([Text::from("hello.txt")]))
+            .unwrap();
+        assert_eq!(
+            repository.index().unwrap().entry("hello.txt").unwrap().id,
+            ObjectId::blob(b"native")
+        );
         assert!(repository.changes().unwrap().is_empty());
         remove_dir_all(&path).unwrap();
     }
@@ -328,10 +661,37 @@ mod tests {
         let repository = Repository::init(&path).unwrap();
         create_dir_all(&join_path(&path, "src")).unwrap();
         write_file(&join_path(&path, "src/lib.rs"), b"pub fn native() {}\n").unwrap();
-        repository.stage(&Vector::from([Text::from("src/lib.rs")])).unwrap();
-        let commit = repository.commit("initial", "MRML", "mrml@example.invalid", 1_700_000_000).unwrap();
+        repository
+            .stage(&Vector::from([Text::from("src/lib.rs")]))
+            .unwrap();
+        let commit = repository
+            .commit("initial", "MRML", "mrml@example.invalid", 1_700_000_000)
+            .unwrap();
         assert_eq!(repository.head().unwrap(), Some(commit));
-        assert!(path_is_file(&join_path(&repository.git_dir, &mrml_runtime::mrml_format!("objects/{}/{}", &commit.to_hex()[..2], &commit.to_hex()[2..]))));
+        assert!(path_is_file(&join_path(
+            &repository.git_dir,
+            &mrml_runtime::mrml_format!(
+                "objects/{}/{}",
+                &commit.to_hex()[..2],
+                &commit.to_hex()[2..]
+            )
+        )));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn creates_lists_and_deletes_native_refs() {
+        let path = root("refs");
+        let repository = Repository::init(&path).unwrap();
+        write_file(&join_path(&path, "tracked"), b"value").unwrap();
+        repository.stage(&Vector::from([Text::from("tracked")])).unwrap();
+        let head = repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
+        assert_eq!(repository.create_branch("topic/nested", false).unwrap(), head);
+        assert!(repository.branches().unwrap().iter().any(|(name, id)| name == "topic/nested" && *id == head));
+        repository.delete_branch("topic/nested").unwrap();
+        assert!(!repository.branches().unwrap().iter().any(|(name, _)| name == "topic/nested"));
+        assert_eq!(repository.create_tag("v1").unwrap(), head);
+        assert_eq!(repository.tags().unwrap()[0], (Text::from("v1"), head));
         remove_dir_all(&path).unwrap();
     }
 }

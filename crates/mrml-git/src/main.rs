@@ -420,14 +420,42 @@ fn dispatch(cli: &Cli) -> Result<()> {
             run_visible(repository, &["blame", "--color-lines", "--", &tail[0]])
         }
         "conflicts" if tail.is_empty() => conflicts(repository),
-        "branch" if tail.is_empty() => run_visible(repository, &["branch", "--all", "--verbose"]),
+        "branch" if tail.is_empty() => {
+            let repository = native_repository(repository)?;
+            let current = repository
+                .current_branch()
+                .map_err(|error| anyhow!("{}", error))?;
+            for (name, id) in repository
+                .branches()
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                if current.as_deref() == Some(&name) {
+                    println!("{} {} {}", "*".green(), name, &id.to_hex()[..12]);
+                } else {
+                    println!("  {} {}", name, &id.to_hex()[..12]);
+                }
+            }
+            Ok(())
+        }
         "branch" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &["switch", "-c", &tail[0]])
+            let id = native_repository(repository)?
+                .create_branch(&tail[0], true)
+                .map_err(|error| anyhow!("{}", error))?;
+            println!(
+                "Switched to a new branch '{}' at {}",
+                tail[0],
+                &id.to_hex()[..12]
+            );
+            Ok(())
         }
         "branch-delete" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &["branch", "-d", "--", &tail[0]])
+            native_repository(repository)?
+                .delete_branch(&tail[0])
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("Deleted branch {}", tail[0]);
+            Ok(())
         }
         "switch" if tail.len() == 1 => {
             checked_positionals(tail)?;
@@ -603,10 +631,22 @@ fn dispatch(cli: &Cli) -> Result<()> {
             checked_positionals(&tail[1..])?;
             run_visible(repository, &["verify-tag", "--", &tail[1]])
         }
-        "tag" if tail.is_empty() => run_visible(repository, &["tag"]),
+        "tag" if tail.is_empty() => {
+            for (name, _) in native_repository(repository)?
+                .tags()
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                println!("{}", name);
+            }
+            Ok(())
+        }
         "tag" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &collect("tag", &["--"], tail))
+            let id = native_repository(repository)?
+                .create_tag(&tail[0])
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("Tagged {} at {}", tail[0], &id.to_hex()[..12]);
+            Ok(())
         }
         "tag-sign" if tail.len() >= 2 => {
             checked_positionals(&tail[..1])?;
