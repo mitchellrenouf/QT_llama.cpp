@@ -43,6 +43,9 @@ pub struct BlameLine {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeOutcome { UpToDate, FastForward(ObjectId) }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RepositoryError {
     File(FileError),
     Index(IndexError),
@@ -64,6 +67,7 @@ pub enum RepositoryError {
     CurrentBranch,
     Object(ObjectError),
     WorktreeDirty,
+    MergeRequired,
 }
 
 impl Repository {
@@ -277,6 +281,50 @@ impl Repository {
         self.write_index(&target)?;
         write_file(&join_path(&self.git_dir, "HEAD"), mrml_runtime::mrml_format!("ref: refs/heads/{branch}\n").as_bytes())?;
         Ok(id)
+    }
+
+    pub fn is_ancestor(&self, ancestor: ObjectId, descendant: ObjectId) -> Result<bool, RepositoryError> {
+        const MAX_COMMITS: usize = 1_000_000;
+        let mut pending = Vector::from([descendant]);
+        let mut seen: Vector<ObjectId> = Vector::new();
+        while let Some(id) = pending.pop() {
+            if id == ancestor { return Ok(true); }
+            if seen.iter().any(|value| *value == id) { continue; }
+            if seen.len() >= MAX_COMMITS { return Err(RepositoryError::TooManyFiles); }
+            seen.push(id);
+            pending.extend(self.read_commit(id)?.parents.iter().copied());
+        }
+        Ok(false)
+    }
+
+    pub fn merge(&self, revision: &str) -> Result<MergeOutcome, RepositoryError> {
+        if !self.changes()?.is_empty() { return Err(RepositoryError::WorktreeDirty); }
+        let current = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let target = self.resolve_revision(revision)?;
+        if self.is_ancestor(target, current)? { return Ok(MergeOutcome::UpToDate); }
+        if !self.is_ancestor(current, target)? { return Err(RepositoryError::MergeRequired); }
+        let commit = self.read_commit(target)?;
+        let target_index = self.tree_index(commit.tree)?;
+        self.materialize_index(&target_index)?;
+        let branch = self.current_branch()?.ok_or(RepositoryError::DetachedHead)?;
+        let reference = mrml_runtime::mrml_format!("refs/heads/{branch}");
+        let path = join_path(&self.git_dir, &reference);
+        let lock = mrml_runtime::mrml_format!("{path}.lock");
+        if path_exists(&lock) { return Err(RepositoryError::AlreadyExists); }
+        write_file(&lock, mrml_runtime::mrml_format!("{target}\n").as_bytes())?;
+        mrml_runtime::rename_file(&lock, &path)?;
+        Ok(MergeOutcome::FastForward(target))
+    }
+
+    fn materialize_index(&self, target: &Index) -> Result<(), RepositoryError> {
+        let current = self.index()?;
+        let mut files: Vector<(Text, Vector<u8>)> = Vector::new();
+        for entry in &target.entries { files.push((entry.path.clone(), self.read_blob(entry.id)?)); }
+        for entry in &current.entries {
+            if target.entry(&entry.path).is_none() { let path = join_path(&self.worktree, &entry.path); if path_is_file(&path) { mrml_runtime::remove_file(&path)?; } }
+        }
+        for (relative, contents) in files { let path = join_path(&self.worktree, &relative); if let Some(parent) = parent_path(&path) { create_dir_all(parent)?; } write_file(&path, &contents)?; }
+        self.write_index(target)
     }
 
     fn write_index(&self, index: &Index) -> Result<(), RepositoryError> {
@@ -940,6 +988,7 @@ impl fmt::Display for RepositoryError {
             Self::Index(error) => write!(formatter, "{error}"),
             Self::Object(error) => write!(formatter, "{error}"),
             Self::WorktreeDirty => formatter.write_str("working tree is not clean"),
+            Self::MergeRequired => formatter.write_str("non-fast-forward merge requires native three-way merge"),
             Self::NotRepository => formatter.write_str("not an MRML Git repository"),
             Self::AlreadyExists => formatter.write_str("repository metadata already exists"),
             Self::UnsupportedLayout => {
@@ -1172,6 +1221,19 @@ mod tests {
         let blame = repository.blame("tracked").unwrap();
         assert_eq!(blame[0].commit, old); assert_eq!(blame[1].commit, new);
         assert!(blame[0].author.starts_with("Old ")); assert!(blame[1].author.starts_with("New "));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn fast_forwards_current_branch_natively() {
+        let path = root("merge-ff"); let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked"); let paths = Vector::from([Text::from("tracked")]);
+        write_file(&file, b"base").unwrap(); repository.stage(&paths).unwrap(); repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
+        repository.create_branch("topic", true).unwrap(); write_file(&file, b"topic").unwrap(); repository.stage(&paths).unwrap(); let topic = repository.commit("topic", "MRML", "mrml@example.invalid", 2).unwrap();
+        repository.switch_branch("main").unwrap();
+        assert_eq!(repository.merge("topic").unwrap(), MergeOutcome::FastForward(topic));
+        assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"topic"); assert_eq!(repository.head().unwrap(), Some(topic));
+        assert_eq!(repository.merge("topic").unwrap(), MergeOutcome::UpToDate);
         remove_dir_all(&path).unwrap();
     }
 }

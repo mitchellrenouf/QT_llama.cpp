@@ -3,7 +3,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use mrml_error::{Context, Result, anyhow};
-use mrml_git::{Change, Cli, NativeChangeKind, Repository, validate_positional};
+use mrml_git::{Change, Cli, MergeOutcome, NativeChangeKind, Repository, validate_positional};
 use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println};
 use mrml_ssh::SshRemote;
 use mrml_terminal_style::Colorize;
@@ -459,7 +459,11 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "merge" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &["merge", "--no-edit", "--", &tail[0]])
+            match native_repository(repository)?.merge(&tail[0]).map_err(|error| anyhow!("{}", error))? {
+                MergeOutcome::UpToDate => println!("Already up to date."),
+                MergeOutcome::FastForward(id) => println!("Fast-forward to {}", &id.to_hex()[..12]),
+            }
+            Ok(())
         }
         "rebase" if tail.len() == 1 => {
             checked_positionals(tail)?;
