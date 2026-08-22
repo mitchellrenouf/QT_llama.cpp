@@ -239,6 +239,12 @@ impl EncryptedPacketReader {
         self.sequence = self.sequence.wrapping_add(1);
         Ok((owned,total))
     }
+    pub fn wire_length(&self, first_block: &[u8;16]) -> Result<usize,ProtocolError>{
+        let mut plain=[0u8;16];aes128_ctr_xor(&self.key,self.counter,first_block,&mut plain).map_err(|_|ProtocolError::Length)?;
+        let length=u32::from_be_bytes(plain[..4].try_into().map_err(|_|ProtocolError::Truncated)?)as usize;
+        let encrypted=length.checked_add(4).ok_or(ProtocolError::Length)?;
+        if encrypted<16||encrypted>MAX_STRING+260||encrypted%16!=0{return Err(ProtocolError::InvalidPacket);}encrypted.checked_add(32).ok_or(ProtocolError::Length)
+    }
 }
 
 pub fn derive_exchange_keys(
