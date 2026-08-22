@@ -199,16 +199,18 @@ An immediate value-producing loop expression of the form
 Its operand retains its integer or Boolean type through direct evaluation, IR
 lowering, local initialization, and native emission. Up to four source-ordered
 `if condition { break value; }` exits may precede the required fallback break.
-Every condition must be Boolean, all five possible values unify to one type,
-and only the selected operand is evaluated. These forms accept one
+The same exits may use a structured `if`/`else if`/`else` chain, matching the
+scalar control-flow shape in the pinned `loop-break-value.rs` oracle. Every
+condition must be Boolean, all five possible values unify to one type, and only
+the selected operand is evaluated. These forms accept one
 lifetime-style loop label and matching labeled breaks; missing colons, unknown
 break labels, and a fifth conditional exit fail with dedicated expression
 diagnostics. General iterating loop expressions, larger break-value graphs,
 coercion, and nested diverging loops remain separate work. An original labeled
-four-guard probe emitted deterministic 407-byte COFF and 800-byte ELF64 objects.
-Independent pinned-nightly callers selected every exit, covered signed results,
-and passed a selected zero input that would trap if fallback division were
-evaluated.
+four-guard probe and its structured-alternative counterpart each emitted
+deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
+pinned-nightly callers selected every exit, covered signed results, and passed
+a selected zero input that would trap if fallback division were evaluated.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code;
 both explicit `-> ()` and an omitted function return type select a C-ABI void
@@ -558,8 +560,8 @@ its immediate scalar integer and Boolean break-value forms, including matching
 labels. The oracle file's arrays, references, trait coercions, never type,
 nested loops, matches, and break-value control-flow graphs beyond four guarded
 exits plus a fallback are not claimed by this slice. Replacements cover up to
-five compatible competing scalar values and lazy selection of the taken break
-edge.
+five compatible competing scalar values, both sequential and structured
+alternative syntax, and lazy selection of the taken break edge.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate

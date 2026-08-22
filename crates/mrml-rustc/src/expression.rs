@@ -2410,7 +2410,23 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         let mut branches = [None; MAX_LOOP_BREAK_BRANCHES];
         let mut branch_count = 0usize;
         let mut control = self.take()?;
-        while control.is_some_and(|token| token.text == "if") {
+        let (operand, close) = loop {
+            if !control.is_some_and(|token| token.text == "if") {
+                if !control.is_some_and(|token| token.text == "break") {
+                    return Err(self.error(ExpressionErrorKind::ExpectedExpression, control));
+                }
+                self.loop_break_label(label)?;
+                let operand = self.expression(0, depth + 1)?;
+                let semicolon = self.take()?;
+                if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
+                    return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
+                }
+                let close = self.take()?;
+                let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
+                    return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+                };
+                break (operand, close);
+            }
             if branch_count == MAX_LOOP_BREAK_BRANCHES {
                 return Err(self.error(ExpressionErrorKind::TooManyLoopBreakBranches, control));
             }
@@ -2437,19 +2453,36 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             branches[branch_count] = Some(then_branch);
             branch_count += 1;
             control = self.take()?;
-        }
-        if !control.is_some_and(|token| token.text == "break") {
-            return Err(self.error(ExpressionErrorKind::ExpectedExpression, control));
-        }
-        self.loop_break_label(label)?;
-        let operand = self.expression(0, depth + 1)?;
-        let semicolon = self.take()?;
-        if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
-            return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
-        }
-        let close = self.take()?;
-        let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
-            return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+            if !control.is_some_and(|token| token.text == "else") {
+                continue;
+            }
+            let alternative = self.take()?;
+            if alternative.is_some_and(|token| token.text == "if") {
+                control = alternative;
+                continue;
+            }
+            if !alternative.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+                return Err(self.error(ExpressionErrorKind::ExpectedOpenBrace, alternative));
+            }
+            let fallback_break = self.take()?;
+            if !fallback_break.is_some_and(|token| token.text == "break") {
+                return Err(self.error(ExpressionErrorKind::ExpectedExpression, fallback_break));
+            }
+            self.loop_break_label(label)?;
+            let operand = self.expression(0, depth + 1)?;
+            let semicolon = self.take()?;
+            if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
+                return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
+            }
+            let alternative_close = self.take()?;
+            if !alternative_close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, alternative_close));
+            }
+            let close = self.take()?;
+            let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
+                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+            };
+            break (operand, close);
         };
         let span = Span {
             start: label.map_or(loop_token.span.start, |label| label.span.start),
@@ -2930,6 +2963,16 @@ mod tests {
             Ok(4)
         );
         assert_eq!(
+            evaluate(
+                "'value: loop { if false { break 'value 1 / 0; } else if true { break 'value 42; } else { break 'value 1 / 0; } }"
+            ),
+            Ok(42)
+        );
+        assert_eq!(
+            evaluate("loop { if true { break 13; } else { break 1 / 0; } }"),
+            Ok(13)
+        );
+        assert_eq!(
             ExpressionParser::<32>::new(
                 "loop { if false { break 1; } if false { break 2; } if false { break 3; } if false { break 4; } if true { break 5; } break 6; }"
             )
@@ -2937,6 +2980,13 @@ mod tests {
             .unwrap_err()
             .kind,
             ExpressionErrorKind::TooManyLoopBreakBranches
+        );
+        assert_eq!(
+            ExpressionParser::<16>::new("loop { if true { break 1; } else break 2; }")
+                .parse()
+                .unwrap_err()
+                .kind,
+            ExpressionErrorKind::ExpectedOpenBrace
         );
         assert_eq!(
             ExpressionParser::<8>::new("'value loop { break 13; }")
