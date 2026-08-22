@@ -2798,10 +2798,15 @@ fn runtime_expression_type_with_locals<
                 operand,
                 depth + 1,
             )?;
-            let RuntimeExpressionType::Reference { target, .. } = operand_type else {
-                return Err(CodegenErrorKind::RuntimeTypeMismatch);
-            };
-            runtime_reference_target_type(target)
+            match operand_type {
+                RuntimeExpressionType::Reference { target, .. } => {
+                    runtime_reference_target_type(target)
+                }
+                RuntimeExpressionType::RawPointer { pointee, .. } => {
+                    Ok(runtime_type_from_array_element(pointee))
+                }
+                _ => Err(CodegenErrorKind::RuntimeTypeMismatch),
+            }
         }
         ExprKind::Unary {
             operator:
@@ -3932,11 +3937,16 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     0,
                 )
                 .map_err(|kind| self.error(kind))?;
-                let RuntimeExpressionType::Reference { target, .. } = operand_type else {
-                    return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
-                };
-                let RuntimeReferenceTarget::Scalar(pointee) = target else {
-                    return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
+                let pointee = match operand_type {
+                    RuntimeExpressionType::Reference {
+                        target: RuntimeReferenceTarget::Scalar(pointee),
+                        ..
+                    }
+                    | RuntimeExpressionType::RawPointer { pointee, .. } => pointee,
+                    RuntimeExpressionType::Reference { .. } => {
+                        return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
+                    }
+                    _ => return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch)),
                 };
                 self.emit_expression(tree, operand, depth + 1)?;
                 self.emit_reference_load(pointee)?;
@@ -5781,17 +5791,27 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     .iter()
                     .flatten()
                     .find(|parameter| parameter.name == name)
-                    .and_then(|parameter| runtime_reference_type(parameter.ty.text))
+                    .and_then(|parameter| {
+                        runtime_reference_type(parameter.ty.text)
+                            .or_else(|| runtime_raw_pointer_type(parameter.ty.text))
+                    })
             })
             .ok_or(CodegenError {
                 kind: CodegenErrorKind::UnknownRuntimeName,
                 span: translate_span(body_start, assignment.name_span),
             })?;
-        let RuntimeExpressionType::Reference { target, mutable } = target_type else {
-            return Err(CodegenError {
-                kind: CodegenErrorKind::RuntimeTypeMismatch,
-                span: translate_span(body_start, assignment.name_span),
-            });
+        let (pointee, mutable) = match target_type {
+            RuntimeExpressionType::Reference {
+                target: RuntimeReferenceTarget::Scalar(pointee),
+                mutable,
+            }
+            | RuntimeExpressionType::RawPointer { pointee, mutable } => (pointee, mutable),
+            _ => {
+                return Err(CodegenError {
+                    kind: CodegenErrorKind::RuntimeTypeMismatch,
+                    span: translate_span(body_start, assignment.name_span),
+                });
+            }
         };
         if !mutable {
             return Err(CodegenError {
@@ -5799,12 +5819,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.name_span),
             });
         }
-        let RuntimeReferenceTarget::Scalar(pointee) = target else {
-            return Err(CodegenError {
-                kind: CodegenErrorKind::RuntimeTypeMismatch,
-                span: translate_span(body_start, assignment.name_span),
-            });
-        };
         let value_type = runtime_type_from_array_element(pointee);
         if value_type == RuntimeExpressionType::Bool
             && !matches!(
@@ -8716,6 +8730,39 @@ mod tests {
                 expected,
             );
         }
+    }
+
+    #[test]
+    fn dereferences_scalar_raw_pointers() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> u16 { *input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u16) -> u16 { *input = 42; *input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut i16) -> i16 { *input += 2; *input }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 2048, 4, 160>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let source =
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) { *input = 42; }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 768, 2, 80>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::ImmutableAssignment,
+        );
     }
 
     #[test]
