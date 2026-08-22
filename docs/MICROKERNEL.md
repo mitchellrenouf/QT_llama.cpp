@@ -1467,6 +1467,12 @@ per poll on Windows and 341 ns on Linux. The signed two-vCPU CPL3 migration
 path now uses this policy to select its published destination load before
 detaching the complete domain; fresh KVM and WHP runs both reached the terminal
 CPU/task proof. Repeated timer-driven invocation remains pending. The
+`PeriodicDomainBalancer` couples this cadence to the complete-domain ticket and
+typed ownership mailboxes. A full destination mailbox retains the unpublished
+ticket inside the controller; every later call retries it before considering a
+new tick. Windows and Linux tests force that pressure path, drain the competing
+ticket, and prove the exact saved context and capability reach the destination
+without duplication, loss, or reordering. The
 task runtime now extends migration from scheduler metadata to a complete linear
 user-domain ticket containing the saved CPL3 context and page-table root,
 capability space, and bounded IPC inbox. Admission consumes the ticket only

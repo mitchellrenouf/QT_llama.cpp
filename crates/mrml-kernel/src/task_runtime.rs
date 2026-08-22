@@ -2,9 +2,9 @@ use core::array;
 
 use crate::arch::x86_64::{TrapDisposition, UserContext};
 use crate::{
-    Capability, CapabilitySpace, DetachedTask, Endpoint, IpcError, KernelScheduleError,
-    KernelScheduler, Message, Priority, Rights, ScheduleOutcome, SchedulerLoad, TaskId,
-    TaskMigration,
+    BalancePolicyError, BalanceTarget, Capability, CapabilitySpace, DetachedTask, Endpoint,
+    IpcError, KernelScheduleError, KernelScheduler, Message, OwnershipMailbox, PeriodicBalancer,
+    Priority, Rights, ScheduleOutcome, SchedulerLoad, TaskId, TaskMigration,
 };
 
 pub const TASK_INBOX_MESSAGES: usize = 2;
@@ -52,6 +52,85 @@ struct TaskDomain<const CAPS: usize> {
 pub struct DetachedTaskDomain<const CAPS: usize> {
     scheduling: DetachedTask,
     domain: TaskDomain<CAPS>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DomainBalanceError {
+    Policy(BalancePolicyError),
+    Runtime(TaskRuntimeError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DomainBalanceOutcome {
+    Idle,
+    Published(BalanceTarget),
+    RetryPending(BalanceTarget),
+}
+
+/// Couples periodic peer selection to linear complete-domain ownership. A full
+/// destination mailbox retains the detached domain inside this controller and
+/// retries it before considering another tick, so cadence cannot duplicate,
+/// discard, or reorder migration tickets.
+pub struct PeriodicDomainBalancer<const CPUS: usize, const CAPS: usize> {
+    policy: PeriodicBalancer<CPUS>,
+    pending: Option<(BalanceTarget, DetachedTaskDomain<CAPS>)>,
+}
+
+impl<const CPUS: usize, const CAPS: usize> PeriodicDomainBalancer<CPUS, CAPS> {
+    pub const fn new(start_tick: u64, interval_ticks: u64) -> Result<Self, DomainBalanceError> {
+        let policy = match PeriodicBalancer::new(start_tick, interval_ticks) {
+            Ok(policy) => policy,
+            Err(error) => return Err(DomainBalanceError::Policy(error)),
+        };
+        Ok(Self {
+            policy,
+            pending: None,
+        })
+    }
+
+    pub fn pending_target(&self) -> Option<BalanceTarget> {
+        self.pending.as_ref().map(|pending| pending.0)
+    }
+
+    pub fn poll_and_publish<const TASKS: usize>(
+        &mut self,
+        tick: u64,
+        local_cpu: usize,
+        loads: &[SchedulerLoad; CPUS],
+        runtime: &mut TaskRuntime<TASKS, CAPS>,
+        mailboxes: &[&OwnershipMailbox<DetachedTaskDomain<CAPS>>; CPUS],
+    ) -> Result<DomainBalanceOutcome, DomainBalanceError> {
+        if let Some((target, ticket)) = self.pending.take() {
+            return match mailboxes[target.cpu()].publish(ticket) {
+                Ok(()) => Ok(DomainBalanceOutcome::Published(target)),
+                Err((_, ticket)) => {
+                    self.pending = Some((target, ticket));
+                    Ok(DomainBalanceOutcome::RetryPending(target))
+                }
+            };
+        }
+
+        let Some(target) = self
+            .policy
+            .poll(tick, local_cpu, loads)
+            .map_err(DomainBalanceError::Policy)?
+        else {
+            return Ok(DomainBalanceOutcome::Idle);
+        };
+        let Some(ticket) = runtime
+            .detach_domain_for_rebalance(target.load())
+            .map_err(DomainBalanceError::Runtime)?
+        else {
+            return Ok(DomainBalanceOutcome::Idle);
+        };
+        match mailboxes[target.cpu()].publish(ticket) {
+            Ok(()) => Ok(DomainBalanceOutcome::Published(target)),
+            Err((_, ticket)) => {
+                self.pending = Some((target, ticket));
+                Ok(DomainBalanceOutcome::RetryPending(target))
+            }
+        }
+    }
 }
 
 /// Owns the scheduler-visible identity, saved context, and capability space as
@@ -926,5 +1005,92 @@ mod tests {
                 .instruction_pointer(),
             0x50_0000
         );
+    }
+
+    #[test]
+    fn periodic_domain_balancer_retries_linear_ticket_before_new_work() {
+        let mut source = TaskRuntime::<3, 1>::new(1_000, 1).unwrap();
+        let current = source
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let migrating = source
+            .create(Priority::RESPONSIVE, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        let capability = source
+            .capabilities_mut(migrating)
+            .unwrap()
+            .insert(ObjectId(19), Rights::READ)
+            .unwrap();
+        source
+            .create(Priority::BACKGROUND, context(0x40_0000, 0x60_0000))
+            .unwrap();
+        assert!(matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == current));
+
+        let mut blocker = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let blocker_task = blocker
+            .create(Priority::NORMAL, context(0x50_0000, 0x70_0000))
+            .unwrap();
+        let local_mailbox = OwnershipMailbox::new();
+        let remote_mailbox = OwnershipMailbox::new();
+        remote_mailbox
+            .publish(blocker.detach_domain(blocker_task).unwrap())
+            .ok()
+            .unwrap();
+        let mailboxes = [&local_mailbox, &remote_mailbox];
+        let loads = [source.load(), SchedulerLoad::new(0, 0, 3).unwrap()];
+        let mut balancer = PeriodicDomainBalancer::<2, 1>::new(0, 1).unwrap();
+
+        assert!(matches!(
+            balancer
+                .poll_and_publish(1, 0, &loads, &mut source, &mailboxes)
+                .unwrap(),
+            DomainBalanceOutcome::RetryPending(target) if target.cpu() == 1
+        ));
+        assert_eq!(balancer.pending_target().unwrap().cpu(), 1);
+        assert_eq!(source.load().runnable(), 2);
+
+        let _occupied = remote_mailbox.take().unwrap();
+        assert!(matches!(
+            balancer
+                .poll_and_publish(2, 0, &loads, &mut source, &mailboxes)
+                .unwrap(),
+            DomainBalanceOutcome::Published(target) if target.cpu() == 1
+        ));
+        assert!(balancer.pending_target().is_none());
+
+        let mut destination = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let mut ticket = remote_mailbox.take();
+        let migration = destination.attach_domain(&mut ticket).unwrap();
+        assert_eq!(migration.source(), migrating);
+        assert_eq!(
+            destination
+                .context(migration.destination())
+                .unwrap()
+                .page_table(),
+            PhysAddr::new(0x30_0000).unwrap()
+        );
+        assert_eq!(
+            destination
+                .capabilities_mut(migration.destination())
+                .unwrap()
+                .authorize(capability, Rights::READ),
+            Ok(ObjectId(19))
+        );
+    }
+
+    #[test]
+    fn periodic_domain_balancer_rejects_invalid_cadence() {
+        assert!(matches!(
+            PeriodicDomainBalancer::<1, 0>::new(0, 1),
+            Err(DomainBalanceError::Policy(
+                BalancePolicyError::InvalidCpuCount
+            ))
+        ));
+        assert!(matches!(
+            PeriodicDomainBalancer::<2, 0>::new(0, 0),
+            Err(DomainBalanceError::Policy(
+                BalancePolicyError::InvalidInterval
+            ))
+        ));
     }
 }

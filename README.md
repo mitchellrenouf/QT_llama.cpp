@@ -392,6 +392,13 @@ cycles into the live multi-vCPU kernel remains unfinished. The release-mode
 The signed two-vCPU CPL3 migration path now obtains its destination from this
 policy rather than a hard-coded peer and passes under both KVM and WHP; only
 repeated timer-driven invocation remains to close the orchestration gap.
+`PeriodicDomainBalancer` now couples that cadence to complete-domain ownership:
+it detaches only after selecting a real destination, publishes through the
+typed linear mailbox, and retains an unpublished ticket internally when the
+mailbox is full. Later calls retry that exact ticket before polling a new tick,
+so pressure cannot lose, duplicate, or reorder migrated context and authority.
+Windows and Linux tests force the occupied-mailbox path and then prove the
+original context and capability arrive intact after retry.
 The task runtime also has a non-copyable complete-domain migration ticket. It
 retires a non-current scheduler identity together with its saved CPL3 context,
 page-table root, capability space, and bounded IPC inbox; destination admission
