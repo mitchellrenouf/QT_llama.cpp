@@ -93,6 +93,17 @@ fn compile(source: &str, format: ObjectFormat) -> Result<(), CompileErrorKind> {
         .map_err(|error| error.kind)
 }
 
+fn compile_wide(source: &str, format: ObjectFormat) -> Result<(), CompileErrorKind> {
+    compile_source_function::<4096, 2048, 4, 8, 8, 64>(
+        source,
+        "probe",
+        format,
+        TargetLayout::X86_64,
+    )
+    .map(|_| ())
+    .map_err(|error| error.kind)
+}
+
 #[test]
 fn rustc_binding_if_let_assignment_order_has_a_scalar_replacement() {
     // This original scalar case maps only the pinned test's ordered assignment
@@ -1682,6 +1693,19 @@ fn rustc_const_let_eq_one_word_array_parameter_reaches_native_objects() {
     let source = "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(values: [usize; 1], after: usize) -> usize { let copied = values; copied[0] + after }";
     assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
     assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
+fn rustc_copy_out_of_array_multiword_parameter_reaches_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(before: usize, values: [usize; 2], after: usize) -> usize { before + values[0] * 10 + values[1] + after }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(before: usize, values: [usize; 3], after: usize) -> usize { before + values[0] + values[1] + values[2] + after }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, b: usize, c: usize, d: usize, e: usize, values: [usize; 2], after: usize) -> usize { a + b * 2 + c * 3 + d * 4 + e * 5 + values[0] * 6 + values[1] * 7 + after * 8 }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
 }
 
 #[test]

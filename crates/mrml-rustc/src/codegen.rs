@@ -538,17 +538,12 @@ pub fn compile_x86_64_function_with_options<
         if let Some(RuntimeExpressionType::Array { element, count }) =
             runtime_array_type(parameter.ty.text)
         {
-            if count != 1 {
-                return Err(CodegenError {
-                    kind: CodegenErrorKind::UnsupportedParameterType,
-                    span: parameter.ty.span,
-                });
-            }
             match element {
-                RuntimeArrayElementType::Bool => continue,
-                RuntimeArrayElementType::Char if returns_char => continue,
+                RuntimeArrayElementType::Bool if count == 1 => continue,
+                RuntimeArrayElementType::Char if count == 1 && returns_char => continue,
                 RuntimeArrayElementType::Integer(Some(element))
                     if (returns_unit || returns_bool || element.name() == return_type_text)
+                        && (count == 1 || element.bits(64) == Some(64))
                         && integer_operand_type
                             .is_none_or(|existing| existing == element.name()) =>
                 {
@@ -595,6 +590,18 @@ pub fn compile_x86_64_function_with_options<
         kind: CodegenErrorKind::UnsupportedRuntimeType,
         span: function.name_span,
     })?;
+    let saved_parameter_slots = function
+        .parameters()
+        .iter()
+        .flatten()
+        .try_fold(0usize, |total, parameter| {
+            let slots = runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
+            total.checked_add(slots)
+        })
+        .ok_or(CodegenError {
+            kind: CodegenErrorKind::TooManyAbiParameters,
+            span: function.name_span,
+        })?;
     let body = function
         .parse_body::<MAX_PARAMETERS>()
         .map_err(|error| CodegenError {
@@ -611,7 +618,7 @@ pub fn compile_x86_64_function_with_options<
         abi,
         width,
         overflow_checks: options.overflow_checks,
-        saved_parameters: function.parameter_count(),
+        saved_parameter_slots,
         locals: [None; MAX_PARAMETERS],
         saved_locals: 0,
         evaluation_depth: 0,
@@ -2328,7 +2335,7 @@ struct RuntimeEmitter<'tree, 'source, R, const MAX_BYTES: usize, const MAX_PARAM
     abi: X86_64Abi,
     width: RuntimeWidth,
     overflow_checks: bool,
-    saved_parameters: usize,
+    saved_parameter_slots: usize,
     locals: [Option<RuntimeLocal<'source>>; MAX_PARAMETERS],
     saved_locals: usize,
     evaluation_depth: usize,
@@ -2359,6 +2366,21 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             })
     }
 
+    fn parameter_stack_slots_from(&self, index: usize) -> Result<usize, CodegenError> {
+        self.function
+            .parameters()
+            .iter()
+            .flatten()
+            .skip(index)
+            .try_fold(0usize, |total, parameter| {
+                let slots =
+                    runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
+                total
+                    .checked_add(slots)
+                    .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))
+            })
+    }
+
     fn emit(&mut self, bytes: &[u8]) -> Result<(), CodegenError> {
         let capacity_error = self.error(CodegenErrorKind::OutputTooSmall);
         let end = self.length.checked_add(bytes.len()).ok_or(capacity_error)?;
@@ -2376,29 +2398,118 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     }
 
     fn emit_prologue(&mut self) -> Result<(), CodegenError> {
-        for index in 0..self.saved_parameters {
-            if let Some(encoding) = parameter_push_encoding(self.abi, index) {
-                self.emit(encoding)?;
-            } else {
-                self.emit_stack_parameter_push(index)?;
+        match self.abi {
+            X86_64Abi::Windows => {
+                let mut pushed_slots = 0usize;
+                for (index, parameter) in self.function.parameters().iter().flatten().enumerate() {
+                    let count =
+                        runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
+                    if count <= 1 {
+                        self.emit_windows_parameter_word(index, pushed_slots)?;
+                        pushed_slots += 1;
+                    } else {
+                        self.emit_windows_parameter_pointer(index, pushed_slots)?;
+                        for element in 0..count {
+                            self.emit_pointer_element_push(element)?;
+                            pushed_slots += 1;
+                        }
+                    }
+                }
+            }
+            X86_64Abi::SystemV => {
+                let mut register = 0usize;
+                let mut stack_offset = 8usize;
+                let mut pushed_slots = 0usize;
+                for parameter in self.function.parameters().iter().flatten() {
+                    let count =
+                        runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
+                    if count <= 2 && register + count <= 6 {
+                        for _ in 0..count {
+                            self.emit(
+                                parameter_push_encoding(X86_64Abi::SystemV, register)
+                                    .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?,
+                            )?;
+                            register += 1;
+                            pushed_slots += 1;
+                        }
+                    } else {
+                        for element in 0..count {
+                            let original = stack_offset
+                                .checked_add(element * 8)
+                                .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
+                            self.emit_original_stack_word_push(original, pushed_slots)?;
+                            pushed_slots += 1;
+                        }
+                        stack_offset = stack_offset
+                            .checked_add(count * 8)
+                            .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
+                    }
+                }
             }
         }
         Ok(())
     }
 
-    fn emit_stack_parameter_push(&mut self, index: usize) -> Result<(), CodegenError> {
-        let (register_count, first_stack_offset) = match self.abi {
-            X86_64Abi::Windows => (4usize, 40usize),
-            X86_64Abi::SystemV => (6, 8),
-        };
-        let stack_index = index
-            .checked_sub(register_count)
-            .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
-        let original_offset = stack_index
-            .checked_mul(8)
-            .and_then(|offset| first_stack_offset.checked_add(offset))
-            .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
-        let current_stack_delta = index
+    fn emit_windows_parameter_word(
+        &mut self,
+        index: usize,
+        pushed_slots: usize,
+    ) -> Result<(), CodegenError> {
+        if let Some(encoding) = parameter_push_encoding(X86_64Abi::Windows, index) {
+            self.emit(encoding)
+        } else {
+            let original = 40usize
+                .checked_add((index - 4) * 8)
+                .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
+            self.emit_original_stack_word_push(original, pushed_slots)
+        }
+    }
+
+    fn emit_windows_parameter_pointer(
+        &mut self,
+        index: usize,
+        pushed_slots: usize,
+    ) -> Result<(), CodegenError> {
+        match index {
+            0 => self.emit(&[0x48, 0x89, 0xc8]),
+            1 => self.emit(&[0x48, 0x89, 0xd0]),
+            2 => self.emit(&[0x4c, 0x89, 0xc0]),
+            3 => self.emit(&[0x4c, 0x89, 0xc8]),
+            _ => {
+                let original = 40usize
+                    .checked_add((index - 4) * 8)
+                    .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
+                self.emit_original_stack_word_load(original, pushed_slots)
+            }
+        }
+    }
+
+    fn emit_pointer_element_push(&mut self, element: usize) -> Result<(), CodegenError> {
+        let displacement = u8::try_from(element * 8)
+            .map_err(|_| self.error(CodegenErrorKind::TooManyAbiParameters))?;
+        if displacement == 0 {
+            self.emit(&[0x48, 0x8b, 0x10])?;
+        } else {
+            self.emit(&[0x48, 0x8b, 0x50, displacement])?;
+        }
+        self.emit(&[0x52])
+    }
+
+    fn emit_original_stack_word_push(
+        &mut self,
+        original_offset: usize,
+        pushed_slots: usize,
+    ) -> Result<(), CodegenError> {
+        self.emit_original_stack_word_load(original_offset, pushed_slots)?;
+        self.emit(&[0x50])
+    }
+
+    fn emit_original_stack_word_load(
+        &mut self,
+        original_offset: usize,
+        pushed_slots: usize,
+    ) -> Result<(), CodegenError> {
+        let current_stack_delta = pushed_slots
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
         let displacement = original_offset
@@ -2412,12 +2523,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit(&[0x48, 0x8b, 0x84, 0x24])?;
             self.emit(&displacement.to_le_bytes())?;
         }
-        self.emit(&[0x50])
+        Ok(())
     }
 
     fn emit_epilogue(&mut self) -> Result<(), CodegenError> {
         let bytes = self
-            .saved_parameters
+            .saved_parameter_slots
             .checked_add(self.local_stack_slots()?)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?
             .checked_mul(8)
@@ -2867,12 +2978,13 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
                 };
-                if count != 1 || index >= count {
+                if index >= count {
                     return Err(self.error(CodegenErrorKind::ValueOutOfRange));
                 }
                 let slots = self
                     .local_stack_slots()?
-                    .checked_add(self.saved_parameters - 1 - parameter_index)
+                    .checked_add(self.parameter_stack_slots_from(parameter_index + 1)?)
+                    .and_then(|slots| slots.checked_add(count - 1 - index))
                     .and_then(|slots| slots.checked_add(self.evaluation_depth))
                     .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
                 self.emit_stack_slot(slots)?;
@@ -3056,7 +3168,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 .is_some_and(|parameter| parameter.ty.text == "bool");
             let slots = self
                 .local_stack_slots()?
-                .checked_add(self.saved_parameters - 1 - index)
+                .checked_add(self.parameter_stack_slots_from(index + 1)?)
                 .and_then(|slots| slots.checked_add(self.evaluation_depth))
                 .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
             self.emit_stack_slot(slots)?;
@@ -5622,20 +5734,23 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u64; 1]) -> u64 { let copied = values; copied[0] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [bool; 1]) -> bool { values[0] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [char; 1]) -> char { values[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u64; 2], after: u64) -> u64 { values[0] + values[1] + after }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(before: u64, values: [u64; 3], after: u64) -> u64 { before + values[0] + values[1] + values[2] + after }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(a: u64, b: u64, c: u64, d: u64, e: u64, values: [u64; 2], after: u64) -> u64 { a + b + c + d + e + values[0] + values[1] + after }",
         ];
         for source in sources {
-            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let module = Parser::new(source).parse_module::<2, 8>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {
                 panic!("expected function")
             };
             for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
-                let result = compile_x86_64_function::<_, 512, 4, 64>(&function, &NoConstants, abi);
+                let result = compile_x86_64_function::<_, 512, 8, 64>(&function, &NoConstants, abi);
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
 
         let unsupported = Parser::new(
-            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u64; 2]) -> u64 { values[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u32; 2]) -> u64 { values[0] as u64 }",
         )
         .parse_module::<2, 2>()
         .unwrap();
