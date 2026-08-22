@@ -903,6 +903,25 @@ impl DynamicLibrary {
         let symbol = unsafe { dlsym(self.0, name.as_ptr()) };
         (!symbol.is_null()).then_some(symbol)
     }
+
+    /// Invoke the stable CUDA driver bootstrap ABI when this is `libcuda`.
+    pub fn initialize_cuda_driver(&self) -> bool {
+        type Initialize = unsafe extern "C" fn(u32) -> i32;
+        let Some(symbol) = self.symbol(c"cuInit") else {
+            return false;
+        };
+        let initialize: Initialize = unsafe { core::mem::transmute(symbol) };
+        unsafe { initialize(0) == 0 }
+    }
+
+    /// Query the stable NVENC bootstrap ABI when this is `libnvidia-encode`.
+    pub fn nvenc_max_supported_version(&self) -> Option<u32> {
+        type Query = unsafe extern "C" fn(*mut u32) -> i32;
+        let symbol = self.symbol(c"NvEncodeAPIGetMaxSupportedVersion")?;
+        let query: Query = unsafe { core::mem::transmute(symbol) };
+        let mut version = 0;
+        (unsafe { query(&mut version) } == 0).then_some(version)
+    }
 }
 
 #[cfg(unix)]

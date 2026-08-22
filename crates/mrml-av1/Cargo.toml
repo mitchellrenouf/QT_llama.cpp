@@ -1,0 +1,22 @@
+[package]
+name = "mrml-av1"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mrml-runtime = { path = "../mrml-runtime" }
+
+[features]
+default = []
+nvidia = ["dep:mrml-linux", "dep:mrml-windows"]
+
+[target.'cfg(unix)'.dependencies]
+mrml-linux = { path = "../mrml-linux", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+mrml-windows = { path = "../mrml-windows", optional = true }
