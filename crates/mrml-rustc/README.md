@@ -474,9 +474,10 @@ objects. Scalar raw pointers now support exact-width
 loads, mutable stores, and the same integer compound assignments as mutable
 scalar references; writes through `*const T` are rejected. Native callers read
 10 through a shared pointer and updated an `i16` from 40 to 42 through 109- and
-188-byte COFF objects plus 496- and 584-byte ELF64 objects. This parser subset
-does not yet accept the `unsafe fn` qualifier, so callers remain responsible
-for placing generated raw-pointer operations behind their own unsafe boundary.
+188-byte COFF objects plus 496- and 584-byte ELF64 objects. Rust, const, and C-
+ABI functions accept the `unsafe fn` qualifier in its ordinary position after
+`const` and before `extern`; the native raw-pointer probes retain that explicit
+unsafe boundary without changing their deterministic object bytes.
 Pointers with compatible scalar pointees support `==`, `!=`, `<`, `<=`, `>`,
 and `>=`, using unsigned address ordering and mutable-to-const compatibility.
 An independent caller exercised equal, ascending, and descending addresses
@@ -1069,7 +1070,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 340 Windows library, conformance, rustc-nightly-replacement, and driver
+The 341 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1743,7 +1744,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 340 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 341 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

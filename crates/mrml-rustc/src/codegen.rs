@@ -8750,9 +8750,9 @@ mod tests {
     #[test]
     fn dereferences_scalar_raw_pointers() {
         let sources = [
-            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> u16 { *input }",
-            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u16) -> u16 { *input = 42; *input }",
-            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut i16) -> i16 { *input += 2; *input }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16) -> u16 { *input }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *mut u16) -> u16 { *input = 42; *input }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *mut i16) -> i16 { *input += 2; *input }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
@@ -8766,8 +8766,7 @@ mod tests {
             }
         }
 
-        let source =
-            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) { *input = 42; }";
+        let source = "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16) { *input = 42; }";
         let module = Parser::new(source).parse_module::<2, 2>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")

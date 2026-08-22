@@ -44,6 +44,7 @@ pub enum FunctionAbi {
 pub struct Function<'source, const MAX_PARAMETERS: usize> {
     pub public: bool,
     pub constant: bool,
+    pub unsafe_function: bool,
     pub abi: FunctionAbi,
     pub no_mangle: bool,
     pub name: &'source str,
@@ -2594,6 +2595,7 @@ impl<'source> Parser<'source> {
         &mut self,
         public: bool,
         constant: bool,
+        unsafe_function: bool,
         abi: FunctionAbi,
         no_mangle: bool,
     ) -> Result<Function<'source, MAX_PARAMETERS>, ParseError> {
@@ -2654,6 +2656,7 @@ impl<'source> Parser<'source> {
         Ok(Function {
             public,
             constant,
+            unsafe_function,
             abi,
             no_mangle,
             name: name.text,
@@ -2736,9 +2739,13 @@ impl<'source> Parser<'source> {
             let public = self.take_text("pub")?.is_some();
             let keyword = self.take()?;
             let item = match keyword.map(|token| token.text) {
-                Some("fn") => {
-                    Item::Function(self.function(public, false, FunctionAbi::Rust, no_mangle)?)
-                }
+                Some("fn") => Item::Function(self.function(
+                    public,
+                    false,
+                    false,
+                    FunctionAbi::Rust,
+                    no_mangle,
+                )?),
                 Some("extern") => {
                     let abi = self.take()?;
                     if !abi.is_some_and(|token| {
@@ -2750,12 +2757,24 @@ impl<'source> Parser<'source> {
                     if !function_keyword.is_some_and(|token| token.text == "fn") {
                         return Err(self.error(ParseErrorKind::ExpectedItem, function_keyword));
                     }
-                    Item::Function(self.function(public, false, FunctionAbi::C, no_mangle)?)
+                    Item::Function(self.function(
+                        public,
+                        false,
+                        false,
+                        FunctionAbi::C,
+                        no_mangle,
+                    )?)
                 }
                 Some("const") => match self.peek()?.map(|token| token.text) {
                     Some("fn") => {
                         self.take()?;
-                        Item::Function(self.function(public, true, FunctionAbi::Rust, no_mangle)?)
+                        Item::Function(self.function(
+                            public,
+                            true,
+                            false,
+                            FunctionAbi::Rust,
+                            no_mangle,
+                        )?)
                     }
                     Some("extern") => {
                         self.take()?;
@@ -2769,7 +2788,48 @@ impl<'source> Parser<'source> {
                         if !function_keyword.is_some_and(|token| token.text == "fn") {
                             return Err(self.error(ParseErrorKind::ExpectedItem, function_keyword));
                         }
-                        Item::Function(self.function(public, true, FunctionAbi::C, no_mangle)?)
+                        Item::Function(self.function(
+                            public,
+                            true,
+                            false,
+                            FunctionAbi::C,
+                            no_mangle,
+                        )?)
+                    }
+                    Some("unsafe") => {
+                        self.take()?;
+                        let qualifier = self.take()?;
+                        match qualifier.map(|token| token.text) {
+                            Some("fn") => Item::Function(self.function(
+                                public,
+                                true,
+                                true,
+                                FunctionAbi::Rust,
+                                no_mangle,
+                            )?),
+                            Some("extern") => {
+                                let abi = self.take()?;
+                                if !abi.is_some_and(|token| {
+                                    token.kind == TokenKind::String && token.text == "\"C\""
+                                }) {
+                                    return Err(self.error(ParseErrorKind::UnsupportedAbi, abi));
+                                }
+                                let function_keyword = self.take()?;
+                                if !function_keyword.is_some_and(|token| token.text == "fn") {
+                                    return Err(
+                                        self.error(ParseErrorKind::ExpectedItem, function_keyword)
+                                    );
+                                }
+                                Item::Function(self.function(
+                                    public,
+                                    true,
+                                    true,
+                                    FunctionAbi::C,
+                                    no_mangle,
+                                )?)
+                            }
+                            _ => return Err(self.error(ParseErrorKind::ExpectedItem, qualifier)),
+                        }
                     }
                     _ if !no_mangle => Item::Const(self.const_item(public)?),
                     _ => {
@@ -2777,6 +2837,40 @@ impl<'source> Parser<'source> {
                         return Err(self.error(ParseErrorKind::ExpectedItem, token));
                     }
                 },
+                Some("unsafe") => {
+                    let qualifier = self.take()?;
+                    match qualifier.map(|token| token.text) {
+                        Some("fn") => Item::Function(self.function(
+                            public,
+                            false,
+                            true,
+                            FunctionAbi::Rust,
+                            no_mangle,
+                        )?),
+                        Some("extern") => {
+                            let abi = self.take()?;
+                            if !abi.is_some_and(|token| {
+                                token.kind == TokenKind::String && token.text == "\"C\""
+                            }) {
+                                return Err(self.error(ParseErrorKind::UnsupportedAbi, abi));
+                            }
+                            let function_keyword = self.take()?;
+                            if !function_keyword.is_some_and(|token| token.text == "fn") {
+                                return Err(
+                                    self.error(ParseErrorKind::ExpectedItem, function_keyword)
+                                );
+                            }
+                            Item::Function(self.function(
+                                public,
+                                false,
+                                true,
+                                FunctionAbi::C,
+                                no_mangle,
+                            )?)
+                        }
+                        _ => return Err(self.error(ParseErrorKind::ExpectedItem, qualifier)),
+                    }
+                }
                 Some("static") if !no_mangle => Item::Static(self.const_item(public)?),
                 _ => return Err(self.error(ParseErrorKind::ExpectedItem, keyword)),
             };
@@ -2819,6 +2913,29 @@ mod tests {
             &source[function.body_expression_span.start..function.body_expression_span.end],
             function.body_expression
         );
+    }
+
+    #[test]
+    fn parses_unsafe_function_qualifiers() {
+        let source = "unsafe fn rust(input: *const u8) -> u8 { *input } #[unsafe(no_mangle)] pub unsafe extern \"C\" fn exported(input: *mut u16) { *input = 42; } const unsafe fn constant() -> u8 { 1 }";
+        let module: TestModule<'_> = Parser::new(source).parse_module().unwrap();
+        let Some(Item::Function(rust)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        let Some(Item::Function(exported)) = module.items()[1] else {
+            panic!("expected function")
+        };
+        let Some(Item::Function(constant)) = module.items()[2] else {
+            panic!("expected function")
+        };
+        assert!(rust.unsafe_function);
+        assert_eq!(rust.abi, FunctionAbi::Rust);
+        assert!(exported.public);
+        assert!(exported.unsafe_function);
+        assert_eq!(exported.abi, FunctionAbi::C);
+        assert!(exported.no_mangle);
+        assert!(constant.constant);
+        assert!(constant.unsafe_function);
     }
 
     #[test]
