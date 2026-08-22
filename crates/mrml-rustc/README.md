@@ -514,6 +514,10 @@ pointee and mutability type. Native callers matched a live array address and
 retargeted it to another element through 106- and 122-byte COFF objects plus
 496- and 512-byte ELF64 objects. Non-pointer receivers and non-`usize`
 replacement addresses are rejected. Shared
+and mutable raw pointers also support `cast_mut()` and `cast_const()`, changing
+only the pointer mutability while retaining its pointee and address. Independent
+native callers preserved live array addresses through 110- and 112-byte COFF
+objects plus two 504-byte ELF64 objects; non-pointer receivers are rejected. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1101,7 +1105,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 353 Windows library, conformance, rustc-nightly-replacement, and driver
+The 355 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1775,7 +1779,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 353 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 355 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

@@ -282,6 +282,7 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             | ExprKind::ReferenceAsPointer { .. }
             | ExprKind::RawPointerIsNull { .. }
             | ExprKind::RawPointerAddress { .. }
+            | ExprKind::RawPointerMutability { .. }
             | ExprKind::RawPointerWithAddress { .. }
             | ExprKind::RawPointerOffset { .. }
             | ExprKind::RawPointerDifference { .. } => {
