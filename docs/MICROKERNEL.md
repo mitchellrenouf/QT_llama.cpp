@@ -1069,10 +1069,12 @@ page-aligned, non-overlapping in both guest and host address spaces, and never
 writable and executable. A request buffer must fit wholly within one readable
 mapping. Backend-owned pointers never enter the policy core. The common
 `VmBackend` contract currently covers vCPU exits, bounded guest copies, and
-interrupt injection. KVM has a prepared launch path and Hyper-V has an initial
-native lifecycle/memory path; register initialization, device models, and
-shared-memory data queues are still incomplete, so this is not yet a runnable
-hosted VM.
+interrupt injection. KVM has a prepared launch path and WHP has a native
+long-mode lifecycle, memory, and register path. Both run signed one- and
+two-vCPU kernel images, isolated CPL3 services, timer/preemption probes, and
+authenticated mediated-GPU queues. General-purpose device models and bulk
+shared-memory service queues remain separate production work; the hosted VM is
+executable rather than a lifecycle-only prototype.
 
 Guest mappings receive opaque monotonic identifiers and can be revoked or have
 their permissions changed without exposing array slots. Revocation compacts the
@@ -1268,7 +1270,8 @@ verifies its trust root and statement, loads its PE32+ image, proves its code
 page is immutable after sealing, enters long mode at the signed entry point,
 executes `INT3`, and observes the expected breakpoint vector. This demonstrates
 the complete verified-artifact-to-native-execution boundary on Hyper-V;
-end-to-end UEFI-to-kernel boot remains a separate pending integration gate.
+the separate repository UEFI-to-kernel integration gate is exercised by the
+QEMU loader runs above, including the signed two-vCPU periodic scheduler proof.
 The WHP exit decoder validates the common x86 VP prefix before consuming any
 exit union, including execution-state and reserved fields. Memory and port-I/O
 exits bound the captured instruction length and require all ABI-reserved bytes
@@ -1474,7 +1477,12 @@ The proof checks each intermediate load and terminates only at source load
 three and destination load three. Fresh release runs measured
 `total=130536us` on nested KVM and `total=224797us` on WHP. Initialization is
 split from the non-returning run phase so its large bounded frame is unwound
-before interrupt entry. The
+before interrupt entry. A fresh two-CPU QEMU TCG run then admitted the same
+signed kernel through `mrml-loader.efi`, crossed `ExitBootServices`, completed
+INIT/SIPI startup, handled both AP-local timer events and both migration IPIs,
+and produced terminal debug trace `70 71 81 83 85 76 76 87 82 72 84 86 76 77
+88`. This closes the UEFI-to-live-SMP-scheduler integration gate without host
+interrupt injection. The
 `PeriodicDomainBalancer` couples this cadence to the complete-domain ticket and
 typed ownership mailboxes. A full destination mailbox retains the unpublished
 ticket inside the controller; every later call retries it before considering a

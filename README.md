@@ -396,7 +396,10 @@ from five runnable domains to three and CPU 1 to rise from one to three. Fresh
 release-mode signed runs passed under nested KVM in 130,536 microseconds and
 WHP in 224,797 microseconds. The large initialization frame is deliberately
 unwound before the non-returning timer phase so interrupt entry retains its
-bounded early-stack guarantee. The release-mode
+bounded early-stack guarantee. The same signed kernel also passed through the
+repository UEFI loader under two-CPU QEMU TCG, including authenticated PE
+admission, `ExitBootServices`, INIT/SIPI startup, both timer ticks, and terminal
+trace byte `0x88`. The release-mode
 256-CPU selection gate measured 348 ns per poll on Windows and 341 ns on Linux.
 The signed two-vCPU CPL3 migration path now obtains its destination from this
 policy rather than a hard-coded peer and passes under both KVM and WHP.

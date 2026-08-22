@@ -6,6 +6,8 @@
 use mrml_crypto::{LAMPORT_PUBLIC_KEY_BYTES, Sha3_512};
 use mrml_error::{Result, anyhow};
 use mrml_kernel::arch::x86_64::PRIVILEGE_STACK_ARENA_PAGES;
+#[cfg(all(target_os = "windows", feature = "cuda"))]
+use mrml_kernel::verify_gpu_kernel_bundle;
 #[cfg(target_os = "windows")]
 use mrml_kernel::{
     ArtifactKind, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuQueueIdentity,
@@ -13,17 +15,15 @@ use mrml_kernel::{
     GpuVmmQueueBridge, ResourceCommand, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
     VerifiedGpuKernelBundle, VmBackend, VmExit,
 };
-#[cfg(all(target_os = "windows", feature = "cuda"))]
-use mrml_kernel::verify_gpu_kernel_bundle;
 #[cfg(any(test, target_os = "windows"))]
 use mrml_kernel::{
     FramebufferInfo, MemoryKind, MemoryRegion, PhysAddr, PixelFormat, encode_handoff,
     encode_handoff_with_smp,
 };
-#[cfg(target_os = "windows")]
-use mrml_runtime::{Instant, mrml_println as println};
 #[cfg(all(target_os = "windows", feature = "cuda"))]
 use mrml_runtime::Vector;
+#[cfg(target_os = "windows")]
+use mrml_runtime::{Instant, mrml_println as println};
 #[cfg(target_os = "windows")]
 use mrml_whp::{PreparedWhpGuest, WhpLaunchLayout, WhpSystem};
 
