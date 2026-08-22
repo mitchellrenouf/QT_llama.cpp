@@ -41,8 +41,8 @@ pub use parser::{
     MAX_BODY_CONDITIONAL_ASSIGNMENTS, MAX_BODY_EXPRESSION_STATEMENTS, MAX_BODY_RETURNS,
     MAX_BODY_STATEMENTS, MAX_CONDITIONAL_ASSIGNMENT_BRANCHES, MAX_CONDITIONAL_BRANCH_ACTIONS,
     MAX_CONDITIONAL_LOOP_ACTIONS, MAX_CONDITIONAL_LOOP_ELSE_ARMS, MAX_CONDITIONAL_RETURN_BRANCHES,
-    MAX_NESTED_LOOP_ACTIONS, MAX_NESTED_LOOP_BLOCKS, Module, NestedLoopBlock, Parameter,
-    ParseError, ParseErrorKind, Parser, TypeRef, WhileLoop,
+    MAX_NESTED_LOOP_ACTIONS, MAX_NESTED_LOOP_BLOCKS, MAX_NESTED_LOOP_CONDITIONAL_RETURNS, Module,
+    NestedLoopBlock, Parameter, ParseError, ParseErrorKind, Parser, TypeRef, WhileLoop,
 };
 pub use pipeline::{
     CompileError, CompileErrorKind, ObjectFormat, compile_source_function,
