@@ -2161,6 +2161,10 @@ fn validate_runtime_inline_const<
         ExprKind::SliceLen { base } => recurse(base)?,
         ExprKind::SliceIsEmpty { base } => recurse(base)?,
         ExprKind::StrAsBytes { base } => recurse(base)?,
+        ExprKind::StrIsCharBoundary { base, index } => {
+            recurse(base)?;
+            recurse(index)?;
+        }
         ExprKind::Cast { operand, .. }
         | ExprKind::Ascribe { operand, .. }
         | ExprKind::Unary { operand, .. }
@@ -2468,6 +2472,36 @@ fn runtime_expression_type_with_locals<
                 ))),
                 mutable: false,
             })
+        }
+        ExprKind::StrIsCharBoundary { base, index } => {
+            if !matches!(
+                runtime_expression_type_with_locals(
+                    function,
+                    resolver,
+                    locals,
+                    tree,
+                    base,
+                    depth + 1,
+                )?,
+                RuntimeExpressionType::Reference {
+                    target: RuntimeReferenceTarget::Str,
+                    ..
+                }
+            ) || !matches!(
+                runtime_expression_type_with_locals(
+                    function,
+                    resolver,
+                    locals,
+                    tree,
+                    index,
+                    depth + 1,
+                )?,
+                RuntimeExpressionType::Integer(None)
+                    | RuntimeExpressionType::Integer(Some(crate::IntegerType::Usize))
+            ) {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            }
+            Ok(RuntimeExpressionType::Bool)
         }
         ExprKind::Integer(literal) => Ok(RuntimeExpressionType::Integer(
             literal.suffix.and_then(crate::IntegerType::from_name),
@@ -3672,6 +3706,9 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             ExprKind::StrAsBytes { base } => {
                 self.emit_expression(tree, base, depth + 1)?;
             }
+            ExprKind::StrIsCharBoundary { base, index } => {
+                self.emit_string_is_char_boundary(tree, base, index, depth + 1)?;
+            }
             ExprKind::Integer(literal) => {
                 if literal.value > u128::from(self.width.maximum) {
                     return Err(self.error(CodegenErrorKind::ValueOutOfRange));
@@ -4774,6 +4811,46 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         self.emit_string_boundary_check()?;
         self.emit(&[0x48, 0x8b, 0x4c, 0x24, 0x08, 0x48, 0x03, 0x0c, 0x24])?;
         self.emit_string_boundary_check()
+    }
+
+    fn emit_string_is_char_boundary<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        base: crate::ExprId,
+        index: crate::ExprId,
+        depth: usize,
+    ) -> Result<(), CodegenError> {
+        let source = reference_source_name(tree, base)
+            .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
+        self.emit_expression(tree, base, depth + 1)?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        self.emit_slice_length(source)?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        self.emit_expression(tree, index, depth + 1)?;
+        self.emit(&[0x48, 0x3b, 0x04, 0x24])?;
+        let out_of_bounds = self.emit_forward_branch(0x87)?;
+        let at_end = self.emit_forward_branch(0x84)?;
+        self.emit(&[0x48, 0x85, 0xc0])?;
+        let at_start = self.emit_forward_branch(0x84)?;
+        self.emit(&[0x48, 0x89, 0xc1, 0x48, 0x8b, 0x44, 0x24, 0x08])?;
+        self.emit(&[0x0f, 0xb6, 0x04, 0x08, 0x25, 0xc0, 0x00, 0x00, 0x00])?;
+        self.emit(&[
+            0x3d, 0x80, 0x00, 0x00, 0x00, 0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0,
+        ])?;
+        let value_end = self.emit_unconditional_forward_branch()?;
+        self.patch_forward_branch(at_end)?;
+        self.patch_forward_branch(at_start)?;
+        self.emit(&[0xb8, 0x01, 0x00, 0x00, 0x00])?;
+        let true_end = self.emit_unconditional_forward_branch()?;
+        self.patch_forward_branch(out_of_bounds)?;
+        self.emit(&[0x31, 0xc0])?;
+        self.patch_forward_branch(value_end)?;
+        self.patch_forward_branch(true_end)?;
+        self.emit_stack_cleanup_bytes(16)?;
+        self.evaluation_depth -= 2;
+        Ok(())
     }
 
     fn emit_string_boundary_check(&mut self) -> Result<(), CodegenError> {
@@ -8458,6 +8535,46 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch,
         );
+    }
+
+    #[test]
+    fn checks_string_character_boundaries() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, index: usize) -> bool { input.is_char_boundary(index) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> bool { input.is_char_boundary(0) && input.is_char_boundary(input.len()) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, index: usize) -> bool { let copied: &str = input; copied.is_char_boundary(index) }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 2048, 4, 160>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        for source in [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u8], index: usize) -> bool { input.is_char_boundary(index) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> bool { input.is_char_boundary(true) }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            assert_eq!(
+                compile_x86_64_function::<_, 768, 2, 80>(
+                    &function,
+                    &NoConstants,
+                    X86_64Abi::Windows,
+                )
+                .unwrap_err()
+                .kind,
+                CodegenErrorKind::RuntimeTypeMismatch,
+            );
+        }
     }
 
     #[test]

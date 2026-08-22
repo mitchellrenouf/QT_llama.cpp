@@ -260,6 +260,10 @@ pub enum ExprKind<'source> {
     StrAsBytes {
         base: ExprId,
     },
+    StrIsCharBoundary {
+        base: ExprId,
+        index: ExprId,
+    },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -413,6 +417,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::RangeIndex { .. }
             | ExprKind::SliceLen { .. }
             | ExprKind::StrAsBytes { .. }
+            | ExprKind::StrIsCharBoundary { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
             | ExprKind::Identifier(_)
@@ -623,6 +628,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             ExprKind::SliceLen { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::SliceIsEmpty { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::StrAsBytes { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::StrIsCharBoundary { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -1828,6 +1834,10 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             | ExprKind::SliceIsEmpty { base }
             | ExprKind::StrAsBytes { base } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
+            }
+            ExprKind::StrIsCharBoundary { base, index } => {
+                self.substitute_identifier(base, name, replacement, depth + 1)?;
+                self.substitute_identifier(index, name, replacement, depth + 1)?;
             }
             ExprKind::Cast { operand, .. }
             | ExprKind::Ascribe { operand, .. }
@@ -3348,15 +3358,23 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             }
             self.take()?;
             let method = self.take()?;
-            let Some(method) =
-                method.filter(|method| matches!(method.text, "len" | "is_empty" | "as_bytes"))
-            else {
+            let Some(method) = method.filter(|method| {
+                matches!(
+                    method.text,
+                    "len" | "is_empty" | "as_bytes" | "is_char_boundary"
+                )
+            }) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
             };
             let open = self.take()?;
             if !open.is_some_and(|open| open.kind == TokenKind::OpenParen) {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, open));
             }
+            let index = if method.text == "is_char_boundary" {
+                Some(self.expression(0, depth + 1)?)
+            } else {
+                None
+            };
             let close = self.take()?;
             let Some(close) = close.filter(|close| close.kind == TokenKind::CloseParen) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
@@ -3365,7 +3383,13 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             let kind = match method.text {
                 "len" => ExprKind::SliceLen { base },
                 "is_empty" => ExprKind::SliceIsEmpty { base },
-                _ => ExprKind::StrAsBytes { base },
+                "as_bytes" => ExprKind::StrAsBytes { base },
+                _ => ExprKind::StrIsCharBoundary {
+                    base,
+                    index: index.ok_or_else(|| {
+                        self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
+                    })?,
+                },
             };
             base = self.push(Expr {
                 kind,

@@ -1964,6 +1964,19 @@ fn rustc_string_as_bytes_reaches_native_objects() {
 }
 
 #[test]
+fn rustc_string_character_boundary_checks_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str, index: usize) -> bool { input.is_char_boundary(index) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str) -> bool { input.is_char_boundary(0) && input.is_char_boundary(input.len()) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str, index: usize) -> bool { let copied: &str = input; copied.is_char_boundary(index) }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",

@@ -457,7 +457,12 @@ the resulting fat pointer supports locals, returns, length methods, and
 bounds-checked byte indexing. Independent callers preserved pointer and byte
 length for `"rust🦀"` and read its leading UTF-8 byte `0xF0` through 143-byte
 and 161-byte COFF objects plus 512-byte and 560-byte ELF64 objects. Coercion to
-a mutable byte slice is rejected. Shared
+a mutable byte slice is rejected. `str::is_char_boundary(index)` evaluates its
+`usize` argument once, returns true at zero, the byte length, ASCII boundaries,
+and multibyte leading bytes, and returns false for continuation-byte or out-of-
+range indexes. Native callers exercised all five cases through a 214-byte COFF
+and 600-byte ELF64 object. Non-string receivers and non-`usize` arguments are
+rejected. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1045,7 +1050,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 332 Windows library, conformance, rustc-nightly-replacement, and driver
+The 334 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1719,7 +1724,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 332 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 334 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
