@@ -1949,6 +1949,13 @@ fn inline_const_has_invalid_capture<const MAX_NODES: usize>(
         ExprKind::Index { base, index } => {
             recurse(base, inside_inline_const) || recurse(index, inside_inline_const)
         }
+        ExprKind::RangeIndex {
+            base, start, end, ..
+        } => {
+            recurse(base, inside_inline_const)
+                || start.is_some_and(|start| recurse(start, inside_inline_const))
+                || end.is_some_and(|end| recurse(end, inside_inline_const))
+        }
         ExprKind::SliceLen { base } => recurse(base, inside_inline_const),
         ExprKind::SliceIsEmpty { base } => recurse(base, inside_inline_const),
         ExprKind::InlineConst { operand } => recurse(operand, true),
@@ -2009,6 +2016,9 @@ fn expression_contains_call<const MAX_NODES: usize>(
             .any(|element| recurse(*element)),
         ExprKind::ArrayRepeat { element, .. } => recurse(element),
         ExprKind::Index { base, index } => recurse(base) || recurse(index),
+        ExprKind::RangeIndex {
+            base, start, end, ..
+        } => recurse(base) || start.is_some_and(recurse) || end.is_some_and(recurse),
         ExprKind::SliceLen { base } => recurse(base),
         ExprKind::SliceIsEmpty { base } => recurse(base),
         ExprKind::Cast { operand, .. }

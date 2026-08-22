@@ -274,7 +274,9 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
                     span: expression.span,
                 });
             }
-            ExprKind::SliceLen { .. } | ExprKind::SliceIsEmpty { .. } => {
+            ExprKind::RangeIndex { .. }
+            | ExprKind::SliceLen { .. }
+            | ExprKind::SliceIsEmpty { .. } => {
                 return Err(IrError {
                     kind: IrErrorKind::InvalidExpressionTree,
                     span: expression.span,

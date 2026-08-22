@@ -419,15 +419,22 @@ length argument words. Typed copies and reborrows preserve both words;
 constant and runtime indexing checks the saved length before exact-width reads
 or mutable stores. Independent callers passed a four-element mutable slice,
 changed index 2 from 20 to 22, and observed the changed backing array plus the
-returned sum 62 through 337-byte COFF and 720-byte ELF64 objects. Slice creation
-from range expressions and general aggregate ABI transport remain separate
-work. The postfix `len()` method reads the preserved runtime length from shared
+returned sum 62 through 337-byte COFF and 720-byte ELF64 objects. The postfix
+`len()` method reads the preserved runtime length from shared
 or mutable slice references, including typed copies and mutable reborrows. A
 native four-element probe added the copied and original lengths and returned 8
 through 146-byte COFF and 528-byte ELF64 objects. The `is_empty()` method tests
 that same runtime length and normalizes the result to Rust `bool`. Independent
 callers observed true for an empty slice and false for a one-element slice
 through 130-byte COFF and 520-byte ELF64 objects.
+Constant `start..end`, `start..=end`, `..end`, `start..`, and `..` ranges over
+native fixed-array references create shared or mutable slice fat pointers.
+Bounds and mutability are checked before code emission; typed locals retain the
+adjusted data address and derived length. Independent callers sliced elements
+1 through 2 from a four-element mutable array reference, changed 20 to 22, and
+observed length 2 plus the changed backing array through 309-byte COFF and
+696-byte ELF64 objects. Runtime range endpoints, ranges over expanded array
+locals, and general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -927,7 +934,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 299 Windows library, conformance, rustc-nightly-replacement, and driver
+The 301 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1601,7 +1608,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 299 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 301 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

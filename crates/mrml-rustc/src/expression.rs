@@ -245,6 +245,12 @@ pub enum ExprKind<'source> {
         base: ExprId,
         index: ExprId,
     },
+    RangeIndex {
+        base: ExprId,
+        start: Option<ExprId>,
+        end: Option<ExprId>,
+        inclusive: bool,
+    },
     SliceLen {
         base: ExprId,
     },
@@ -401,6 +407,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::Array { .. }
             | ExprKind::ArrayRepeat { .. }
             | ExprKind::Index { .. }
+            | ExprKind::RangeIndex { .. }
             | ExprKind::SliceLen { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
@@ -608,6 +615,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 }
                 self.evaluate_array_element(base, index, resolver, depth + 1)
             }
+            ExprKind::RangeIndex { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::SliceLen { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::SliceIsEmpty { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
@@ -949,6 +957,7 @@ pub(crate) fn evaluate_binary(
     }
 }
 
+#[derive(Clone)]
 pub struct ExpressionParser<'source, const MAX_NODES: usize> {
     lexer: Lexer<'source>,
     lookahead: Option<Token<'source>>,
@@ -1798,6 +1807,17 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             ExprKind::Index { base, index } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
                 self.substitute_identifier(index, name, replacement, depth + 1)?;
+            }
+            ExprKind::RangeIndex {
+                base, start, end, ..
+            } => {
+                self.substitute_identifier(base, name, replacement, depth + 1)?;
+                if let Some(start) = start {
+                    self.substitute_identifier(start, name, replacement, depth + 1)?;
+                }
+                if let Some(end) = end {
+                    self.substitute_identifier(end, name, replacement, depth + 1)?;
+                }
             }
             ExprKind::SliceLen { base } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
@@ -3242,7 +3262,60 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         while let Some(token) = self.peek()? {
             if token.kind == TokenKind::OpenBracket {
                 self.take()?;
-                let index = self.expression(0, depth + 1)?;
+                let range_starts_here = self
+                    .peek()?
+                    .is_some_and(|token| token.kind == TokenKind::Dot);
+                let first = if range_starts_here {
+                    None
+                } else {
+                    Some(self.expression(0, depth + 1)?)
+                };
+                let is_range = self
+                    .peek()?
+                    .is_some_and(|token| token.kind == TokenKind::Dot);
+                if is_range {
+                    self.take()?;
+                    let second_dot = self.take()?;
+                    if !second_dot.is_some_and(|token| token.kind == TokenKind::Dot) {
+                        return Err(self.error(ExpressionErrorKind::ExpectedExpression, second_dot));
+                    }
+                    let inclusive = if self.peek()?.is_some_and(|token| token.text == "=") {
+                        self.take()?;
+                        true
+                    } else {
+                        false
+                    };
+                    let end = if self
+                        .peek()?
+                        .is_some_and(|token| token.kind == TokenKind::CloseBracket)
+                    {
+                        None
+                    } else {
+                        Some(self.expression(0, depth + 1)?)
+                    };
+                    let close = self.take()?;
+                    let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBracket)
+                    else {
+                        return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
+                    };
+                    let start_span = self.node_span(base)?.start;
+                    base = self.push(Expr {
+                        kind: ExprKind::RangeIndex {
+                            base,
+                            start: first,
+                            end,
+                            inclusive,
+                        },
+                        span: Span {
+                            start: start_span,
+                            end: close.span.end,
+                        },
+                    })?;
+                    continue;
+                }
+                let index = first.ok_or_else(|| {
+                    self.error(ExpressionErrorKind::ExpectedExpression, self.lookahead)
+                })?;
                 let close = self.take()?;
                 let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBracket)
                 else {
@@ -3259,6 +3332,14 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 continue;
             }
             if token.kind != TokenKind::Dot {
+                break;
+            }
+            let mut probe = self.clone();
+            probe.take()?;
+            if probe
+                .peek()?
+                .is_some_and(|token| token.kind == TokenKind::Dot)
+            {
                 break;
             }
             self.take()?;
