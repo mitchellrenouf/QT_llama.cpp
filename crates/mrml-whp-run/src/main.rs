@@ -74,7 +74,10 @@ fn application_main() -> Result<()> {
     let service_mode = arguments.len() == 8 && arguments[4] == "service-probe";
     let service_preemption_mode =
         arguments.len() == 8 && arguments[4] == "service-preemption-probe";
-    let service_artifact_mode = service_mode || service_preemption_mode;
+    let smp_service_migration_mode =
+        arguments.len() == 8 && arguments[4] == "smp-service-migration-probe";
+    let service_artifact_mode =
+        service_mode || service_preemption_mode || smp_service_migration_mode;
     let timer_mode = arguments.len() == 5 && arguments[4] == "timer-probe";
     let preemption_mode = arguments.len() == 5 && arguments[4] == "preemption-probe";
     let smp_mode = arguments.len() == 5 && arguments[4] == "smp-probe";
@@ -89,7 +92,7 @@ fn application_main() -> Result<()> {
         && !smp_ipi_mode
     {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-scheduler-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-ipi-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-scheduler-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-ipi-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-service-migration-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -171,7 +174,7 @@ fn application_main() -> Result<()> {
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
-    let hosted_smp = smp_mode || smp_scheduler_mode || smp_ipi_mode;
+    let hosted_smp = smp_mode || smp_scheduler_mode || smp_ipi_mode || smp_service_migration_mode;
     let handoff = if hosted_smp {
         smp_boot_handoff(
             executable.artifact().version(),
@@ -196,7 +199,11 @@ fn application_main() -> Result<()> {
             0xffff_8001_6000_0000,
         )
     };
-    let table_pages = if smp_ipi_mode { 64 } else { 32 };
+    let table_pages = if smp_ipi_mode || smp_service_migration_mode {
+        64
+    } else {
+        32
+    };
     let layout = WhpLaunchLayout::new(
         0x10_0000,
         table_pages,
@@ -230,7 +237,7 @@ fn application_main() -> Result<()> {
     }
     .map_err(|error| anyhow!("verified WHP kernel preparation failed: {:?}", error))?;
     if service_artifact_mode {
-        let local_apic = service_preemption_mode;
+        let local_apic = service_preemption_mode || smp_service_migration_mode;
         guest = guest
             .attach_isolated_service_at(
                 0,
@@ -289,7 +296,7 @@ fn application_main() -> Result<()> {
         let expected_bootstrap = VmExit::Io {
             port: if smp_scheduler_mode {
                 0x4d5e
-            } else if smp_ipi_mode {
+            } else if smp_ipi_mode || smp_service_migration_mode {
                 0x4d60
             } else {
                 SMP_PROBE_PORT
@@ -303,6 +310,8 @@ fn application_main() -> Result<()> {
                 0x4d5f
             } else if smp_ipi_mode {
                 0x4d61
+            } else if smp_service_migration_mode {
+                0x4d62
             } else {
                 SMP_PROBE_PORT
             },

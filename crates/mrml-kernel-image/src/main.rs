@@ -12,7 +12,11 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use mrml_kernel::BootPolicy;
 #[cfg(any(feature = "timer-probe", feature = "smp-scheduler-probe"))]
 use mrml_kernel::KernelScheduler;
-#[cfg(any(feature = "user-probe", feature = "service-probe"))]
+#[cfg(any(
+    feature = "user-probe",
+    feature = "service-probe",
+    feature = "smp-service-migration-probe"
+))]
 use mrml_kernel::SyscallRequest;
 #[cfg(any(
     feature = "user-probe",
@@ -57,7 +61,11 @@ use mrml_kernel::arch::x86_64::TrapDisposition;
 use mrml_kernel::arch::x86_64::UserContext;
 #[cfg(any(feature = "user-probe", feature = "preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context;
-#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
+#[cfg(any(
+    feature = "service-probe",
+    feature = "service-preemption-probe",
+    feature = "smp-service-migration-probe"
+))]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::arch::x86_64::{
@@ -149,7 +157,8 @@ const SMP_PROBE_PORT: u16 = 0x4d5c;
 #[cfg(any(
     feature = "whp-smp-probe",
     feature = "whp-smp-scheduler-probe",
-    feature = "whp-smp-ipi-probe"
+    feature = "whp-smp-ipi-probe",
+    feature = "whp-smp-service-migration-probe"
 ))]
 const WHP_SMP_HANDSHAKE_PORT: u16 = 0x4d5d;
 #[cfg(feature = "smp-scheduler-probe")]
@@ -158,17 +167,34 @@ const SMP_SCHEDULER_READY_PORT: u16 = 0x4d5e;
 const SMP_SCHEDULER_TICK_PORT: u16 = 0x4d5f;
 #[cfg(feature = "smp-ipi-probe")]
 const SMP_IPI_READY_PORT: u16 = 0x4d60;
-#[cfg(feature = "smp-ipi-probe")]
+#[cfg(all(
+    feature = "smp-ipi-probe",
+    not(feature = "smp-service-migration-probe")
+))]
 const SMP_IPI_PROOF_PORT: u16 = 0x4d61;
-#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
+#[cfg(feature = "smp-service-migration-probe")]
+const SMP_SERVICE_MIGRATION_PROOF_PORT: u16 = 0x4d62;
+#[cfg(any(
+    feature = "service-probe",
+    feature = "service-preemption-probe",
+    feature = "smp-service-migration-probe"
+))]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_B_ROOT: u64 = 0x00d0_0000;
-#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
+#[cfg(any(
+    feature = "service-probe",
+    feature = "service-preemption-probe",
+    feature = "smp-service-migration-probe"
+))]
 const SERVICE_ENTRY: u64 = 0x0000_0001_4000_1000;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_SENDER_ENTRY: u64 = SERVICE_ENTRY + 0x80;
-#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
+#[cfg(any(
+    feature = "service-probe",
+    feature = "service-preemption-probe",
+    feature = "smp-service-migration-probe"
+))]
 const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 
 static mut CPU0_DESCRIPTORS: CpuDescriptorState = CpuDescriptorState::empty(0);
@@ -219,14 +245,14 @@ static AP_RESCHEDULE_REQUEST: [AtomicBool; MAX_X86_64_CPUS] =
 static AP_SCHEDULER_LOAD: [AtomicU32; MAX_X86_64_CPUS] =
     [const { AtomicU32::new(0) }; MAX_X86_64_CPUS];
 #[cfg(feature = "smp-ipi-probe")]
-struct SmpIpiRuntime(UnsafeCell<MaybeUninit<TaskRuntime<2, 0>>>);
+struct SmpIpiRuntime(UnsafeCell<MaybeUninit<TaskRuntime<2, 1>>>);
 #[cfg(feature = "smp-ipi-probe")]
 unsafe impl Sync for SmpIpiRuntime {}
 #[cfg(feature = "smp-ipi-probe")]
 #[unsafe(link_section = ".data")]
 static SMP_IPI_RUNTIME: SmpIpiRuntime = SmpIpiRuntime(UnsafeCell::new(MaybeUninit::uninit()));
 #[cfg(feature = "smp-ipi-probe")]
-static SMP_MIGRATION_MAILBOX: OwnershipMailbox<DetachedTaskDomain<0>> = OwnershipMailbox::new();
+static SMP_MIGRATION_MAILBOX: OwnershipMailbox<DetachedTaskDomain<1>> = OwnershipMailbox::new();
 #[cfg(not(feature = "fault-probe"))]
 struct ApStartupWorkspace(UnsafeCell<MaybeUninit<ApStartupTable<MAX_X86_64_CPUS>>>);
 #[cfg(not(feature = "fault-probe"))]
@@ -487,7 +513,10 @@ unsafe extern "C" {
     fn mrml_user_replacement_probe() -> !;
     #[cfg(feature = "user-probe")]
     fn mrml_user_call() -> !;
-    #[cfg(all(feature = "service-probe", not(feature = "user-probe")))]
+    #[cfg(all(
+        any(feature = "service-probe", feature = "smp-service-migration-probe"),
+        not(feature = "user-probe")
+    ))]
     fn mrml_user_call() -> !;
     static mrml_exception_table: [u64; 32];
 }
@@ -651,7 +680,42 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
             }
         }
     }
-    #[cfg(not(any(feature = "user-probe", feature = "service-probe")))]
+    #[cfg(feature = "smp-service-migration-probe")]
+    unsafe {
+        let frame = frame.as_mut().unwrap_or_else(|| halt());
+        if frame.request().unwrap_or_else(|_| halt()) != SyscallRequest::Receive {
+            halt();
+        }
+        let runtime = (&mut *SMP_IPI_RUNTIME.0.get()).assume_init_mut();
+        let task = runtime.current().unwrap_or_else(|| halt());
+        let context = runtime.context(task).unwrap_or_else(|_| halt());
+        if context.page_table() != PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()) {
+            halt();
+        }
+        let apic_id = current_apic_id().unwrap_or_else(|| halt());
+        let cpu = AP_SCHEDULERS
+            .0
+            .iter()
+            .enumerate()
+            .find(|(_, slot)| {
+                slot.initialized.load(Ordering::Acquire)
+                    && slot.apic_id.load(Ordering::Acquire) == apic_id
+            })
+            .map(|(cpu, _)| cpu)
+            .unwrap_or_else(|| halt());
+        asm!(
+            "out dx, eax",
+            in("dx") SMP_SERVICE_MIGRATION_PROOF_PORT,
+            in("eax") ((cpu as u32) << 16) | task.token() as u32,
+            options(nomem, nostack)
+        );
+        halt()
+    }
+    #[cfg(not(any(
+        feature = "user-probe",
+        feature = "service-probe",
+        feature = "smp-service-migration-probe"
+    )))]
     let _ = frame;
 }
 
@@ -807,16 +871,32 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
             halt();
         }
         let context = runtime.context(next).unwrap_or_else(|_| halt());
+        #[cfg(not(feature = "smp-service-migration-probe"))]
         if context.instruction_pointer() != 0x0050_0000 {
             halt();
         }
         LocalApicTimer::acknowledge();
+        #[cfg(feature = "smp-service-migration-probe")]
+        {
+            if context.instruction_pointer() != SERVICE_ENTRY
+                || context.page_table() != PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt())
+            {
+                halt();
+            }
+            let descriptor = AP_DESCRIPTORS.0.get(cpu).unwrap_or_else(|| halt()).get();
+            let state = (&*descriptor).assume_init_ref();
+            let transition_stack =
+                CpuDescriptorState::entry_stack_top_from(state).unwrap_or_else(|_| halt());
+            enter_user_context_on_stack(context, transition_stack)
+        }
+        #[cfg(not(feature = "smp-service-migration-probe"))]
         asm!(
             "out dx, eax",
             in("dx") SMP_IPI_PROOF_PORT,
             in("eax") ((cpu as u32) << 16) | next.token() as u32,
             options(nomem, nostack)
         );
+        #[cfg(not(feature = "smp-service-migration-probe"))]
         halt();
     }
     #[cfg(not(feature = "smp-ipi-probe"))]
@@ -1045,7 +1125,8 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
     #[cfg(any(
         feature = "whp-smp-probe",
         feature = "whp-smp-scheduler-probe",
-        feature = "whp-smp-ipi-probe"
+        feature = "whp-smp-ipi-probe",
+        feature = "whp-smp-service-migration-probe"
     ))]
     unsafe {
         asm!(
@@ -1105,7 +1186,7 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
             0x0000_7000_0000_0000,
         )
         .unwrap_or_else(|_| halt());
-        let mut runtime = TaskRuntime::<2, 0>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let mut runtime = TaskRuntime::<2, 1>::new(1_000, 1).unwrap_or_else(|_| halt());
         let first = runtime
             .create(Priority::NORMAL, context)
             .unwrap_or_else(|_| halt());
@@ -1299,18 +1380,25 @@ unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
     let page_table: u64;
     unsafe { asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags)) };
     let root = PhysAddr::new(page_table).unwrap_or_else(|_| halt());
-    let mut source = TaskRuntime::<3, 0>::new(1_000, 1).unwrap_or_else(|_| halt());
+    let mut source = TaskRuntime::<3, 1>::new(1_000, 1).unwrap_or_else(|_| halt());
     let first = source
         .create(
             Priority::NORMAL,
             UserContext::new(root, 0x0040_0000, 0x0000_7000_0000_0000).unwrap_or_else(|_| halt()),
         )
         .unwrap_or_else(|_| halt());
+    #[cfg(feature = "smp-service-migration-probe")]
+    let responsive_context = UserContext::new(
+        PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
+        SERVICE_ENTRY,
+        SERVICE_STACK_TOP,
+    )
+    .unwrap_or_else(|_| halt());
+    #[cfg(not(feature = "smp-service-migration-probe"))]
+    let responsive_context =
+        UserContext::new(root, 0x0050_0000, 0x0000_7000_0000_1000).unwrap_or_else(|_| halt());
     source
-        .create(
-            Priority::RESPONSIVE,
-            UserContext::new(root, 0x0050_0000, 0x0000_7000_0000_1000).unwrap_or_else(|_| halt()),
-        )
+        .create(Priority::RESPONSIVE, responsive_context)
         .unwrap_or_else(|_| halt());
     source
         .create(
@@ -2117,7 +2205,11 @@ unsafe fn install_descriptor_state(
     if unsafe { state.install(kernel_stack, double_fault_stack, handlers, fallback) }.is_err() {
         halt();
     }
-    #[cfg(any(feature = "user-probe", feature = "service-probe"))]
+    #[cfg(any(
+        feature = "user-probe",
+        feature = "service-probe",
+        feature = "smp-service-migration-probe"
+    ))]
     if unsafe { state.install_user_call(mrml_user_call as *const () as usize as u64) }.is_err() {
         halt();
     }

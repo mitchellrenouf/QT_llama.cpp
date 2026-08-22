@@ -383,16 +383,20 @@ page-table root, capability space, and bounded IPC inbox; destination admission
 creates a fresh local identity, while failure leaves the entire ticket in
 caller-owned storage for retry. Windows and Linux tests cover preserved context,
 authority, queued messages, destination-full recovery, and rejection of a
-running-domain detach. Live cross-CPU CPL3 resumption of this complete ticket
-remains unfinished. The signed SMP IPI probe now carries this complete domain
+running-domain detach. The signed SMP IPI probe carries this complete domain
 through the typed mailbox: CPU1 admits it into a CPU-owned `TaskRuntime`, checks
 the preserved responsive policy and saved instruction pointer, verifies its
-two-domain load, and schedules the fresh identity. Fresh runs completed in
-88,887 microseconds on nested KVM and 63,447 microseconds on WHP. The larger
+two-domain load, and schedules the fresh identity. The
+`smp-service-migration-probe` extends that proof across the privilege boundary:
+CPU 1 validates the migrated service CR3 and entry, changes to its own
+supervisor-only TSS stack, restores the domain with `IRETQ`, executes the
+independently signed service at CPL3, accepts its `INT 0x80`, and emits a proof
+bound to CPU 1 and the fresh task identity. Fresh signed runs completed in
+56,057 microseconds on nested KVM and 63,323 microseconds on WHP. The larger
 runtime mapping exhausted the prior 32-page translation-table pool and failed
 before execution; both native launchers now provision 64 checked pages for this
-mode. The probe still halts before `IRETQ`, so execution of the migrated CPL3
-context is not yet claimed.
+mode. Each isolated service root maps every provisioned CPU's entry and
+double-fault stacks with checked arithmetic and supervisor-only permissions.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

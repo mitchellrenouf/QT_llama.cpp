@@ -1463,16 +1463,20 @@ after both runtime and scheduler capacity checks; failure leaves it in
 caller-owned storage for retry without allocation or a large result value.
 Windows and Linux tests prove context, authority, and queued-message
 preservation, full-destination recovery, fresh destination identity, and exact
-restoration when detaching the current domain is rejected. Live cross-CPU CPL3
-resumption of this complete ticket remains pending. The signed SMP IPI path now
+restoration when detaching the current domain is rejected. The signed SMP IPI path
 transfers the complete domain through the typed mailbox, admits it into a
 CPU1-owned `TaskRuntime`, validates the preserved responsive priority and saved
 instruction pointer, verifies the resulting two-domain load, and schedules the
-fresh CPU1 identity before its terminal proof. Fresh runs measured
-`total=88887us` on nested KVM and `total=63447us` on WHP. The increased runtime
+fresh CPU1 identity. The `smp-service-migration-probe` validates the migrated
+service CR3 and entry, changes to CPU 1's supervisor-only TSS stack, restores
+the complete context with `IRETQ`, executes the separately signed PE service at
+CPL3, receives its `INT 0x80`, and emits a CPU/task-bound terminal proof. Fresh
+2026-08-22 runs measured `total=56057us` on nested KVM and `total=63323us` on
+WHP. The increased runtime
 mapping made the old 32-page page-table pool fail closed during launch, so KVM
-and WHP now provision 64 checked table pages for this mode. The handler still
-halts before `IRETQ`; migrated CPL3 execution is therefore not yet claimed. The
+and WHP now provision 64 checked table pages for this mode. Each isolated
+service root maps every provisioned CPU's entry and double-fault stacks with
+checked address arithmetic and supervisor-only permissions. The
 bounded discovery foundation
 uses a parser that accepts only a complete loader-copied ACPI MADT with a
 valid signature, exact encoded length, checksum, entry geometry, reserved

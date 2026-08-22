@@ -1196,6 +1196,16 @@ impl<const N: usize> KvmBackend<N> {
                                 Ok(exit) => exit,
                                 Err(error) => break Err(error),
                             };
+                            if let VmExit::Io {
+                                port: 0x00e9,
+                                size: 1,
+                                write: true,
+                                value,
+                            } = exit
+                            {
+                                mrml_runtime::mrml_println!("KVM_SMP_TRACE stage={:#04x}", value);
+                                continue;
+                            }
                             if matches!(
                                 exit,
                                 VmExit::Io {

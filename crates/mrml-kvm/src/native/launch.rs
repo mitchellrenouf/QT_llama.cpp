@@ -337,37 +337,66 @@ impl<const N: usize> PreparedKvmGuest<N> {
         let mut tables = self.backend.page_tables(table_physical, table_pages)?;
         map_loaded_pe(&mut tables, kernel, loaded_kernel, false)?;
         map_loaded_pe(&mut tables, service, loaded_service, true)?;
-        let kernel_stack =
-            PrivilegeStackLayout::new(kernel_layout.stack_virtual, kernel_layout.stack_pages)
-                .map_err(|_| KvmError::InvalidMapping)?;
-        let kernel_stack_physical =
-            PrivilegeStackLayout::new(kernel_layout.stack_physical, kernel_layout.stack_pages)
-                .map_err(|_| KvmError::InvalidMapping)?;
-        for (virtual_base, physical_base, pages) in [
-            (
-                kernel_stack.entry_base(),
-                kernel_stack_physical.entry_base(),
-                kernel_stack.entry_pages(),
-            ),
-            (
-                kernel_stack.double_fault_base(),
-                kernel_stack_physical.double_fault_base(),
-                kernel_stack.double_fault_pages(),
-            ),
-        ] {
-            tables
-                .map(
-                    Mapping::new(
-                        VirtAddr::new(virtual_base.map_err(|_| KvmError::InvalidMapping)?)
-                            .map_err(|_| KvmError::InvalidMapping)?,
-                        PhysAddr::new(physical_base.map_err(|_| KvmError::InvalidMapping)?)
-                            .map_err(|_| KvmError::InvalidMapping)?,
-                        pages,
-                        PagePermissions::KERNEL_READ_WRITE,
+        let kernel_cpus = if kernel_layout.stack_virtual == kernel_layout.stack_physical {
+            2u64
+        } else {
+            1u64
+        };
+        let kernel_stack_stride = kernel_layout
+            .stack_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(KvmError::MemoryOverflow)?;
+        for cpu in 0..kernel_cpus {
+            let offset = cpu
+                .checked_mul(kernel_stack_stride)
+                .ok_or(KvmError::MemoryOverflow)?;
+            let kernel_stack = PrivilegeStackLayout::new(
+                kernel_layout
+                    .stack_virtual
+                    .checked_add(offset)
+                    .ok_or(KvmError::MemoryOverflow)?,
+                kernel_layout.stack_pages,
+            )
+            .map_err(|_| KvmError::InvalidMapping)?;
+            let kernel_stack_physical = PrivilegeStackLayout::new(
+                kernel_layout
+                    .stack_physical
+                    .checked_add(offset)
+                    .ok_or(KvmError::MemoryOverflow)?,
+                kernel_layout.stack_pages,
+            )
+            .map_err(|_| KvmError::InvalidMapping)?;
+            for (virtual_base, physical_base, pages) in [
+                (
+                    kernel_stack.entry_base(),
+                    kernel_stack_physical.entry_base(),
+                    kernel_stack.entry_pages(),
+                ),
+                (
+                    kernel_stack.double_fault_base(),
+                    kernel_stack_physical.double_fault_base(),
+                    kernel_stack.double_fault_pages(),
+                ),
+            ] {
+                let virtual_base = virtual_base.map_err(|_| KvmError::InvalidMapping)?;
+                let permissions = if virtual_base < 1 << 47 {
+                    PagePermissions::KERNEL_LOW_READ_WRITE
+                } else {
+                    PagePermissions::KERNEL_READ_WRITE
+                };
+                tables
+                    .map(
+                        Mapping::new(
+                            VirtAddr::new(virtual_base).map_err(|_| KvmError::InvalidMapping)?,
+                            PhysAddr::new(physical_base.map_err(|_| KvmError::InvalidMapping)?)
+                                .map_err(|_| KvmError::InvalidMapping)?,
+                            pages,
+                            permissions,
+                        )
+                        .map_err(|_| KvmError::InvalidMapping)?,
                     )
-                    .map_err(|_| KvmError::InvalidMapping)?,
-                )
-                .map_err(|_| KvmError::PageTable)?;
+                    .map_err(|_| KvmError::PageTable)?;
+            }
         }
         if local_apic {
             tables
@@ -728,12 +757,22 @@ impl KvmSystem {
                 .checked_mul(layout.stack_pages)
                 .and_then(|pages| pages.checked_mul(PAGE_SIZE))
                 .ok_or(KvmError::MemoryOverflow)?;
-            let virtual_stack =
-                PrivilegeStackLayout::new(layout.stack_virtual + offset, layout.stack_pages)
-                    .map_err(|_| KvmError::InvalidMapping)?;
-            let physical_stack =
-                PrivilegeStackLayout::new(layout.stack_physical + offset, layout.stack_pages)
-                    .map_err(|_| KvmError::InvalidMapping)?;
+            let virtual_stack = PrivilegeStackLayout::new(
+                layout
+                    .stack_virtual
+                    .checked_add(offset)
+                    .ok_or(KvmError::MemoryOverflow)?,
+                layout.stack_pages,
+            )
+            .map_err(|_| KvmError::InvalidMapping)?;
+            let physical_stack = PrivilegeStackLayout::new(
+                layout
+                    .stack_physical
+                    .checked_add(offset)
+                    .ok_or(KvmError::MemoryOverflow)?,
+                layout.stack_pages,
+            )
+            .map_err(|_| KvmError::InvalidMapping)?;
             for (virtual_base, physical_base, pages, permissions) in [
                 (
                     virtual_stack.early_base(),

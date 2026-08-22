@@ -207,7 +207,20 @@ impl PreparedWhpGuest<'_> {
                 let mut runner = self.partition.secondary_runner(trampoline)?;
                 let worker_result = result.clone();
                 mrml_runtime::spawn_detached(move || {
-                    let first = runner.run();
+                    let first = loop {
+                        let exit = runner.run();
+                        if let Ok(VmExit::Io {
+                            port: 0x00e9,
+                            size: 1,
+                            write: true,
+                            value,
+                        }) = exit
+                        {
+                            mrml_runtime::mrml_println!("WHP_SMP_TRACE stage={:#04x}", value);
+                            continue;
+                        }
+                        break exit;
+                    };
                     let exit = match first {
                         Ok(VmExit::Io {
                             port: 0x4d5d,
@@ -217,6 +230,19 @@ impl PreparedWhpGuest<'_> {
                         }) => runner.restore_trampoline_rw().and_then(|()| {
                             loop {
                                 let exit = runner.run()?;
+                                if let VmExit::Io {
+                                    port: 0x00e9,
+                                    size: 1,
+                                    write: true,
+                                    value,
+                                } = exit
+                                {
+                                    mrml_runtime::mrml_println!(
+                                        "WHP_SMP_TRACE stage={:#04x}",
+                                        value
+                                    );
+                                    continue;
+                                }
                                 if matches!(
                                     exit,
                                     VmExit::Io {
@@ -445,37 +471,66 @@ impl PreparedWhpGuest<'_> {
             false,
         )?;
         map_pe(&mut tables, image, service_physical, service_virtual, true)?;
-        let kernel_stack =
-            PrivilegeStackLayout::new(kernel_layout.stack_virtual, kernel_layout.stack_pages)
-                .map_err(|_| WhpError::InvalidMapping)?;
-        let kernel_stack_physical =
-            PrivilegeStackLayout::new(kernel_layout.stack_physical, kernel_layout.stack_pages)
-                .map_err(|_| WhpError::InvalidMapping)?;
-        for (virtual_base, physical_base, pages) in [
-            (
-                kernel_stack.entry_base(),
-                kernel_stack_physical.entry_base(),
-                kernel_stack.entry_pages(),
-            ),
-            (
-                kernel_stack.double_fault_base(),
-                kernel_stack_physical.double_fault_base(),
-                kernel_stack.double_fault_pages(),
-            ),
-        ] {
-            tables
-                .map(
-                    Mapping::new(
-                        VirtAddr::new(virtual_base.map_err(|_| WhpError::InvalidMapping)?)
-                            .map_err(|_| WhpError::InvalidMapping)?,
-                        PhysAddr::new(physical_base.map_err(|_| WhpError::InvalidMapping)?)
-                            .map_err(|_| WhpError::InvalidMapping)?,
-                        pages,
-                        PagePermissions::KERNEL_READ_WRITE,
+        let kernel_cpus = if kernel_layout.stack_virtual == kernel_layout.stack_physical {
+            2u64
+        } else {
+            1u64
+        };
+        let kernel_stack_stride = kernel_layout
+            .stack_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(WhpError::MemoryOverflow)?;
+        for cpu in 0..kernel_cpus {
+            let offset = cpu
+                .checked_mul(kernel_stack_stride)
+                .ok_or(WhpError::MemoryOverflow)?;
+            let kernel_stack = PrivilegeStackLayout::new(
+                kernel_layout
+                    .stack_virtual
+                    .checked_add(offset)
+                    .ok_or(WhpError::MemoryOverflow)?,
+                kernel_layout.stack_pages,
+            )
+            .map_err(|_| WhpError::InvalidMapping)?;
+            let kernel_stack_physical = PrivilegeStackLayout::new(
+                kernel_layout
+                    .stack_physical
+                    .checked_add(offset)
+                    .ok_or(WhpError::MemoryOverflow)?,
+                kernel_layout.stack_pages,
+            )
+            .map_err(|_| WhpError::InvalidMapping)?;
+            for (virtual_base, physical_base, pages) in [
+                (
+                    kernel_stack.entry_base(),
+                    kernel_stack_physical.entry_base(),
+                    kernel_stack.entry_pages(),
+                ),
+                (
+                    kernel_stack.double_fault_base(),
+                    kernel_stack_physical.double_fault_base(),
+                    kernel_stack.double_fault_pages(),
+                ),
+            ] {
+                let virtual_base = virtual_base.map_err(|_| WhpError::InvalidMapping)?;
+                let permissions = if virtual_base < 1 << 47 {
+                    PagePermissions::KERNEL_LOW_READ_WRITE
+                } else {
+                    PagePermissions::KERNEL_READ_WRITE
+                };
+                tables
+                    .map(
+                        Mapping::new(
+                            VirtAddr::new(virtual_base).map_err(|_| WhpError::InvalidMapping)?,
+                            PhysAddr::new(physical_base.map_err(|_| WhpError::InvalidMapping)?)
+                                .map_err(|_| WhpError::InvalidMapping)?,
+                            pages,
+                            permissions,
+                        )
+                        .map_err(|_| WhpError::InvalidMapping)?,
                     )
-                    .map_err(|_| WhpError::InvalidMapping)?,
-                )
-                .map_err(|_| WhpError::InvalidRegisterState)?;
+                    .map_err(|_| WhpError::InvalidRegisterState)?;
+            }
         }
         if local_apic {
             tables
@@ -1024,12 +1079,22 @@ fn build_page_tables(
             .checked_mul(layout.stack_pages)
             .and_then(|pages| pages.checked_mul(PAGE_SIZE))
             .ok_or(WhpError::MemoryOverflow)?;
-        let stack_layout =
-            PrivilegeStackLayout::new(layout.stack_virtual + offset, layout.stack_pages)
-                .map_err(|_| WhpError::InvalidMapping)?;
-        let physical_stack =
-            PrivilegeStackLayout::new(layout.stack_physical + offset, layout.stack_pages)
-                .map_err(|_| WhpError::InvalidMapping)?;
+        let stack_layout = PrivilegeStackLayout::new(
+            layout
+                .stack_virtual
+                .checked_add(offset)
+                .ok_or(WhpError::MemoryOverflow)?,
+            layout.stack_pages,
+        )
+        .map_err(|_| WhpError::InvalidMapping)?;
+        let physical_stack = PrivilegeStackLayout::new(
+            layout
+                .stack_physical
+                .checked_add(offset)
+                .ok_or(WhpError::MemoryOverflow)?,
+            layout.stack_pages,
+        )
+        .map_err(|_| WhpError::InvalidMapping)?;
         for (virtual_base, physical_base, pages, permissions) in [
             (
                 stack_layout.early_base(),

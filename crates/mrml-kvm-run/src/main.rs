@@ -81,6 +81,7 @@ enum LaunchMode {
     SmpProbe,
     SmpSchedulerProbe,
     SmpIpiProbe,
+    SmpServiceMigrationProbe,
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -98,8 +99,9 @@ impl LaunchMode {
             "smp-probe" => Ok(Self::SmpProbe),
             "smp-scheduler-probe" => Ok(Self::SmpSchedulerProbe),
             "smp-ipi-probe" => Ok(Self::SmpIpiProbe),
+            "smp-service-migration-probe" => Ok(Self::SmpServiceMigrationProbe),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, gpu-benchmark, smp-probe, smp-scheduler-probe, or smp-ipi-probe"
+                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, gpu-benchmark, smp-probe, smp-scheduler-probe, smp-ipi-probe, or smp-service-migration-probe"
             )),
         }
     }
@@ -128,7 +130,10 @@ fn application_main() -> Result<()> {
     let mode = LaunchMode::parse(&arguments[4])?;
     if matches!(
         mode,
-        LaunchMode::GpuBenchmark | LaunchMode::ServiceProbe | LaunchMode::ServicePreemptionProbe
+        LaunchMode::GpuBenchmark
+            | LaunchMode::ServiceProbe
+            | LaunchMode::ServicePreemptionProbe
+            | LaunchMode::SmpServiceMigrationProbe
     ) != (arguments.len() == 8)
     {
         return Err(anyhow!(
@@ -152,7 +157,9 @@ fn application_main() -> Result<()> {
         .map_err(|_| anyhow!("kernel signature or PE policy rejected"))?;
     let service_mode = matches!(
         mode,
-        LaunchMode::ServiceProbe | LaunchMode::ServicePreemptionProbe
+        LaunchMode::ServiceProbe
+            | LaunchMode::ServicePreemptionProbe
+            | LaunchMode::SmpServiceMigrationProbe
     );
     let service_bundle = if service_mode {
         Some(mrml_runtime::read_file_bounded(
@@ -209,7 +216,10 @@ fn application_main() -> Result<()> {
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
     let smp_mode = matches!(
         mode,
-        LaunchMode::SmpProbe | LaunchMode::SmpSchedulerProbe | LaunchMode::SmpIpiProbe
+        LaunchMode::SmpProbe
+            | LaunchMode::SmpSchedulerProbe
+            | LaunchMode::SmpIpiProbe
+            | LaunchMode::SmpServiceMigrationProbe
     );
     let handoff = if smp_mode {
         smp_boot_handoff(
@@ -236,7 +246,10 @@ fn application_main() -> Result<()> {
             0xffff_8001_6000_0000,
         )
     };
-    let table_pages = if mode == LaunchMode::SmpIpiProbe {
+    let table_pages = if matches!(
+        mode,
+        LaunchMode::SmpIpiProbe | LaunchMode::SmpServiceMigrationProbe
+    ) {
         64
     } else {
         32
@@ -272,14 +285,20 @@ fn application_main() -> Result<()> {
         | LaunchMode::ServicePreemptionProbe => {
             system.prepare_timer_kernel_guest::<13>(0, &executable, handoff.as_slice(), layout)
         }
-        LaunchMode::SmpProbe | LaunchMode::SmpSchedulerProbe | LaunchMode::SmpIpiProbe => {
+        LaunchMode::SmpProbe
+        | LaunchMode::SmpSchedulerProbe
+        | LaunchMode::SmpIpiProbe
+        | LaunchMode::SmpServiceMigrationProbe => {
             system.prepare_smp_kernel_guest::<13>(&executable, handoff.as_slice(), layout)
         }
         _ => system.prepare_kernel_guest::<13>(0, &executable, handoff.as_slice(), layout),
     }
     .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
     if service_mode {
-        let local_apic = mode == LaunchMode::ServicePreemptionProbe;
+        let local_apic = matches!(
+            mode,
+            LaunchMode::ServicePreemptionProbe | LaunchMode::SmpServiceMigrationProbe
+        );
         guest = guest
             .attach_isolated_service_at(
                 0,
@@ -334,10 +353,11 @@ fn application_main() -> Result<()> {
             .map_err(|error| anyhow!("KVM SMP execution failed: {:?}", error))?;
         let scheduler_probe = mode == LaunchMode::SmpSchedulerProbe;
         let ipi_probe = mode == LaunchMode::SmpIpiProbe;
+        let service_migration_probe = mode == LaunchMode::SmpServiceMigrationProbe;
         let expected_bootstrap = VmExit::Io {
             port: if scheduler_probe {
                 0x4d5e
-            } else if ipi_probe {
+            } else if ipi_probe || service_migration_probe {
                 0x4d60
             } else {
                 SMP_PROBE_PORT
@@ -351,6 +371,8 @@ fn application_main() -> Result<()> {
                 0x4d5f
             } else if ipi_probe {
                 0x4d61
+            } else if service_migration_probe {
+                0x4d62
             } else {
                 SMP_PROBE_PORT
             },
