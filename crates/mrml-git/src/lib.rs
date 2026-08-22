@@ -2,6 +2,14 @@
 
 use mrml_runtime::{Text, Vector};
 
+mod index;
+mod repository;
+mod sha1;
+
+pub use index::{Index, IndexEntry, IndexError};
+pub use repository::{NativeChange, NativeChangeKind, Repository, RepositoryError};
+pub use sha1::{ObjectId, Sha1};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cli {
     pub repository: Option<Text>,

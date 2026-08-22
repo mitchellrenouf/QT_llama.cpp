@@ -3,7 +3,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use mrml_error::{Context, Result, anyhow};
-use mrml_git::{Change, Cli, parse_porcelain, validate_positional};
+use mrml_git::{Change, Cli, NativeChangeKind, Repository, parse_porcelain, validate_positional};
 use mrml_runtime::{
     Command, Output, Text, Vector, mrml_format as format, mrml_print as print,
     mrml_println as println,
@@ -172,6 +172,32 @@ fn dashboard(repository: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn native_repository(repository: Option<&str>) -> Result<Repository> {
+    Repository::discover(repository.unwrap_or(".")).map_err(|error| anyhow!("{}", error))
+}
+
+fn native_dashboard(repository: Option<&str>) -> Result<()> {
+    let repository = native_repository(repository)?;
+    let branch = repository.current_branch().map_err(|error| anyhow!("{}", error))?.unwrap_or_else(|| "detached HEAD".into());
+    let head = repository.head().map_err(|error| anyhow!("{}", error))?;
+    let changes = repository.changes().map_err(|error| anyhow!("{}", error))?;
+    println!("{}", "MRML GIT · NATIVE STATUS".bright_cyan().bold());
+    println!("  {}   {}", "root".dimmed(), repository.worktree);
+    println!("  {} {}", "branch".dimmed(), branch.magenta().bold());
+    if let Some(id) = head { println!("  {}   {}", "head".dimmed(), id); }
+    else { println!("  {}   no commits yet", "head".dimmed()); }
+    if changes.is_empty() { println!("  {}", "clean — index matches working tree".green()); }
+    for change in changes {
+        let label = match change.kind {
+            NativeChangeKind::Modified => "modified".yellow(),
+            NativeChangeKind::Deleted => "deleted".red(),
+            NativeChangeKind::Untracked => "untracked".bright_cyan(),
+        };
+        println!("  {:9} {}", label, change.path);
+    }
+    Ok(())
+}
+
 fn help() {
     println!("{}\n", "MRML GIT".bright_cyan().bold());
     for usage in [
@@ -321,7 +347,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
     let repository = cli.repository.as_deref();
     let tail: &[Text] = &cli.arguments;
     match cli.command.as_str() {
-        "status" | "pulse" if tail.is_empty() => dashboard(repository),
+        "status" | "pulse" if tail.is_empty() => native_dashboard(repository),
         "help" | "--help" | "-h" if tail.is_empty() => {
             help();
             Ok(())
@@ -331,17 +357,19 @@ fn dispatch(cli: &Cli) -> Result<()> {
             Ok(())
         }
         "doctor" if tail.is_empty() => {
-            let version = run(repository, &["--version"])?;
-            println!("{} {}", "git".green().bold(), version.trim());
-            match run(repository, &["rev-parse", "--show-toplevel"]) {
-                Ok(root) => println!("{} {}", "repository".green().bold(), root.trim()),
+            println!("{} built-in object IDs, index, repository and status", "native".green().bold());
+            match native_repository(repository) {
+                Ok(repo) => println!("{} {}", "repository".green().bold(), repo.worktree),
                 Err(_) => println!("{} not inside a repository", "repository".yellow().bold()),
             }
             Ok(())
         }
         "init" if tail.len() <= 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &collect("init", &["--"], tail))
+            let path = tail.first().map(Text::as_str).or(repository).unwrap_or(".");
+            let initialized = Repository::init(path).map_err(|error| anyhow!("{}", error))?;
+            println!("Initialized empty MRML Git repository in {}", initialized.git_dir);
+            Ok(())
         }
         "clone" if matches!(tail.len(), 1 | 2) => {
             checked_positionals(tail)?;
