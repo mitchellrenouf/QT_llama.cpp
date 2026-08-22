@@ -8,6 +8,7 @@ mod auth;
 mod channel;
 mod client;
 mod keyfile;
+mod signing;
 
 pub use protocol::{
     AlgorithmProposal, BinaryReader, BinaryWriter, ExchangeKeys, Identification, ProtocolError,
@@ -19,6 +20,7 @@ pub use auth::{RsaPrivateKey, RsaPublicKey, build_publickey_auth, encode_rsa_pub
 pub use channel::{ChannelEvent, ChannelState, GitService, build_channel_close, build_channel_data, build_channel_eof, build_channel_open, build_exec_request, build_service_request, build_window_adjust, parse_channel_event};
 pub use client::{AuthenticatedSsh, GitChannel, SshWire, WireError};
 pub use keyfile::{parse_rsa_private_pem, parse_rsa_public_line};
+pub use signing::{sign_sshsig,verify_sshsig};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SshRemote {
