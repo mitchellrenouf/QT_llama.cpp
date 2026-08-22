@@ -1,6 +1,6 @@
 use crate::{
     ObjectId, Repository, extract_pack_response, fetch_request, parse_advertisement,
-    parse_push_response, push_request,
+    parse_push_response_mode, push_request_mode,
 };
 use core::fmt;
 use mrml_runtime::{Text, Vector};
@@ -48,14 +48,38 @@ pub fn fetch_ssh(
         }
     }
     if wants.is_empty() {
-        return Err(FetchError::NoReferences);
+        channel.send_all(b"0000").map_err(|_| FetchError::Ssh)?;
+        channel.send_eof().map_err(|_| FetchError::Ssh)?;
+        collect_to_close(&mut channel)?;
+        repository
+            .prune_remote_refs(remote_name, &[])
+            .map_err(|_| FetchError::Repository)?;
+        return Ok(FetchResult {
+            objects: Vector::new(),
+            branches: Vector::new(),
+            default_branch: None,
+        });
     }
-    let request = fetch_request(&wants, &[], &["side-band-64k", "ofs-delta"])
-        .map_err(|_| FetchError::Protocol)?;
+    let side_band = advertisement
+        .capabilities
+        .iter()
+        .any(|capability| capability == "side-band-64k");
+    let mut capabilities = Vector::new();
+    if side_band {
+        capabilities.push("side-band-64k");
+    }
+    if advertisement
+        .capabilities
+        .iter()
+        .any(|capability| capability == "ofs-delta")
+    {
+        capabilities.push("ofs-delta");
+    }
+    let request = fetch_request(&wants, &[], &capabilities).map_err(|_| FetchError::Protocol)?;
     channel.send_all(&request).map_err(|_| FetchError::Ssh)?;
     channel.send_eof().map_err(|_| FetchError::Ssh)?;
     let response = collect_to_close(&mut channel)?;
-    let pack = extract_pack_response(&response, true).map_err(|_| FetchError::Protocol)?;
+    let pack = extract_pack_response(&response, side_band).map_err(|_| FetchError::Protocol)?;
     let objects = repository
         .import_pack(&pack)
         .map_err(|_| FetchError::Pack)?;
@@ -64,7 +88,7 @@ pub fn fetch_ssh(
             .strip_prefix("symref=HEAD:refs/heads/")
             .map(Into::into)
     });
-    let mut branches = Vector::new();
+    let mut branches: Vector<(Text, ObjectId)> = Vector::new();
     for reference in advertisement.refs {
         if let Some(branch) = reference.name.strip_prefix("refs/heads/") {
             repository
@@ -73,6 +97,10 @@ pub fn fetch_ssh(
             branches.push((branch.into(), reference.id));
         }
     }
+    let live: Vector<Text> = branches.iter().map(|(branch, _)| branch.clone()).collect();
+    repository
+        .prune_remote_refs(remote_name, &live)
+        .map_err(|_| FetchError::Repository)?;
     Ok(FetchResult {
         objects,
         branches,
@@ -195,13 +223,13 @@ pub fn push_ssh(
         .capabilities
         .iter()
         .any(|cap| cap == "report-status")
-        || !advertisement
-            .capabilities
-            .iter()
-            .any(|cap| cap == "side-band-64k")
     {
         return Err(PushError::Protocol);
     }
+    let side_band = advertisement
+        .capabilities
+        .iter()
+        .any(|cap| cap == "side-band-64k");
     let reference = mrml_runtime::mrml_format!("refs/heads/{branch}");
     let old = advertisement
         .refs
@@ -225,11 +253,12 @@ pub fn push_ssh(
     let pack = repository
         .pack_reachable(new)
         .map_err(|_| PushError::Repository)?;
-    let request = push_request(old, new, &reference, &pack).map_err(|_| PushError::Protocol)?;
+    let request = push_request_mode(old, new, &reference, &pack, side_band)
+        .map_err(|_| PushError::Protocol)?;
     channel.send_all(&request).map_err(|_| PushError::Ssh)?;
     channel.send_eof().map_err(|_| PushError::Ssh)?;
     let response = collect_to_close(&mut channel).map_err(map_fetch_push)?;
-    parse_push_response(&response, &reference).map_err(|_| PushError::Remote)?;
+    parse_push_response_mode(&response, &reference, side_band).map_err(|_| PushError::Remote)?;
     repository
         .update_remote_ref(remote_name, &reference, new)
         .map_err(|_| PushError::Repository)?;

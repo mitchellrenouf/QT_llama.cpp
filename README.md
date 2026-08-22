@@ -872,8 +872,9 @@ cargo run --release -p mrml-server --features cuda -- `
 ### MRML Git client
 
 `mrml-git` is a small, original porcelain client built on MRML's native
-runtime. Its default workspace-pulse view separates staged, unstaged, and
-dual-lane changes and safely parses Git's NUL-delimited porcelain format.
+runtime. Its default workspace-pulse view computes HEAD-to-index and
+index-to-worktree changes independently, including staged-only and dual-lane
+changes, without invoking or parsing output from a host Git process.
 
 ```powershell
 mrml-git status
@@ -916,7 +917,19 @@ compromised host can read or misuse keys, alter the client or its inputs, or
 forge the displayed result; this client does not treat hosted signing as a
 bare-metal MRML security boundary. Native SSH currently supports the explicitly
 negotiated RSA-SHA2/AES-128-CTR/HMAC-SHA-256 suite and unencrypted PKCS #1 RSA
-private keys; encrypted keys and other SSH algorithm suites are rejected.
+private keys; encrypted keys and other SSH algorithm suites are rejected. The
+native repository reader supports loose and pack-v2/v3 objects and loose and
+packed refs. Git alternates, shallow repositories, submodules, replace refs,
+reftable storage, encrypted private keys, and non-SSH network transports are
+not advertised or silently delegated to host tools.
+
+Status, staging, diffs, restore, checkout, and stash use the repository's
+`core.autocrlf` clean/smudge policy. On Windows, text is cleaned to LF by
+default when no repository or user setting is available, preserving
+interoperability with the platform's common Git configuration. The bounded
+status walker honors ordered root `.gitignore` patterns, including negation,
+directory patterns, `*`, `?`, and `**`; nested ignore files and attributes are
+not yet advertised.
 
 Mutating commands deliberately map to narrow Git operations: `stage` inserts
 `--` before paths, `unstage` uses `restore --staged`, `branch <name>` creates

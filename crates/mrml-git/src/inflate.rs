@@ -118,6 +118,14 @@ impl Huff {
 }
 
 pub fn inflate_zlib(source: &[u8]) -> Result<Vector<u8>, InflateError> {
+    let (output, consumed) = inflate_zlib_prefix(source)?;
+    if consumed != source.len() {
+        return Err(InflateError::Header);
+    }
+    Ok(output)
+}
+
+pub(crate) fn inflate_zlib_prefix(source: &[u8]) -> Result<(Vector<u8>, usize), InflateError> {
     if source.len() < 6 {
         return Err(InflateError::Truncated);
     }
@@ -125,21 +133,21 @@ pub fn inflate_zlib(source: &[u8]) -> Result<Vector<u8>, InflateError> {
     if h % 31 != 0 || source[0] & 15 != 8 || source[0] >> 4 > 7 || source[1] & 0x20 != 0 {
         return Err(InflateError::Header);
     }
-    let end = source.len() - 4;
-    let (out, consumed) = inflate_raw(&source[2..end])?;
-    if consumed != end - 2 {
-        return Err(InflateError::Header);
-    }
-    if adler(&out)
-        != u32::from_be_bytes(
-            source[end..]
-                .try_into()
-                .map_err(|_| InflateError::Truncated)?,
-        )
+    let (out, raw_consumed) = inflate_raw(&source[2..])?;
+    let checksum_start = 2usize
+        .checked_add(raw_consumed)
+        .ok_or(InflateError::TooLarge)?;
+    let end = checksum_start
+        .checked_add(4)
+        .ok_or(InflateError::TooLarge)?;
+    let checksum = source
+        .get(checksum_start..end)
+        .ok_or(InflateError::Truncated)?;
+    if adler(&out) != u32::from_be_bytes(checksum.try_into().map_err(|_| InflateError::Truncated)?)
     {
         return Err(InflateError::Checksum);
     }
-    Ok(out)
+    Ok((out, end))
 }
 
 pub(crate) fn inflate_raw(source: &[u8]) -> Result<(Vector<u8>, usize), InflateError> {

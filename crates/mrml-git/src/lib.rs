@@ -27,7 +27,8 @@ pub use repository::{
 pub use sha1::{ObjectId, Sha1};
 pub use transport::{
     Advertisement, RemoteRef, TransportError, decode_packets, encode_flush, encode_packet,
-    extract_pack_response, fetch_request, parse_advertisement, parse_push_response, push_request,
+    extract_pack_response, fetch_request, parse_advertisement, parse_push_response,
+    parse_push_response_mode, push_request, push_request_mode,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

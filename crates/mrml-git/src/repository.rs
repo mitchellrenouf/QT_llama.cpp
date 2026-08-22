@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{cell::RefCell, fmt};
 use mrml_runtime::{
     FileError, Text, Vector, canonical_path, create_dir_all, join_path, parent_path, path_exists,
     path_is_directory, path_is_file, read_directory, read_file_bounded, read_file_text_bounded,
@@ -13,6 +13,8 @@ use crate::{
 };
 
 const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PACK_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_PACKED_REFS_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKTREE_FILE: usize = 256 * 1024 * 1024;
 const MAX_WORKTREE_ENTRIES: usize = 1_000_000;
 const MAX_DEPTH: usize = 128;
@@ -21,6 +23,7 @@ const MAX_DEPTH: usize = 128;
 pub struct Repository {
     pub worktree: Text,
     pub git_dir: Text,
+    pack_cache: RefCell<Vector<PackObject>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,6 +37,8 @@ pub enum NativeChangeKind {
 pub struct NativeChange {
     pub path: Text,
     pub kind: NativeChangeKind,
+    pub staged: bool,
+    pub unstaged: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,6 +87,7 @@ pub enum RepositoryError {
     Object(ObjectError),
     Pack(PackError),
     WorktreeDirty,
+    NoChanges,
     MergeRequired,
     Signing,
 }
@@ -102,6 +108,7 @@ impl Repository {
                 return Ok(Self {
                     worktree: current,
                     git_dir: marker,
+                    pack_cache: RefCell::new(Vector::new()),
                 });
             }
             if path_exists(&marker) {
@@ -138,7 +145,11 @@ impl Repository {
             &join_path(&git_dir, "description"),
             b"Unnamed MRML repository\n",
         )?;
-        Ok(Self { worktree, git_dir })
+        Ok(Self {
+            worktree,
+            git_dir,
+            pack_cache: RefCell::new(Vector::new()),
+        })
     }
 
     pub fn current_branch(&self) -> Result<Option<Text>, RepositoryError> {
@@ -158,14 +169,7 @@ impl Repository {
         let head = head.trim();
         if let Some(reference) = head.strip_prefix("ref: ") {
             validate_reference(reference)?;
-            let path = join_path(&self.git_dir, reference);
-            if !path_is_file(&path) {
-                return Ok(None);
-            }
-            let value = read_file_text_bounded(&path, 4096)?;
-            return ObjectId::parse(value.trim())
-                .map(Some)
-                .ok_or(RepositoryError::InvalidHead);
+            return self.read_reference(reference);
         }
         ObjectId::parse(head)
             .map(Some)
@@ -202,13 +206,56 @@ impl Repository {
             &join_path(&self.git_dir, "objects"),
             &mrml_runtime::mrml_format!("{}/{}", &hex[..2], &hex[2..]),
         );
-        let encoded = read_file_bounded(&path, MAX_WORKTREE_FILE)?;
-        let object = decode_loose_object(&encoded)?;
-        let (computed, _) = encode_loose_object(object.kind, &object.contents);
-        if computed != id {
-            return Err(RepositoryError::InvalidHead);
+        if path_is_file(&path) {
+            let encoded = read_file_bounded(&path, MAX_WORKTREE_FILE)?;
+            let object = decode_loose_object(&encoded)?;
+            let (computed, _) = encode_loose_object(object.kind, &object.contents);
+            if computed != id {
+                return Err(RepositoryError::InvalidHead);
+            }
+            return Ok(object);
         }
-        Ok(object)
+        if let Some(object) = self
+            .pack_cache
+            .borrow()
+            .iter()
+            .find(|object| object.id == id)
+            .cloned()
+        {
+            return Ok(Object {
+                kind: object.kind,
+                contents: object.contents,
+            });
+        }
+        let pack_root = join_path(&self.git_dir, "objects/pack");
+        if path_is_directory(&pack_root) {
+            let mut inspected = 0usize;
+            for entry in read_directory(&pack_root)? {
+                if entry.is_symlink {
+                    return Err(RepositoryError::UnsupportedFileType);
+                }
+                if !entry.is_directory && entry.name.ends_with(".pack") {
+                    inspected = inspected
+                        .checked_add(1)
+                        .ok_or(RepositoryError::TooManyFiles)?;
+                    if inspected > 4096 {
+                        return Err(RepositoryError::TooManyFiles);
+                    }
+                    let bytes =
+                        read_file_bounded(&join_path(&pack_root, &entry.name), MAX_PACK_BYTES)?;
+                    let objects = parse_pack(&bytes)?;
+                    let found = objects.iter().find(|object| object.id == id).cloned();
+                    self.pack_cache.borrow_mut().extend(objects);
+                    if let Some(packed) = found {
+                        return Ok(Object {
+                            kind: packed.kind,
+                            contents: packed.contents,
+                        });
+                    }
+                }
+            }
+        }
+        Err(RepositoryError::ReferenceMissing)
     }
 
     pub fn import_pack(&self, source: &[u8]) -> Result<Vector<ObjectId>, RepositoryError> {
@@ -268,6 +315,51 @@ impl Repository {
     }
 
     pub fn resolve_revision(&self, revision: &str) -> Result<ObjectId, RepositoryError> {
+        if let Some(split) = revision.find(['~', '^']) {
+            if split == 0 {
+                return Err(RepositoryError::InvalidReference);
+            }
+            let mut id = self.resolve_revision(&revision[..split])?;
+            let bytes = revision.as_bytes();
+            let mut cursor = split;
+            while cursor < bytes.len() {
+                let operator = bytes[cursor];
+                cursor += 1;
+                let start = cursor;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                    cursor += 1;
+                }
+                let count = if start == cursor {
+                    1
+                } else {
+                    revision[start..cursor]
+                        .parse::<usize>()
+                        .map_err(|_| RepositoryError::InvalidReference)?
+                };
+                if count > 1_000_000 {
+                    return Err(RepositoryError::TooManyFiles);
+                }
+                id = self.peel_commit(id)?;
+                if operator == b'~' {
+                    for _ in 0..count {
+                        id = self
+                            .read_commit(id)?
+                            .parents
+                            .first()
+                            .copied()
+                            .ok_or(RepositoryError::ReferenceMissing)?;
+                    }
+                } else if count != 0 {
+                    id = self
+                        .read_commit(id)?
+                        .parents
+                        .get(count - 1)
+                        .copied()
+                        .ok_or(RepositoryError::ReferenceMissing)?;
+                }
+            }
+            return Ok(id);
+        }
         if revision == "HEAD" {
             return self.head()?.ok_or(RepositoryError::ReferenceMissing);
         }
@@ -276,19 +368,89 @@ impl Repository {
         }
         if revision.starts_with("refs/") {
             validate_reference(revision)?;
-            let value = read_file_text_bounded(&join_path(&self.git_dir, revision), 4096)?;
-            return ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference);
+            return self
+                .read_reference(revision)?
+                .ok_or(RepositoryError::ReferenceMissing);
         }
         for prefix in ["refs/heads", "refs/tags"] {
             let reference = mrml_runtime::mrml_format!("{prefix}/{revision}");
             validate_reference(&reference)?;
-            let path = join_path(&self.git_dir, &reference);
-            if path_is_file(&path) {
-                let value = read_file_text_bounded(&path, 4096)?;
-                return ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference);
+            if let Some(id) = self.read_reference(&reference)? {
+                return Ok(id);
             }
         }
         Err(RepositoryError::ReferenceMissing)
+    }
+
+    fn peel_commit(&self, mut id: ObjectId) -> Result<ObjectId, RepositoryError> {
+        for _ in 0..128 {
+            let object = self.read_object(id)?;
+            match object.kind {
+                ObjectKind::Commit => return Ok(id),
+                ObjectKind::Tag => {
+                    id = core::str::from_utf8(&object.contents)
+                        .map_err(|_| RepositoryError::InvalidReference)?
+                        .lines()
+                        .find_map(|line| line.strip_prefix("object "))
+                        .and_then(ObjectId::parse)
+                        .ok_or(RepositoryError::InvalidReference)?;
+                }
+                _ => return Err(RepositoryError::InvalidReference),
+            }
+        }
+        Err(RepositoryError::TooDeep)
+    }
+
+    fn read_reference(&self, reference: &str) -> Result<Option<ObjectId>, RepositoryError> {
+        validate_reference(reference)?;
+        let path = join_path(&self.git_dir, reference);
+        if path_is_file(&path) {
+            let value = read_file_text_bounded(&path, 4096)?;
+            return ObjectId::parse(value.trim())
+                .map(Some)
+                .ok_or(RepositoryError::InvalidReference);
+        }
+        Ok(self
+            .packed_references()?
+            .into_iter()
+            .find(|(name, _)| name == reference)
+            .map(|(_, id)| id))
+    }
+
+    fn packed_references(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {
+        let path = join_path(&self.git_dir, "packed-refs");
+        if !path_is_file(&path) {
+            return Ok(Vector::new());
+        }
+        let text = read_file_text_bounded(&path, MAX_PACKED_REFS_BYTES)?;
+        let mut output = Vector::new();
+        let mut can_peel = false;
+        for line in text.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                can_peel = false;
+                continue;
+            }
+            if let Some(hex) = line.strip_prefix('^') {
+                if !can_peel || ObjectId::parse(hex).is_none() {
+                    return Err(RepositoryError::InvalidReference);
+                }
+                can_peel = false;
+                continue;
+            }
+            let (hex, reference) = line
+                .split_once(' ')
+                .ok_or(RepositoryError::InvalidReference)?;
+            validate_reference(reference)?;
+            let id = ObjectId::parse(hex).ok_or(RepositoryError::InvalidReference)?;
+            if output.len() >= MAX_WORKTREE_ENTRIES
+                || output.iter().any(|(existing, _)| existing == reference)
+            {
+                return Err(RepositoryError::InvalidReference);
+            }
+            output.push((reference.into(), id));
+            can_peel = reference.starts_with("refs/tags/");
+        }
+        Ok(output)
     }
 
     pub fn read_commit(&self, id: ObjectId) -> Result<Commit, RepositoryError> {
@@ -380,6 +542,7 @@ impl Repository {
         let commit = self.read_commit(id)?;
         let target = self.tree_index(commit.tree)?;
         let current = self.index()?;
+        let smudge_crlf = self.autocrlf_mode()?.1;
         let mut files: Vector<(Text, Vector<u8>)> = Vector::new();
         for entry in &target.entries {
             let object = self.read_object(entry.id)?;
@@ -401,7 +564,7 @@ impl Repository {
             if let Some(parent) = parent_path(&path) {
                 create_dir_all(parent)?;
             }
-            write_file(&path, &contents)?;
+            write_file(&path, &smudge_worktree_bytes(&contents, smudge_crlf))?;
         }
         self.write_index(&target)?;
         write_file(
@@ -966,6 +1129,7 @@ impl Repository {
 
     fn materialize_index(&self, target: &Index) -> Result<(), RepositoryError> {
         let current = self.index()?;
+        let smudge_crlf = self.autocrlf_mode()?.1;
         let mut files: Vector<(Text, Vector<u8>)> = Vector::new();
         for entry in &target.entries {
             files.push((entry.path.clone(), self.read_blob(entry.id)?));
@@ -983,7 +1147,7 @@ impl Repository {
             if let Some(parent) = parent_path(&path) {
                 create_dir_all(parent)?;
             }
-            write_file(&path, &contents)?;
+            write_file(&path, &smudge_worktree_bytes(&contents, smudge_crlf))?;
         }
         self.write_index(target)
     }
@@ -1001,6 +1165,7 @@ impl Repository {
 
     pub fn restore(&self, paths: &[Text]) -> Result<(), RepositoryError> {
         let index = self.index()?;
+        let smudge_crlf = self.autocrlf_mode()?.1;
         let mut files: Vector<(Text, Vector<u8>)> = Vector::new();
         for path in paths {
             validate_worktree_path(path)?;
@@ -1016,7 +1181,7 @@ impl Repository {
             if let Some(parent) = parent_path(&path) {
                 create_dir_all(parent)?;
             }
-            write_file(&path, &contents)?;
+            write_file(&path, &smudge_worktree_bytes(&contents, smudge_crlf))?;
         }
         Ok(())
     }
@@ -1043,6 +1208,7 @@ impl Repository {
             validate_worktree_path(path)?;
         }
         let index = self.index()?;
+        let clean_crlf = self.autocrlf_mode()?.0;
         let base = if staged {
             match self.head()? {
                 Some(id) => self.tree_index(self.read_commit(id)?.tree)?,
@@ -1095,7 +1261,10 @@ impl Repository {
             } else {
                 let path = join_path(&self.worktree, &name);
                 if path_is_file(&path) {
-                    Some(read_file_bounded(&path, MAX_WORKTREE_FILE)?)
+                    Some(clean_worktree_bytes(
+                        &read_file_bounded(&path, MAX_WORKTREE_FILE)?,
+                        clean_crlf,
+                    ))
                 } else {
                     None
                 }
@@ -1119,6 +1288,7 @@ impl Repository {
         for path in paths {
             validate_worktree_path(path)?;
         }
+        let clean_crlf = self.autocrlf_mode()?.0;
         let id = self.resolve_revision(revision)?;
         let base = self.tree_index(self.read_commit(id)?.tree)?;
         let mut names: Vector<Text> = base
@@ -1151,7 +1321,10 @@ impl Repository {
             };
             let disk = join_path(&self.worktree, &name);
             let new = if path_is_file(&disk) {
-                Some(read_file_bounded(&disk, MAX_WORKTREE_FILE)?)
+                Some(clean_worktree_bytes(
+                    &read_file_bounded(&disk, MAX_WORKTREE_FILE)?,
+                    clean_crlf,
+                ))
             } else {
                 None
             };
@@ -1275,6 +1448,13 @@ impl Repository {
         if path_is_directory(&root) {
             self.collect_references(&root, "", &mut branches)?;
         }
+        for (reference, id) in self.packed_references()? {
+            if let Some(name) = reference.strip_prefix("refs/heads/")
+                && !branches.iter().any(|(existing, _)| existing == name)
+            {
+                branches.push((name.into(), id));
+            }
+        }
         branches.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
         Ok(branches)
     }
@@ -1311,7 +1491,7 @@ impl Repository {
         validate_reference(&reference)?;
         let id = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
         let path = join_path(&self.git_dir, &reference);
-        if path_exists(&path) {
+        if self.read_reference(&reference)?.is_some() {
             return Err(RepositoryError::ReferenceExists);
         }
         if let Some(parent) = parent_path(&path) {
@@ -1334,10 +1514,13 @@ impl Repository {
             return Err(RepositoryError::CurrentBranch);
         }
         let path = join_path(&self.git_dir, &reference);
-        if !path_is_file(&path) {
+        if self.read_reference(&reference)?.is_none() {
             return Err(RepositoryError::ReferenceMissing);
         }
-        mrml_runtime::remove_file(&path)?;
+        if path_is_file(&path) {
+            mrml_runtime::remove_file(&path)?;
+        }
+        self.remove_packed_reference(&reference)?;
         Ok(())
     }
 
@@ -1346,6 +1529,13 @@ impl Repository {
         let root = join_path(&self.git_dir, "refs/tags");
         if path_is_directory(&root) {
             self.collect_references(&root, "", &mut tags)?;
+        }
+        for (reference, id) in self.packed_references()? {
+            if let Some(name) = reference.strip_prefix("refs/tags/")
+                && !tags.iter().any(|(existing, _)| existing == name)
+            {
+                tags.push((name.into(), id));
+            }
         }
         tags.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
         Ok(tags)
@@ -1356,7 +1546,7 @@ impl Repository {
         validate_reference(&reference)?;
         let id = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
         let path = join_path(&self.git_dir, &reference);
-        if path_exists(&path) {
+        if self.read_reference(&reference)?.is_some() {
             return Err(RepositoryError::ReferenceExists);
         }
         if let Some(parent) = parent_path(&path) {
@@ -1364,6 +1554,39 @@ impl Repository {
         }
         write_file(&path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
         Ok(id)
+    }
+
+    fn remove_packed_reference(&self, reference: &str) -> Result<(), RepositoryError> {
+        let path = join_path(&self.git_dir, "packed-refs");
+        if !path_is_file(&path) {
+            return Ok(());
+        }
+        let text = read_file_text_bounded(&path, MAX_PACKED_REFS_BYTES)?;
+        let mut output = Text::new();
+        let mut removed = false;
+        let mut skip_peeled = false;
+        for line in text.lines() {
+            if skip_peeled && line.starts_with('^') {
+                skip_peeled = false;
+                continue;
+            }
+            skip_peeled = false;
+            let matches = !line.starts_with(['#', '^'])
+                && line
+                    .split_once(' ')
+                    .is_some_and(|(_, name)| name == reference);
+            if matches {
+                removed = true;
+                skip_peeled = true;
+            } else {
+                output.push_str(line);
+                output.push('\n');
+            }
+        }
+        if removed {
+            write_file(&path, output.as_bytes())?;
+        }
+        Ok(())
     }
 
     pub fn create_signed_tag(
@@ -1378,7 +1601,7 @@ impl Repository {
         let reference = mrml_runtime::mrml_format!("refs/tags/{name}");
         validate_reference(&reference)?;
         let path = join_path(&self.git_dir, &reference);
-        if path_exists(&path) {
+        if self.read_reference(&reference)?.is_some() {
             return Err(RepositoryError::ReferenceExists);
         }
         validate_identity(tagger, email)?;
@@ -1521,6 +1744,60 @@ impl Repository {
         Ok(())
     }
 
+    pub fn prune_remote_refs(
+        &self,
+        remote: &str,
+        live_branches: &[Text],
+    ) -> Result<usize, RepositoryError> {
+        validate_config_name(remote)?;
+        for branch in live_branches {
+            validate_reference(&mrml_runtime::mrml_format!("refs/heads/{branch}"))?;
+        }
+        let root = join_path(
+            &self.git_dir,
+            &mrml_runtime::mrml_format!("refs/remotes/{remote}"),
+        );
+        if !path_exists(&root) {
+            return Ok(0);
+        }
+        let mut removed = 0;
+        self.prune_remote_directory(&root, "", live_branches, 0, &mut removed)?;
+        Ok(removed)
+    }
+
+    fn prune_remote_directory(
+        &self,
+        directory: &str,
+        prefix: &str,
+        live_branches: &[Text],
+        depth: usize,
+        removed: &mut usize,
+    ) -> Result<(), RepositoryError> {
+        if depth > MAX_DEPTH {
+            return Err(RepositoryError::TooDeep);
+        }
+        for entry in read_directory(directory)? {
+            if entry.is_symlink {
+                return Err(RepositoryError::UnsupportedFileType);
+            }
+            let path = join_path(directory, &entry.name);
+            let branch = if prefix.is_empty() {
+                entry.name.clone()
+            } else {
+                mrml_runtime::mrml_format!("{prefix}/{}", entry.name)
+            };
+            if entry.is_directory {
+                self.prune_remote_directory(&path, &branch, live_branches, depth + 1, removed)?;
+            } else if !live_branches.iter().any(|live| live == &branch) {
+                mrml_runtime::remove_file(&path)?;
+                *removed = removed
+                    .checked_add(1)
+                    .ok_or(RepositoryError::TooManyFiles)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn config_value(&self, section: &str, key: &str) -> Result<Option<Text>, RepositoryError> {
         validate_config_name(section)?;
         validate_config_name(key)?;
@@ -1540,6 +1817,32 @@ impl Repository {
             }
         }
         Ok(None)
+    }
+
+    fn autocrlf_mode(&self) -> Result<(bool, bool), RepositoryError> {
+        let mut value = self.config_value("core", "autocrlf")?;
+        if value.is_none() {
+            let global = mrml_runtime::environment_variable("GIT_CONFIG_GLOBAL").or_else(|| {
+                mrml_runtime::environment_variable(if cfg!(windows) {
+                    "USERPROFILE"
+                } else {
+                    "HOME"
+                })
+                .map(|home| join_path(&home, ".gitconfig"))
+            });
+            if let Some(path) = global
+                && path_is_file(&path)
+            {
+                let text = read_file_text_bounded(&path, 1024 * 1024)?;
+                value = config_text_value(&text, "core", "autocrlf");
+            }
+        }
+        Ok(match value.as_deref() {
+            Some(value) if value.eq_ignore_ascii_case("true") => (true, true),
+            Some(value) if value.eq_ignore_ascii_case("input") => (true, false),
+            _ if cfg!(windows) => (true, false),
+            _ => (false, false),
+        })
     }
 
     pub fn set_config_value(
@@ -1732,6 +2035,7 @@ impl Repository {
 
     pub fn stage(&self, paths: &[Text]) -> Result<(), RepositoryError> {
         let mut index = self.index()?;
+        let clean_crlf = self.autocrlf_mode()?.0;
         for relative in paths {
             validate_worktree_path(relative)?;
             index.remove(relative);
@@ -1749,6 +2053,7 @@ impl Repository {
                     error.into()
                 }
             })?;
+            let contents = clean_worktree_bytes(&contents, clean_crlf);
             let id = self.write_object(ObjectKind::Blob, &contents)?;
             index.upsert(crate::IndexEntry {
                 path: relative.clone(),
@@ -1861,11 +2166,19 @@ impl Repository {
             .ok_or(RepositoryError::DetachedHead)?;
         let tree = self.write_tree()?;
         let parent = self.head()?;
+        let merge_head_path = join_path(&self.git_dir, "MERGE_HEAD");
+        if !path_is_file(&merge_head_path)
+            && parent
+                .map(|id| self.read_commit(id).map(|commit| commit.tree == tree))
+                .transpose()?
+                .unwrap_or(false)
+        {
+            return Err(RepositoryError::NoChanges);
+        }
         let mut contents = mrml_runtime::mrml_format!("tree {}\n", tree);
         if let Some(parent) = parent {
             contents.push_str(&mrml_runtime::mrml_format!("parent {}\n", parent));
         }
-        let merge_head_path = join_path(&self.git_dir, "MERGE_HEAD");
         if path_is_file(&merge_head_path) {
             let value = read_file_text_bounded(&merge_head_path, 4096)?;
             let merge_parent =
@@ -1989,10 +2302,12 @@ impl Repository {
         let head = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
         let baseline = self.tree_index(self.read_commit(head)?.tree)?;
         let mut snapshot = self.index()?;
+        let clean_crlf = self.autocrlf_mode()?.0;
         for entry in snapshot.clone().entries {
             let path = join_path(&self.worktree, &entry.path);
             if path_is_file(&path) {
-                let contents = read_file_bounded(&path, MAX_WORKTREE_FILE)?;
+                let contents =
+                    clean_worktree_bytes(&read_file_bounded(&path, MAX_WORKTREE_FILE)?, clean_crlf);
                 let id = self.write_object(ObjectKind::Blob, &contents)?;
                 snapshot.upsert(IndexEntry {
                     path: entry.path.clone(),
@@ -2066,14 +2381,30 @@ impl Repository {
 
     pub fn changes(&self) -> Result<Vector<NativeChange>, RepositoryError> {
         let index = self.index()?;
-        let mut changes = Vector::new();
+        let clean_crlf = self.autocrlf_mode()?.0;
+        let base = match self.head()? {
+            Some(head) => self.tree_index(self.read_commit(head)?.tree)?,
+            None => Index::empty(),
+        };
+        let mut names: Vector<Text> = base
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
         for entry in index.entries.iter().filter(|entry| entry.stage == 0) {
-            let path = join_path(&self.worktree, &entry.path);
-            if !path_exists(&path) {
-                changes.push(NativeChange {
-                    path: entry.path.clone(),
-                    kind: NativeChangeKind::Deleted,
-                });
+            if !names.contains(&entry.path) {
+                names.push(entry.path.clone());
+            }
+        }
+        names.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        let mut changes = Vector::new();
+        for name in names {
+            let base_id = base.entry(&name).map(|entry| entry.id);
+            let index_id = index.entry(&name).map(|entry| entry.id);
+            let staged = base_id != index_id;
+            let path = join_path(&self.worktree, &name);
+            let disk_id = if !path_exists(&path) {
+                None
             } else if !path_is_file(&path) {
                 return Err(RepositoryError::UnsupportedFileType);
             } else {
@@ -2084,16 +2415,45 @@ impl Repository {
                         error.into()
                     }
                 })?;
-                if ObjectId::blob(&bytes) != entry.id {
-                    changes.push(NativeChange {
-                        path: entry.path.clone(),
-                        kind: NativeChangeKind::Modified,
-                    });
-                }
+                Some(ObjectId::blob(&clean_worktree_bytes(&bytes, clean_crlf)))
+            };
+            let unstaged = index_id != disk_id;
+            if staged || unstaged {
+                changes.push(NativeChange {
+                    path: name,
+                    kind: if disk_id.is_none() || index_id.is_none() {
+                        NativeChangeKind::Deleted
+                    } else {
+                        NativeChangeKind::Modified
+                    },
+                    staged,
+                    unstaged,
+                });
             }
         }
-        self.collect_untracked(&index, &self.worktree, "", 0, &mut changes)?;
+        let ignores = self.root_ignore_patterns()?;
+        self.collect_untracked(&index, &self.worktree, "", 0, &ignores, &mut changes)?;
         Ok(changes)
+    }
+
+    fn root_ignore_patterns(&self) -> Result<Vector<Text>, RepositoryError> {
+        let path = join_path(&self.worktree, ".gitignore");
+        if !path_is_file(&path) {
+            return Ok(Vector::new());
+        }
+        let text = read_file_text_bounded(&path, 1024 * 1024)?;
+        let mut patterns = Vector::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.len() > 4096 || patterns.len() >= 65_536 {
+                return Err(RepositoryError::TooManyFiles);
+            }
+            patterns.push(line.into());
+        }
+        Ok(patterns)
     }
 
     fn collect_untracked(
@@ -2102,6 +2462,7 @@ impl Repository {
         directory: &str,
         prefix: &str,
         depth: usize,
+        ignores: &[Text],
         changes: &mut Vector<NativeChange>,
     ) -> Result<(), RepositoryError> {
         if depth > MAX_DEPTH {
@@ -2123,8 +2484,11 @@ impl Repository {
                 value.push_str(&entry.name);
                 value
             };
+            if is_ignored(&relative, entry.is_directory, ignores) {
+                continue;
+            }
             if entry.is_directory {
-                self.collect_untracked(index, &disk_path, &relative, depth + 1, changes)?;
+                self.collect_untracked(index, &disk_path, &relative, depth + 1, ignores, changes)?;
             } else if index.entry(&relative).is_none() {
                 if changes.len() >= MAX_WORKTREE_ENTRIES {
                     return Err(RepositoryError::TooManyFiles);
@@ -2132,11 +2496,131 @@ impl Repository {
                 changes.push(NativeChange {
                     path: relative,
                     kind: NativeChangeKind::Untracked,
+                    staged: false,
+                    unstaged: true,
                 });
             }
         }
         Ok(())
     }
+}
+
+fn config_text_value(text: &str, section: &str, key: &str) -> Option<Text> {
+    let target = mrml_runtime::mrml_format!("[{section}]");
+    let mut active = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            active = line.eq_ignore_ascii_case(&target);
+        } else if active
+            && let Some((found, value)) = line.split_once('=')
+            && found.trim().eq_ignore_ascii_case(key)
+        {
+            return Some(value.trim().into());
+        }
+    }
+    None
+}
+
+fn clean_worktree_bytes(source: &[u8], enabled: bool) -> Vector<u8> {
+    if !enabled || source.contains(&0) || !source.windows(2).any(|pair| pair == b"\r\n") {
+        return source.iter().copied().collect();
+    }
+    let mut output = Vector::new();
+    let mut cursor = 0usize;
+    while cursor < source.len() {
+        if source.get(cursor..cursor + 2) == Some(&b"\r\n"[..]) {
+            output.push(b'\n');
+            cursor += 2;
+        } else {
+            output.push(source[cursor]);
+            cursor += 1;
+        }
+    }
+    output
+}
+
+fn smudge_worktree_bytes(source: &[u8], enabled: bool) -> Vector<u8> {
+    if !enabled || source.contains(&0) || !source.contains(&b'\n') {
+        return source.iter().copied().collect();
+    }
+    let mut output = Vector::new();
+    let mut previous = None;
+    for byte in source {
+        if *byte == b'\n' && previous != Some(b'\r') {
+            output.push(b'\r');
+        }
+        output.push(*byte);
+        previous = Some(*byte);
+    }
+    output
+}
+
+fn is_ignored(path: &str, is_directory: bool, patterns: &[Text]) -> bool {
+    let mut ignored = false;
+    for configured in patterns {
+        let (negated, mut pattern) = configured
+            .strip_prefix('!')
+            .map_or((false, configured.as_str()), |pattern| (true, pattern));
+        if pattern.is_empty() {
+            continue;
+        }
+        let directory_only = pattern.ends_with('/');
+        pattern = pattern.trim_end_matches('/').trim_start_matches('/');
+        let matches = if directory_only {
+            (is_directory && ignore_pattern_matches(pattern, path))
+                || path
+                    .strip_prefix(pattern)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        } else {
+            ignore_pattern_matches(pattern, path)
+        };
+        if matches {
+            ignored = !negated;
+        }
+    }
+    ignored
+}
+
+fn ignore_pattern_matches(pattern: &str, path: &str) -> bool {
+    if pattern.contains('/') {
+        wildcard_match(pattern.as_bytes(), path.as_bytes())
+            || pattern
+                .strip_prefix("**/")
+                .is_some_and(|pattern| wildcard_match(pattern.as_bytes(), path.as_bytes()))
+    } else {
+        path.split('/')
+            .any(|component| wildcard_match(pattern.as_bytes(), component.as_bytes()))
+    }
+}
+
+fn wildcard_match(pattern: &[u8], text: &[u8]) -> bool {
+    let (mut p, mut t) = (0usize, 0usize);
+    let mut star: Option<(usize, usize, bool)> = None;
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == text[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == b'*' {
+            let double = pattern.get(p + 1) == Some(&b'*');
+            p += if double { 2 } else { 1 };
+            star = Some((p, t, double));
+        } else if let Some((after, matched, crosses_slash)) = star {
+            if matched >= text.len() || (!crosses_slash && text[matched] == b'/') {
+                return false;
+            }
+            let next = matched + 1;
+            star = Some((after, next, crosses_slash));
+            p = after;
+            t = next;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+    p == pattern.len()
 }
 
 fn validate_reference(reference: &str) -> Result<(), RepositoryError> {
@@ -2355,6 +2839,7 @@ impl fmt::Display for RepositoryError {
             Self::Object(error) => write!(formatter, "{error}"),
             Self::Pack(error) => write!(formatter, "{error}"),
             Self::WorktreeDirty => formatter.write_str("working tree is not clean"),
+            Self::NoChanges => formatter.write_str("no staged changes to commit"),
             Self::MergeRequired => {
                 formatter.write_str("non-fast-forward merge requires native three-way merge")
             }
@@ -2445,9 +2930,77 @@ mod tests {
             repository.changes().unwrap(),
             Vector::from([NativeChange {
                 path: "hello.txt".into(),
-                kind: NativeChangeKind::Untracked
+                kind: NativeChangeKind::Untracked,
+                staged: false,
+                unstaged: true,
             }])
         );
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn excludes_root_gitignore_patterns_from_status_walk() {
+        let path = root("ignored-status");
+        let repository = Repository::init(&path).unwrap();
+        write_file(
+            &join_path(&path, ".gitignore"),
+            b"target/\ntarget-*\n**/*.bak\n",
+        )
+        .unwrap();
+        repository
+            .stage(&Vector::from([Text::from(".gitignore")]))
+            .unwrap();
+        repository
+            .commit("ignore", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        create_dir_all(&join_path(&path, "target/deep")).unwrap();
+        create_dir_all(&join_path(&path, "target-debug")).unwrap();
+        create_dir_all(&join_path(&path, "src")).unwrap();
+        write_file(&join_path(&path, "target/deep/generated"), b"x").unwrap();
+        write_file(&join_path(&path, "target-debug/generated"), b"x").unwrap();
+        write_file(&join_path(&path, "src/temporary.bak"), b"x").unwrap();
+        write_file(&join_path(&path, "visible"), b"x").unwrap();
+        assert_eq!(
+            repository.changes().unwrap(),
+            Vector::from([NativeChange {
+                path: "visible".into(),
+                kind: NativeChangeKind::Untracked,
+                staged: false,
+                unstaged: true,
+            }])
+        );
+        assert!(wildcard_match(b"target-*", b"target-debug"));
+        assert!(ignore_pattern_matches("**/*.bak", "temporary.bak"));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn applies_native_autocrlf_clean_and_smudge_filters() {
+        let path = root("autocrlf");
+        let repository = Repository::init(&path).unwrap();
+        repository
+            .set_config_value("core", "autocrlf", "true")
+            .unwrap();
+        let file = join_path(&path, "text.txt");
+        write_file(&file, b"one\r\ntwo\r\n").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("text.txt")]))
+            .unwrap();
+        assert_eq!(
+            repository.index().unwrap().entry("text.txt").unwrap().id,
+            ObjectId::blob(b"one\ntwo\n")
+        );
+        repository
+            .commit("text", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        assert!(repository.changes().unwrap().is_empty());
+        write_file(&file, b"different\r\n").unwrap();
+        repository
+            .restore(&Vector::from([Text::from("text.txt")]))
+            .unwrap();
+        assert_eq!(&*read_file_bounded(&file, 64).unwrap(), b"one\r\ntwo\r\n");
+        assert_eq!(&*clean_worktree_bytes(b"a\r\nb\r\n", true), b"a\nb\n");
+        assert_eq!(&*smudge_worktree_bytes(b"a\nb\n", true), b"a\r\nb\r\n");
         remove_dir_all(&path).unwrap();
     }
 
@@ -2463,7 +3016,32 @@ mod tests {
             repository.index().unwrap().entry("hello.txt").unwrap().id,
             ObjectId::blob(b"native")
         );
-        assert!(repository.changes().unwrap().is_empty());
+        assert_eq!(
+            repository.changes().unwrap(),
+            Vector::from([NativeChange {
+                path: "hello.txt".into(),
+                kind: NativeChangeKind::Modified,
+                staged: true,
+                unstaged: false,
+            }])
+        );
+        repository
+            .commit("base", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        write_file(&join_path(&path, "hello.txt"), b"staged").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("hello.txt")]))
+            .unwrap();
+        write_file(&join_path(&path, "hello.txt"), b"worktree").unwrap();
+        assert_eq!(
+            repository.changes().unwrap(),
+            Vector::from([NativeChange {
+                path: "hello.txt".into(),
+                kind: NativeChangeKind::Modified,
+                staged: true,
+                unstaged: true,
+            }])
+        );
         remove_dir_all(&path).unwrap();
     }
 
@@ -2479,6 +3057,10 @@ mod tests {
         let commit = repository
             .commit("initial", "MRML", "mrml@example.invalid", 1_700_000_000)
             .unwrap();
+        assert_eq!(
+            repository.commit("empty", "MRML", "mrml@example.invalid", 1_700_000_001),
+            Err(RepositoryError::NoChanges)
+        );
         assert_eq!(repository.head().unwrap(), Some(commit));
         assert!(path_is_file(&join_path(
             &repository.git_dir,
@@ -2496,6 +3078,17 @@ mod tests {
         );
         assert!(packed.iter().any(|object| object.kind == ObjectKind::Tree));
         assert!(packed.iter().any(|object| object.kind == ObjectKind::Blob));
+        write_file(&join_path(&path, "src/lib.rs"), b"pub fn second() {}\n").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("src/lib.rs")]))
+            .unwrap();
+        let second = repository
+            .commit("second", "MRML", "mrml@example.invalid", 1_700_000_002)
+            .unwrap();
+        assert_eq!(repository.resolve_revision("HEAD~"), Ok(commit));
+        assert_eq!(repository.resolve_revision("HEAD^1"), Ok(commit));
+        assert_eq!(repository.resolve_revision("HEAD^0"), Ok(second));
+        assert!(repository.resolve_revision("HEAD^2").is_err());
         remove_dir_all(&path).unwrap();
     }
 
@@ -2564,6 +3157,57 @@ mod tests {
         );
         assert_eq!(repository.create_tag("v1").unwrap(), head);
         assert_eq!(repository.tags().unwrap()[0], (Text::from("v1"), head));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn reads_packed_objects_and_references_after_gc_layout() {
+        let source_path = root("pack-source");
+        let source = Repository::init(&source_path).unwrap();
+        write_file(&join_path(&source_path, "tracked"), b"packed").unwrap();
+        source
+            .stage(&Vector::from([Text::from("tracked")]))
+            .unwrap();
+        let head = source
+            .commit("packed", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        let pack = source.pack_reachable(head).unwrap();
+
+        let path = root("packed-layout");
+        let repository = Repository::init(&path).unwrap();
+        let pack_dir = join_path(&repository.git_dir, "objects/pack");
+        create_dir_all(&pack_dir).unwrap();
+        write_file(&join_path(&pack_dir, "pack-native.pack"), &pack).unwrap();
+        write_file(
+            &join_path(&repository.git_dir, "packed-refs"),
+            mrml_runtime::mrml_format!(
+                "# pack-refs with: peeled fully-peeled\n{head} refs/heads/main\n{head} refs/heads/topic\n{head} refs/tags/v1\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(repository.head().unwrap(), Some(head));
+        assert_eq!(
+            repository.read_commit(head).unwrap().message.trim(),
+            "packed"
+        );
+        assert!(
+            repository
+                .branches()
+                .unwrap()
+                .iter()
+                .any(|(name, _)| name == "topic")
+        );
+        assert_eq!(repository.resolve_revision("v1"), Ok(head));
+        repository.delete_branch("topic").unwrap();
+        assert!(
+            !repository
+                .branches()
+                .unwrap()
+                .iter()
+                .any(|(name, _)| name == "topic")
+        );
+        remove_dir_all(&source_path).unwrap();
         remove_dir_all(&path).unwrap();
     }
 
@@ -2659,6 +3303,20 @@ mod tests {
             .unwrap()
             .trim()
         );
+        repository
+            .update_remote_ref("origin", "refs/heads/stale/topic", remote_id)
+            .unwrap();
+        assert_eq!(
+            repository
+                .prune_remote_refs("origin", &[Text::from("main")])
+                .unwrap(),
+            1
+        );
+        assert!(!path_exists(&join_path(
+            &repository.git_dir,
+            "refs/remotes/origin/stale/topic"
+        )));
+        assert_eq!(repository.prune_remote_refs("origin", &[]).unwrap(), 1);
         assert!(
             repository
                 .update_remote_ref("../escape", "refs/heads/main", remote_id)

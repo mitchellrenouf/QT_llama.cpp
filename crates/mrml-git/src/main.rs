@@ -58,7 +58,13 @@ fn native_dashboard(repository: Option<&str>) -> Result<()> {
             NativeChangeKind::Deleted => "deleted".red(),
             NativeChangeKind::Untracked => "untracked".bright_cyan(),
         };
-        println!("  {:9} {}", label, change.path);
+        let lane = match (change.staged, change.unstaged) {
+            (true, true) => "staged+worktree",
+            (true, false) => "staged",
+            (false, true) => "worktree",
+            (false, false) => "",
+        };
+        println!("  {:9} {:15} {}", label, lane.dimmed(), change.path);
     }
     Ok(())
 }
@@ -103,7 +109,7 @@ fn help() {
         println!("  mrml-git {}", usage);
     }
     println!(
-        "\nPulls are fast-forward only. SSH signing is repository-local. No command shows the workspace pulse."
+        "\nPulls are fast-forward only. SSH signing is repository-local. No command invokes host Git or OpenSSH."
     );
 }
 
@@ -113,13 +119,6 @@ fn require_arguments<'a>(command: &str, arguments: &'a [Text]) -> Result<&'a [Te
     } else {
         Ok(arguments)
     }
-}
-
-fn collect<'a>(command: &'a str, fixed: &[&'a str], tail: &'a [Text]) -> Vector<&'a str> {
-    let mut args = Vector::from([command]);
-    args.extend(fixed.iter().copied());
-    args.extend(tail.iter().map(Text::as_str));
-    args
 }
 
 fn join_words(words: &[Text]) -> Text {
@@ -348,11 +347,16 @@ fn dispatch(cli: &Cli) -> Result<()> {
                         .iter()
                         .find(|(branch, _)| branch == "master")
                 })
-                .or_else(|| result.branches.first())
-                .ok_or_else(|| anyhow!("remote has no branch to check out"))?;
-            repo.checkout_branch_at(&branch.0, branch.1)
-                .map_err(|error| anyhow!("{}", error))?;
-            println!("Cloned {} into {} on branch {}", tail[0], target, branch.0);
+                .or_else(|| result.branches.first());
+            if let Some(branch) = branch {
+                repo.checkout_branch_at(&branch.0, branch.1)
+                    .map_err(|error| anyhow!("{}", error))?;
+                repo.set_upstream(&mrml_runtime::mrml_format!("origin/{}", branch.0))
+                    .map_err(|error| anyhow!("{}", error))?;
+                println!("Cloned {} into {} on branch {}", tail[0], target, branch.0);
+            } else {
+                println!("Cloned empty repository {} into {}", tail[0], target);
+            }
             Ok(())
         }
         "log" => {
@@ -873,10 +877,32 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "tag" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            let id = native_repository(repository)?
-                .create_tag(&tail[0])
-                .map_err(|error| anyhow!("{}", error))?;
-            println!("Tagged {} at {}", tail[0], &id.to_hex()[..12]);
+            let repo = native_repository(repository)?;
+            let auto = repo
+                .config_value("tag", "gpgsign")
+                .ok()
+                .flatten()
+                .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+            let id = if auto {
+                let key = repository_signing_key(&repo)?;
+                let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
+                    .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
+                    .unwrap_or_else(|| "MRML User".into());
+                let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
+                    .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
+                    .unwrap_or_else(|| "mrml@localhost".into());
+                let timestamp = mrml_runtime::unix_time_seconds()
+                    .ok_or_else(|| anyhow!("system time is unavailable"))?;
+                repo.create_signed_tag(&tail[0], &tail[0], &name, &email, timestamp, &key)
+            } else {
+                repo.create_tag(&tail[0])
+            }
+            .map_err(|error| anyhow!("{}", error))?;
+            if auto {
+                println!("Signed tag {} at {}", tail[0], &id.to_hex()[..12]);
+            } else {
+                println!("Tagged {} at {}", tail[0], &id.to_hex()[..12]);
+            }
             Ok(())
         }
         "tag-sign" if tail.len() >= 2 => {
@@ -948,6 +974,64 @@ fn application_main() -> Result<()> {
     let cli =
         Cli::parse(mrml_runtime::command_arguments()).map_err(|error| anyhow!("{}", error))?;
     dispatch(&cli).context("mrml-git")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mrml_runtime::{join_path, process_id, remove_dir_all, temporary_directory, write_file};
+
+    fn invoke(repository: &str, command: &str, arguments: &[&str]) {
+        dispatch(&Cli {
+            repository: Some(repository.into()),
+            command: command.into(),
+            arguments: arguments
+                .iter()
+                .map(|argument| (*argument).into())
+                .collect(),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn advertised_local_porcelain_dispatches_without_host_tools() {
+        let path = join_path(
+            &temporary_directory(),
+            &mrml_runtime::mrml_format!("mrml-git-cli-{}", process_id()),
+        );
+        Repository::init(&path).unwrap();
+        invoke(&path, "status", &[]);
+        let tracked = join_path(&path, "tracked.txt");
+        write_file(&tracked, b"base\n").unwrap();
+        invoke(&path, "stage", &["tracked.txt"]);
+        invoke(&path, "commit", &["base"]);
+        for (command, arguments) in [
+            ("log", &["2"][..]),
+            ("show", &["HEAD"][..]),
+            ("history", &["tracked.txt"][..]),
+            ("blame", &["tracked.txt"][..]),
+            ("diff-ref", &["HEAD", "tracked.txt"][..]),
+            ("conflicts", &[][..]),
+            ("remote", &[][..]),
+            ("signing", &["status"][..]),
+            ("stash", &["list"][..]),
+        ] {
+            invoke(&path, command, arguments);
+        }
+        write_file(&tracked, b"changed\n").unwrap();
+        invoke(&path, "stage", &["tracked.txt"]);
+        invoke(&path, "unstage", &["tracked.txt"]);
+        invoke(&path, "restore", &["tracked.txt"]);
+        invoke(&path, "branch", &["feature"]);
+        invoke(&path, "switch", &["main"]);
+        invoke(&path, "branch-delete", &["feature"]);
+        invoke(&path, "tag", &["v1"]);
+        invoke(&path, "tag", &[]);
+        write_file(&tracked, b"stashed\n").unwrap();
+        invoke(&path, "stash", &["push", "checkpoint"]);
+        invoke(&path, "stash", &["pop"]);
+        remove_dir_all(&path).unwrap();
+    }
 }
 
 mrml_runtime::mrml_entrypoint!(application_main);
