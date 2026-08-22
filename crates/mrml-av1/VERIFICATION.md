@@ -60,12 +60,14 @@ into the crate.
   intra transform-type CDF. Correcting warped-prediction phase reduction then
   advances the second frame through its first affine global-motion block.
   Clipping variable-transform lookup and inter prediction at the cropped right
-  edge now advances that frame through 211 blocks and 734 transform blocks
-  before the next tile-entropy divergence, so this remains a failing
-  conformance target.
+  edge, variable-transform neighbor contexts, and global-mode reference-MV
+  substitution now allow both frames to pass strict tile termination. Pixel
+  reconstruction remains non-conformant: MRML's two planar outputs differ
+  from the independent decoder's 304128-byte I420 output, so this remains a
+  failing conformance target.
 
-The remaining q7 failure is explicit evidence that decoder conformance is not
-complete.
+The remaining q7 pixel failure is explicit evidence that decoder conformance
+is not complete.
 The run exposed and fixed a coefficient escape error: the normative Golomb
 value is one-based, and `coeff_base_eob` likewise contributes its zero-based
 symbol plus one. It also exposed an EOB-CDF selection error that used the

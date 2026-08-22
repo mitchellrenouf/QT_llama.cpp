@@ -408,32 +408,32 @@ impl MiGrid {
             tile.contains(i64::from(row) - 1, i64::from(column))
                 .then(|| self.get(row - 1, column))
                 .flatten()
-                .map_or(0, |state| {
-                    if state.is_inter {
-                        state.size.map_or(0, |size| size.dimensions().0)
+                .map_or(64, |state| {
+                    if state.skip {
+                        state.size.map_or(64, |size| size.dimensions().0)
                     } else {
                         state
                             .tx_size
-                            .map_or(0, |size| u16::from(size.dimensions().0))
+                            .map_or(64, |size| u16::from(size.dimensions().0))
                     }
                 })
         } else {
             row.checked_sub(1)
                 .and_then(|y| self.get(y, column))
                 .and_then(|state| state.tx_size)
-                .map_or(0, |size| u16::from(size.dimensions().0))
+                .map_or(64, |size| u16::from(size.dimensions().0))
         };
         let left = if column == block.column {
             tile.contains(i64::from(row), i64::from(column) - 1)
                 .then(|| self.get(row, column - 1))
                 .flatten()
-                .map_or(0, |state| {
-                    if state.is_inter {
-                        state.size.map_or(0, |size| size.dimensions().1)
+                .map_or(64, |state| {
+                    if state.skip {
+                        state.size.map_or(64, |size| size.dimensions().1)
                     } else {
                         state
                             .tx_size
-                            .map_or(0, |size| u16::from(size.dimensions().1))
+                            .map_or(64, |size| u16::from(size.dimensions().1))
                     }
                 })
         } else {
@@ -441,7 +441,7 @@ impl MiGrid {
                 .checked_sub(1)
                 .and_then(|x| self.get(row, x))
                 .and_then(|state| state.tx_size)
-                .map_or(0, |size| u16::from(size.dimensions().1))
+                .map_or(64, |size| u16::from(size.dimensions().1))
         };
         (above, left)
     }
@@ -661,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn variable_tx_context_uses_inter_block_size_even_when_not_skipped() {
+    fn variable_tx_context_uses_leaf_size_for_non_skipped_inter_neighbor() {
         let mut grid = MiGrid::new(16, 16).unwrap();
         grid.fill(
             BlockRect::new(0, 0, BlockSize::Block16x16),
@@ -687,7 +687,47 @@ mod tests {
                 BlockRect::new(0, 4, BlockSize::Block16x16),
                 tile,
             ),
-            (16, 0)
+            (4, 64)
+        );
+        grid.fill(
+            BlockRect::new(0, 0, BlockSize::Block16x16),
+            BlockState {
+                size: Some(BlockSize::Block16x16),
+                tx_size: Some(TxSize::Tx4x4),
+                is_inter: true,
+                skip: true,
+                ..BlockState::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            grid.inter_tx_neighbor_dimensions(
+                4,
+                0,
+                BlockRect::new(0, 4, BlockSize::Block16x16),
+                tile,
+            ),
+            (16, 64)
+        );
+    }
+
+    #[test]
+    fn unavailable_variable_tx_neighbors_use_largest_initialized_extent() {
+        let grid = MiGrid::new(8, 8).unwrap();
+        let tile = TileBounds {
+            column_start: 0,
+            column_end: 8,
+            row_start: 0,
+            row_end: 8,
+        };
+        assert_eq!(
+            grid.inter_tx_neighbor_dimensions(
+                0,
+                0,
+                BlockRect::new(0, 0, BlockSize::Block16x16),
+                tile,
+            ),
+            (64, 64)
         );
     }
 

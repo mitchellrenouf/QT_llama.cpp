@@ -1618,6 +1618,40 @@ mod tests {
     }
 
     #[test]
+    fn invalid_local_warp_falls_back_to_translation_prediction() {
+        let reference = Plane::new(16, 16, 29).unwrap();
+        let prediction = predict_inter_reference(
+            &reference,
+            InterReferenceConfig {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+                subsampling_x: false,
+                subsampling_y: false,
+                bit_depth: 8,
+                compound: false,
+                force_integer_mv: false,
+                motion_mode: MotionMode::LocalWarp,
+                local_warp: None,
+                global_mode: false,
+                global_motion: GlobalMotion::default(),
+                reference_scaled: false,
+                scaled_motion: ScaledMotion {
+                    start_x: 0,
+                    start_y: 0,
+                    step_x: 1024,
+                    step_y: 1024,
+                },
+                horizontal_filter: InterpolationFilter::Regular,
+                vertical_filter: InterpolationFilter::Regular,
+            },
+        )
+        .unwrap();
+        assert!(prediction.iter().all(|&sample| sample == 29));
+    }
+
+    #[test]
     fn scaled_inter_block_dispatches_motion_and_compound_blending() {
         let first = Plane::new(16, 16, 20).unwrap();
         let second = Plane::new(16, 16, 100).unwrap();

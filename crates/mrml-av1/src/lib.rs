@@ -518,6 +518,7 @@ pub enum ModeStage {
 pub enum PredictionStage {
     Mode,
     IntraPixels,
+    InterPixels,
     ChromaFromLuma,
 }
 
@@ -1752,6 +1753,8 @@ impl Decoder {
                                 tile: bounds,
                                 references,
                                 compound,
+                                global_types,
+                                global_vectors,
                             },
                             temporal_field,
                             temporal: temporal_field.map(|_| motion::TemporalScanConfig {
@@ -2057,22 +2060,22 @@ impl Decoder {
                                 blend: inter::CompoundBlend::Average,
                                 mask_output: None,
                             },
-                        )?;
+                        )
+                        .map_err(|error| {
+                            prediction_stage_error(error, PredictionStage::InterPixels)
+                        })?;
                     }
                 } else if prefix.is_inter {
                     let motion = inter_motion.ok_or(Error::InvalidObu)?;
                     let post = inter_post.ok_or(Error::InvalidObu)?;
                     let local_warp = if post.motion_mode == mode::MotionMode::LocalWarp {
-                        Some(
-                            motion::derive_local_warp(
-                                grid,
-                                block,
-                                bounds,
-                                post.references[0],
-                                motion.motion_vectors[0],
-                            )?
-                            .ok_or(Error::InvalidObu)?,
-                        )
+                        motion::derive_local_warp(
+                            grid,
+                            block,
+                            bounds,
+                            post.references[0],
+                            motion.motion_vectors[0],
+                        )?
                     } else {
                         None
                     };
@@ -2223,7 +2226,10 @@ impl Decoder {
                                 blend,
                                 mask_output,
                             },
-                        )?;
+                        )
+                        .map_err(|error| {
+                            prediction_stage_error(error, PredictionStage::InterPixels)
+                        })?;
                         if post.inter_intra.enabled {
                             let count = region
                                 .width

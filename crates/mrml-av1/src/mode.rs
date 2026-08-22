@@ -2395,6 +2395,8 @@ mod tests {
                     },
                     references: [1, -1],
                     compound: false,
+                    global_types: [GlobalMotionType::Identity; 2],
+                    global_vectors: [MotionVector::default(); 2],
                 },
                 temporal_field: None,
                 temporal: None,

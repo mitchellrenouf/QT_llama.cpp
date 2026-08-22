@@ -627,6 +627,27 @@ pub struct SpatialScan {
     pub tile: TileBounds,
     pub references: [i8; 2],
     pub compound: bool,
+    pub global_types: [GlobalMotionType; 2],
+    pub global_vectors: [MotionVector; 2],
+}
+
+fn add_spatial_reference_candidate(
+    stack: &mut MotionStack,
+    mut candidate: BlockState,
+    scan: SpatialScan,
+    weight: u16,
+) -> Result<bool, Error> {
+    let dimensions = candidate.size.ok_or(Error::InvalidObu)?.dimensions();
+    if dimensions.0.min(dimensions.1) >= 8 {
+        for list in 0..(1 + usize::from(scan.compound)) {
+            if matches!(candidate.prediction_mode, 16 | 24)
+                && scan.global_types[list] > GlobalMotionType::Translation
+            {
+                candidate.motion_vectors[list] = scan.global_vectors[list];
+            }
+        }
+    }
+    add_reference_candidate(stack, candidate, scan.references, scan.compound, weight)
 }
 
 pub fn scan_row(
@@ -663,11 +684,10 @@ pub fn scan_row(
         if width >= 16 {
             length = length.max(4);
         }
-        found |= add_reference_candidate(
+        found |= add_spatial_reference_candidate(
             stack,
             *candidate,
-            scan.references,
-            scan.compound,
+            scan,
             u16::try_from(length * 2).map_err(|_| Error::LimitExceeded)?,
         )?;
         offset = offset.checked_add(length).ok_or(Error::LimitExceeded)?;
@@ -708,11 +728,10 @@ pub fn scan_column(
         if height >= 16 {
             length = length.max(4);
         }
-        found |= add_reference_candidate(
+        found |= add_spatial_reference_candidate(
             stack,
             *candidate,
-            scan.references,
-            scan.compound,
+            scan,
             u16::try_from(length * 2).map_err(|_| Error::LimitExceeded)?,
         )?;
         offset = offset.checked_add(length).ok_or(Error::LimitExceeded)?;
@@ -730,7 +749,7 @@ pub fn scan_point(
     let row = i64::from(scan.block.row) + i64::from(delta_row);
     let column = i64::from(scan.block.column) + i64::from(delta_column);
     if let Some(candidate) = candidate_at(grid, scan.tile, row, column) {
-        return add_reference_candidate(stack, *candidate, scan.references, scan.compound, 4);
+        return add_spatial_reference_candidate(stack, *candidate, scan, 4);
     }
     Ok(false)
 }
@@ -1660,7 +1679,7 @@ pub fn resolve_divisor(divisor: i64) -> Result<(u8, i32), Error> {
             .checked_shl(DIV_LUT_BITS - n)
             .ok_or(Error::LimitExceeded)?
     };
-    if f >= 256 {
+    if f > 256 {
         return Err(Error::InvalidObu);
     }
     let denominator = 256u64.checked_add(f).ok_or(Error::LimitExceeded)?;
@@ -2313,6 +2332,7 @@ mod tests {
         assert_eq!(resolve_divisor(256), Ok((22, 16384)));
         assert_eq!(resolve_divisor(257), Ok((22, 16320)));
         assert_eq!(resolve_divisor(-260), Ok((22, -16132)));
+        assert_eq!(resolve_divisor(65_528), Ok((29, 8192)));
         assert_eq!(resolve_divisor(0), Err(Error::InvalidObu));
     }
 
@@ -2610,6 +2630,8 @@ mod tests {
                     },
                     references: [1, 5],
                     compound: true,
+                    global_types: [GlobalMotionType::Identity; 2],
+                    global_vectors: [MotionVector::default(); 2],
                 },
                 temporal_field: None,
                 temporal: None,
@@ -2640,6 +2662,8 @@ mod tests {
                     },
                     references: [1, -1],
                     compound: false,
+                    global_types: [GlobalMotionType::Identity; 2],
+                    global_vectors: [MotionVector::default(); 2],
                 },
                 temporal_field: None,
                 temporal: None,
@@ -2695,6 +2719,8 @@ mod tests {
             },
             references: [1, -1],
             compound: false,
+            global_types: [GlobalMotionType::Identity; 2],
+            global_vectors: [MotionVector::default(); 2],
         };
         let mut stack = MotionStack::new().unwrap();
         scan_row(&grid, &mut stack, scan, -2).unwrap();
@@ -2727,6 +2753,8 @@ mod tests {
             },
             references: [1, -1],
             compound: false,
+            global_types: [GlobalMotionType::Identity; 2],
+            global_vectors: [MotionVector::default(); 2],
         };
         let mut stack = MotionStack::new().unwrap();
         scan_point(&grid, &mut stack, scan, -1, -1).unwrap();
@@ -2762,6 +2790,8 @@ mod tests {
                 },
                 references: [1, -1],
                 compound: false,
+                global_types: [GlobalMotionType::Identity; 2],
+                global_vectors: [MotionVector::default(); 2],
             },
         )
         .unwrap();
@@ -2769,6 +2799,68 @@ mod tests {
         assert_eq!(result.nearest_count, 1);
         assert!(result.any_new_nearest);
         assert!(result.stack.entries()[0].weight >= 640);
+    }
+
+    #[test]
+    fn spatial_stack_uses_global_vector_for_warped_global_neighbor() {
+        use crate::partition::BlockSize;
+
+        let mut grid = MiGrid::new(8, 8).unwrap();
+        let stored = MotionVector { row: 0, column: -7 };
+        for (rect, size, prediction_mode) in [
+            (
+                BlockRect::new(2, 0, BlockSize::Block8x8),
+                BlockSize::Block8x8,
+                14,
+            ),
+            (
+                BlockRect::new(0, 2, BlockSize::Block8x8),
+                BlockSize::Block8x8,
+                16,
+            ),
+        ] {
+            grid.fill(
+                rect,
+                BlockState {
+                    size: Some(size),
+                    is_inter: true,
+                    reference_frames: [1, -1],
+                    motion_vectors: [stored, MotionVector::default()],
+                    prediction_mode,
+                    ..BlockState::default()
+                },
+            )
+            .unwrap();
+        }
+        let global = MotionVector {
+            row: -1,
+            column: -7,
+        };
+        let result = build_spatial_motion_stack(
+            &grid,
+            SpatialScan {
+                block: BlockRect::new(2, 2, BlockSize::Block8x8),
+                tile: TileBounds {
+                    column_start: 0,
+                    column_end: 8,
+                    row_start: 0,
+                    row_end: 8,
+                },
+                references: [1, -1],
+                compound: false,
+                global_types: [GlobalMotionType::Affine, GlobalMotionType::Identity],
+                global_vectors: [global, MotionVector::default()],
+            },
+        )
+        .unwrap();
+        assert_eq!(result.nearest_count, 2);
+        assert_eq!(result.stack.entries()[0].vectors[0], stored);
+        assert_eq!(result.stack.entries()[1].vectors[0], global);
+        assert!(
+            result.stack.entries()[..2]
+                .iter()
+                .all(|candidate| candidate.weight >= 640)
+        );
     }
 
     #[test]
