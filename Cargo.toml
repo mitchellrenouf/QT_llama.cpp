@@ -16,6 +16,7 @@ members = [
     "crates/mrml-tensor",
     "crates/mrml-agent",
     "crates/mrml-cli",
+    "crates/mrml-git",
     "crates/mrml-machine",
     "crates/mrml-error",
     "crates/mrml-server",

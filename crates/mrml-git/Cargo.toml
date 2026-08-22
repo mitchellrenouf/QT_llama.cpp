@@ -1,0 +1,16 @@
+[package]
+name = "mrml-git"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+autobins = false
+
+[[bin]]
+name = "mrml-git"
+path = "src/main.rs"
+
+[dependencies]
+mrml-error = { path = "../mrml-error" }
+mrml-runtime = { path = "../mrml-runtime" }
+mrml-terminal-style = { path = "../mrml-terminal-style" }

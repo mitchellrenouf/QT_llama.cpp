@@ -714,6 +714,7 @@ space, network use, and VRAM before accepting a download.
 | Crate | Binary | Purpose |
 | --- | --- | --- |
 | `mrml-cli` | `mrml-cli` | Interactive and one-shot terminal frontend |
+| `mrml-git` | `mrml-git` | Dependency-free Git workspace client |
 | `mrml-machine` | `mrml-machine` | Stable JSONL automation and benchmark frontend |
 | `mrml-server` | `mrml-server` | OpenAI-compatible HTTPS/SSE server |
 | `mrml-uefi` | `mrml-loader.efi` | Minimal original x86_64 UEFI boot stage |
@@ -728,6 +729,9 @@ Common commands:
 # Interactive terminal
 cargo run --release -p mrml-cli --features cuda -- --model C:\path\to\model.gguf
 
+# Show the current branch, HEAD, and staged/unstaged workspace pulse
+cargo run --release -p mrml-git
+
 # OpenAI-compatible HTTPS server. The PEM certificate must contain the full
 # chain and the unencrypted key must be PKCS #8 or PKCS #1 RSA.
 $env:MRML_TLS_CERT = "C:\path\to\fullchain.pem"
@@ -736,6 +740,27 @@ $env:MRML_API_TOKEN = "replace-with-at-least-32-random-ascii-bytes"
 cargo run --release -p mrml-server --features cuda -- `
   --model C:\path\to\model.gguf --port 8080
 ```
+
+### MRML Git client
+
+`mrml-git` is a small, original porcelain client built on MRML's native
+runtime. Its default workspace-pulse view separates staged, unstaged, and
+dual-lane changes and safely parses Git's NUL-delimited porcelain format.
+
+```powershell
+mrml-git status
+mrml-git log 20
+mrml-git diff --staged
+mrml-git stage src/main.rs
+mrml-git unstage src/main.rs
+mrml-git branch feature/name
+mrml-git switch main
+mrml-git commit "Describe the change"
+```
+
+Mutating commands deliberately map to narrow Git operations: `stage` inserts
+`--` before paths, `unstage` uses `restore --staged`, `branch <name>` creates
+and switches in one operation, and `commit` requires an explicit message.
 
 The HTTPS server requires X25519MLKEM768 and rejects clients that do not offer
 the standardized hybrid group. Its certificate handshake uses TLS 1.3
