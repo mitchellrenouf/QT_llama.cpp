@@ -26,6 +26,13 @@ pub struct Commit {
     pub message: Text,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeEntry {
+    pub mode: u32,
+    pub name: Text,
+    pub id: ObjectId,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectError {
     Truncated,
@@ -131,6 +138,28 @@ impl Commit {
         }
         Ok(Self { tree: tree.ok_or(ObjectError::InvalidHeader)?, parents, author: author.ok_or(ObjectError::InvalidHeader)?, message: message.into() })
     }
+}
+
+pub fn parse_tree(contents: &[u8]) -> Result<Vector<TreeEntry>, ObjectError> {
+    let mut entries = Vector::new();
+    let mut cursor = 0usize;
+    while cursor < contents.len() {
+        let space = contents[cursor..].iter().position(|byte| *byte == b' ').map(|offset| cursor + offset).ok_or(ObjectError::InvalidHeader)?;
+        let mode_text = core::str::from_utf8(&contents[cursor..space]).map_err(|_| ObjectError::InvalidHeader)?;
+        if mode_text.is_empty() || !mode_text.bytes().all(|byte| matches!(byte, b'0'..=b'7')) { return Err(ObjectError::InvalidHeader); }
+        let mut mode = 0u32;
+        for byte in mode_text.bytes() { mode = mode.checked_mul(8).and_then(|value| value.checked_add((byte - b'0') as u32)).ok_or(ObjectError::InvalidHeader)?; }
+        cursor = space + 1;
+        let nul = contents[cursor..].iter().position(|byte| *byte == 0).map(|offset| cursor + offset).ok_or(ObjectError::Truncated)?;
+        let name = core::str::from_utf8(&contents[cursor..nul]).map_err(|_| ObjectError::InvalidHeader)?;
+        if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\\']) || name.chars().any(char::is_control) { return Err(ObjectError::InvalidHeader); }
+        cursor = nul + 1;
+        let id = ObjectId(contents.get(cursor..cursor + 20).ok_or(ObjectError::Truncated)?.try_into().map_err(|_| ObjectError::Truncated)?);
+        cursor += 20;
+        if !matches!(mode, 0o40000 | 0o100644 | 0o100755 | 0o120000 | 0o160000) { return Err(ObjectError::InvalidHeader); }
+        entries.push(TreeEntry { mode, name: name.into(), id });
+    }
+    Ok(entries)
 }
 
 fn adler32(bytes: &[u8]) -> u32 {

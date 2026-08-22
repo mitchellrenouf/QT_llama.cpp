@@ -454,7 +454,9 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "switch" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &["switch", &tail[0]])
+            let id = native_repository(repository)?.switch_branch(&tail[0]).map_err(|error| anyhow!("{}", error))?;
+            println!("Switched to branch '{}' at {}", tail[0], &id.to_hex()[..12]);
+            Ok(())
         }
         "upstream" if tail.len() == 1 => {
             checked_positionals(tail)?;

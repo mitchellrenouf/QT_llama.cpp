@@ -9,7 +9,7 @@ mod repository;
 mod sha1;
 
 pub use index::{Index, IndexEntry, IndexError};
-pub use object::{Commit, Object, ObjectError, ObjectKind, decode_loose_object, encode_loose_object};
+pub use object::{Commit, Object, ObjectError, ObjectKind, TreeEntry, decode_loose_object, encode_loose_object, parse_tree};
 pub use repository::{NativeChange, NativeChangeKind, Repository, RepositoryError};
 pub use sha1::{ObjectId, Sha1};
 

@@ -6,8 +6,8 @@ use mrml_runtime::{
 };
 
 use crate::{
-    Commit, Index, IndexError, Object, ObjectError, ObjectId, ObjectKind, decode_loose_object,
-    encode_loose_object,
+    Commit, Index, IndexEntry, IndexError, Object, ObjectError, ObjectId, ObjectKind,
+    decode_loose_object, encode_loose_object, parse_tree,
 };
 
 const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
@@ -55,6 +55,7 @@ pub enum RepositoryError {
     ReferenceMissing,
     CurrentBranch,
     Object(ObjectError),
+    WorktreeDirty,
 }
 
 impl Repository {
@@ -213,6 +214,70 @@ impl Repository {
             history.push((id, commit));
         }
         Ok(history)
+    }
+
+    pub fn tree_index(&self, tree: ObjectId) -> Result<Index, RepositoryError> {
+        let mut index = Index::empty();
+        self.flatten_tree(tree, "", 0, &mut index)?;
+        Ok(index)
+    }
+
+    fn flatten_tree(&self, id: ObjectId, prefix: &str, depth: usize, index: &mut Index) -> Result<(), RepositoryError> {
+        if depth > MAX_DEPTH { return Err(RepositoryError::TooDeep); }
+        let object = self.read_object(id)?;
+        if object.kind != ObjectKind::Tree { return Err(RepositoryError::InvalidReference); }
+        for entry in parse_tree(&object.contents)? {
+            let path = if prefix.is_empty() { entry.name.clone() } else { mrml_runtime::mrml_format!("{prefix}/{}", entry.name) };
+            if entry.mode == 0o40000 {
+                self.flatten_tree(entry.id, &path, depth + 1, index)?;
+            } else if matches!(entry.mode, 0o100644 | 0o100755) {
+                if index.entries.len() >= MAX_WORKTREE_ENTRIES { return Err(RepositoryError::TooManyFiles); }
+                let object = self.read_object(entry.id)?;
+                if object.kind != ObjectKind::Blob { return Err(RepositoryError::InvalidReference); }
+                index.upsert(IndexEntry { path, id: entry.id, mode: entry.mode, size: object.contents.len().try_into().map_err(|_| RepositoryError::FileTooLarge)?, stage: 0 });
+            } else {
+                return Err(RepositoryError::UnsupportedFileType);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn switch_branch(&self, branch: &str) -> Result<ObjectId, RepositoryError> {
+        validate_reference(&mrml_runtime::mrml_format!("refs/heads/{branch}"))?;
+        if !self.changes()?.is_empty() { return Err(RepositoryError::WorktreeDirty); }
+        let id = self.resolve_revision(branch)?;
+        let commit = self.read_commit(id)?;
+        let target = self.tree_index(commit.tree)?;
+        let current = self.index()?;
+        let mut files: Vector<(Text, Vector<u8>)> = Vector::new();
+        for entry in &target.entries {
+            let object = self.read_object(entry.id)?;
+            if object.kind != ObjectKind::Blob { return Err(RepositoryError::InvalidReference); }
+            files.push((entry.path.clone(), object.contents));
+        }
+        for entry in &current.entries {
+            if target.entry(&entry.path).is_none() {
+                let path = join_path(&self.worktree, &entry.path);
+                if path_is_file(&path) { mrml_runtime::remove_file(&path)?; }
+            }
+        }
+        for (relative, contents) in files {
+            let path = join_path(&self.worktree, &relative);
+            if let Some(parent) = parent_path(&path) { create_dir_all(parent)?; }
+            write_file(&path, &contents)?;
+        }
+        self.write_index(&target)?;
+        write_file(&join_path(&self.git_dir, "HEAD"), mrml_runtime::mrml_format!("ref: refs/heads/{branch}\n").as_bytes())?;
+        Ok(id)
+    }
+
+    fn write_index(&self, index: &Index) -> Result<(), RepositoryError> {
+        let encoded = index.encode()?;
+        let lock = join_path(&self.git_dir, "index.lock");
+        if path_exists(&lock) { return Err(RepositoryError::AlreadyExists); }
+        write_file(&lock, &encoded)?;
+        mrml_runtime::rename_file(&lock, &join_path(&self.git_dir, "index"))?;
+        Ok(())
     }
 
     pub fn branches(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {
@@ -624,6 +689,7 @@ impl fmt::Display for RepositoryError {
             Self::File(error) => write!(formatter, "{error}"),
             Self::Index(error) => write!(formatter, "{error}"),
             Self::Object(error) => write!(formatter, "{error}"),
+            Self::WorktreeDirty => formatter.write_str("working tree is not clean"),
             Self::NotRepository => formatter.write_str("not an MRML Git repository"),
             Self::AlreadyExists => formatter.write_str("repository metadata already exists"),
             Self::UnsupportedLayout => {
@@ -769,6 +835,24 @@ mod tests {
         );
         assert_eq!(repository.create_tag("v1").unwrap(), head);
         assert_eq!(repository.tags().unwrap()[0], (Text::from("v1"), head));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn switches_branches_by_materializing_authenticated_tree() {
+        let path = root("switch");
+        let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked");
+        write_file(&file, b"main").unwrap();
+        repository.stage(&Vector::from([Text::from("tracked")])).unwrap();
+        let main = repository.commit("main", "MRML", "mrml@example.invalid", 1).unwrap();
+        repository.create_branch("topic", true).unwrap();
+        write_file(&file, b"topic").unwrap();
+        repository.stage(&Vector::from([Text::from("tracked")])).unwrap();
+        repository.commit("topic", "MRML", "mrml@example.invalid", 2).unwrap();
+        assert_eq!(repository.switch_branch("main").unwrap(), main);
+        assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"main");
+        assert_eq!(repository.current_branch().unwrap().as_deref(), Some("main"));
         remove_dir_all(&path).unwrap();
     }
 }
