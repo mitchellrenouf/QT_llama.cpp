@@ -445,8 +445,13 @@ returns, and mutable-to-shared coercion are supported. Independent callers
 observed byte length 8 for `"rust🦀"`, empty/nonempty results, and pointer/length
 identity through 106-byte, 128-byte, 141-byte, and 194-byte COFF objects plus
 504-byte, 512-byte, 512-byte, and 568-byte ELF64 objects. Integer indexing is
-rejected because Rust strings are not byte-indexable; UTF-8-boundary-checked
-string ranges are not claimed. Shared
+rejected because Rust strings are not byte-indexable. Shared and mutable
+`start..end`, `start..=end`, `..end`, `start..`, and `..` string ranges perform
+the ordinary range checks and additionally verify both derived endpoints are
+UTF-8 character boundaries before forming the result. An independent caller
+selected the crab from `"a🦀z"` through a 322-byte COFF and 696-byte ELF64
+object. Interior-byte start and end endpoints separately reached Windows
+`0xC000001D` and Linux `SIGILL`. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1034,7 +1039,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 328 Windows library, conformance, rustc-nightly-replacement, and driver
+The 330 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1708,7 +1713,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 328 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 330 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

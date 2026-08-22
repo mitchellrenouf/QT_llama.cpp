@@ -2738,7 +2738,7 @@ fn runtime_expression_type_with_locals<
                         base,
                         depth + 1,
                     )?;
-                    let (element, count, mutable) = match base_type {
+                    let (target, count, mutable) = match base_type {
                         RuntimeExpressionType::Reference {
                             target:
                                 RuntimeReferenceTarget::Array {
@@ -2747,11 +2747,15 @@ fn runtime_expression_type_with_locals<
                                     layout: RuntimeReferenceArrayLayout::Native,
                                 },
                             mutable,
-                        } => (element, Some(count), mutable),
+                        } => (RuntimeReferenceTarget::Slice(element), Some(count), mutable),
                         RuntimeExpressionType::Reference {
                             target: RuntimeReferenceTarget::Slice(element),
                             mutable,
-                        } => (element, None, mutable),
+                        } => (RuntimeReferenceTarget::Slice(element), None, mutable),
+                        RuntimeExpressionType::Reference {
+                            target: RuntimeReferenceTarget::Str,
+                            mutable,
+                        } => (RuntimeReferenceTarget::Str, None, mutable),
                         RuntimeExpressionType::Array { element, count } => {
                             let Some(ExprKind::Identifier(name)) =
                                 tree.expression(base).map(|expression| expression.kind)
@@ -2764,7 +2768,11 @@ fn runtime_expression_type_with_locals<
                                 .rev()
                                 .find(|local| local.name == name)
                                 .ok_or(CodegenErrorKind::RuntimeTypeMismatch)?;
-                            (element, Some(count), local.mutable)
+                            (
+                                RuntimeReferenceTarget::Slice(element),
+                                Some(count),
+                                local.mutable,
+                            )
                         }
                         _ => return Err(CodegenErrorKind::RuntimeTypeMismatch),
                     };
@@ -2796,7 +2804,7 @@ fn runtime_expression_type_with_locals<
                             Err(error) => return Err(error),
                         }
                     }
-                    RuntimeReferenceTarget::Slice(element)
+                    target
                 }
                 ExprKind::Index { base, index } => {
                     if !matches!(
@@ -4617,7 +4625,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             depth + 1,
         )
         .map_err(|kind| self.error(kind))?;
-        let (element, count, local_name, slice_name) = match base_type {
+        let (element, count, local_name, slice_name, string_slice) = match base_type {
             RuntimeExpressionType::Reference {
                 target:
                     RuntimeReferenceTarget::Array {
@@ -4626,14 +4634,28 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                         layout: RuntimeReferenceArrayLayout::Native,
                     },
                 ..
-            } => (element, Some(count), None, None),
+            } => (element, Some(count), None, None, false),
             RuntimeExpressionType::Reference {
                 target: RuntimeReferenceTarget::Slice(element),
                 ..
             } => {
                 let source = reference_source_name(tree, base)
                     .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
-                (element, None, None, Some(source))
+                (element, None, None, Some(source), false)
+            }
+            RuntimeExpressionType::Reference {
+                target: RuntimeReferenceTarget::Str,
+                ..
+            } => {
+                let source = reference_source_name(tree, base)
+                    .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
+                (
+                    RuntimeArrayElementType::Integer(Some(crate::IntegerType::U8)),
+                    None,
+                    None,
+                    Some(source),
+                    true,
+                )
             }
             RuntimeExpressionType::Array { element, count } => {
                 let Some(ExprKind::Identifier(name)) =
@@ -4641,7 +4663,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
                 };
-                (element, Some(count), Some(name), None)
+                (element, Some(count), Some(name), None, false)
             }
             _ => return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch)),
         };
@@ -4694,6 +4716,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         } else {
             self.emit_expression(tree, base, depth + 1)?;
         }
+        if string_slice {
+            self.emit_string_range_boundary_checks(
+                slice_name.ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?,
+            )?;
+        }
         self.emit(&[0x48, 0x8b, 0x4c, 0x24, 0x08])?;
         match runtime_array_element_bytes(element)
             .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?
@@ -4709,6 +4736,28 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         ])?;
         self.evaluation_depth -= 2;
         Ok(true)
+    }
+
+    fn emit_string_range_boundary_checks(&mut self, source: &str) -> Result<(), CodegenError> {
+        self.emit(&[0x49, 0x89, 0xc0])?;
+        self.emit_slice_length(source)?;
+        self.emit(&[0x48, 0x89, 0xc2, 0x4c, 0x89, 0xc0])?;
+        self.emit(&[0x48, 0x8b, 0x4c, 0x24, 0x08])?;
+        self.emit_string_boundary_check()?;
+        self.emit(&[0x48, 0x8b, 0x4c, 0x24, 0x08, 0x48, 0x03, 0x0c, 0x24])?;
+        self.emit_string_boundary_check()
+    }
+
+    fn emit_string_boundary_check(&mut self) -> Result<(), CodegenError> {
+        self.emit(&[0x48, 0x85, 0xc9])?;
+        let at_start = self.emit_forward_branch(0x84)?;
+        self.emit(&[0x48, 0x39, 0xd1])?;
+        let at_end = self.emit_forward_branch(0x84)?;
+        self.emit(&[0x44, 0x0f, 0xb6, 0x04, 0x08])?;
+        self.emit(&[0x41, 0x80, 0xe0, 0xc0, 0x41, 0x80, 0xf8, 0x80])?;
+        self.emit_trap_branch(0x84)?;
+        self.patch_forward_branch(at_start)?;
+        self.patch_forward_branch(at_end)
     }
 
     fn emit_slice_value_to_stack<const MAX_NODES: usize>(
@@ -8325,6 +8374,29 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch,
         );
+    }
+
+    #[test]
+    fn creates_utf8_checked_string_ranges() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, start: usize, end: usize) -> &str { &input[start..end] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, end: usize) -> &str { &input[..end] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, start: usize) -> &str { &input[start..] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> &str { &input[..] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, start: usize, end: usize) -> &str { &input[start..=end] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut str, start: usize, end: usize) -> &mut str { &mut input[start..end] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 3072, 4, 192>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
     }
 
     #[test]
