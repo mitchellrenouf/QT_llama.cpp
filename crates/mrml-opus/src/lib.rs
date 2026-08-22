@@ -2131,7 +2131,7 @@ impl Decoder {
         let parsed = Packet::parse(packet)?;
         let all_dtx = parsed.frames[..usize::from(parsed.frame_count)]
             .iter()
-            .all(|frame| frame.len == 0);
+            .all(|frame| frame.len <= 1);
         let frames = (u64::from(sample_rate)
             * u64::from(parsed.frame_duration_us)
             * u64::from(parsed.frame_count)
@@ -2935,6 +2935,20 @@ mod tests {
             Ok(960)
         );
         assert_eq!(pcm, [0; 1920]);
+    }
+
+    #[test]
+    fn one_byte_frames_are_dtx_in_every_coding_mode() {
+        for toc in [0x00, 0x78, 0x80, 0x88, 0xf8] {
+            for payload in [0x00, 0x7f, 0xff] {
+                let mut decoder = Decoder::new(2).unwrap();
+                let mut output = [1i16; 5_760];
+                let samples = decoder.decode(&[toc, payload], &mut output, 48_000).unwrap();
+                assert!(samples > 0);
+                assert!(output[..samples * 2].iter().all(|&sample| sample == 0));
+                assert_eq!(decoder.final_range(), 0);
+            }
+        }
     }
 
     #[test]
