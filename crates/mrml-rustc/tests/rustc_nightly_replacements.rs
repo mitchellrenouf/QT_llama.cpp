@@ -1773,6 +1773,18 @@ fn rustc_immutable_scalar_references_reach_native_objects() {
 }
 
 #[test]
+fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut usize) -> usize { let copied: &mut usize = input; *copied }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",

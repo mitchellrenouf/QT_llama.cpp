@@ -1728,6 +1728,7 @@ fn runtime_array_type(text: &str) -> Option<RuntimeExpressionType> {
 
 fn runtime_reference_type(text: &str) -> Option<RuntimeExpressionType> {
     let pointee = text.trim().strip_prefix('&')?.trim();
+    let pointee = pointee.strip_prefix("mut ").unwrap_or(pointee).trim();
     let pointee = match pointee {
         "bool" => RuntimeArrayElementType::Bool,
         "char" => RuntimeArrayElementType::Char,
@@ -3663,6 +3664,8 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     });
                 }
                 array
+            } else if let Some(reference) = runtime_reference_type(ty.text) {
+                reference
             } else if ty.text == "()" {
                 RuntimeExpressionType::Unit
             } else if ty.text == "bool" {
@@ -6250,6 +6253,24 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &i16) -> i16 { *input }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &bool) -> bool { *input }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &char) -> char { *input }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result = compile_x86_64_function::<_, 512, 4, 48>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_typed_and_mutable_scalar_reference_pointers() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u64) -> u64 { let copied: &u64 = input; *copied }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut u64) -> u64 { let copied: &mut u64 = input; *copied }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
