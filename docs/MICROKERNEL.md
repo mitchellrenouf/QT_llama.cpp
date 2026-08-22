@@ -1431,8 +1431,11 @@ aligned stack, passes the bounded CPU index, and jumps to a canonical kernel
 entry. Its low-memory page is bound to the lifecycle's SIPI vector. A common
 installer enforces read/write+NX to read/execute+non-writable, verifies the
 final permissions, and revokes and zeroes every failed installation; only its
-opaque installed result may publish SIPI. Platform-specific page backends,
-live AP execution, and SMP scheduling are still required. Platform-backed service page
+opaque installed result may publish SIPI. The WHP implementation allocates a
+dedicated low guest-physical page, stages it RW/NX, replaces the GPA mapping
+with RX, and verifies the copied bytes and denied guest write against the live
+Windows hypervisor. UEFI/KVM page backends, live AP execution, and SMP
+scheduling are still required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 

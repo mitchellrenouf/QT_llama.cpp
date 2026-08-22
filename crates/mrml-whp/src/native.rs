@@ -2,6 +2,9 @@ use core::ffi::{c_char, c_void};
 use core::ptr::NonNull;
 use core::slice;
 
+use mrml_kernel::arch::x86_64::{
+    ApTrampolineImage, ApTrampolinePage, InstalledApTrampoline, TrampolinePermissions,
+};
 use mrml_kernel::{MAX_PE_SECTIONS, PAGE_SIZE, PeImage, VmExit};
 
 use crate::{GuestRange, MapPermissions, WHP_EXIT_CONTEXT_BYTES, WhpError, decode_exit_context};
@@ -234,6 +237,22 @@ pub struct PreparedWhpPartition<'system> {
 impl PreparedWhpPartition<'_> {
     pub(crate) fn map_zeroed(&mut self, range: GuestRange) -> Result<usize, WhpError> {
         self.map_initialized(range, &[])
+    }
+
+    pub fn install_ap_trampoline(
+        &mut self,
+        image: &ApTrampolineImage,
+    ) -> Result<InstalledApTrampoline, WhpError> {
+        let range = GuestRange::new(image.physical(), PAGE_SIZE, MapPermissions::read_write())?;
+        let id = self.map_zeroed(range)?;
+        let mut page = WhpTrampolinePage {
+            partition: self,
+            mapping: id,
+            physical: image.physical(),
+        };
+        image
+            .install(&mut page)
+            .map_err(|_| WhpError::InvalidPermissions)
     }
 
     pub(crate) fn map_zeroed_service_readonly(
@@ -703,6 +722,74 @@ impl Drop for PartitionGuard {
     }
 }
 
+struct WhpTrampolinePage<'a, 'system> {
+    partition: &'a mut PreparedWhpPartition<'system>,
+    mapping: usize,
+    physical: u64,
+}
+
+impl ApTrampolinePage for WhpTrampolinePage<'_, '_> {
+    fn permissions(&self, physical: u64) -> Option<TrampolinePermissions> {
+        if physical != self.physical {
+            return None;
+        }
+        let mapping = self.partition.mappings.get(self.mapping)?.as_ref()?;
+        let range = mapping
+            .subranges
+            .iter()
+            .flatten()
+            .find(|range| range.guest_address() == physical && range.size() == PAGE_SIZE)?;
+        let bits = range.permissions().bits();
+        Some(TrampolinePermissions {
+            readable: bits & MapPermissions::READ.bits() != 0,
+            writable: bits & MapPermissions::WRITE.bits() != 0,
+            executable: bits & MapPermissions::EXECUTE.bits() != 0,
+        })
+    }
+
+    fn write_page(&mut self, physical: u64, bytes: &[u8; PAGE_SIZE as usize]) -> bool {
+        physical == self.physical && self.partition.write_guest(physical, bytes).is_ok()
+    }
+
+    fn protect_read_execute(&mut self, physical: u64) -> bool {
+        if physical != self.physical {
+            return false;
+        }
+        let Ok(range) = GuestRange::new(physical, PAGE_SIZE, MapPermissions::read_execute()) else {
+            return false;
+        };
+        let mut final_ranges = [const { None }; MAX_SUBMAPPINGS];
+        final_ranges[0] = Some(range);
+        self.partition
+            .replace_subranges(self.mapping, final_ranges)
+            .is_ok()
+    }
+
+    fn revoke_and_zero(&mut self, physical: u64) -> bool {
+        if physical != self.physical {
+            return false;
+        }
+        let unmap = self.partition.api.unmap_gpa_range;
+        let partition = self.partition.partition;
+        let Some(mapping) = self
+            .partition
+            .mappings
+            .get_mut(self.mapping)
+            .and_then(Option::as_mut)
+        else {
+            return false;
+        };
+        if check(unsafe { unmap(partition.as_ptr(), physical, PAGE_SIZE) }).is_err() {
+            return false;
+        }
+        unsafe {
+            core::ptr::write_bytes(mapping.address.as_ptr(), 0, PAGE_SIZE as usize);
+        }
+        mapping.subranges.fill(None);
+        true
+    }
+}
+
 struct OwnedMapping {
     address: NonNull<c_void>,
     range: GuestRange,
@@ -864,6 +951,24 @@ mod tests {
                     0x60_0000,
                 )
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn live_trampoline_is_sealed_read_execute_when_hypervisor_is_present() {
+        let system = WhpSystem::open().unwrap();
+        if system.hypervisor_present().unwrap() {
+            let mut partition = system.prepare_partition().unwrap();
+            let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x40_0000, 1).unwrap();
+            let installed = partition.install_ap_trampoline(&image).unwrap();
+            assert_eq!(installed.physical(), 0x8000);
+            assert_eq!(
+                partition.write_guest(0x8000, &[0]),
+                Err(WhpError::ReadOnlyMemory)
+            );
+            let mut copied = [0u8; PAGE_SIZE as usize];
+            partition.read_guest(0x8000, &mut copied).unwrap();
+            assert_eq!(&copied, image.bytes());
         }
     }
 }

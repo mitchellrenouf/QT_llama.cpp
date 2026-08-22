@@ -303,8 +303,11 @@ and the lifecycle binds the exact image page to its SIPI vector. Installation
 requires an initially read/write and NX page, copies the image, changes it to
 read/execute and non-writable, verifies those permissions, and revokes and
 zeroes the page on every failed write, protection, or verification step. Only
-the opaque installed-page result can advance the lifecycle to SIPI. Concrete
-UEFI/KVM/WHP page backends, per-CPU interrupt routing, and a live
+the opaque installed-page result can advance the lifecycle to SIPI. WHP now
+creates a dedicated low GPA page, writes it while guest-RW/NX, atomically
+replaces the mapping with guest-RX, and verifies host reads still match while
+guest writes are denied. This passed against the live Windows hypervisor.
+Concrete UEFI/KVM page backends, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
