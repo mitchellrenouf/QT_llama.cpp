@@ -699,6 +699,54 @@ mod tests {
     }
 
     #[test]
+    fn generated_runs_match_the_complete_normative_cache_fingerprint() {
+        // These are the 23 run profiles, in their normative packed order.
+        // Hashing the leading run length and every generated Q3 cost keeps
+        // the full 392-byte cache covered without storing a second copy.
+        let profiles = [
+            (1usize, 40u8),
+            (2, 40),
+            (3, 40),
+            (4, 40),
+            (6, 35),
+            (9, 21),
+            (11, 17),
+            (8, 25),
+            (12, 16),
+            (18, 11),
+            (22, 9),
+            (16, 12),
+            (24, 9),
+            (36, 7),
+            (44, 6),
+            (32, 7),
+            (48, 6),
+            (72, 5),
+            (88, 5),
+            (64, 5),
+            (96, 5),
+            (144, 4),
+            (176, 4),
+        ];
+        let mut scratch = [0; MAX_PULSES + 1];
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut length = 0usize;
+        for (dimensions, count) in profiles {
+            hash = (hash ^ u64::from(count)).wrapping_mul(0x0000_0100_0000_01b3);
+            length += 1;
+            for index in 1..=count {
+                let pulses = pulses_for_index(index).unwrap();
+                let size = codebook_size(dimensions, pulses, &mut scratch).unwrap();
+                let cost = packed_pulse_cache_cost(size).unwrap();
+                hash = (hash ^ u64::from(cost)).wrapping_mul(0x0000_0100_0000_01b3);
+                length += 1;
+            }
+        }
+        assert_eq!(length, 392);
+        assert_eq!(hash, 0x302c_ab98_a404_f495);
+    }
+
+    #[test]
     fn range_coded_pvq_vectors_round_trip() {
         let vectors: [(&[i32], usize); 4] = [
             (&[1, 0, 0, 0], 1),
