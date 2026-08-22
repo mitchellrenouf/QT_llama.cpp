@@ -211,7 +211,7 @@ pub fn compile_x86_64_constant_function<
             integer_type
         } else {
             match expression_type {
-                RuntimeExpressionType::Unit => {
+                RuntimeExpressionType::Unit | RuntimeExpressionType::Default => {
                     return Err(CodegenError {
                         kind: CodegenErrorKind::RuntimeTypeMismatch,
                         span: translate_span(
@@ -1510,6 +1510,7 @@ fn validate_stable_export<const MAX_PARAMETERS: usize>(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeExpressionType {
     Unit,
+    Default,
     Integer(Option<crate::IntegerType>),
     Bool,
     Char,
@@ -1524,6 +1525,7 @@ struct RuntimeLocal<'source> {
 
 fn runtime_types_compatible(left: RuntimeExpressionType, right: RuntimeExpressionType) -> bool {
     match (left, right) {
+        (RuntimeExpressionType::Default, _) | (_, RuntimeExpressionType::Default) => true,
         (RuntimeExpressionType::Unit, RuntimeExpressionType::Unit) => true,
         (RuntimeExpressionType::Bool, RuntimeExpressionType::Bool) => true,
         (RuntimeExpressionType::Char, RuntimeExpressionType::Char) => true,
@@ -1647,7 +1649,11 @@ fn validate_runtime_inline_const<
             recurse(then_branch)?;
             recurse(else_branch)?;
         }
-        ExprKind::Unit | ExprKind::Integer(_) | ExprKind::Bool(_) | ExprKind::Char(_) => {}
+        ExprKind::Unit
+        | ExprKind::DefaultValue
+        | ExprKind::Integer(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Char(_) => {}
     }
     Ok(())
 }
@@ -1693,7 +1699,9 @@ fn validate_runtime_range_endpoints<
             }
             RuntimeExpressionType::Integer(None) => continue,
             RuntimeExpressionType::Bool => return Err(CodegenErrorKind::InvalidRangeType),
-            RuntimeExpressionType::Unit => return Err(CodegenErrorKind::RuntimeTypeMismatch),
+            RuntimeExpressionType::Unit | RuntimeExpressionType::Default => {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            }
         };
         for endpoint in [validation.start, validation.end].into_iter().flatten() {
             let expression = tree
@@ -1762,6 +1770,7 @@ fn runtime_expression_type_with_locals<
         .ok_or(CodegenErrorKind::RuntimeExpressionUnsupported)?;
     match expression.kind {
         ExprKind::Unit => Ok(RuntimeExpressionType::Unit),
+        ExprKind::DefaultValue => Ok(RuntimeExpressionType::Default),
         ExprKind::Integer(literal) => Ok(RuntimeExpressionType::Integer(
             literal.suffix.and_then(crate::IntegerType::from_name),
         )),
@@ -1903,6 +1912,8 @@ fn runtime_expression_type_with_locals<
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
             Ok(match (then_type, else_type) {
+                (RuntimeExpressionType::Default, resolved)
+                | (resolved, RuntimeExpressionType::Default) => resolved,
                 (RuntimeExpressionType::Integer(None), resolved)
                 | (resolved, RuntimeExpressionType::Integer(None)) => resolved,
                 (resolved, _) => resolved,
@@ -2041,6 +2052,7 @@ fn runtime_expression_type_with_locals<
                 return match left_type {
                     RuntimeExpressionType::Integer(_) => Ok(left_type),
                     RuntimeExpressionType::Unit
+                    | RuntimeExpressionType::Default
                     | RuntimeExpressionType::Bool
                     | RuntimeExpressionType::Char => Err(CodegenErrorKind::RuntimeTypeMismatch),
                 };
@@ -2204,7 +2216,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             .expression(id)
             .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
         match expression.kind {
-            ExprKind::Unit => self.emit(&[0x31, 0xc0])?,
+            ExprKind::Unit | ExprKind::DefaultValue => self.emit(&[0x31, 0xc0])?,
             ExprKind::Integer(literal) => {
                 if literal.value > u128::from(self.width.maximum) {
                     return Err(self.error(CodegenErrorKind::ValueOutOfRange));
@@ -2402,7 +2414,9 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     )))
                 })?;
                 match expression_type {
-                    RuntimeExpressionType::Unit => self.emit(&[0x31, 0xc0])?,
+                    RuntimeExpressionType::Unit | RuntimeExpressionType::Default => {
+                        self.emit(&[0x31, 0xc0])?;
+                    }
                     RuntimeExpressionType::Bool => {
                         if value > 1 {
                             return Err(self.error(CodegenErrorKind::ValueOutOfRange));
@@ -2675,6 +2689,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         } else {
             match initializer_type {
                 RuntimeExpressionType::Unit => RuntimeExpressionType::Unit,
+                RuntimeExpressionType::Default => {
+                    return Err(CodegenError {
+                        kind: CodegenErrorKind::RuntimeTypeMismatch,
+                        span: translate_span(body_start, local.initializer_span),
+                    });
+                }
                 RuntimeExpressionType::Bool => RuntimeExpressionType::Bool,
                 RuntimeExpressionType::Char => RuntimeExpressionType::Char,
                 RuntimeExpressionType::Integer(Some(ty)) => {
@@ -4503,6 +4523,8 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let result: u64 = loop { break 13; }; result }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(choose_first: bool, input: u64) -> u64 { let result: u64 = loop { if choose_first { break input + 1; } break 84 / input; }; result }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let first: () = loop { break (); break; }; first; let second: () = loop { break; break (); }; second; 42 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let first: () = loop { if true { break; } else { break break Default::default(); } }; first; let second: () = loop { if true { break Default::default(); } else { break; } }; second; let third: () = loop { break if true { Default::default() } else { break; }; }; third; 42 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let integer: u64 = Default::default(); let boolean: bool = Default::default(); integer; if boolean { 1 / 0 } else { integer + 42 } }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
@@ -4510,9 +4532,8 @@ mod tests {
                 panic!("expected function")
             };
             for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
-                assert!(
-                    compile_x86_64_function::<_, 512, 4, 32>(&function, &NoConstants, abi,).is_ok()
-                );
+                let result = compile_x86_64_function::<_, 512, 4, 32>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
 
@@ -4552,6 +4573,21 @@ mod tests {
         .parse_module::<2, 4>()
         .unwrap();
         let Some(Item::Function(function)) = unreachable_mismatch.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 512, 4, 32>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch
+        );
+
+        let unconstrained_default = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn bad() -> u64 { let result = Default::default(); result }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = unconstrained_default.items()[0] else {
             panic!("expected function")
         };
         assert_eq!(

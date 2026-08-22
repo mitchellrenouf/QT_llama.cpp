@@ -257,7 +257,7 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             });
         }
         match expression.kind {
-            ExprKind::Unit => {
+            ExprKind::Unit | ExprKind::DefaultValue => {
                 self.push(Instruction::PushInteger(0), expression.span)?;
             }
             ExprKind::Integer(literal) => {

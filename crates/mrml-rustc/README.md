@@ -236,6 +236,18 @@ second operands. Their combined probe emitted 169-byte COFF and 560-byte ELF64
 objects and returned 42 through independent Windows gnullvm and Arch Linux WSL
 callers. A separate regression rejects an unreachable Boolean value after an
 integer break, and a trapping later integer operand remains unevaluated. An
+associated `Default::default()` expression now retains an unresolved default
+type until a scalar unit, integer, or Boolean context is available. It lowers
+to the corresponding zero representation; an unconstrained inferred local is
+rejected rather than silently choosing a type, and malformed method names or
+arguments fail during parsing. Nested unlabeled `break` operands share their
+single terminating semicolon with the enclosing break. Together these features
+cover the oracle's three remaining scalar unit/default shapes, including
+`break break Default::default()` and a break whose operand is an `if` with a
+nested valueless break. Their combined probe emitted 207-byte COFF and 600-byte
+ELF64 objects and returned 42 through independent Windows gnullvm and Arch
+Linux WSL callers. Aggregate defaults and general trait method dispatch remain
+outside this scalar implementation. An
 original labeled four-guard probe and its structured-alternative counterpart each emitted
 deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
@@ -598,8 +610,9 @@ cross-nested value exits, terminating nested value-loop operands, up to five
 compatible competing scalar values, both sequential and structured alternative
 syntax, lazy selection of the taken break edge, and the oracle's labeled
 `break`-as-`while`-condition cases plus its two source orders for unreachable
-unit sibling breaks. General `while` condition expressions and arbitrary nested
-value-loop graphs remain outside this bounded slice.
+unit sibling breaks and its three scalar `Default::default()`/nested-break
+forms. General `while` condition expressions, aggregate defaults, and arbitrary
+nested value-loop graphs remain outside this bounded slice.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate

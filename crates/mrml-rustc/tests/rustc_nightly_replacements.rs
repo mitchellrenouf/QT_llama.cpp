@@ -1590,10 +1590,13 @@ fn rustc_immediate_break_loop_values_reach_native_objects() {
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(exit_outer: bool) -> u32 { let value: u32 = 'outer: loop { 'inner: loop { if exit_outer { break 'outer 42; } else { break 'inner false; } }; break 'outer 99; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { let first: u32 = 'outer1: loop { 'inner: while break 'inner { 1 / 0; } break 'outer1 123; }; let second: u32 = 'outer2: loop { while break 'outer2 567 { 1 / 0; } }; first + second }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { let first: () = loop { break (); break; }; first; let second: () = loop { break; break (); }; second; 42 }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { let first: () = loop { if true { break; } else { break break Default::default(); } }; first; let second: () = loop { if true { break Default::default(); } else { break; } }; second; 42 }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { let third: () = loop { break if true { Default::default() } else { break; }; }; third; 42 }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { let integer: u32 = Default::default(); let boolean: bool = Default::default(); integer; if boolean { 1 / 0 } else { integer + 42 } }",
     ];
     for source in sources {
-        assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
-        assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+        assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()), "{source}");
+        assert_eq!(compile(source, ObjectFormat::Coff), Ok(()), "{source}");
     }
 }
 

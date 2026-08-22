@@ -228,6 +228,7 @@ impl IntegerType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExprKind<'source> {
     Unit,
+    DefaultValue,
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -373,6 +374,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
         match expression.kind {
             ExprKind::Bool(_) => true,
             ExprKind::Unit
+            | ExprKind::DefaultValue
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
             | ExprKind::Identifier(_)
@@ -558,7 +560,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             .expression(id)
             .ok_or(ConstEvalError::InvalidExpressionTree)?;
         match expression.kind {
-            ExprKind::Unit => Ok(0),
+            ExprKind::Unit | ExprKind::DefaultValue => Ok(0),
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -967,6 +969,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         };
         match expression.kind {
             ExprKind::Unit => true,
+            ExprKind::DefaultValue => false,
             ExprKind::InlineConst { operand }
             | ExprKind::Return { operand }
             | ExprKind::LoopBreak { operand } => self.node_is_unit(operand, depth + 1),
@@ -994,6 +997,26 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         }
         let token = self.take()?;
         match token {
+            Some(token) if token.text == "break" => {
+                if self
+                    .peek()?
+                    .is_some_and(|next| next.kind == TokenKind::CloseBrace)
+                {
+                    return self.push(Expr {
+                        kind: ExprKind::Identifier(token.text),
+                        span: token.span,
+                    });
+                }
+                let operand = self.nested_loop_break_operand(depth + 1)?;
+                let operand_span = self.node_span(operand)?;
+                self.push(Expr {
+                    kind: ExprKind::LoopBreak { operand },
+                    span: Span {
+                        start: token.span.start,
+                        end: operand_span.end,
+                    },
+                })
+            }
             Some(token) if token.kind == TokenKind::Integer => {
                 let literal = decode_integer(token)?;
                 self.push(Expr {
@@ -1023,6 +1046,33 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             }
             Some(token) if token.text == "const" => self.const_block_expression(token, depth + 1),
             Some(token) if token.kind == TokenKind::Identifier => {
+                if token.text == "Default"
+                    && self
+                        .peek()?
+                        .is_some_and(|next| next.kind == TokenKind::PathSeparator)
+                {
+                    self.take()?;
+                    let method = self.take()?;
+                    if !method.is_some_and(|method| method.text == "default") {
+                        return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
+                    }
+                    let open = self.take()?;
+                    if !open.is_some_and(|open| open.kind == TokenKind::OpenParen) {
+                        return Err(self.error(ExpressionErrorKind::ExpectedExpression, open));
+                    }
+                    let close = self.take()?;
+                    let Some(close) = close.filter(|close| close.kind == TokenKind::CloseParen)
+                    else {
+                        return Err(self.error(ExpressionErrorKind::ExpectedCloseParen, close));
+                    };
+                    return self.push(Expr {
+                        kind: ExprKind::DefaultValue,
+                        span: Span {
+                            start: token.span.start,
+                            end: close.span.end,
+                        },
+                    });
+                }
                 if matches!(token.text, "true" | "false") {
                     return self.push(Expr {
                         kind: ExprKind::Bool(token.text == "true"),
@@ -1523,6 +1573,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             }
             ExprKind::InlineConst { .. }
             | ExprKind::Unit
+            | ExprKind::DefaultValue
             | ExprKind::Integer(_)
             | ExprKind::Bool(_)
             | ExprKind::Char(_)
@@ -2822,6 +2873,22 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         Ok(operand)
     }
 
+    fn nested_loop_break_operand(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
+        if let Some(semicolon) = self
+            .peek()?
+            .filter(|token| token.kind == TokenKind::Semicolon)
+        {
+            return self.push(Expr {
+                kind: ExprKind::Unit,
+                span: Span {
+                    start: semicolon.span.start,
+                    end: semicolon.span.start,
+                },
+            });
+        }
+        self.expression(0, depth + 1)
+    }
+
     fn loop_break_label(
         &mut self,
         expected: Option<Token<'source>>,
@@ -3287,6 +3354,22 @@ mod tests {
         assert_eq!(evaluate("loop { break (); break; }"), Ok(0));
         assert_eq!(evaluate("loop { break; break (); }"), Ok(0));
         assert_eq!(evaluate("loop { break 42; break 1 / 0; }"), Ok(42));
+        assert_eq!(
+            evaluate("loop { if true { break; } else { break break Default::default(); } }"),
+            Ok(0)
+        );
+        assert_eq!(
+            evaluate("loop { if true { break Default::default(); } else { break; } }"),
+            Ok(0)
+        );
+        assert_eq!(
+            evaluate("loop { break if true { Default::default() } else { break; }; }"),
+            Ok(0)
+        );
+        assert_eq!(evaluate("Default::default()"), Ok(0));
+        for source in ["Default::other()", "Default::default(1)"] {
+            assert!(ExpressionParser::<8>::new(source).parse().is_err());
+        }
         assert_eq!(
             ExpressionParser::<24>::new(
                 "loop { break 1; break 2; break 3; break 4; break 5; break 6; }"

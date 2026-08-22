@@ -1962,6 +1962,7 @@ fn inline_const_has_invalid_capture<const MAX_NODES: usize>(
                 || recurse(else_branch, inside_inline_const)
         }
         ExprKind::Unit
+        | ExprKind::DefaultValue
         | ExprKind::Integer(_)
         | ExprKind::Bool(_)
         | ExprKind::Char(_)
@@ -2002,6 +2003,7 @@ fn expression_contains_call<const MAX_NODES: usize>(
             else_branch,
         } => recurse(condition) || recurse(then_branch) || recurse(else_branch),
         ExprKind::Unit
+        | ExprKind::DefaultValue
         | ExprKind::Integer(_)
         | ExprKind::Bool(_)
         | ExprKind::Char(_)
