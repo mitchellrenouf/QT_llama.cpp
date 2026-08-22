@@ -246,9 +246,11 @@ live iteration slots in its complete frame cleanup. Const evaluation restores
 the same scope after every iteration while retaining mutations to enclosing
 locals. Native emission uses checked forward exits and signed 32-bit backedges.
 Capacity overflow is diagnosed before object emission. To keep bootstrap probes
-bounded, an unconditional `loop` must contain a supported exit form. Labels,
-nested statement loops, and break values in statement-loop operations remain
-unsupported.
+bounded, an unconditional `loop` must contain a supported exit form. The exact
+unit-valued inner form `loop { break; }` is accepted as a nested loop operation;
+its break is consumed by the inner loop and cannot exit the containing loop.
+General nested statement loops, labels, and break values in statement-loop
+operations remain unsupported.
 Conditional loop-control blocks may perform up to four local declarations,
 assignments, or discarded scalar expressions before a terminal `break`,
 `continue`, or typed function return. Their actions are lazy and receive a
@@ -602,7 +604,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 212 Windows library, conformance, rustc-nightly-replacement, and driver
+The 213 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -809,6 +811,12 @@ continue edge in `loop-no-reinit-needed-post-bot.rs`. Its 576-byte COFF and
 968-byte ELF64 objects passed independent nightly-built callers through a
 primary break, else-if continue, later else-if break, fallback return, zero
 iterations, and 60,000 continues. Const evaluation exercises the same edges.
+The immediate nested-unit-loop replacement maps unchanged pinned
+`tests/ui/for-loop-while/nested-loop-break-unit.rs` and the immediate exit in
+`loop-break-cont-1.rs`. The exact oracle compiled and ran on both hosts. MRML's
+193-byte COFF and 584-byte ELF64 objects passed independent nightly-built
+callers at zero, one, 42, and 60,000 outer iterations, proving the inner break
+does not target the outer exit.
 A post-loop local-binding replacement emitted a 291-byte COFF object. Its
 independent caller observed 4 on the zero-iteration path and 42 after 19
 iterations, proving the initializer reads the loop's final value instead of a
@@ -1156,7 +1164,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 212 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 213 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

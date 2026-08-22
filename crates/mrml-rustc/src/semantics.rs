@@ -1400,6 +1400,7 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                         depth,
                     )?;
                 }
+                crate::LoopOperation::NestedUnitLoop => {}
                 crate::LoopOperation::ConditionalBlock(index) => {
                     let block = loop_statement.conditional_blocks()[*index]
                         .as_ref()
@@ -3030,7 +3031,7 @@ mod tests {
     #[test]
     fn evaluates_scoped_loop_locals_and_expressions_in_const_functions() {
         let module = Parser::new(
-            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u8 = current; total += selected; } else if i % 2 == 0 { let even: u8 = 2; total += even; } else { let fallback: u8 = 1; total += fallback; } if i % 2 == 0 { let skipped: u8 = current; skipped + 10; continue; } if i == stop { let selected: u8 = current; selected + 20; break; } total + current; } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99); const fn choose(value: u8) -> u8 { loop { if value == 0 { let selected: u8 = 42; selected + 1; return selected; } return value; } } const RETURNED: u8 = choose(0);",
+            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { loop { break; } let current: u8 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u8 = current; total += selected; } else if i % 2 == 0 { let even: u8 = 2; total += even; } else { let fallback: u8 = 1; total += fallback; } if i % 2 == 0 { let skipped: u8 = current; skipped + 10; continue; } if i == stop { let selected: u8 = current; selected + 20; break; } total + current; } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99); const fn choose(value: u8) -> u8 { loop { if value == 0 { let selected: u8 = 42; selected + 1; return selected; } return value; } } const RETURNED: u8 = choose(0);",
         )
         .parse_module::<6, 4>()
         .unwrap();

@@ -685,6 +685,10 @@ pub fn compile_x86_64_function_with_options<
                 ends_with_unconditional_control = false;
                 continue;
             }
+            if matches!(operation, LoopOperation::NestedUnitLoop) {
+                ends_with_unconditional_control = false;
+                continue;
+            }
             if let LoopOperation::ConditionalBlock(index) = operation {
                 let block = loop_statement.conditional_blocks()[*index].ok_or(CodegenError {
                     kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
@@ -1012,6 +1016,7 @@ pub fn compile_x86_64_function_with_options<
                     LoopOperation::Return(_) => continue,
                     LoopOperation::Local(_) => continue,
                     LoopOperation::Expression(_) => continue,
+                    LoopOperation::NestedUnitLoop => continue,
                     LoopOperation::Assignment(_) => continue,
                 };
                 if let Some(control) = conditional {
@@ -3947,7 +3952,7 @@ mod tests {
 
     #[test]
     fn emits_scoped_loop_locals_across_control_edges() {
-        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u64 = current; total += selected; } else if i % 2 == 0 { let even: u64 = 2; total += even; } else { let fallback: u64 = 1; total += fallback; } if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; break; } total + current; } total }";
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { loop { break; } let current: u64 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u64 = current; total += selected; } else if i % 2 == 0 { let even: u64 = 2; total += even; } else { let fallback: u64 = 1; total += fallback; } if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; break; } total + current; } total }";
         let module = Parser::new(source).parse_module::<2, 4>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")

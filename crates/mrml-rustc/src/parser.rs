@@ -335,6 +335,7 @@ pub enum LoopOperation<'source> {
     ConditionalReturn(ConditionalReturn<'source>),
     ConditionalBlock(usize),
     Return(LoopReturn<'source>),
+    NestedUnitLoop,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1417,6 +1418,28 @@ impl<'source> BodyParser<'source> {
                 }
                 if operation_count == MAX_LOOP_OPERATIONS {
                     return Err(probe.error(ParseErrorKind::TooManyLoopOperations, next));
+                }
+                if next.is_some_and(|token| token.text == "loop") {
+                    probe.take()?;
+                    let open = probe.take()?;
+                    if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+                        return Err(probe.error(ParseErrorKind::ExpectedBody, open));
+                    }
+                    let inner_break = probe.take()?;
+                    if !inner_break.is_some_and(|token| token.text == "break") {
+                        return Err(probe.error(ParseErrorKind::ExpectedBody, inner_break));
+                    }
+                    let semicolon = probe.take()?;
+                    if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
+                        return Err(probe.error(ParseErrorKind::ExpectedSemicolon, semicolon));
+                    }
+                    let close = probe.take()?;
+                    if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                        return Err(probe.error(ParseErrorKind::UnexpectedClosingDelimiter, close));
+                    }
+                    operations[operation_count] = Some(LoopOperation::NestedUnitLoop);
+                    operation_count += 1;
+                    continue;
                 }
                 if next.is_some_and(|token| token.text == "if") {
                     probe.take()?;
@@ -2719,6 +2742,25 @@ mod tests {
         assert_eq!(block.else_arm_count, 2);
         let final_arm = loop_statement.conditional_else_arms()[else_index + 1].unwrap();
         assert_eq!(final_arm.condition, None);
+
+        let nested_unit = Parser::new(
+            "fn nested(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { loop { break; } i += 1; } i }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = nested_unit.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<2>().unwrap();
+        let loop_statement = body.while_loops()[0].unwrap();
+        assert_eq!(
+            loop_statement.operations()[0],
+            Some(LoopOperation::NestedUnitLoop)
+        );
+        assert!(matches!(
+            loop_statement.operations()[1],
+            Some(LoopOperation::Assignment(_))
+        ));
 
         let too_many_conditional_actions = Parser::new(
             "fn crowded(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { i += 1; if i == limit { i + 1; i + 2; i + 3; i + 4; i + 5; break; } } i }",
