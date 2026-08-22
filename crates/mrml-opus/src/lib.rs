@@ -2952,6 +2952,28 @@ mod tests {
     }
 
     #[test]
+    fn any_valid_one_byte_packet_is_treated_as_dtx_range_zero() {
+        for toc in u8::MIN..=u8::MAX {
+            let packet = [toc, 0x00];
+            let Ok(parsed) = Packet::parse(&packet) else {
+                continue;
+            };
+            if !parsed.frames[..usize::from(parsed.frame_count)]
+                .iter()
+                .all(|frame| frame.len <= 1)
+            {
+                continue;
+            }
+            let mut decoder = Decoder::new(2).unwrap();
+            let mut output = [0i16; 5_760];
+            let samples = decoder.decode(&packet, &mut output, 48_000).unwrap();
+            assert!(samples > 0);
+            assert!(output[..samples * 2].iter().all(|&sample| sample == 0));
+            assert_eq!(decoder.final_range(), 0);
+        }
+    }
+
+    #[test]
     fn transition_cross_lap_uses_redundant_halves_at_the_requested_edge() {
         let mut main = [[1.0f32; 960]; 2];
         let redundant = [[0.0f32; 240]; 2];
