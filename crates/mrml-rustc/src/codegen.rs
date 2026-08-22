@@ -2211,6 +2211,11 @@ fn validate_runtime_inline_const<
         }
         ExprKind::ReferenceAsPointer { base, .. } => recurse(base)?,
         ExprKind::RawPointerIsNull { base } => recurse(base)?,
+        ExprKind::RawPointerAddress { base } => recurse(base)?,
+        ExprKind::RawPointerWithAddress { base, address } => {
+            recurse(base)?;
+            recurse(address)?;
+        }
         ExprKind::RawPointerOffset { base, offset, .. } => {
             recurse(base)?;
             recurse(offset)?;
@@ -2608,6 +2613,51 @@ fn runtime_expression_type_with_locals<
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
             Ok(RuntimeExpressionType::Bool)
+        }
+        ExprKind::RawPointerAddress { base } => {
+            if !matches!(
+                runtime_expression_type_with_locals(
+                    function,
+                    resolver,
+                    locals,
+                    tree,
+                    base,
+                    depth + 1,
+                )?,
+                RuntimeExpressionType::RawPointer { .. }
+            ) {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            }
+            Ok(RuntimeExpressionType::Integer(Some(
+                crate::IntegerType::Usize,
+            )))
+        }
+        ExprKind::RawPointerWithAddress { base, address } => {
+            let base_type = runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                base,
+                depth + 1,
+            )?;
+            if !matches!(base_type, RuntimeExpressionType::RawPointer { .. })
+                || !matches!(
+                    runtime_expression_type_with_locals(
+                        function,
+                        resolver,
+                        locals,
+                        tree,
+                        address,
+                        depth + 1,
+                    )?,
+                    RuntimeExpressionType::Integer(None)
+                        | RuntimeExpressionType::Integer(Some(crate::IntegerType::Usize))
+                )
+            {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            }
+            Ok(base_type)
         }
         ExprKind::RawPointerOffset {
             base,
@@ -3932,6 +3982,17 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             ExprKind::RawPointerIsNull { base } => {
                 self.emit_expression(tree, base, depth + 1)?;
                 self.emit(&[0x48, 0x85, 0xc0, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0])?;
+            }
+            ExprKind::RawPointerAddress { base } => {
+                self.emit_expression(tree, base, depth + 1)?;
+            }
+            ExprKind::RawPointerWithAddress { base, address } => {
+                self.emit_expression(tree, base, depth + 1)?;
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+                self.emit_expression(tree, address, depth + 1)?;
+                self.evaluation_depth -= 1;
+                self.emit(&[0x48, 0x83, 0xc4, 0x08])?;
             }
             ExprKind::RawPointerOffset {
                 base,
@@ -9198,6 +9259,48 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch,
         );
+    }
+
+    #[test]
+    fn extracts_and_replaces_raw_pointer_addresses() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> usize { input.addr() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut char) -> usize { input.addr() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u32, address: usize) -> *const u32 { input.with_addr(address) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u64, address: usize) -> *mut u64 { input.with_addr(address) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u8, address: usize) -> usize { input.with_addr(address).addr() }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1024, 4, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        for source in [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize) -> usize { input.addr() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16, address: u64) -> *const u16 { input.with_addr(address) }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            assert_eq!(
+                compile_x86_64_function::<_, 768, 2, 80>(
+                    &function,
+                    &NoConstants,
+                    X86_64Abi::Windows,
+                )
+                .unwrap_err()
+                .kind,
+                CodegenErrorKind::RuntimeTypeMismatch,
+            );
+        }
     }
 
     #[test]
