@@ -1580,6 +1580,8 @@ impl<'source> BodyParser<'source> {
                         if next.is_some_and(|token| token.kind == TokenKind::CloseBrace)
                             && (entry_condition.is_some()
                                 || conditional_break_count != 0
+                                || conditional_continue_count != 0
+                                || conditional_return_count != 0
                                 || unconditional_control_count != 0)
                         {
                             probe.take()?;
@@ -3256,6 +3258,25 @@ mod tests {
         );
         assert_eq!(inner.unconditional_control_action_indices(), &[2]);
         assert_eq!(inner.action_count(), 4);
+
+        let conditional_only_loop = Parser::new(
+            "fn nested(enter: bool, stop: u64) -> u64 { let mut inner: u64 = 0; while enter { loop { inner += 1; if inner < stop { continue; } if inner == stop { return inner; } } } 0 }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = conditional_only_loop.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+            panic!("expected nested loop block")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert!(inner.entry_condition.is_none());
+        assert_eq!(inner.conditional_continues().len(), 1);
+        assert_eq!(inner.conditional_returns().len(), 1);
+        assert!(inner.unconditional_controls().is_empty());
 
         let crowded_unconditional = Parser::new(
             "fn nested() { loop { loop { break; continue; return; break; continue; } } }",

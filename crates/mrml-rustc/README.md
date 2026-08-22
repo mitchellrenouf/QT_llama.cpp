@@ -298,6 +298,10 @@ Conditional returns also retain their order relative to the inner conditional
 continue. If both guards at one action position are true, the source-earlier
 control edge wins; a taken continue therefore suppresses every later return in
 that iteration.
+An unconditional inner `loop` may use only conditional continue and function
+return controls. False guards reach the inner backedge rather than escaping the
+loop, while the first true return performs full-frame cleanup. This preserves
+Rust's diverging-loop behavior without requiring a synthetic break edge.
 General nested statement loops, labels, and break values in statement-loop
 operations remain unsupported.
 Conditional loop-control blocks may perform up to four local declarations,
@@ -653,7 +657,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 238 Windows library, conformance, rustc-nightly-replacement, and driver
+The 240 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -901,6 +905,12 @@ unreachable division, while a separate invalid Boolean local after the edge was
 still rejected during native type checking. Const evaluation likewise skipped
 the unreachable overflow and return; parser regressions cover the four-control
 capacity boundary.
+The conditional-only inner-loop replacement maps the backedge/return shape from
+pinned `tests/ui/for-loop-while/loop-break-cont.rs`. Its 270-byte COFF and
+664-byte ELF64 objects passed independent nightly-built callers through false
+outer entry, immediate return, two conditional continues, and 60,000 inner
+iterations. Const evaluation independently covered false entry and one- and
+200-iteration returns.
 The nested-while replacement maps nested scalar while flow from pinned
 `tests/ui/for-loop-while/while.rs` and the nested targeting observed in
 `nested-loop-break-unit.rs`. Its 361-byte COFF and 752-byte ELF64 objects passed
@@ -1302,7 +1312,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 238 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 240 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

@@ -1610,6 +1610,8 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                         }
                         let should_break = block.entry_condition.is_none()
                             && block.conditional_breaks().is_empty()
+                            && block.conditional_continues().is_empty()
+                            && block.conditional_returns().is_empty()
                             && block.unconditional_controls().is_empty();
                         resolver.truncate(nested_checkpoint)?;
                         if should_break {
@@ -3350,6 +3352,19 @@ mod tests {
         assert_eq!(values.resolve("ZERO"), Some(0));
         assert_eq!(values.resolve("ONE"), Some(1));
         assert_eq!(values.resolve("FIVE"), Some(5));
+    }
+
+    #[test]
+    fn evaluates_inner_loop_with_only_conditional_continue_and_return() {
+        let module = Parser::new(
+            "const fn spin(enter: bool, stop: u16) -> u16 { let mut inner: u16 = 0; while enter { loop { inner += 1; if inner < stop { continue; } if inner == stop { return inner; } } } 0 } const SKIP: u16 = spin(false, 200); const ONE: u16 = spin(true, 1); const TWO_HUNDRED: u16 = spin(true, 200);",
+        )
+        .parse_module::<5, 4>()
+        .unwrap();
+        let values = analyze_constants::<3, 96, 5, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("SKIP"), Some(0));
+        assert_eq!(values.resolve("ONE"), Some(1));
+        assert_eq!(values.resolve("TWO_HUNDRED"), Some(200));
     }
 
     #[test]

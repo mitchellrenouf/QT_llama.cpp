@@ -939,7 +939,10 @@ pub fn compile_x86_64_function_with_options<
                 }
                 emitter.emit_stack_cleanup_to(nested_checkpoint)?;
                 emitter.truncate_scoped_locals(nested_checkpoint)?;
-                if (block.entry_condition.is_some() || nested_exit_count != 0)
+                if (block.entry_condition.is_some()
+                    || nested_exit_count != 0
+                    || !block.conditional_continues().is_empty()
+                    || !block.conditional_returns().is_empty())
                     && block.unconditional_controls().is_empty()
                 {
                     emitter.emit_backward_branch(nested_start)?;
@@ -4243,6 +4246,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_multiple_continues(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { continue; } if inner == second { continue; } total += inner; } outer += 1; inner = 0; } total }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_multiple_breaks(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { break; } total += inner; if inner == second { break; } } outer += 1; inner = 0; } total }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_unconditional_continue(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; let unreachable: u64 = 10 / 0; unreachable; } outer += 1; inner = 0; } outer }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_conditional_only_loop(enter: bool, stop: u64) -> u64 { let mut inner: u64 = 0; while enter { loop { inner += 1; if inner < stop { continue; } if inner == stop { return inner; } } } 0 }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {

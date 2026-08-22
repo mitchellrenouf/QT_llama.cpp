@@ -864,6 +864,24 @@ fn rustc_unconditional_nested_continue_has_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_inner_loop_with_conditional_only_exits_has_an_executable_replacement() {
+    // Original scalar replacement for conditional backedges and return exits in
+    // pinned tests/ui/for-loop-while/loop-break-cont.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(enter: bool, stop: u32) -> u32 { let mut inner: u32 = 0; while enter { loop { inner += 1; if inner < stop { continue; } if inner == stop { return inner; } } } 0 }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<2048, 1536, 4, 4, 4, 64>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",
