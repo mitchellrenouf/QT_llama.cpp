@@ -1406,13 +1406,40 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                         .as_ref()
                         .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
                     let mut nested_iterations = 0usize;
-                    loop {
+                    'nested: loop {
                         if nested_iterations == MAX_CONST_LOOP_ITERATIONS {
                             return Err(SemanticErrorKind::UnsupportedConstCall);
                         }
                         nested_iterations += 1;
                         let nested_checkpoint = resolver.count;
-                        for action in block.actions().iter().flatten() {
+                        for action_index in 0..=block.action_count() {
+                            if block.continue_condition.is_some()
+                                && action_index == block.continue_action_index
+                            {
+                                let condition = block
+                                    .continue_condition
+                                    .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
+                                let tree = condition
+                                    .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
+                                    .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
+                                if evaluate_boolean_const_expression(
+                                    context,
+                                    symbol_count,
+                                    &tree,
+                                    tree.root(),
+                                    resolver,
+                                    depth,
+                                )? {
+                                    resolver.truncate(nested_checkpoint)?;
+                                    continue 'nested;
+                                }
+                            }
+                            if action_index == block.action_count() {
+                                break;
+                            }
+                            let action = block.actions()[action_index]
+                                .as_ref()
+                                .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
                             match action {
                                 crate::ConditionalLoopAction::Local(local) => evaluate_const_local(
                                     context,
@@ -3141,6 +3168,19 @@ mod tests {
         assert_eq!(values.resolve("ZERO"), Some(0));
         assert_eq!(values.resolve("ONE"), Some(6));
         assert_eq!(values.resolve("FIVE"), Some(30));
+    }
+
+    #[test]
+    fn evaluates_conditional_continue_inside_a_repeated_inner_loop() {
+        let module = Parser::new(
+            "const fn sum(limit: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < limit { loop { let selected: u8 = inner + 1; inner = selected; if selected % 2 == 0 { continue; } total += selected as u16; if selected == 5 { break; } } outer += 1; inner = 0; } total } const ZERO: u16 = sum(0); const ONE: u16 = sum(1); const FIVE: u16 = sum(5);",
+        )
+        .parse_module::<5, 4>()
+        .unwrap();
+        let values = analyze_constants::<3, 96, 5, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("ONE"), Some(9));
+        assert_eq!(values.resolve("FIVE"), Some(45));
     }
 
     #[test]

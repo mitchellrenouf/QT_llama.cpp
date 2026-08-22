@@ -281,6 +281,8 @@ pub struct NestedLoopBlock<'source> {
     actions: [Option<ConditionalLoopAction<'source>>; MAX_NESTED_LOOP_ACTIONS],
     action_count: usize,
     pub break_condition: Option<ConditionalLoopControl<'source>>,
+    pub continue_condition: Option<ConditionalLoopControl<'source>>,
+    pub continue_action_index: usize,
 }
 
 impl<'source> NestedLoopBlock<'source> {
@@ -1457,6 +1459,8 @@ impl<'source> BodyParser<'source> {
                     }
                     let mut actions = [None; MAX_NESTED_LOOP_ACTIONS];
                     let mut action_count = 0usize;
+                    let mut continue_condition = None;
+                    let mut continue_action_index = 0usize;
                     let break_condition;
                     loop {
                         let next = probe.peek()?;
@@ -1475,9 +1479,13 @@ impl<'source> BodyParser<'source> {
                             probe.take()?;
                             let (condition_span, _) =
                                 probe.delimited_until("{", ParseErrorKind::ExpectedBody)?;
-                            let inner_break = probe.take()?;
-                            if !inner_break.is_some_and(|token| token.text == "break") {
-                                return Err(probe.error(ParseErrorKind::ExpectedBody, inner_break));
+                            let inner_control = probe.take()?;
+                            if !inner_control
+                                .is_some_and(|token| matches!(token.text, "break" | "continue"))
+                            {
+                                return Err(
+                                    probe.error(ParseErrorKind::ExpectedBody, inner_control)
+                                );
                             }
                             let semicolon = probe.take()?;
                             if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
@@ -1494,10 +1502,21 @@ impl<'source> BodyParser<'source> {
                                     conditional_close,
                                 ));
                             }
-                            break_condition = Some(ConditionalLoopControl {
+                            let condition = ConditionalLoopControl {
                                 condition: &self.source[condition_span.start..condition_span.end],
                                 condition_span,
-                            });
+                            };
+                            if inner_control.is_some_and(|token| token.text == "continue") {
+                                if continue_condition.is_some() {
+                                    return Err(
+                                        probe.error(ParseErrorKind::ExpectedBody, inner_control)
+                                    );
+                                }
+                                continue_condition = Some(condition);
+                                continue_action_index = action_count;
+                                continue;
+                            }
+                            break_condition = Some(condition);
                             break;
                         }
                         if action_count == MAX_NESTED_LOOP_ACTIONS {
@@ -1543,6 +1562,8 @@ impl<'source> BodyParser<'source> {
                                 actions,
                                 action_count,
                                 break_condition,
+                                continue_condition,
+                                continue_action_index,
                             });
                             let index = nested_block_count;
                             nested_block_count += 1;
@@ -2856,7 +2877,7 @@ mod tests {
         assert_eq!(final_arm.condition, None);
 
         let nested_unit = Parser::new(
-            "fn nested(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; let mut inner: u64 = 0; while i < limit { loop { let selected: u64 = inner + 1; inner = selected; total += selected; if selected == 3 { break; } } i += 1; inner = 0; } total }",
+            "fn nested(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; let mut inner: u64 = 0; while i < limit { loop { let selected: u64 = inner + 1; inner = selected; if selected % 2 == 0 { continue; } total += selected; if selected == 5 { break; } } i += 1; inner = 0; } total }",
         )
         .parse_module::<2, 2>()
         .unwrap();
@@ -2875,8 +2896,16 @@ mod tests {
                 .break_condition
                 .expect("expected conditional break")
                 .condition,
-            "selected == 3"
+            "selected == 5"
         );
+        assert_eq!(
+            nested
+                .continue_condition
+                .expect("expected conditional continue")
+                .condition,
+            "selected % 2 == 0"
+        );
+        assert_eq!(nested.continue_action_index, 2);
         assert!(matches!(
             loop_statement.operations()[1],
             Some(LoopOperation::Assignment(_))

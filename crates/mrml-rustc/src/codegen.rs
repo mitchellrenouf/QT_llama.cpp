@@ -692,11 +692,66 @@ pub fn compile_x86_64_function_with_options<
                 })?;
                 let nested_checkpoint = emitter.saved_locals;
                 let nested_start = emitter.length;
-                for action in block.actions().iter().flatten() {
+                for action_index in 0..=block.action_count() {
+                    if block.continue_condition.is_some()
+                        && action_index == block.continue_action_index
+                    {
+                        let condition = block.continue_condition.ok_or(CodegenError {
+                            kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
+                            span: function.body_expression_span,
+                        })?;
+                        let tree = condition
+                            .parse_condition::<MAX_EXPRESSION_NODES>()
+                            .map_err(|error| CodegenError {
+                                kind: CodegenErrorKind::Expression(error.kind),
+                                span: translate_span(
+                                    function.body_expression_span.start
+                                        + condition.condition_span.start,
+                                    error.span,
+                                ),
+                            })?;
+                        let condition_type = runtime_expression_type_with_locals(
+                            function,
+                            emitter.resolver,
+                            &emitter.locals[..emitter.saved_locals],
+                            &tree,
+                            tree.root(),
+                            0,
+                        )
+                        .map_err(|kind| CodegenError {
+                            kind,
+                            span: translate_span(
+                                function.body_expression_span.start,
+                                condition.condition_span,
+                            ),
+                        })?;
+                        if condition_type != RuntimeExpressionType::Bool {
+                            return Err(CodegenError {
+                                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                                span: translate_span(
+                                    function.body_expression_span.start,
+                                    condition.condition_span,
+                                ),
+                            });
+                        }
+                        emitter.emit_expression(&tree, tree.root(), 0)?;
+                        emitter.emit(&[0x48, 0x85, 0xc0])?;
+                        let skip_continue = emitter.emit_forward_branch(0x84)?;
+                        emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                        emitter.emit_backward_branch(nested_start)?;
+                        emitter.patch_forward_branch(skip_continue)?;
+                    }
+                    if action_index == block.action_count() {
+                        break;
+                    }
+                    let action = block.actions()[action_index].ok_or(CodegenError {
+                        kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
+                        span: function.body_expression_span,
+                    })?;
                     match action {
                         crate::ConditionalLoopAction::Local(local) => {
                             emitter.emit_local::<MAX_EXPRESSION_NODES>(
-                                local,
+                                &local,
                                 operand_type,
                                 function.body_expression_span.start,
                                 true,
@@ -704,13 +759,13 @@ pub fn compile_x86_64_function_with_options<
                         }
                         crate::ConditionalLoopAction::Assignment(assignment) => {
                             emitter.emit_assignment::<MAX_EXPRESSION_NODES>(
-                                assignment,
+                                &assignment,
                                 function.body_expression_span.start,
                             )?;
                         }
                         crate::ConditionalLoopAction::Expression(statement) => {
                             emitter.emit_expression_statement::<MAX_EXPRESSION_NODES>(
-                                statement,
+                                &statement,
                                 function.body_expression_span.start,
                             )?;
                         }
