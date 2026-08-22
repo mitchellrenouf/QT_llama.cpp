@@ -663,6 +663,24 @@ fn rustc_nested_while_has_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_nested_while_controls_have_an_executable_replacement() {
+    // Original scalar replacement combining nested while, continue, and break
+    // flow from pinned tests/ui/for-loop-while/while.rs and loop-break-cont.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(outer_limit: u32, inner_limit: u32) -> u32 { let mut outer: u32 = 0; let mut inner: u32 = 0; let mut total: u32 = 0; while outer < outer_limit { while inner < inner_limit { let selected: u32 = inner + 1; inner = selected; if selected % 2 == 0 { continue; } total += selected; if selected == 5 { break; } } outer += 1; inner = 0; } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<3072, 2048, 4, 4, 4, 96>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

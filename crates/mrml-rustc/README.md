@@ -621,7 +621,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 221 Windows library, conformance, rustc-nightly-replacement, and driver
+The 223 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -857,6 +857,11 @@ The nested-while replacement maps nested scalar while flow from pinned
 independent nightly-built callers at zero, one, five, and 60,000 outer
 iterations, with three condition-headed inner iterations each. Const evaluation
 produced matching zero, six, and thirty results.
+A combined nested-while-control replacement emitted 489-byte COFF and 880-byte
+ELF64 objects. Independent nightly-built callers covered immediate head exit,
+natural head exhaustion, taken and false conditional continue, later
+conditional break, zero outer iterations, and 60,000 outer repetitions. The
+const evaluator produced matching zero, four, nine, and forty-five path results.
 A post-loop local-binding replacement emitted a 291-byte COFF object. Its
 independent caller observed 4 on the zero-iteration path and 42 after 19
 iterations, proving the initializer reads the loop's final value instead of a
@@ -1204,7 +1209,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 221 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 223 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

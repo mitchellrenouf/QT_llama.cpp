@@ -3212,6 +3212,21 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_nested_while_with_continue_and_break_controls() {
+        let module = Parser::new(
+            "const fn sum(outer_limit: u8, inner_limit: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < outer_limit { while inner < inner_limit { let selected: u8 = inner + 1; inner = selected; if selected % 2 == 0 { continue; } total += selected as u16; if selected == 5 { break; } } outer += 1; inner = 0; } total } const ZERO: u16 = sum(0, 7); const HEAD_EXIT: u16 = sum(1, 0); const NATURAL: u16 = sum(1, 4); const BREAK: u16 = sum(1, 7); const FIVE: u16 = sum(5, 7);",
+        )
+        .parse_module::<7, 4>()
+        .unwrap();
+        let values = analyze_constants::<5, 128, 7, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("HEAD_EXIT"), Some(0));
+        assert_eq!(values.resolve("NATURAL"), Some(4));
+        assert_eq!(values.resolve("BREAK"), Some(9));
+        assert_eq!(values.resolve("FIVE"), Some(45));
+    }
+
+    #[test]
     fn evaluates_bounded_boolean_const_function_calls_and_parameters() {
         let module = Parser::new(
             "const fn invert(value: bool) -> bool { !value } const fn both(left: bool, right: bool) -> bool { left && right } const fn positive(value: i32) -> bool { value > 0 } const fn choose(condition: bool, left: u8, right: u8) -> u8 { if condition { left } else { right } } const FLAG: bool = invert(false) && both(true, positive(42)); const VALUE: u8 = choose(FLAG, 42, 0);",
