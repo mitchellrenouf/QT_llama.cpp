@@ -8,6 +8,7 @@ use mrml_runtime::{
     Command, Output, Text, Vector, mrml_format as format, mrml_print as print,
     mrml_println as println,
 };
+use mrml_ssh::SshRemote;
 use mrml_terminal_style::Colorize;
 
 fn git_output(repository: Option<&str>, args: &[&str]) -> Result<Output> {
@@ -172,9 +173,35 @@ fn dashboard(repository: Option<&str>) -> Result<()> {
 }
 
 fn help() {
+    println!("{}\n", "MRML GIT".bright_cyan().bold());
+    for usage in [
+        "[-C PATH] [status]",
+        "[-C PATH] doctor",
+        "[-C PATH] init [path]",
+        "[-C PATH] clone <url> [path]",
+        "[-C PATH] log [count]",
+        "[-C PATH] diff [--staged] [args...]",
+        "[-C PATH] show [revision]",
+        "[-C PATH] branch [new-name]",
+        "[-C PATH] switch <name>",
+        "[-C PATH] stage <path>...",
+        "[-C PATH] unstage <path>...",
+        "[-C PATH] restore <path>...",
+        "[-C PATH] commit [--sign] <message>",
+        "[-C PATH] fetch [remote]",
+        "[-C PATH] pull [remote] [branch]",
+        "[-C PATH] push [remote] [branch]",
+        "[-C PATH] remote",
+        "[-C PATH] ssh <add|set|info|check> ...",
+        "[-C PATH] signing <configure|auto|status|off|verify|verify-tag> ...",
+        "[-C PATH] tag [name]",
+        "[-C PATH] tag-sign <name> <message>",
+        "[-C PATH] stash [list|push [message]|pop]",
+    ] {
+        println!("  mrml-git {}", usage);
+    }
     println!(
-        "{}\n\n  mrml-git [-C PATH] [status]\n  mrml-git [-C PATH] doctor\n  mrml-git [-C PATH] init [path]\n  mrml-git [-C PATH] clone <url> [path]\n  mrml-git [-C PATH] log [count]\n  mrml-git [-C PATH] diff [--staged] [args...]\n  mrml-git [-C PATH] show [revision]\n  mrml-git [-C PATH] branch [new-name]\n  mrml-git [-C PATH] switch <name>\n  mrml-git [-C PATH] stage <path>...\n  mrml-git [-C PATH] unstage <path>...\n  mrml-git [-C PATH] restore <path>...\n  mrml-git [-C PATH] commit <message>\n  mrml-git [-C PATH] fetch [remote]\n  mrml-git [-C PATH] pull [remote] [branch]\n  mrml-git [-C PATH] push [remote] [branch]\n  mrml-git [-C PATH] remote\n  mrml-git [-C PATH] tag [name]\n  mrml-git [-C PATH] stash [list|push [message]|pop]\n\nPulls are fast-forward only. No command shows the workspace pulse.",
-        "MRML GIT".bright_cyan().bold()
+        "\nPulls are fast-forward only. SSH signing is repository-local. No command shows the workspace pulse."
     );
 }
 
@@ -207,6 +234,53 @@ fn join_words(words: &[Text]) -> Text {
 fn checked_positionals(values: &[Text]) -> Result<&[Text]> {
     validate_positional(values).map_err(|error| anyhow!("{}", error))?;
     Ok(values)
+}
+
+fn ssh_remote(repository: Option<&str>, name: &str) -> Result<(Text, SshRemote)> {
+    let url = run(repository, &["remote", "get-url", "--", name])?;
+    let url: Text = url.trim().into();
+    let parsed =
+        SshRemote::parse(&url).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
+    Ok((url, parsed))
+}
+
+fn print_ssh_remote(name: &str, url: &str, remote: &SshRemote) {
+    println!("{} {}", "remote".green().bold(), name);
+    println!("{} {}", "url".green().bold(), url);
+    println!("{} {}", "destination".green().bold(), remote.destination());
+    println!("{} {}", "path".green().bold(), remote.path);
+    println!(
+        "{} {}",
+        "port".green().bold(),
+        remote
+            .port
+            .map(|value| format!("{}", value))
+            .unwrap_or_else(|| "default".into())
+    );
+}
+
+fn config_value(repository: Option<&str>, key: &str) -> Option<Text> {
+    run(repository, &["config", "--local", "--get", key])
+        .ok()
+        .map(|value| value.trim().into())
+}
+
+fn print_signing_status(repository: Option<&str>) -> Result<()> {
+    run(repository, &["rev-parse", "--show-toplevel"])?;
+    for (label, key) in [
+        ("format", "gpg.format"),
+        ("key", "user.signingkey"),
+        ("commits", "commit.gpgsign"),
+        ("tags", "tag.gpgsign"),
+        ("allowed signers", "gpg.ssh.allowedSignersFile"),
+    ] {
+        println!(
+            "{} {}",
+            label.green().bold(),
+            config_value(repository, key).unwrap_or_else(|| "not configured".into())
+        );
+    }
+    Ok(())
 }
 
 fn dispatch(cli: &Cli) -> Result<()> {
@@ -311,9 +385,18 @@ fn dispatch(cli: &Cli) -> Result<()> {
             ),
         ),
         "commit" => {
-            require_arguments("commit", tail)?;
-            let message = join_words(tail);
-            run_visible(repository, &["commit", "-m", &message])
+            let (sign, words) = if tail.first().is_some_and(|value| value == "--sign") {
+                (true, &tail[1..])
+            } else {
+                (false, tail)
+            };
+            require_arguments("commit", words)?;
+            let message = join_words(words);
+            if sign {
+                run_visible(repository, &["commit", "-S", "-m", &message])
+            } else {
+                run_visible(repository, &["commit", "-m", &message])
+            }
         }
         "fetch" if tail.len() <= 1 => {
             checked_positionals(tail)?;
@@ -328,10 +411,97 @@ fn dispatch(cli: &Cli) -> Result<()> {
             run_visible(repository, &collect("push", &[], tail))
         }
         "remote" if tail.is_empty() => run_visible(repository, &["remote", "--verbose"]),
+        "ssh" if tail.len() == 3 && tail[0] == "add" => {
+            checked_positionals(&tail[1..2])?;
+            SshRemote::parse(&tail[2]).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
+            run_visible(repository, &["remote", "add", "--", &tail[1], &tail[2]])
+        }
+        "ssh" if tail.len() == 3 && tail[0] == "set" => {
+            checked_positionals(&tail[1..2])?;
+            SshRemote::parse(&tail[2]).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
+            run_visible(repository, &["remote", "set-url", "--", &tail[1], &tail[2]])
+        }
+        "ssh" if matches!(tail.len(), 1 | 2) && tail[0] == "info" => {
+            let name = tail.get(1).map(Text::as_str).unwrap_or("origin");
+            checked_positionals(&tail[1..])?;
+            let (url, parsed) = ssh_remote(repository, name)?;
+            print_ssh_remote(name, &url, &parsed);
+            Ok(())
+        }
+        "ssh" if matches!(tail.len(), 1 | 2) && tail[0] == "check" => {
+            let name = tail.get(1).map(Text::as_str).unwrap_or("origin");
+            checked_positionals(&tail[1..])?;
+            let (url, parsed) = ssh_remote(repository, name)?;
+            print_ssh_remote(name, &url, &parsed);
+            println!("{}", "checking read-only SSH access...".dimmed());
+            run_visible(
+                repository,
+                &["ls-remote", "--exit-code", "--", name, "HEAD"],
+            )
+        }
+        "signing" if tail.len() == 2 && tail[0] == "configure" => {
+            checked_positionals(&tail[1..])?;
+            run_visible(repository, &["config", "--local", "gpg.format", "ssh"])?;
+            run_visible(
+                repository,
+                &["config", "--local", "user.signingkey", &tail[1]],
+            )?;
+            print_signing_status(repository)
+        }
+        "signing" if tail.len() == 3 && tail[0] == "configure" => {
+            checked_positionals(&tail[1..])?;
+            run_visible(repository, &["config", "--local", "gpg.format", "ssh"])?;
+            run_visible(
+                repository,
+                &["config", "--local", "user.signingkey", &tail[1]],
+            )?;
+            run_visible(
+                repository,
+                &["config", "--local", "gpg.ssh.allowedSignersFile", &tail[2]],
+            )?;
+            print_signing_status(repository)
+        }
+        "signing" if tail.len() == 1 && tail[0] == "auto" => {
+            if config_value(repository, "gpg.format").as_deref() != Some("ssh")
+                || config_value(repository, "user.signingkey").is_none()
+            {
+                return Err(anyhow!(
+                    "run signing configure <key> [allowed-signers] first"
+                ));
+            }
+            run_visible(repository, &["config", "--local", "commit.gpgsign", "true"])?;
+            run_visible(repository, &["config", "--local", "tag.gpgsign", "true"])?;
+            print_signing_status(repository)
+        }
+        "signing" if tail.len() == 1 && tail[0] == "status" => print_signing_status(repository),
+        "signing" if tail.len() == 1 && tail[0] == "off" => {
+            run_visible(
+                repository,
+                &["config", "--local", "commit.gpgsign", "false"],
+            )?;
+            run_visible(repository, &["config", "--local", "tag.gpgsign", "false"])?;
+            print_signing_status(repository)
+        }
+        "signing" if tail.len() == 2 && tail[0] == "verify" => {
+            checked_positionals(&tail[1..])?;
+            run_visible(repository, &["verify-commit", "--", &tail[1]])
+        }
+        "signing" if tail.len() == 2 && tail[0] == "verify-tag" => {
+            checked_positionals(&tail[1..])?;
+            run_visible(repository, &["verify-tag", "--", &tail[1]])
+        }
         "tag" if tail.is_empty() => run_visible(repository, &["tag"]),
         "tag" if tail.len() == 1 => {
             checked_positionals(tail)?;
             run_visible(repository, &collect("tag", &["--"], tail))
+        }
+        "tag-sign" if tail.len() >= 2 => {
+            checked_positionals(&tail[..1])?;
+            let message = join_words(&tail[1..]);
+            run_visible(
+                repository,
+                &["tag", "--sign", "-m", &message, "--", &tail[0]],
+            )
         }
         "stash" if tail.is_empty() || (tail.len() == 1 && tail[0] == "list") => {
             run_visible(repository, &["stash", "list"])

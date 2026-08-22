@@ -765,6 +765,28 @@ mrml-git push origin main
 mrml-git stash push "checkpoint"
 ```
 
+SSH remotes and SSH-format Git signatures use the host Git and OpenSSH
+processes. MRML validates remote structure before configuration, accepts SCP
+style (`git@host:owner/repo.git`) and `ssh://` URLs, rejects embedded passwords,
+and provides a read-only remote access check:
+
+```powershell
+mrml-git ssh add origin git@github.com:owner/repository.git
+mrml-git ssh info origin
+mrml-git ssh check origin
+mrml-git signing configure C:\keys\id_ed25519 C:\keys\allowed_signers
+mrml-git commit --sign "Signed change"
+mrml-git tag-sign v1.0.0 "Signed release"
+mrml-git signing verify HEAD
+mrml-git signing verify-tag v1.0.0
+```
+
+Signing configuration is local to the repository. `signing auto` enables
+automatic commit and tag signing, while `signing off` disables both. A
+compromised host can read or misuse host keys, alter Git/OpenSSH, or forge the
+displayed result; this client does not treat hosted signing as a bare-metal
+MRML security boundary.
+
 Mutating commands deliberately map to narrow Git operations: `stage` inserts
 `--` before paths, `unstage` uses `restore --staged`, `branch <name>` creates
 and switches in one operation, and `commit` requires an explicit message.

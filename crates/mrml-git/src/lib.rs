@@ -169,7 +169,9 @@ pub fn parse_porcelain(source: &[u8]) -> Vector<Change> {
 }
 
 pub fn validate_positional(values: &[Text]) -> core::result::Result<(), Text> {
-    if let Some(value) = values.iter().find(|value| value.starts_with('-')) {
+    if let Some(value) = values.iter().find(|value| {
+        value.starts_with('-') || value.chars().any(|character| character.is_control())
+    }) {
         Err(mrml_runtime::mrml_format!(
             "option-like value '{}' is not allowed here",
             value
@@ -234,5 +236,6 @@ mod tests {
     fn positional_validation_blocks_option_injection() {
         assert!(validate_positional(&Vector::from([Text::from("origin")])).is_ok());
         assert!(validate_positional(&Vector::from([Text::from("--force")])).is_err());
+        assert!(validate_positional(&Vector::from([Text::from("key\ncommand")])).is_err());
     }
 }

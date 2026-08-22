@@ -30,6 +30,7 @@ impl SshRemote {
         }
         let (user, host_port) = split_user(authority)?;
         let (host, port) = split_host_port(host_port)?;
+        validate_path(&path[1..])?;
         Ok(Self {
             user: user.map(Into::into),
             host: host.into(),
@@ -50,9 +51,7 @@ impl SshRemote {
         let path = &host_and_path[separator + 1..];
         let host = host.trim_matches(['[', ']']);
         validate_host(host)?;
-        if path.is_empty() {
-            return Err(Error::MissingPath);
-        }
+        validate_path(path)?;
         Ok(Self {
             user: user.map(Into::into),
             host: host.into(),
@@ -78,6 +77,7 @@ fn split_user(authority: &str) -> Result<(Option<&str>, &str), Error> {
             if user.contains(':') {
                 return Err(Error::PasswordNotAllowed);
             }
+            validate_user(user)?;
             Ok((Some(user), host))
         }
         None => Ok((None, authority)),
@@ -130,11 +130,37 @@ fn validate_text(value: &str) -> Result<(), Error> {
 
 fn validate_host(host: &str) -> Result<(), Error> {
     if host.is_empty()
-        || host
-            .chars()
-            .any(|character| character.is_whitespace() || matches!(character, '/' | '\\'))
+        || host.starts_with('-')
+        || host.chars().any(|character| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | ':'))
+        })
     {
         Err(Error::InvalidAuthority)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_user(user: &str) -> Result<(), Error> {
+    if user.starts_with('-')
+        || user.chars().any(|character| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+        })
+    {
+        Err(Error::InvalidAuthority)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_path(path: &str) -> Result<(), Error> {
+    if path.is_empty()
+        || path.starts_with('-')
+        || path.chars().any(|character| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '/' | '.' | '_' | '-' | '~'))
+        })
+    {
+        Err(Error::InvalidPath)
     } else {
         Ok(())
     }
@@ -148,6 +174,7 @@ pub enum Error {
     InvalidAuthority,
     InvalidPort,
     MissingPath,
+    InvalidPath,
 }
 
 impl core::fmt::Display for Error {
@@ -159,6 +186,7 @@ impl core::fmt::Display for Error {
             Self::InvalidAuthority => "SSH user or host is invalid",
             Self::InvalidPort => "SSH port is invalid",
             Self::MissingPath => "SSH repository path is missing",
+            Self::InvalidPath => "SSH repository path contains unsafe characters",
         })
     }
 }
@@ -198,6 +226,14 @@ mod tests {
         assert_eq!(
             SshRemote::parse("git@example.com:repo\ncommand").unwrap_err(),
             Error::InvalidText
+        );
+        assert_eq!(
+            SshRemote::parse("git@example.com:repo;command").unwrap_err(),
+            Error::InvalidPath
+        );
+        assert_eq!(
+            SshRemote::parse("bad user@example.com:repo").unwrap_err(),
+            Error::InvalidAuthority
         );
     }
 }
