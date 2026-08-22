@@ -5,14 +5,14 @@ use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use mrml_kernel::{
     ArtifactKind, FramebufferInfo, MAX_HANDOFF_BYTES, MAX_HANDOFF_MADT_BYTES,
-    MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PeImage, PhysAddr, PixelFormat,
-    SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
+    MAX_KERNEL_IMAGE_BYTES, MAX_SERVICE_IMAGE_BYTES, MemoryKind, MemoryRegion, PeImage, PhysAddr,
+    PixelFormat, SIGNED_ARTIFACT_OVERHEAD_BYTES, ServiceLaunch, SignedArtifact, TrustRoot,
     arch::x86_64::{
         AcpiMemory, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES, PagePermissions,
         PageTableBuildError, PageTableBuilder, PageTableStore, PerCpuPrivilegeStacks, VirtAddr,
         copy_madt,
     },
-    encode_handoff_with_smp,
+    encode_handoff_with_smp_and_service,
 };
 use mrml_uefi::tpm::{NvCounterError, TpmTransport, enforce_version};
 use mrml_uefi::*;
@@ -48,6 +48,12 @@ const KERNEL_STACK_GUARD_PAGES: usize = 1;
 const KERNEL_PATH: &[u16] = &[
     92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 75, 69, 82, 78, 69, 76, 46, 83, 73, 71, 78, 69, 68, 0,
 ];
+const SERVICE_PATH: &[u16] = &[
+    92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 83, 69, 82, 86, 73, 67, 69, 46, 83, 73, 71, 78, 69, 68,
+    0,
+];
+const SERVICE_STACK_PAGES: usize = 16;
+const SERVICE_TABLE_PAGES: usize = 64;
 
 #[derive(Clone, Copy)]
 struct Framebuffer {
@@ -67,6 +73,11 @@ struct Transition {
     double_fault_stack_top: u64,
     ap_trampoline: u64,
     ap_stack_arena: u64,
+}
+
+#[derive(Clone, Copy)]
+struct PreparedService {
+    launch: ServiceLaunch,
 }
 
 struct FirmwarePageTables {
@@ -277,7 +288,15 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     }
     paint(framebuffer, [0x80, 0x40, 0x00]);
 
-    let kernel_file = unsafe { load_kernel_file(image, services, framebuffer) }?;
+    let kernel_file = unsafe {
+        load_file(
+            image,
+            services,
+            framebuffer,
+            KERNEL_PATH,
+            MAX_KERNEL_IMAGE_BYTES as usize + SIGNED_ARTIFACT_OVERHEAD_BYTES,
+        )
+    }?;
     if kernel_file
         .address
         .checked_add(kernel_file.length as u64)
@@ -297,8 +316,9 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
             ArtifactKind::Kernel,
         )
         .map_err(|_| LOAD_ERROR)?;
-    let measured_boot = measure_kernel(services, signed.payload())?;
-    if require_tpm_measurement() && !measured_boot {
+    let kernel_measured =
+        measure_artifact(services, signed.payload(), b"MRML authenticated kernel PE")?;
+    if require_tpm_measurement() && !kernel_measured {
         return Err(LOAD_ERROR);
     }
     if verified.image().image_size() == 0 {
@@ -325,7 +345,109 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         .image()
         .materialize_at(image_destination, image_address)
         .map_err(|_| LOAD_ERROR)?;
-    let transition = prepare_transition(services, verified.image(), image_address, framebuffer)?;
+    let service_file = unsafe {
+        load_file(
+            image,
+            services,
+            framebuffer,
+            SERVICE_PATH,
+            MAX_SERVICE_IMAGE_BYTES as usize + SIGNED_ARTIFACT_OVERHEAD_BYTES,
+        )
+    }?;
+    let service_bytes = unsafe {
+        core::slice::from_raw_parts(service_file.address as *const u8, service_file.length)
+    };
+    let service_signed = SignedArtifact::decode(service_bytes).map_err(|_| LOAD_ERROR)?;
+    let service_verified = service_signed
+        .verify_executable(
+            &TrustRoot::new(
+                ArtifactKind::ServiceImage,
+                embedded_service_root().ok_or(LOAD_ERROR)?,
+                embedded_service_minimum_version().ok_or(LOAD_ERROR)?,
+            ),
+            ArtifactKind::ServiceImage,
+        )
+        .map_err(|_| LOAD_ERROR)?;
+    let service_measured = measure_artifact(
+        services,
+        service_signed.payload(),
+        b"MRML authenticated service PE",
+    )?;
+    let measured_boot = kernel_measured && service_measured;
+    if require_tpm_measurement() && !measured_boot {
+        return Err(LOAD_ERROR);
+    }
+    let service_image_size = service_verified.image().image_size() as usize;
+    let service_image_pages = service_image_size.div_ceil(PAGE_BYTES);
+    let service_allocation_bytes = service_image_pages
+        .checked_mul(PAGE_BYTES)
+        .ok_or(LOAD_ERROR)?;
+    let mut service_image_physical = 0u64;
+    check(unsafe {
+        (services.allocate_pages)(0, 2, service_image_pages, &mut service_image_physical)
+    })?;
+    let service_image = unsafe {
+        core::slice::from_raw_parts_mut(service_image_physical as *mut u8, service_allocation_bytes)
+    };
+    service_image.fill(0);
+    let service_entry = service_verified
+        .image()
+        .materialize(&mut service_image[..service_image_size])
+        .map_err(|_| LOAD_ERROR)?;
+    let mut service_stack_physical = 0u64;
+    check(unsafe {
+        (services.allocate_pages)(0, 2, SERVICE_STACK_PAGES, &mut service_stack_physical)
+    })?;
+    let mut service_table_physical = 0u64;
+    check(unsafe {
+        (services.allocate_pages)(0, 2, SERVICE_TABLE_PAGES, &mut service_table_physical)
+    })?;
+    if [
+        service_image_physical,
+        service_stack_physical,
+        service_table_physical,
+    ]
+    .into_iter()
+    .any(|address| address == 0 || !address.is_multiple_of(PAGE_BYTES as u64))
+    {
+        return Err(LOAD_ERROR);
+    }
+    unsafe {
+        core::ptr::write_bytes(
+            service_stack_physical as *mut u8,
+            0,
+            SERVICE_STACK_PAGES * PAGE_BYTES,
+        );
+        core::ptr::write_bytes(
+            service_table_physical as *mut u8,
+            0,
+            SERVICE_TABLE_PAGES * PAGE_BYTES,
+        );
+    }
+    let service_stack_top = 0x0000_0002_0000_0000u64;
+    let prepared_service = PreparedService {
+        launch: ServiceLaunch::new(
+            PhysAddr::new(service_image_physical).map_err(|_| LOAD_ERROR)?,
+            service_image_pages as u64,
+            service_verified.image().image_base(),
+            service_entry,
+            PhysAddr::new(service_stack_physical).map_err(|_| LOAD_ERROR)?,
+            SERVICE_STACK_PAGES as u64,
+            service_stack_top,
+            PhysAddr::new(service_table_physical).map_err(|_| LOAD_ERROR)?,
+            SERVICE_TABLE_PAGES as u64,
+            service_verified.artifact().version(),
+            *service_verified.artifact().digest(),
+        )
+        .map_err(|_| LOAD_ERROR)?,
+    };
+    let transition = prepare_transition(
+        services,
+        verified.image(),
+        image_address,
+        framebuffer,
+        prepared_service,
+    )?;
     let kernel_version = verified.artifact().version();
     let kernel_measurement = *verified.artifact().digest();
     paint(framebuffer, [0x00, 0x60, 0x20]);
@@ -356,6 +478,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
             entropy,
             acpi_root,
             framebuffer,
+            prepared_service,
         )
     }
 }
@@ -383,6 +506,7 @@ unsafe fn launch_after_exit(
     entropy: [u8; 32],
     acpi_root: u64,
     framebuffer: Framebuffer,
+    service: PreparedService,
 ) -> ! {
     let map_bytes = unsafe { core::slice::from_raw_parts(MEMORY_MAP.0.get().cast(), map_size) };
     let regions = unsafe { &mut *REGIONS.0.get() };
@@ -420,6 +544,7 @@ unsafe fn launch_after_exit(
         framebuffer,
         &regions[..region_count],
         &madt_storage[..madt_length],
+        service,
     )
     .is_err()
     {
@@ -468,6 +593,14 @@ fn embedded_kernel_root() -> Option<[u8; 64]> {
 
 fn embedded_minimum_version() -> Option<u64> {
     parse_nonzero_version(option_env!("MRML_KERNEL_MIN_VERSION")?.as_bytes())
+}
+
+fn embedded_service_root() -> Option<[u8; 64]> {
+    parse_root_digest(option_env!("MRML_SERVICE_ROOT_DIGEST_HEX")?.as_bytes())
+}
+
+fn embedded_service_minimum_version() -> Option<u64> {
+    parse_nonzero_version(option_env!("MRML_SERVICE_MIN_VERSION")?.as_bytes())
 }
 
 fn require_tpm_measurement() -> bool {
@@ -556,8 +689,12 @@ fn read_boolean_variable(runtime: &RuntimeServices, name: &[u16]) -> Result<Opti
     Ok(Some(value == 1))
 }
 
-fn measure_kernel(services: &BootServices, payload: &[u8]) -> Result<bool, Status> {
-    if payload.is_empty() {
+fn measure_artifact(
+    services: &BootServices,
+    payload: &[u8],
+    description: &[u8],
+) -> Result<bool, Status> {
+    if payload.is_empty() || description.is_empty() || description.len() > 32 {
         return Err(LOAD_ERROR);
     }
     let mut protocol_pointer = core::ptr::null_mut();
@@ -573,11 +710,10 @@ fn measure_kernel(services: &BootServices, payload: &[u8]) -> Result<bool, Statu
     }
     check(status)?;
     let protocol = unsafe { (protocol_pointer as *mut Tcg2Protocol).as_mut() }.ok_or(LOAD_ERROR)?;
-    const DESCRIPTION: &[u8] = b"MRML authenticated kernel PE";
     let mut event = Tcg2Event {
         size: (core::mem::size_of::<u32>()
             + core::mem::size_of::<Tcg2EventHeader>()
-            + DESCRIPTION.len()) as u32,
+            + description.len()) as u32,
         header: Tcg2EventHeader {
             header_size: core::mem::size_of::<Tcg2EventHeader>() as u32,
             header_version: 1,
@@ -586,7 +722,7 @@ fn measure_kernel(services: &BootServices, payload: &[u8]) -> Result<bool, Statu
         },
         event: [0; 32],
     };
-    event.event[..DESCRIPTION.len()].copy_from_slice(DESCRIPTION);
+    event.event[..description.len()].copy_from_slice(description);
     check(unsafe {
         (protocol.hash_log_extend_event)(
             protocol,
@@ -604,11 +740,16 @@ struct LoadedFile {
     length: usize,
 }
 
-unsafe fn load_kernel_file(
+unsafe fn load_file(
     image: Handle,
     services: &BootServices,
     framebuffer: Framebuffer,
+    path: &[u16],
+    maximum: usize,
 ) -> Result<LoadedFile, Status> {
+    if path.last().copied() != Some(0) || maximum == 0 {
+        return Err(LOAD_ERROR);
+    }
     let mut loaded_pointer = core::ptr::null_mut();
     check(unsafe { (services.handle_protocol)(image, &LOADED_IMAGE_GUID, &mut loaded_pointer) })?;
     let loaded =
@@ -634,12 +775,12 @@ unsafe fn load_kernel_file(
     let root = unsafe { root.as_mut() }.ok_or(LOAD_ERROR)?;
     paint(framebuffer, [0x00, 0x80, 0x80]);
     let mut file_pointer = core::ptr::null_mut();
-    let open_status = unsafe { (root.open)(root, &mut file_pointer, KERNEL_PATH.as_ptr(), 1, 0) };
+    let open_status = unsafe { (root.open)(root, &mut file_pointer, path.as_ptr(), 1, 0) };
     let _ = unsafe { (root.close)(root) };
     check(open_status)?;
     paint(framebuffer, [0x00, 0x00, 0x80]);
     let file = unsafe { file_pointer.as_mut() }.ok_or(LOAD_ERROR)?;
-    let result = unsafe { read_file_pages(file, services) };
+    let result = unsafe { read_file_pages(file, services, maximum) };
     let close_status = unsafe { (file.close)(file) };
     let loaded = result?;
     check(close_status)?;
@@ -649,6 +790,7 @@ unsafe fn load_kernel_file(
 unsafe fn read_file_pages(
     file: &mut FileProtocol,
     services: &BootServices,
+    maximum: usize,
 ) -> Result<LoadedFile, Status> {
     let mut info_size = 0usize;
     let status =
@@ -669,7 +811,6 @@ unsafe fn read_file_pages(
         return Err(LOAD_ERROR);
     }
     let file_length_u64 = u64::from_le_bytes(info[8..16].try_into().map_err(|_| LOAD_ERROR)?);
-    let maximum = MAX_KERNEL_IMAGE_BYTES as usize + SIGNED_ARTIFACT_OVERHEAD_BYTES;
     let file_length = usize::try_from(file_length_u64).map_err(|_| LOAD_ERROR)?;
     if file_length == 0 || file_length > maximum {
         return Err(LOAD_ERROR);
@@ -718,6 +859,7 @@ fn enter_kernel(
     framebuffer: Framebuffer,
     regions: &[NormalizedRegion],
     madt: &[u8],
+    service: PreparedService,
 ) -> Result<(), Status> {
     let placeholder = MemoryRegion::new(
         PhysAddr::new(0).map_err(|_| LOAD_ERROR)?,
@@ -759,7 +901,7 @@ fn enter_kernel(
     let handoff_page = unsafe { &mut *HANDOFF.0.get() };
     handoff_page.fill(0);
     let handoff = &mut handoff_page[..HANDOFF_BYTES];
-    let handoff_length = encode_handoff_with_smp(
+    let handoff_length = encode_handoff_with_smp_and_service(
         kernel_version,
         entropy,
         kernel_measurement,
@@ -771,6 +913,7 @@ fn enter_kernel(
         &kernel_regions[..regions.len()],
         transition.ap_trampoline,
         transition.ap_stack_arena,
+        service.launch,
         madt,
         handoff,
     )
@@ -799,6 +942,7 @@ fn prepare_transition(
     image: &PeImage<'_>,
     image_address: u64,
     framebuffer: Framebuffer,
+    service: PreparedService,
 ) -> Result<Transition, Status> {
     let stack_allocation_pages = MAX_X86_64_CPUS
         .checked_mul(PRIVILEGE_STACK_ARENA_PAGES as usize)
@@ -923,6 +1067,24 @@ fn prepare_transition(
         ap_trampoline,
         1,
         PagePermissions::KERNEL_MMIO_READ_WRITE,
+    )?;
+    map_identity(
+        &mut tables,
+        service.launch.image_physical().get(),
+        service.launch.image_pages(),
+        PagePermissions::KERNEL_READ,
+    )?;
+    map_identity(
+        &mut tables,
+        service.launch.stack_physical().get(),
+        service.launch.stack_pages(),
+        PagePermissions::KERNEL_READ_WRITE,
+    )?;
+    map_identity(
+        &mut tables,
+        service.launch.table_physical().get(),
+        service.launch.table_pages(),
+        PagePermissions::KERNEL_READ_WRITE,
     )?;
     let mut frame_index = 0usize;
     while frame_index < tables.store().count {
