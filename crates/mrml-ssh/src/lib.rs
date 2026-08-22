@@ -5,6 +5,7 @@ use mrml_runtime::Text;
 mod protocol;
 mod session;
 mod auth;
+mod channel;
 
 pub use protocol::{
     AlgorithmProposal, BinaryReader, BinaryWriter, ExchangeKeys, Identification, ProtocolError,
@@ -13,6 +14,7 @@ pub use protocol::{
 };
 pub use session::{KexAlgorithms, NegotiatedAlgorithms, build_kex_init, negotiate_kex_init};
 pub use auth::{RsaPrivateKey, RsaPublicKey, build_publickey_auth, parse_rsa_public_key, sign_rsa_sha2_256, verify_rsa_sha2_256};
+pub use channel::{ChannelEvent, ChannelState, GitService, build_channel_close, build_channel_data, build_channel_eof, build_channel_open, build_exec_request, build_service_request, parse_channel_event};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SshRemote {
