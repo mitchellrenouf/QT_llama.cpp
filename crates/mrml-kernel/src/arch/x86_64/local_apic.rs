@@ -131,6 +131,16 @@ impl ApicIpi {
         })
     }
 
+    pub const fn init_deassert(destination: u32) -> Result<Self, LocalApicError> {
+        if destination == u32::MAX {
+            return Err(LocalApicError::InvalidDestination);
+        }
+        Ok(Self {
+            destination,
+            command: (ICR_DELIVERY_INIT | ICR_TRIGGER_LEVEL) as u32,
+        })
+    }
+
     pub const fn startup(destination: u32, vector: u8) -> Result<Self, LocalApicError> {
         if destination == u32::MAX {
             return Err(LocalApicError::InvalidDestination);
@@ -168,6 +178,12 @@ impl ApicIpi {
             return Err(LocalApicError::Unsupported);
         }
         if base & X2APIC_ENABLE != 0 {
+            unsafe {
+                write_msr(
+                    X2APIC_SPURIOUS_VECTOR,
+                    APIC_SOFTWARE_ENABLE | SPURIOUS_VECTOR,
+                )
+            };
             wait_x2apic_idle()?;
             unsafe {
                 write_msr(
@@ -180,6 +196,12 @@ impl ApicIpi {
             if self.destination > u8::MAX as u32 || base & APIC_BASE_MASK != XAPIC_BASE as u64 {
                 return Err(LocalApicError::InvalidDestination);
             }
+            unsafe {
+                write_xapic(
+                    XAPIC_SPURIOUS_VECTOR,
+                    APIC_SOFTWARE_ENABLE | SPURIOUS_VECTOR,
+                )
+            };
             wait_xapic_idle()?;
             unsafe { write_xapic(XAPIC_ICR_HIGH, u64::from(self.destination) << 24) };
             unsafe { write_xapic(XAPIC_ICR_LOW, u64::from(self.command)) };
@@ -425,11 +447,18 @@ mod tests {
         let init = ApicIpi::init(0x1234).unwrap();
         assert_eq!(init.destination(), 0x1234);
         assert_eq!(init.command(), 0x0000_c500);
+        let deassert = ApicIpi::init_deassert(0x1234).unwrap();
+        assert_eq!(deassert.destination(), 0x1234);
+        assert_eq!(deassert.command(), 0x0000_8500);
         let startup = ApicIpi::startup(7, 8).unwrap();
         assert_eq!(startup.destination(), 7);
         assert_eq!(startup.command(), 0x0000_0608);
         assert_eq!(
             ApicIpi::init(u32::MAX),
+            Err(LocalApicError::InvalidDestination)
+        );
+        assert_eq!(
+            ApicIpi::init_deassert(u32::MAX),
             Err(LocalApicError::InvalidDestination)
         );
         assert_eq!(ApicIpi::startup(1, 0), Err(LocalApicError::InvalidVector));

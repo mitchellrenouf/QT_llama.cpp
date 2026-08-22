@@ -16,6 +16,7 @@ use mrml_kernel::{
 #[cfg(any(test, target_os = "linux"))]
 use mrml_kernel::{
     FramebufferInfo, MemoryKind, MemoryRegion, PhysAddr, PixelFormat, encode_handoff,
+    encode_handoff_with_smp,
 };
 #[cfg(target_os = "linux")]
 use mrml_kvm::{KvmLaunchLayout, KvmSystem};
@@ -48,6 +49,8 @@ const SERVICE_FRAME_PORT: u16 = 0x4d59;
 #[cfg(target_os = "linux")]
 const SERVICE_CALL_PORT: u16 = 0x4d5a;
 #[cfg(target_os = "linux")]
+const SMP_PROBE_PORT: u16 = 0x4d5c;
+#[cfg(target_os = "linux")]
 const SERVICE_PHYSICAL: u64 = 0x0060_0000;
 #[cfg(target_os = "linux")]
 const SERVICE_VIRTUAL: u64 = 0x0000_0001_4000_0000;
@@ -75,6 +78,7 @@ enum LaunchMode {
     ServiceProbe,
     ServicePreemptionProbe,
     GpuBenchmark,
+    SmpProbe,
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -89,8 +93,9 @@ impl LaunchMode {
             "service-probe" => Ok(Self::ServiceProbe),
             "service-preemption-probe" => Ok(Self::ServicePreemptionProbe),
             "gpu-benchmark" => Ok(Self::GpuBenchmark),
+            "smp-probe" => Ok(Self::SmpProbe),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, or gpu-benchmark"
+                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, gpu-benchmark, or smp-probe"
             )),
         }
     }
@@ -198,13 +203,23 @@ fn application_main() -> Result<()> {
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
-    let handoff = boot_handoff(
-        executable.artifact().version(),
-        entropy,
-        *executable.artifact().digest(),
-    )?;
+    let handoff = if mode == LaunchMode::SmpProbe {
+        smp_boot_handoff(
+            executable.artifact().version(),
+            entropy,
+            *executable.artifact().digest(),
+        )?
+    } else {
+        boot_handoff(
+            executable.artifact().version(),
+            entropy,
+            *executable.artifact().digest(),
+        )?
+    };
     let user_probe = matches!(mode, LaunchMode::UserProbe | LaunchMode::PreemptionProbe);
-    let (image_virtual, handoff_virtual, stack_virtual) = if user_probe {
+    let (image_virtual, handoff_virtual, stack_virtual) = if mode == LaunchMode::SmpProbe {
+        (0xffff_8001_4000_0000, 0xffff_8001_5000_0000, 0x100_0000)
+    } else if user_probe {
         (0x0040_0000, 0x0200_0000, 0xffff_8001_6000_0000)
     } else {
         (
@@ -218,9 +233,9 @@ fn application_main() -> Result<()> {
         32,
         0x20_0000,
         image_virtual,
-        0x30_0000,
+        0x50_0000,
         handoff_virtual,
-        0x40_0000,
+        0x100_0000,
         stack_virtual,
         PRIVILEGE_STACK_ARENA_PAGES,
         user_probe,
@@ -232,15 +247,22 @@ fn application_main() -> Result<()> {
     let queue_layout = GpuSharedQueueLayout::new(0x00b0_0000, 0x00b0_1000, 1)
         .map_err(|_| anyhow!("invalid fixed GPU queue layout"))?;
     let mut guest = match mode {
-        LaunchMode::GpuBenchmark => {
-            system.prepare_kernel_gpu_guest::<13>(0, &executable, &handoff, layout, queue_layout)
-        }
+        LaunchMode::GpuBenchmark => system.prepare_kernel_gpu_guest::<13>(
+            0,
+            &executable,
+            handoff.as_slice(),
+            layout,
+            queue_layout,
+        ),
         LaunchMode::TimerProbe
         | LaunchMode::PreemptionProbe
         | LaunchMode::ServicePreemptionProbe => {
-            system.prepare_timer_kernel_guest::<13>(0, &executable, &handoff, layout)
+            system.prepare_timer_kernel_guest::<13>(0, &executable, handoff.as_slice(), layout)
         }
-        _ => system.prepare_kernel_guest::<13>(0, &executable, &handoff, layout),
+        LaunchMode::SmpProbe => {
+            system.prepare_smp_kernel_guest::<13>(&executable, handoff.as_slice(), layout)
+        }
+        _ => system.prepare_kernel_guest::<13>(0, &executable, handoff.as_slice(), layout),
     }
     .map_err(|error| anyhow!("verified kernel launch preparation failed: {:?}", error))?;
     if service_mode {
@@ -293,13 +315,39 @@ fn application_main() -> Result<()> {
     }
     let preparation_micros = preparation_started.elapsed().as_micros();
     let execution_started = Instant::now();
-    let mut exit = VmBackend::run(&mut guest, 0)
-        .map_err(|error| anyhow!("KVM execution failed: {:?}", error))?;
+    let mut exit = if mode == LaunchMode::SmpProbe {
+        let (bootstrap, application) = guest
+            .run_smp()
+            .map_err(|error| anyhow!("KVM SMP execution failed: {:?}", error))?;
+        let expected_bootstrap = VmExit::Io {
+            port: SMP_PROBE_PORT,
+            size: 4,
+            write: true,
+            value: 2,
+        };
+        let expected_application = VmExit::Io {
+            port: SMP_PROBE_PORT,
+            size: 4,
+            write: true,
+            value: 0x0001_0001,
+        };
+        if bootstrap != expected_bootstrap || application != expected_application {
+            return Err(anyhow!(
+                "SMP proof mismatch: bootstrap={:?} application={:?}",
+                bootstrap,
+                application
+            ));
+        }
+        VmExit::Halted
+    } else {
+        VmBackend::run(&mut guest, 0)
+            .map_err(|error| anyhow!("KVM execution failed: {:?}", error))?
+    };
     if mode == LaunchMode::GpuBenchmark {
         service_gpu_benchmark(
             &mut guest,
             queue_layout,
-            handoff_entropy(&handoff)?,
+            handoff_entropy(handoff.as_slice())?,
             cuda_bundle
                 .as_ref()
                 .ok_or_else(|| anyhow!("missing verified CUDA bundle"))?,
@@ -919,7 +967,20 @@ fn application_main() -> Result<()> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Result<[u8; 240]> {
+struct EncodedHandoff {
+    bytes: [u8; 316],
+    length: usize,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl EncodedHandoff {
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Result<EncodedHandoff> {
     let framebuffer = FramebufferInfo::new(
         FRAMEBUFFER,
         0x1000,
@@ -938,7 +999,7 @@ fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Resul
         region(0x3000, 1, MemoryKind::Kernel)?,
         region(FRAMEBUFFER, 1, MemoryKind::Mmio)?,
     ];
-    let mut encoded = [0u8; 240];
+    let mut encoded = [0u8; 316];
     let length = encode_handoff(
         version,
         entropy,
@@ -952,10 +1013,72 @@ fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Resul
         &mut encoded,
     )
     .map_err(|_| anyhow!("canonical boot handoff construction failed"))?;
-    if length != encoded.len() {
+    if length != 240 {
         return Err(anyhow!("unexpected canonical boot handoff length"));
     }
-    Ok(encoded)
+    Ok(EncodedHandoff {
+        bytes: encoded,
+        length,
+    })
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn smp_boot_handoff(
+    version: u64,
+    entropy: [u8; 32],
+    measurement: [u8; 64],
+) -> Result<EncodedHandoff> {
+    let framebuffer = FramebufferInfo::new(
+        FRAMEBUFFER,
+        0x1000,
+        16,
+        16,
+        16,
+        PixelFormat::BlueGreenRedReserved,
+    )
+    .map_err(|_| anyhow!("invalid fixed framebuffer description"))?;
+    let region = |address, pages, kind| {
+        let address = PhysAddr::new(address).map_err(|_| anyhow!("unaligned launch region"))?;
+        MemoryRegion::new(address, pages, kind).map_err(|_| anyhow!("invalid launch region"))
+    };
+    let regions = [
+        region(0x1000, 2, MemoryKind::Free)?,
+        region(0x3000, 1, MemoryKind::Kernel)?,
+        region(FRAMEBUFFER, 1, MemoryKind::Mmio)?,
+    ];
+    let mut madt = [0u8; 60];
+    madt[..4].copy_from_slice(b"APIC");
+    madt[4..8].copy_from_slice(&60u32.to_le_bytes());
+    madt[8] = 5;
+    madt[36..40].copy_from_slice(&0xfee0_0000u32.to_le_bytes());
+    madt[44..52].copy_from_slice(&[0, 8, 0, 0, 1, 0, 0, 0]);
+    madt[52..60].copy_from_slice(&[0, 8, 1, 1, 1, 0, 0, 0]);
+    let checksum = madt.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    madt[9] = madt[9].wrapping_sub(checksum);
+    let mut encoded = [0u8; 316];
+    let length = encode_handoff_with_smp(
+        version,
+        entropy,
+        measurement,
+        true,
+        false,
+        false,
+        0x9000,
+        framebuffer,
+        &regions,
+        0x8000,
+        0x100_0000,
+        &madt,
+        &mut encoded,
+    )
+    .map_err(|_| anyhow!("canonical SMP handoff construction failed"))?;
+    if length != encoded.len() {
+        return Err(anyhow!("unexpected canonical SMP handoff length"));
+    }
+    Ok(EncodedHandoff {
+        bytes: encoded,
+        length,
+    })
 }
 
 mrml_runtime::mrml_entrypoint!(application_main);
@@ -970,7 +1093,7 @@ mod tests {
         let entropy = [0x35; 32];
         let measurement = [0xa7; 64];
         let encoded = boot_handoff(19, entropy, measurement).unwrap();
-        let decoded = BootHandoff::decode(&encoded, |_| {}).unwrap();
+        let decoded = BootHandoff::decode(encoded.as_slice(), |_| {}).unwrap();
         assert_eq!(decoded.evidence().image_version(), 19);
         assert_eq!(decoded.evidence().entropy(), &entropy);
         assert_eq!(decoded.evidence().image_measurement(), &measurement);
@@ -1003,5 +1126,24 @@ mod tests {
             LaunchMode::parse("gpu-benchmark").unwrap(),
             LaunchMode::GpuBenchmark
         );
+        assert_eq!(
+            LaunchMode::parse("smp-probe").unwrap(),
+            LaunchMode::SmpProbe
+        );
+    }
+
+    #[test]
+    fn smp_handoff_binds_two_cpus_and_launch_resources() {
+        let encoded = smp_boot_handoff(7, [0x51; 32], [0xa3; 64]).unwrap();
+        let decoded = BootHandoff::decode(encoded.as_slice(), |_| {}).unwrap();
+        assert_eq!(decoded.ap_trampoline(), Some(0x8000));
+        assert_eq!(decoded.ap_stack_arena(), Some(0x100_0000));
+        let topology = mrml_kernel::arch::x86_64::X86CpuTopology::parse_madt(
+            decoded.madt(encoded.as_slice()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(topology.len(), 2);
+        assert_eq!(topology.cpu(0).unwrap().apic_id(), 0);
+        assert_eq!(topology.cpu(1).unwrap().apic_id(), 1);
     }
 }

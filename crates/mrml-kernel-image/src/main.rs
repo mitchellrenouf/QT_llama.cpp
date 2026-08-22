@@ -122,6 +122,8 @@ const SERVICE_PROBE_PORT: u16 = 0x4d58;
 const SERVICE_FRAME_PORT: u16 = 0x4d59;
 #[cfg(feature = "service-probe")]
 const SERVICE_CALL_PORT: u16 = 0x4d5a;
+#[cfg(feature = "smp-probe")]
+const SMP_PROBE_PORT: u16 = 0x4d5c;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
@@ -832,6 +834,15 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
     if AP_ONLINE.acknowledge(cpu, generation).is_err() {
         halt();
     }
+    #[cfg(feature = "smp-probe")]
+    unsafe {
+        asm!(
+            "out dx, eax",
+            in("dx") SMP_PROBE_PORT,
+            in("eax") ((cpu as u32) << 16) | generation,
+            options(nomem, nostack)
+        )
+    };
     halt()
 }
 
@@ -839,6 +850,7 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
 unsafe fn start_application_processors(topology: &X86CpuTopology, handoff: &BootHandoff) {
     smp_trace(0x10);
     let bsp_apic_id = current_apic_id().unwrap_or_else(|| halt());
+    smp_trace(0x60u8.saturating_add(bsp_apic_id as u8));
     // The BSP is the sole writer during one-way early boot. Keeping the full
     // 256-CPU state table out of its guarded early stack leaves enough space
     // for the sealed trampoline image and nested topology parsing frame.
@@ -892,6 +904,8 @@ unsafe fn start_application_processors(topology: &X86CpuTopology, handoff: &Boot
         smp_trace(0x22);
         timing.wait_after_init().unwrap_or_else(|_| halt());
         smp_trace(0x23);
+        unsafe { ApicIpi::init_deassert(destination).and_then(|ipi| ipi.send()) }
+            .unwrap_or_else(|_| halt());
         startup
             .startup_sent_with_image(token, installed)
             .unwrap_or_else(|_| halt());
@@ -914,10 +928,25 @@ unsafe fn start_application_processors(topology: &X86CpuTopology, handoff: &Boot
             smp_trace(0x29);
         }
         if !AP_ONLINE.is_online(token).unwrap_or_else(|_| halt()) {
-            startup.fail(token).unwrap_or_else(|_| halt());
-            AP_ONLINE.fail(token).unwrap_or_else(|_| halt());
-            halt();
+            smp_trace(0x2a);
+            if AP_ONLINE.fail(token).is_ok() {
+                startup.fail(token).unwrap_or_else(|_| halt());
+                #[cfg(feature = "smp-probe")]
+                unsafe {
+                    asm!(
+                        "out dx, eax",
+                        in("dx") SMP_PROBE_PORT,
+                        in("eax") 0xdead_0001u32,
+                        options(nomem, nostack)
+                    )
+                };
+                halt();
+            }
+            if !AP_ONLINE.is_online(token).unwrap_or_else(|_| halt()) {
+                halt();
+            }
         }
+        smp_trace(0x2b);
         startup
             .acknowledge(token, destination)
             .unwrap_or_else(|_| halt());
@@ -982,12 +1011,12 @@ const fn ap_retry_timeout_micros() -> u32 {
     1_000
 }
 
-#[cfg(all(not(feature = "fault-probe"), feature = "emulated-ap-timing"))]
+#[cfg(all(not(feature = "fault-probe"), feature = "ap-startup-trace"))]
 fn smp_trace(stage: u8) {
     unsafe { asm!("out dx, al", in("dx") 0xe9u16, in("al") stage, options(nomem, nostack)) };
 }
 
-#[cfg(all(not(feature = "fault-probe"), not(feature = "emulated-ap-timing")))]
+#[cfg(all(not(feature = "fault-probe"), not(feature = "ap-startup-trace")))]
 const fn smp_trace(_: u8) {}
 
 #[cfg(not(feature = "fault-probe"))]
@@ -1045,6 +1074,15 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
                     smp_trace(0x04);
                     unsafe { start_application_processors(&topology, &handoff) };
                     smp_trace(0x05);
+                    #[cfg(feature = "smp-probe")]
+                    unsafe {
+                        asm!(
+                            "out dx, eax",
+                            in("dx") SMP_PROBE_PORT,
+                            in("eax") topology.len() as u32,
+                            options(nomem, nostack)
+                        )
+                    };
                 }
             }
             (None, None) if topology.len() == 1 => {}

@@ -8,6 +8,7 @@ description = "Strict allocation-free KVM ABI adapter for MRML"
 
 [dependencies]
 mrml-kernel = { path = "../mrml-kernel" }
+mrml-runtime = { path = "../mrml-runtime" }
 
 [dev-dependencies]
 mrml-crypto = { path = "../mrml-crypto", default-features = false }

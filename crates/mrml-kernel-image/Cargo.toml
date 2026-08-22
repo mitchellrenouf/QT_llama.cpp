@@ -17,6 +17,8 @@ production-policy = ["kernel-image"]
 gpu-benchmark = ["kernel-image"]
 whp-gpu-benchmark = ["gpu-benchmark"]
 emulated-ap-timing = ["kernel-image"]
+ap-startup-trace = ["emulated-ap-timing"]
+smp-probe = ["kernel-image"]
 
 [[bin]]
 name = "mrml-kernel-pe"

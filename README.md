@@ -341,8 +341,15 @@ GDT/IDT/TSS with guarded entry and double-fault stacks, and only then publishes
 online. The BSP zeroes and unmaps the trampoline after the final
 acknowledgement. A freshly signed two-vCPU QEMU 11.1 TCG/UEFI image completed
 this sequence on Windows; both CPUs halted in kernel-owned code with distinct
-descriptor tables and the same CR3. KVM/WHP multi-vCPU execution, per-CPU
-interrupt routing, and live SMP scheduling proofs remain unfinished.
+descriptor tables and the same CR3. A freshly signed two-vCPU nested-KVM image
+also completed the sequence on Arch Linux under WSL2. The VMM gives each vCPU
+a normalized APIC identity, holds the AP in KVM's architectural uninitialized
+state until INIT/SIPI makes it runnable, maps the authenticated low trampoline
+and identity-mapped privilege-stack arena, and checks independent terminal
+proofs from CPU 0 and CPU 1. The measured successful run spent 914 microseconds
+verifying, 11,061 microseconds preparing the VM, and 4,181 microseconds executing
+the guest. WHP multi-vCPU execution, per-CPU interrupt routing, and live SMP
+scheduling proofs remain unfinished.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

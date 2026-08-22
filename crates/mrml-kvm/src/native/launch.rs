@@ -17,6 +17,7 @@ struct KernelDevices {
     framebuffer: bool,
     local_apic: bool,
     gpu_queue: Option<GpuSharedQueueLayout>,
+    cpus: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +102,9 @@ struct ServiceInstance {
 }
 
 impl<const N: usize> PreparedKvmGuest<N> {
+    pub fn run_smp(&mut self) -> Result<(VmExit, VmExit), KvmError> {
+        self.backend.run_smp()
+    }
     pub const fn entry(&self) -> u64 {
         self.entry
     }
@@ -461,6 +465,7 @@ impl KvmSystem {
                 framebuffer: false,
                 local_apic: false,
                 gpu_queue: None,
+                cpus: 1,
             },
         )
     }
@@ -483,6 +488,7 @@ impl KvmSystem {
                 framebuffer: true,
                 local_apic: false,
                 gpu_queue: None,
+                cpus: 1,
             },
         )
     }
@@ -504,6 +510,29 @@ impl KvmSystem {
                 framebuffer: true,
                 local_apic: true,
                 gpu_queue: None,
+                cpus: 1,
+            },
+        )
+    }
+
+    /// Prepares two KVM vCPUs behind the in-kernel interrupt controller. The
+    /// handoff must bind a two-CPU MADT, low trampoline, and stack arena.
+    pub fn prepare_smp_kernel_guest<const N: usize>(
+        &self,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: KvmLaunchLayout,
+    ) -> Result<PreparedKvmGuest<N>, KvmError> {
+        self.prepare_guest_inner(
+            0,
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: true,
+                gpu_queue: None,
+                cpus: 2,
             },
         )
     }
@@ -528,6 +557,7 @@ impl KvmSystem {
                 framebuffer: true,
                 local_apic: false,
                 gpu_queue: Some(queue),
+                cpus: 1,
             },
         )
     }
@@ -543,10 +573,31 @@ impl KvmSystem {
         let map_framebuffer = devices.framebuffer;
         let local_apic = devices.local_apic;
         let queue = devices.gpu_queue;
-        if N < 4 + usize::from(map_framebuffer) + usize::from(queue.is_some()) * 2 {
+        let smp = devices.cpus == 2;
+        if !matches!(devices.cpus, 1 | 2)
+            || N < 4
+                + usize::from(map_framebuffer)
+                + usize::from(queue.is_some()) * 2
+                + usize::from(smp)
+        {
             return Err(KvmError::MemoryTableFull);
         }
         let decoded = BootHandoff::decode(handoff, |_| {}).map_err(KvmError::Handoff)?;
+        let trampoline = match (
+            smp,
+            decoded.ap_trampoline(),
+            decoded.ap_stack_arena(),
+            decoded.madt(handoff),
+        ) {
+            (true, Some(page), Some(arena), Some(_))
+                if arena == layout.stack_physical
+                    && layout.stack_virtual == layout.stack_physical =>
+            {
+                page
+            }
+            (false, None, None, _) => 0,
+            _ => return Err(KvmError::InvalidMapping),
+        };
         let image_bytes = page_bytes(executable.image().image_size() as u64)?;
         let handoff_bytes = page_bytes(handoff.len() as u64)?;
         let table_bytes = layout
@@ -555,8 +606,17 @@ impl KvmSystem {
             .ok_or(KvmError::MemoryOverflow)?;
         let stack_bytes = layout
             .stack_pages
-            .checked_mul(PAGE_SIZE)
+            .checked_mul(u64::from(devices.cpus))
+            .and_then(|pages| pages.checked_mul(PAGE_SIZE))
             .ok_or(KvmError::MemoryOverflow)?;
+        if smp {
+            PerCpuPrivilegeStacks::<2>::new(
+                layout.stack_physical,
+                layout.stack_virtual,
+                layout.stack_pages,
+            )
+            .map_err(|_| KvmError::InvalidMapping)?;
+        }
         let stack_layout = PrivilegeStackLayout::new(layout.stack_virtual, layout.stack_pages)
             .map_err(|_| KvmError::InvalidMapping)?;
         let physical_stack = PrivilegeStackLayout::new(layout.stack_physical, layout.stack_pages)
@@ -573,27 +633,47 @@ impl KvmSystem {
         let (command_base, completion_base) = queue
             .map(|value| (value.command_base(), value.completion_base()))
             .unwrap_or((0, 0));
-        let physical_ranges = [
-            (layout.table_physical, table_bytes),
-            (layout.image_physical, image_bytes),
-            (layout.handoff_physical, handoff_bytes),
-            (layout.stack_physical, stack_bytes),
-            (framebuffer.base().get(), framebuffer_bytes),
-            (command_base, queue_bytes),
-            (completion_base, queue_bytes),
-        ];
-        let physical_count = 4 + usize::from(map_framebuffer) + usize::from(queue.is_some()) * 2;
-        validate_ranges(&physical_ranges[..physical_count])?;
-        let virtual_ranges = [
-            (layout.image_virtual, image_bytes),
-            (layout.handoff_virtual, handoff_bytes),
-            (layout.stack_virtual, stack_bytes),
-            (command_base, queue_bytes),
-            (completion_base, queue_bytes),
-        ];
-        validate_ranges(&virtual_ranges[..3 + usize::from(queue.is_some()) * 2])?;
+        if smp {
+            validate_ranges(&[
+                (layout.table_physical, table_bytes),
+                (layout.image_physical, image_bytes),
+                (layout.handoff_physical, handoff_bytes),
+                (layout.stack_physical, stack_bytes),
+                (framebuffer.base().get(), framebuffer_bytes),
+                (trampoline, PAGE_SIZE),
+            ])?;
+            validate_ranges(&[
+                (layout.image_virtual, image_bytes),
+                (layout.handoff_virtual, handoff_bytes),
+                (layout.stack_virtual, stack_bytes),
+                (trampoline, PAGE_SIZE),
+            ])?;
+        } else {
+            let physical_ranges = [
+                (layout.table_physical, table_bytes),
+                (layout.image_physical, image_bytes),
+                (layout.handoff_physical, handoff_bytes),
+                (layout.stack_physical, stack_bytes),
+                (framebuffer.base().get(), framebuffer_bytes),
+                (command_base, queue_bytes),
+                (completion_base, queue_bytes),
+            ];
+            let physical_count =
+                4 + usize::from(map_framebuffer) + usize::from(queue.is_some()) * 2;
+            validate_ranges(&physical_ranges[..physical_count])?;
+            let virtual_ranges = [
+                (layout.image_virtual, image_bytes),
+                (layout.handoff_virtual, handoff_bytes),
+                (layout.stack_virtual, stack_bytes),
+                (command_base, queue_bytes),
+                (completion_base, queue_bytes),
+            ];
+            validate_ranges(&virtual_ranges[..3 + usize::from(queue.is_some()) * 2])?;
+        }
 
-        let mut backend = if local_apic {
+        let mut backend = if smp {
+            self.create_smp_backend::<N>()?
+        } else if local_apic {
             self.create_apic_backend::<N>(vcpu_id)?
         } else {
             self.create_backend::<N>(vcpu_id)?
@@ -602,6 +682,9 @@ impl KvmSystem {
         backend.map_memory(layout.image_physical, image_bytes as usize, false)?;
         backend.map_memory(layout.handoff_physical, handoff_bytes as usize, false)?;
         backend.map_memory(layout.stack_physical, stack_bytes as usize, false)?;
+        if smp {
+            backend.map_memory(trampoline, PAGE_SIZE as usize, false)?;
+        }
         if map_framebuffer {
             backend.map_memory(framebuffer.base().get(), framebuffer_bytes as usize, false)?;
         }
@@ -635,44 +718,69 @@ impl KvmSystem {
             layout.handoff_virtual,
             layout.user,
         )?;
-        let stack_permissions = PagePermissions::KERNEL_READ_WRITE;
-        for (virtual_base, physical_base, pages, permissions) in [
-            (
-                stack_layout.early_base(),
-                physical_stack.early_base(),
-                stack_layout.early_pages(),
-                stack_permissions,
-            ),
-            (
-                stack_layout
-                    .entry_base()
-                    .map_err(|_| KvmError::MemoryOverflow)?,
-                physical_stack
-                    .entry_base()
-                    .map_err(|_| KvmError::MemoryOverflow)?,
-                stack_layout.entry_pages(),
-                PagePermissions::KERNEL_READ_WRITE,
-            ),
-            (
-                stack_layout
-                    .double_fault_base()
-                    .map_err(|_| KvmError::MemoryOverflow)?,
-                physical_stack
-                    .double_fault_base()
-                    .map_err(|_| KvmError::MemoryOverflow)?,
-                stack_layout.double_fault_pages(),
-                PagePermissions::KERNEL_READ_WRITE,
-            ),
-        ] {
-            tables
-                .map(
-                    Mapping::new(
-                        VirtAddr::new(virtual_base).map_err(|_| KvmError::InvalidMapping)?,
-                        PhysAddr::new(physical_base).map_err(|_| KvmError::InvalidMapping)?,
-                        pages,
-                        permissions,
+        let stack_permissions = if smp {
+            PagePermissions::KERNEL_LOW_READ_WRITE
+        } else {
+            PagePermissions::KERNEL_READ_WRITE
+        };
+        for cpu in 0..usize::from(devices.cpus) {
+            let offset = (cpu as u64)
+                .checked_mul(layout.stack_pages)
+                .and_then(|pages| pages.checked_mul(PAGE_SIZE))
+                .ok_or(KvmError::MemoryOverflow)?;
+            let virtual_stack =
+                PrivilegeStackLayout::new(layout.stack_virtual + offset, layout.stack_pages)
+                    .map_err(|_| KvmError::InvalidMapping)?;
+            let physical_stack =
+                PrivilegeStackLayout::new(layout.stack_physical + offset, layout.stack_pages)
+                    .map_err(|_| KvmError::InvalidMapping)?;
+            for (virtual_base, physical_base, pages, permissions) in [
+                (
+                    virtual_stack.early_base(),
+                    physical_stack.early_base(),
+                    virtual_stack.early_pages(),
+                    stack_permissions,
+                ),
+                (
+                    virtual_stack
+                        .entry_base()
+                        .map_err(|_| KvmError::MemoryOverflow)?,
+                    physical_stack
+                        .entry_base()
+                        .map_err(|_| KvmError::MemoryOverflow)?,
+                    virtual_stack.entry_pages(),
+                    stack_permissions,
+                ),
+                (
+                    virtual_stack
+                        .double_fault_base()
+                        .map_err(|_| KvmError::MemoryOverflow)?,
+                    physical_stack
+                        .double_fault_base()
+                        .map_err(|_| KvmError::MemoryOverflow)?,
+                    virtual_stack.double_fault_pages(),
+                    stack_permissions,
+                ),
+            ] {
+                tables
+                    .map(
+                        Mapping::new(
+                            VirtAddr::new(virtual_base).map_err(|_| KvmError::InvalidMapping)?,
+                            PhysAddr::new(physical_base).map_err(|_| KvmError::InvalidMapping)?,
+                            pages,
+                            permissions,
+                        )
+                        .map_err(|_| KvmError::InvalidMapping)?,
                     )
-                    .map_err(|_| KvmError::InvalidMapping)?,
+                    .map_err(|_| KvmError::PageTable)?;
+            }
+        }
+        if smp {
+            tables
+                .map_page(
+                    VirtAddr::new(trampoline).map_err(|_| KvmError::InvalidMapping)?,
+                    PhysAddr::new(trampoline).map_err(|_| KvmError::InvalidMapping)?,
+                    PagePermissions::KERNEL_LOW_READ_WRITE,
                 )
                 .map_err(|_| KvmError::PageTable)?;
         }
@@ -731,6 +839,23 @@ impl KvmSystem {
                     .map_err(|_| KvmError::InvalidMapping)?,
                 )
                 .map_err(|_| KvmError::PageTable)?;
+        }
+        if smp {
+            let mut frame_index = 0;
+            while frame_index < tables.store().allocated_pages() {
+                let frame = tables
+                    .store()
+                    .allocated_frame(frame_index)
+                    .ok_or(KvmError::PageTable)?;
+                tables
+                    .map_page(
+                        VirtAddr::new(frame.get()).map_err(|_| KvmError::InvalidMapping)?,
+                        frame,
+                        PagePermissions::KERNEL_READ_WRITE,
+                    )
+                    .map_err(|_| KvmError::PageTable)?;
+                frame_index += 1;
+            }
         }
         let root = tables.root();
         let _ = tables.into_store();

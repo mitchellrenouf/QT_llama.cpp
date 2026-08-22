@@ -1403,8 +1403,18 @@ signed service lifecycle still completes under WHP and nested KVM after this
 privileged-path refactor. A QEMU 11.1 TCG/UEFI boot of the plain kernel produced
 1,022,848 background pixels at `RGB(11,59,90)` plus the exact 1,152-pixel gold
 kernel marker at `RGB(255,200,87)`. Application-processor discovery and
-sequential startup now execute in the PE kernel; per-CPU interrupt routing and
-live multi-vCPU scheduling remain pending. The bounded discovery foundation
+sequential startup now execute in the PE kernel. The same path now completes in
+a signed two-vCPU nested-KVM guest. Its VMM normalizes CPUID topology and APIC
+identities, creates the in-kernel interrupt controller before either vCPU,
+starts CPU 1 in KVM's architectural uninitialized MP state, and waits for that
+state to become runnable before entering `KVM_RUN`. The authenticated handoff
+binds the synthetic two-CPU MADT, low trampoline, and identity-mapped privilege
+stack arena. CPU 1 proves descriptor installation and generation-one
+acknowledgement independently of CPU 0's proof that topology discovery,
+startup, and trampoline revocation completed. A 2026-08-21 Arch Linux/WSL2
+run measured `verify=914us`, `prepare=11061us`, and `execute=4181us`.
+Per-CPU interrupt routing and live multi-vCPU scheduling remain pending. The
+bounded discovery foundation
 uses a parser that accepts only a complete loader-copied ACPI MADT with a
 valid signature, exact encoded length, checksum, entry geometry, reserved
 fields, unique APIC/firmware identities, at least one enabled CPU, and at most
@@ -1436,8 +1446,8 @@ final permissions, and revokes and zeroes every failed installation; only its
 opaque installed result may publish SIPI. The WHP implementation allocates a
 dedicated low guest-physical page, stages it RW/NX, replaces the GPA mapping
 with RX, and verifies the copied bytes and denied guest write against the live
-Windows hypervisor. UEFI live AP execution is now verified; the KVM page
-backend and SMP scheduling are still required. The common page-table builder
+Windows hypervisor. UEFI and KVM live AP execution are now verified; WHP
+multi-vCPU execution and SMP scheduling are still required. The common page-table builder
 now supports an
 exact-match protection transition: it preflights every 4 KiB leaf, physical
 frame, and old permission before changing any logical mapping. This supplies a

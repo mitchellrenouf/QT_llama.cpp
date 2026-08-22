@@ -1,6 +1,7 @@
 use core::ffi::{c_char, c_int, c_ulong, c_void};
 use core::ptr::NonNull;
 use core::slice;
+use core::time::Duration;
 use mrml_kernel::arch::x86_64::{
     AddressSpace, Mapping, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
     VirtAddr,
@@ -38,6 +39,10 @@ const KVM_SET_REGS: c_ulong = 0x4090_ae82;
 const KVM_SET_SREGS: c_ulong = 0x4138_ae84;
 const KVM_INTERRUPT: c_ulong = 0x4004_ae86;
 const KVM_SET_CPUID2: c_ulong = 0x4008_ae90;
+const KVM_GET_LAPIC: c_ulong = 0x8400_ae8e;
+const KVM_GET_MP_STATE: c_ulong = 0x8004_ae98;
+const KVM_SET_MP_STATE: c_ulong = 0x4004_ae99;
+const KVM_MP_STATE_UNINITIALIZED: u32 = 1;
 const MIN_RUN_BYTES: usize = 88;
 const MAX_RUN_BYTES: usize = 1024 * 1024;
 const KVM_CAP_USER_MEMORY: u32 = 3;
@@ -69,11 +74,22 @@ const EMPTY_CPUID_ENTRY: KvmCpuidEntry2 = KvmCpuidEntry2 {
     padding: [0; 3],
 };
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct KvmCpuidSet {
     count: u32,
     padding: u32,
     entries: [KvmCpuidEntry2; MAX_CPUID_ENTRIES],
+}
+
+#[repr(C)]
+struct KvmMpState {
+    state: u32,
+}
+
+#[repr(C)]
+struct KvmLapicState {
+    registers: [u8; 1024],
 }
 
 #[link(name = "c")]
@@ -109,6 +125,26 @@ pub struct KvmSystem {
 }
 
 impl KvmSystem {
+    fn virtual_cpuid(&self, apic_id: u32, cpus: u8) -> Result<KvmCpuidSet, KvmError> {
+        let apic_id = u8::try_from(apic_id)
+            .ok()
+            .filter(|id| *id < cpus)
+            .ok_or(KvmError::InvalidVcpu)?;
+        let mut cpuid = self.cpuid;
+        for entry in &mut cpuid.entries[..cpuid.count as usize] {
+            match entry.function {
+                1 => {
+                    entry.ebx = (entry.ebx & 0x0000_ffff)
+                        | (u32::from(cpus) << 16)
+                        | (u32::from(apic_id) << 24);
+                }
+                0x0b | 0x1f => entry.edx = u32::from(apic_id),
+                _ => {}
+            }
+        }
+        Ok(cpuid)
+    }
+
     pub fn open() -> Result<Self, KvmError> {
         let file = unsafe { open(c"/dev/kvm".as_ptr(), O_RDWR | O_CLOEXEC) };
         if file < 0 {
@@ -167,6 +203,7 @@ impl KvmSystem {
         let vcpu = vm.create_vcpu(vcpu_id)?;
         Ok(KvmBackend {
             vcpu,
+            secondary: None,
             memory: KvmGuestMemory::new(),
             vm,
             vcpu_id,
@@ -180,12 +217,45 @@ impl KvmSystem {
         let vm = self.create_vm()?;
         vm.create_irqchip()?;
         let vcpu = vm.create_vcpu(vcpu_id)?;
-        vcpu.set_cpuid(&self.cpuid)?;
+        vcpu.set_cpuid(&self.virtual_cpuid(vcpu_id, 1)?)?;
         Ok(KvmBackend {
             vcpu,
+            secondary: None,
             memory: KvmGuestMemory::new(),
             vm,
             vcpu_id,
+        })
+    }
+
+    pub(crate) fn create_smp_backend<const N: usize>(&self) -> Result<KvmBackend<N>, KvmError> {
+        let vm = self.create_vm()?;
+        vm.create_irqchip()?;
+        let vcpu = vm.create_vcpu(0)?;
+        vcpu.set_cpuid(&self.virtual_cpuid(0, 2)?)?;
+        let secondary = vm.create_vcpu(1)?;
+        secondary.set_cpuid(&self.virtual_cpuid(1, 2)?)?;
+        secondary.set_uninitialized()?;
+        let bootstrap_id = vcpu.lapic_id()?;
+        let application_id = secondary.lapic_id()?;
+        let application_state = secondary.mp_state()?;
+        mrml_runtime::mrml_println!(
+            "KVM_SMP_SETUP bsp_apic={} ap_apic={} ap_state={}",
+            bootstrap_id,
+            application_id,
+            application_state
+        );
+        if bootstrap_id != 0
+            || application_id != 1
+            || application_state != KVM_MP_STATE_UNINITIALIZED
+        {
+            return Err(KvmError::InvalidVcpu);
+        }
+        Ok(KvmBackend {
+            vcpu,
+            secondary: Some(secondary),
+            memory: KvmGuestMemory::new(),
+            vm,
+            vcpu_id: 0,
         })
     }
 }
@@ -255,7 +325,54 @@ pub(crate) struct KvmVcpu {
     run_bytes: usize,
 }
 
+// SAFETY: the descriptor and run mapping have one owner. Moving them to a
+// single runner thread creates no aliases, and VM setup is complete first.
+unsafe impl Send for KvmVcpu {}
+
+#[derive(Clone, Copy)]
+struct KvmRunCancellation(NonNull<u8>);
+
+// SAFETY: KVM defines byte one of the shared run page as `immediate_exit`, an
+// asynchronously writable cancellation byte. This handle exposes only it.
+unsafe impl Send for KvmRunCancellation {}
+unsafe impl Sync for KvmRunCancellation {}
+
+impl KvmRunCancellation {
+    fn request(self) {
+        unsafe { self.0.as_ptr().add(1).write_volatile(1) };
+    }
+}
+
 impl KvmVcpu {
+    fn lapic_id(&self) -> Result<u8, KvmError> {
+        let mut state = KvmLapicState {
+            registers: [0; 1024],
+        };
+        if unsafe { ioctl(self.file.0, KVM_GET_LAPIC, &mut state) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(state.registers[0x23])
+    }
+
+    fn mp_state(&self) -> Result<u32, KvmError> {
+        let mut state = KvmMpState { state: 0 };
+        if unsafe { ioctl(self.file.0, KVM_GET_MP_STATE, &mut state) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(state.state)
+    }
+    fn set_uninitialized(&self) -> Result<(), KvmError> {
+        let state = KvmMpState {
+            state: KVM_MP_STATE_UNINITIALIZED,
+        };
+        if unsafe { ioctl(self.file.0, KVM_SET_MP_STATE, &state) } < 0 {
+            return Err(KvmError::SystemCall);
+        }
+        Ok(())
+    }
+    fn cancellation(&self) -> KvmRunCancellation {
+        KvmRunCancellation(self.run)
+    }
     fn set_cpuid(&self, cpuid: &KvmCpuidSet) -> Result<(), KvmError> {
         if cpuid.count == 0 || cpuid.count as usize > MAX_CPUID_ENTRIES {
             return Err(KvmError::InvalidRegisterState);
@@ -997,6 +1114,16 @@ impl<'a, const N: usize> KvmPageTableStore<'a, N> {
             .checked_add((index as u64) * 8)
             .ok_or(PageTableBuildError::AddressOverflow)
     }
+
+    pub(crate) const fn allocated_pages(&self) -> u64 {
+        (self.next - self.start) / PAGE_SIZE
+    }
+
+    pub(crate) fn allocated_frame(&self, index: u64) -> Option<PhysAddr> {
+        (index < self.allocated_pages())
+            .then(|| self.start + index * PAGE_SIZE)
+            .and_then(|address| PhysAddr::new(address).ok())
+    }
 }
 
 impl<const N: usize> PageTableStore for KvmPageTableStore<'_, N> {
@@ -1041,12 +1168,65 @@ impl<const N: usize> PageTableStore for KvmPageTableStore<'_, N> {
 
 pub(crate) struct KvmBackend<const N: usize> {
     vcpu: KvmVcpu,
+    secondary: Option<KvmVcpu>,
     memory: KvmGuestMemory<N>,
     vm: KvmVm,
     vcpu_id: u32,
 }
 
 impl<const N: usize> KvmBackend<N> {
+    pub(crate) fn run_smp(&mut self) -> Result<(VmExit, VmExit), KvmError> {
+        let mut application = self.secondary.take().ok_or(KvmError::InvalidVcpu)?;
+        let cancellation = application.cancellation();
+        let result = mrml_runtime::Shared::new(mrml_runtime::SpinMutex::new(None));
+        let worker_result = result.clone();
+        mrml_runtime::spawn_detached(move || {
+            let deadline = mrml_runtime::Instant::now();
+            let exit = loop {
+                match application.mp_state() {
+                    Ok(KVM_MP_STATE_UNINITIALIZED)
+                        if deadline.elapsed() < Duration::from_secs(2) =>
+                    {
+                        mrml_runtime::yield_now();
+                    }
+                    Ok(KVM_MP_STATE_UNINITIALIZED) => break Err(KvmError::InvalidVcpu),
+                    Ok(_) => break application.run(),
+                    Err(error) => break Err(error),
+                }
+            };
+            *worker_result.lock() = Some(exit);
+        })
+        .map_err(|_| KvmError::SystemCall)?;
+
+        let bootstrap = loop {
+            let exit = self.vcpu.run()?;
+            if let VmExit::Io {
+                port: 0x00e9,
+                size: 1,
+                write: true,
+                value,
+            } = exit
+            {
+                mrml_runtime::mrml_println!("KVM_SMP_TRACE stage={:#04x}", value);
+                continue;
+            }
+            break Ok(exit);
+        };
+        let deadline = mrml_runtime::Instant::now();
+        while result.lock().is_none() && deadline.elapsed() < Duration::from_secs(2) {
+            mrml_runtime::yield_now();
+        }
+        if result.lock().is_none() {
+            cancellation.request();
+        }
+        let secondary = loop {
+            if let Some(exit) = result.lock().take() {
+                break exit;
+            }
+            mrml_runtime::yield_now();
+        };
+        Ok((bootstrap?, secondary?))
+    }
     pub fn map_memory(
         &mut self,
         guest_address: u64,
@@ -1175,6 +1355,7 @@ mod tests {
         assert_eq!(KVM_GET_SUPPORTED_CPUID, 0xc008_ae05);
         assert_eq!(KVM_SET_USER_MEMORY_REGION, 0x4020_ae46);
         assert_eq!(KVM_CREATE_VCPU, 0xae41);
+        assert_eq!(KVM_SET_MP_STATE, 0x4004_ae99);
         assert_eq!(KVM_CREATE_IRQCHIP, 0xae60);
         assert_eq!(KVM_RUN, 0xae80);
         assert_eq!(KVM_GET_REGS, 0x8090_ae81);
