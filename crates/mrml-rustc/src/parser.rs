@@ -1577,13 +1577,7 @@ impl<'source> BodyParser<'source> {
                     let mut unconditional_control_count = 0usize;
                     loop {
                         let next = probe.peek()?;
-                        if next.is_some_and(|token| token.kind == TokenKind::CloseBrace)
-                            && (entry_condition.is_some()
-                                || conditional_break_count != 0
-                                || conditional_continue_count != 0
-                                || conditional_return_count != 0
-                                || unconditional_control_count != 0)
-                        {
+                        if next.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
                             probe.take()?;
                             break;
                         }
@@ -3277,6 +3271,31 @@ mod tests {
         assert_eq!(inner.conditional_continues().len(), 1);
         assert_eq!(inner.conditional_returns().len(), 1);
         assert!(inner.unconditional_controls().is_empty());
+
+        for (source, expected_actions) in [
+            (
+                "fn nested(enter: bool) -> u64 { while enter { loop {} } 42 }",
+                0,
+            ),
+            (
+                "fn nested(enter: bool) -> u64 { while enter { loop { 1; } } 42 }",
+                1,
+            ),
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            let body = function.parse_body::<2>().unwrap();
+            let outer = body.while_loops()[0].unwrap();
+            let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+                panic!("expected diverging nested block")
+            };
+            let inner = outer.nested_blocks()[index].unwrap();
+            assert_eq!(inner.action_count(), expected_actions);
+            assert!(inner.unconditional_controls().is_empty());
+            assert!(inner.conditional_breaks().is_empty());
+        }
 
         let crowded_unconditional = Parser::new(
             "fn nested() { loop { loop { break; continue; return; break; continue; } } }",

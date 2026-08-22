@@ -245,11 +245,13 @@ before every backedge, taken break, or taken continue. A return includes the
 live iteration slots in its complete frame cleanup. Const evaluation restores
 the same scope after every iteration while retaining mutations to enclosing
 locals. Native emission uses checked forward exits and signed 32-bit backedges.
-Capacity overflow is diagnosed before object emission. To keep bootstrap probes
-bounded, an unconditional `loop` must contain a supported exit form. The exact
-unit-valued inner form `loop { break; }` is accepted as a nested loop operation.
+Capacity overflow is diagnosed before object emission. Empty and action-only
+unconditional inner loops are retained as diverging backedges; const evaluation
+stops them at the shared 65,536-iteration limit rather than treating natural
+fallthrough as an exit. The exact unit-valued inner form `loop { break; }` is
+accepted as a nested loop operation.
 Up to four inner loops may each perform up to four scoped scalar locals,
-assignments, or discarded expressions before their mandatory break. Inner
+assignments, or discarded expressions before an optional control. Inner
 locals are removed while mutations to enclosing locals survive. Dedicated
 capacity diagnostics reject a fifth inner action or block. The inner break is
 consumed locally and cannot exit the containing loop.
@@ -657,7 +659,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 240 Windows library, conformance, rustc-nightly-replacement, and driver
+The 242 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -911,6 +913,12 @@ pinned `tests/ui/for-loop-while/loop-break-cont.rs`. Its 270-byte COFF and
 outer entry, immediate return, two conditional continues, and 60,000 inner
 iterations. Const evaluation independently covered false entry and one- and
 200-iteration returns.
+The diverging-inner-loop replacement maps empty and action-only loop bodies from
+pinned `tests/ui/for-loop-while/loop-break-cont.rs`. Its 125-byte COFF and
+520-byte ELF64 objects passed independent nightly-built callers through the
+false enclosing condition, returning 42. Machine-code inspection confirms a
+signed backward jump, and const evaluation reports the exact loop-limit error
+for both entered shapes instead of allowing fallthrough.
 The nested-while replacement maps nested scalar while flow from pinned
 `tests/ui/for-loop-while/while.rs` and the nested targeting observed in
 `nested-loop-break-unit.rs`. Its 361-byte COFF and 752-byte ELF64 objects passed
@@ -1312,7 +1320,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 240 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 242 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

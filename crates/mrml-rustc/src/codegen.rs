@@ -939,12 +939,7 @@ pub fn compile_x86_64_function_with_options<
                 }
                 emitter.emit_stack_cleanup_to(nested_checkpoint)?;
                 emitter.truncate_scoped_locals(nested_checkpoint)?;
-                if (block.entry_condition.is_some()
-                    || nested_exit_count != 0
-                    || !block.conditional_continues().is_empty()
-                    || !block.conditional_returns().is_empty())
-                    && block.unconditional_controls().is_empty()
-                {
+                if block.unconditional_controls().is_empty() {
                     emitter.emit_backward_branch(nested_start)?;
                 }
                 for patch in nested_exit_patches[..nested_exit_count].iter().flatten() {
@@ -4247,6 +4242,8 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_multiple_breaks(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { break; } total += inner; if inner == second { break; } } outer += 1; inner = 0; } total }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_unconditional_continue(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; let unreachable: u64 = 10 / 0; unreachable; } outer += 1; inner = 0; } outer }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_conditional_only_loop(enter: bool, stop: u64) -> u64 { let mut inner: u64 = 0; while enter { loop { inner += 1; if inner < stop { continue; } if inner == stop { return inner; } } } 0 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_empty_loop(enter: bool) -> u64 { while enter { loop {} } 42 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_action_only_loop(enter: bool) -> u64 { while enter { loop { 1; } } 42 }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {
@@ -4274,6 +4271,27 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch
         );
+
+        let empty_inner_loop = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn spin(enter: bool) -> u64 { while enter { loop {} } 42 }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = empty_inner_loop.items()[0] else {
+            panic!("expected function")
+        };
+        let machine =
+            compile_x86_64_function::<_, 512, 2, 32>(&function, &NoConstants, X86_64Abi::Windows)
+                .unwrap();
+        assert!(machine.bytes().windows(5).any(|instruction| {
+            instruction[0] == 0xe9
+                && i32::from_le_bytes([
+                    instruction[1],
+                    instruction[2],
+                    instruction[3],
+                    instruction[4],
+                ]) < 0
+        }));
 
         let leaking = Parser::new(
             "#[unsafe(no_mangle)] pub extern \"C\" fn bad(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { let scoped: u64 = i; i += 1; } scoped }",

@@ -1408,7 +1408,7 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                     let mut nested_iterations = 0usize;
                     'nested: loop {
                         if nested_iterations == MAX_CONST_LOOP_ITERATIONS {
-                            return Err(SemanticErrorKind::UnsupportedConstCall);
+                            return Err(SemanticErrorKind::ConstLoopLimitExceeded);
                         }
                         nested_iterations += 1;
                         if let Some(condition) = block.entry_condition {
@@ -1608,15 +1608,7 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 }
                             }
                         }
-                        let should_break = block.entry_condition.is_none()
-                            && block.conditional_breaks().is_empty()
-                            && block.conditional_continues().is_empty()
-                            && block.conditional_returns().is_empty()
-                            && block.unconditional_controls().is_empty();
                         resolver.truncate(nested_checkpoint)?;
-                        if should_break {
-                            break;
-                        }
                     }
                 }
                 crate::LoopOperation::ConditionalBlock(index) => {
@@ -3365,6 +3357,30 @@ mod tests {
         assert_eq!(values.resolve("SKIP"), Some(0));
         assert_eq!(values.resolve("ONE"), Some(1));
         assert_eq!(values.resolve("TWO_HUNDRED"), Some(200));
+    }
+
+    #[test]
+    fn bounds_empty_and_action_only_inner_loops() {
+        let skipped = Parser::new(
+            "const fn spin(enter: bool) -> u8 { while enter { loop {} } 42 } const VALUE: u8 = spin(false);",
+        )
+        .parse_module::<3, 2>()
+        .unwrap();
+        let values = analyze_constants::<2, 48, 3, 2>(&skipped, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("VALUE"), Some(42));
+
+        for source in [
+            "const fn spin() -> u8 { while true { loop {} } 0 } const BAD: u8 = spin();",
+            "const fn spin() -> u8 { while true { loop { 1; } } 0 } const BAD: u8 = spin();",
+        ] {
+            let module = Parser::new(source).parse_module::<3, 2>().unwrap();
+            assert_eq!(
+                analyze_constants::<2, 48, 3, 2>(&module, TargetLayout::X86_64)
+                    .unwrap_err()
+                    .kind,
+                SemanticErrorKind::ConstLoopLimitExceeded
+            );
+        }
     }
 
     #[test]
