@@ -56,11 +56,9 @@ impl Sha1 {
             *word = u32::from_be_bytes(*bytes);
         }
         for index in 16..80 {
-            words[index] = (words[index - 3]
-                ^ words[index - 8]
-                ^ words[index - 14]
-                ^ words[index - 16])
-                .rotate_left(1);
+            words[index] =
+                (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16])
+                    .rotate_left(1);
         }
         let [mut a, mut b, mut c, mut d, mut e] = self.state;
         for (index, word) in words.into_iter().enumerate() {
