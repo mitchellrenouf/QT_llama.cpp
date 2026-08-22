@@ -1407,67 +1407,76 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                     let condition = block
                         .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
                         .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
-                    if evaluate_boolean_const_expression(
+                    let condition_selected = evaluate_boolean_const_expression(
                         context,
                         symbol_count,
                         &condition,
                         condition.root(),
                         resolver,
                         depth,
-                    )? {
-                        let block_checkpoint = resolver.count;
-                        for action in block.actions().iter().flatten() {
-                            match action {
-                                crate::ConditionalLoopAction::Local(local) => {
-                                    evaluate_const_local(
-                                        context,
-                                        symbol_count,
-                                        local,
-                                        resolver,
-                                        depth,
-                                    )?;
-                                }
-                                crate::ConditionalLoopAction::Assignment(assignment) => {
-                                    evaluate_const_assignment(
-                                        context,
-                                        symbol_count,
-                                        assignment,
-                                        resolver,
-                                        depth,
-                                    )?;
-                                }
-                                crate::ConditionalLoopAction::Expression(statement) => {
-                                    evaluate_const_expression_statement(
-                                        context,
-                                        symbol_count,
-                                        statement,
-                                        resolver,
-                                        depth,
-                                    )?;
-                                }
-                            }
-                        }
-                        match block.terminal {
-                            Some(crate::ConditionalLoopTerminal::Break) => break_loop = true,
-                            Some(crate::ConditionalLoopTerminal::Continue) => {}
-                            Some(crate::ConditionalLoopTerminal::Return(return_statement)) => {
-                                return Ok(Some(evaluate_const_return_statement(
+                    )?;
+                    let (actions, terminal) = if condition_selected {
+                        (block.actions(), block.terminal)
+                    } else if let Some(else_index) = block.else_arm {
+                        let else_arm = loop_statement.conditional_else_arms()[else_index]
+                            .as_ref()
+                            .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
+                        (else_arm.actions(), else_arm.terminal)
+                    } else {
+                        continue;
+                    };
+                    let block_checkpoint = resolver.count;
+                    for action in actions.iter().flatten() {
+                        match action {
+                            crate::ConditionalLoopAction::Local(local) => {
+                                evaluate_const_local(
                                     context,
                                     symbol_count,
-                                    &return_statement,
-                                    return_type,
+                                    local,
                                     resolver,
                                     depth,
-                                )?));
+                                )?;
                             }
-                            None => {
-                                resolver.truncate(block_checkpoint)?;
-                                continue;
+                            crate::ConditionalLoopAction::Assignment(assignment) => {
+                                evaluate_const_assignment(
+                                    context,
+                                    symbol_count,
+                                    assignment,
+                                    resolver,
+                                    depth,
+                                )?;
+                            }
+                            crate::ConditionalLoopAction::Expression(statement) => {
+                                evaluate_const_expression_statement(
+                                    context,
+                                    symbol_count,
+                                    statement,
+                                    resolver,
+                                    depth,
+                                )?;
                             }
                         }
-                        resolver.truncate(block_checkpoint)?;
-                        break;
                     }
+                    match terminal {
+                        Some(crate::ConditionalLoopTerminal::Break) => break_loop = true,
+                        Some(crate::ConditionalLoopTerminal::Continue) => {}
+                        Some(crate::ConditionalLoopTerminal::Return(return_statement)) => {
+                            return Ok(Some(evaluate_const_return_statement(
+                                context,
+                                symbol_count,
+                                &return_statement,
+                                return_type,
+                                resolver,
+                                depth,
+                            )?));
+                        }
+                        None => {
+                            resolver.truncate(block_checkpoint)?;
+                            continue;
+                        }
+                    }
+                    resolver.truncate(block_checkpoint)?;
+                    break;
                 }
                 crate::LoopOperation::Break => {
                     break_loop = true;
@@ -2995,13 +3004,13 @@ mod tests {
     #[test]
     fn evaluates_scoped_loop_locals_and_expressions_in_const_functions() {
         let module = Parser::new(
-            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u8 = current; total += selected; } if i % 2 == 0 { let skipped: u8 = current; skipped + 10; continue; } if i == stop { let selected: u8 = current; selected + 20; total += selected; break; } total += current; } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99); const fn choose(value: u8) -> u8 { loop { if value == 0 { let selected: u8 = 42; selected + 1; return selected; } return value; } } const RETURNED: u8 = choose(0);",
+            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u8 = current; total += selected; } else { let fallback: u8 = 1; total += fallback; } if i % 2 == 0 { let skipped: u8 = current; skipped + 10; continue; } if i == stop { let selected: u8 = current; selected + 20; break; } total += current; } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99); const fn choose(value: u8) -> u8 { loop { if value == 0 { let selected: u8 = 42; selected + 1; return selected; } return value; } } const RETURNED: u8 = choose(0);",
         )
         .parse_module::<6, 4>()
         .unwrap();
-        let values = analyze_constants::<4, 64, 6, 4>(&module, TargetLayout::X86_64).unwrap();
-        assert_eq!(values.resolve("STOPPED"), Some(7));
-        assert_eq!(values.resolve("COMPLETE"), Some(7));
+        let values = analyze_constants::<4, 96, 6, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("STOPPED"), Some(6));
+        assert_eq!(values.resolve("COMPLETE"), Some(10));
         assert_eq!(values.resolve("RETURNED"), Some(42));
     }
 

@@ -770,7 +770,68 @@ pub fn compile_x86_64_function_with_options<
                     None => emitter.emit_stack_cleanup_to(block_checkpoint)?,
                 }
                 emitter.truncate_scoped_locals(block_checkpoint)?;
+                let skip_else = block
+                    .else_arm
+                    .map(|_| emitter.emit_unconditional_forward_branch())
+                    .transpose()?;
                 emitter.patch_forward_branch(skip_block)?;
+                if let Some(else_index) = block.else_arm {
+                    let else_arm =
+                        loop_statement.conditional_else_arms()[else_index].ok_or(CodegenError {
+                            kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
+                            span: function.body_expression_span,
+                        })?;
+                    let else_checkpoint = emitter.saved_locals;
+                    for action in else_arm.actions().iter().flatten() {
+                        match action {
+                            crate::ConditionalLoopAction::Local(local) => {
+                                emitter.emit_local::<MAX_EXPRESSION_NODES>(
+                                    local,
+                                    operand_type,
+                                    function.body_expression_span.start,
+                                    true,
+                                )?;
+                            }
+                            crate::ConditionalLoopAction::Assignment(assignment) => {
+                                emitter.emit_assignment::<MAX_EXPRESSION_NODES>(
+                                    assignment,
+                                    function.body_expression_span.start,
+                                )?;
+                            }
+                            crate::ConditionalLoopAction::Expression(statement) => {
+                                emitter.emit_expression_statement::<MAX_EXPRESSION_NODES>(
+                                    statement,
+                                    function.body_expression_span.start,
+                                )?;
+                            }
+                        }
+                    }
+                    match else_arm.terminal {
+                        Some(crate::ConditionalLoopTerminal::Break) => {
+                            emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                            exit_patches[exit_count] =
+                                Some(emitter.emit_unconditional_forward_branch()?);
+                            exit_count += 1;
+                        }
+                        Some(crate::ConditionalLoopTerminal::Continue) => {
+                            emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                            emitter.emit_backward_branch(loop_start)?;
+                        }
+                        Some(crate::ConditionalLoopTerminal::Return(return_statement)) => {
+                            emitter.emit_return::<MAX_EXPRESSION_NODES>(
+                                &return_statement,
+                                expected_type,
+                                function.body_expression_span.start,
+                            )?;
+                        }
+                        None => emitter.emit_stack_cleanup_to(else_checkpoint)?,
+                    }
+                    emitter.truncate_scoped_locals(else_checkpoint)?;
+                    emitter.patch_forward_branch(skip_else.ok_or(CodegenError {
+                        kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
+                        span: function.body_expression_span,
+                    })?)?;
+                }
                 ends_with_unconditional_control = false;
                 continue;
             }
@@ -3835,15 +3896,14 @@ mod tests {
 
     #[test]
     fn emits_scoped_loop_locals_across_control_edges() {
-        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u64 = current; total += selected; } if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; total += selected; break; } total += current; } total }";
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u64 = current; total += selected; } else { let fallback: u64 = 1; total += fallback; } if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; break; } total += current; } total }";
         let module = Parser::new(source).parse_module::<2, 4>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")
         };
         for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
-            assert!(
-                compile_x86_64_function::<_, 1536, 4, 64>(&function, &NoConstants, abi).is_ok()
-            );
+            let result = compile_x86_64_function::<_, 4096, 4, 64>(&function, &NoConstants, abi);
+            assert!(result.is_ok(), "{:#?}", result.err());
         }
         for source in [
             "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { let current: u64 = i + 1; i = current; continue; } i }",

@@ -35,13 +35,13 @@ pub use object::{ObjectError, ObjectFile, emit_elf64_x86_64, emit_x86_64_coff};
 pub use parser::{
     Assignment, AssignmentOperator, BodyStatement, ConditionalAssignment,
     ConditionalAssignmentAction, ConditionalAssignmentBranch, ConditionalLoopAction,
-    ConditionalLoopBlock, ConditionalLoopControl, ConditionalLoopTerminal, ConditionalReturn,
-    ConditionalReturnElse, ConstItem, ExpressionStatement, Function, FunctionAbi, FunctionBody,
-    Item, LocalBinding, LoopOperation, LoopReturn, MAX_BODY_CONDITIONAL_ASSIGNMENTS,
-    MAX_BODY_EXPRESSION_STATEMENTS, MAX_BODY_RETURNS, MAX_BODY_STATEMENTS,
-    MAX_CONDITIONAL_ASSIGNMENT_BRANCHES, MAX_CONDITIONAL_BRANCH_ACTIONS,
-    MAX_CONDITIONAL_LOOP_ACTIONS, MAX_CONDITIONAL_RETURN_BRANCHES, Module, Parameter, ParseError,
-    ParseErrorKind, Parser, TypeRef, WhileLoop,
+    ConditionalLoopArm, ConditionalLoopBlock, ConditionalLoopControl, ConditionalLoopTerminal,
+    ConditionalReturn, ConditionalReturnElse, ConstItem, ExpressionStatement, Function,
+    FunctionAbi, FunctionBody, Item, LocalBinding, LoopOperation, LoopReturn,
+    MAX_BODY_CONDITIONAL_ASSIGNMENTS, MAX_BODY_EXPRESSION_STATEMENTS, MAX_BODY_RETURNS,
+    MAX_BODY_STATEMENTS, MAX_CONDITIONAL_ASSIGNMENT_BRANCHES, MAX_CONDITIONAL_BRANCH_ACTIONS,
+    MAX_CONDITIONAL_LOOP_ACTIONS, MAX_CONDITIONAL_LOOP_ELSE_ARMS, MAX_CONDITIONAL_RETURN_BRANCHES,
+    Module, Parameter, ParseError, ParseErrorKind, Parser, TypeRef, WhileLoop,
 };
 pub use pipeline::{
     CompileError, CompileErrorKind, ObjectFormat, compile_source_function,

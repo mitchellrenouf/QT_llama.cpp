@@ -260,6 +260,11 @@ loop operations. A fifth prefix action fails with
 The terminal control operation may be omitted. A selected action-only block
 cleans its lexical locals and falls through to the next loop operation; an
 unselected block performs no actions or stack changes.
+Up to four loop conditionals may additionally carry a bounded `else` arm with
+the same action and terminal-control forms. Exactly one arm is selected lazily;
+each has an independent lexical scope. The compact else-arm arena keeps the
+common `WhileLoop` record bounded, and a fifth arm fails with
+`TooManyConditionalLoopElseArms` before lowering.
 An unconditional loop with no break edge is a diverging body tail, so a
 non-unit function ending in a loop return needs no synthetic fallback value.
 Const qualification is retained on both Rust-ABI and `extern "C"` function
@@ -596,7 +601,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 208 Windows library, conformance, rustc-nightly-replacement, and driver
+The 209 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -787,6 +792,11 @@ probe emitted 377-byte COFF and 768-byte ELF64 objects. Independent
 nightly-built callers exercise selected and unselected arms, scoped locals,
 post-arm fallthrough, and 60,000 iterations on both supported hosts. The exact
 unchanged pinned oracle also compiled and ran successfully on both hosts.
+A loop `if`/`else` replacement maps the two-arm ordering from the same pinned
+oracle. MRML's 440-byte COFF and 832-byte ELF64 objects passed independent
+nightly-built callers across true and false arms, scoped locals, post-arm
+fallthrough, and 60,000 iterations. Const evaluation covers both arms, while a
+capacity regression rejects a fifth else arm.
 A post-loop local-binding replacement emitted a 291-byte COFF object. Its
 independent caller observed 4 on the zero-iteration path and 42 after 19
 iterations, proving the initializer reads the loop's final value instead of a
@@ -1134,7 +1144,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 208 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 209 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
