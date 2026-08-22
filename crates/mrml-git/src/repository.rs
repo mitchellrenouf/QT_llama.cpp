@@ -304,6 +304,7 @@ impl Repository {
         let target = self.resolve_revision(revision)?;
         if self.is_ancestor(target, current)? { return Ok(MergeOutcome::UpToDate); }
         if !self.is_ancestor(current, target)? {
+            write_file(&join_path(&self.git_dir, "ORIG_HEAD"), mrml_runtime::mrml_format!("{current}\n").as_bytes())?;
             return self.three_way_merge(current, target, revision, name, email, timestamp);
         }
         let commit = self.read_commit(target)?; let target_index = self.tree_index(commit.tree)?; self.materialize_index(&target_index)?;
@@ -369,7 +370,21 @@ impl Repository {
         let message = mrml_runtime::mrml_format!("Merge {label}");
         let id = self.create_commit_object(tree, &[ours, theirs], &message, name, email, timestamp)?;
         self.update_current_branch(id)?;
+        let original = join_path(&self.git_dir, "ORIG_HEAD"); if path_is_file(&original) { mrml_runtime::remove_file(&original)?; }
         Ok(MergeOutcome::Merged(id))
+    }
+
+    pub fn abort_merge(&self) -> Result<ObjectId, RepositoryError> {
+        let original_path = join_path(&self.git_dir, "ORIG_HEAD");
+        let merge_path = join_path(&self.git_dir, "MERGE_HEAD");
+        if !path_is_file(&original_path) || !path_is_file(&merge_path) { return Err(RepositoryError::ReferenceMissing); }
+        let value = read_file_text_bounded(&original_path, 4096)?;
+        let original = ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
+        let index = self.tree_index(self.read_commit(original)?.tree)?;
+        self.materialize_index(&index)?;
+        self.update_current_branch(original)?;
+        mrml_runtime::remove_file(&merge_path)?; mrml_runtime::remove_file(&original_path)?;
+        Ok(original)
     }
 
     fn materialize_index(&self, target: &Index) -> Result<(), RepositoryError> {
@@ -703,9 +718,9 @@ impl Repository {
         let mut index = self.index()?;
         for relative in paths {
             validate_worktree_path(relative)?;
+            index.remove(relative);
             let disk_path = join_path(&self.worktree, relative);
             if !path_exists(&disk_path) {
-                index.remove(relative);
                 continue;
             }
             if !path_is_file(&disk_path) {
@@ -812,6 +827,12 @@ impl Repository {
         if let Some(parent) = parent {
             contents.push_str(&mrml_runtime::mrml_format!("parent {}\n", parent));
         }
+        let merge_head_path = join_path(&self.git_dir, "MERGE_HEAD");
+        if path_is_file(&merge_head_path) {
+            let value = read_file_text_bounded(&merge_head_path, 4096)?;
+            let merge_parent = ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
+            contents.push_str(&mrml_runtime::mrml_format!("parent {merge_parent}\n"));
+        }
         contents.push_str(&mrml_runtime::mrml_format!(
             "author {} <{}> {} +0000\ncommitter {} <{}> {} +0000\n\n",
             name,
@@ -836,6 +857,8 @@ impl Repository {
         }
         write_file(&lock, mrml_runtime::mrml_format!("{}\n", id).as_bytes())?;
         mrml_runtime::rename_file(&lock, &path)?;
+        if path_is_file(&merge_head_path) { mrml_runtime::remove_file(&merge_head_path)?; }
+        let original = join_path(&self.git_dir, "ORIG_HEAD"); if path_is_file(&original) { mrml_runtime::remove_file(&original)?; }
         Ok(id)
     }
 
@@ -1392,6 +1415,20 @@ mod tests {
         let merged = match repository.merge("topic", "MRML", "mrml@example.invalid", 4).unwrap() { MergeOutcome::Merged(id) => id, other => panic!("unexpected {other:?}") };
         let commit = repository.read_commit(merged).unwrap(); assert_eq!(&commit.parents[..], &[ours, topic]);
         assert!(path_is_file(&topic_file)); assert!(path_is_file(&main_file));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn records_conflict_stages_and_aborts_merge() {
+        let path = root("merge-conflict"); let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked"); let paths = Vector::from([Text::from("tracked")]);
+        write_file(&file, b"base\n").unwrap(); repository.stage(&paths).unwrap(); repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
+        repository.create_branch("topic", true).unwrap(); write_file(&file, b"theirs\n").unwrap(); repository.stage(&paths).unwrap(); repository.commit("theirs", "MRML", "mrml@example.invalid", 2).unwrap();
+        repository.switch_branch("main").unwrap(); write_file(&file, b"ours\n").unwrap(); repository.stage(&paths).unwrap(); let ours = repository.commit("ours", "MRML", "mrml@example.invalid", 3).unwrap();
+        assert_eq!(repository.merge("topic", "MRML", "mrml@example.invalid", 4).unwrap(), MergeOutcome::Conflicts(1));
+        assert_eq!(repository.index().unwrap().entries.iter().filter(|entry| entry.path == "tracked").count(), 3);
+        assert!(read_file_text_bounded(&file, 1024).unwrap().contains("<<<<<<< HEAD"));
+        assert_eq!(repository.abort_merge().unwrap(), ours); assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"ours\n");
         remove_dir_all(&path).unwrap();
     }
 }

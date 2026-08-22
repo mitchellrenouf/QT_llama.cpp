@@ -479,7 +479,9 @@ fn dispatch(cli: &Cli) -> Result<()> {
             run_visible(repository, &["cherry-pick", "--", &tail[0]])
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "merge" => {
-            run_visible(repository, &["merge", "--abort"])
+            let id = native_repository(repository)?.abort_merge().map_err(|error| anyhow!("{}", error))?;
+            println!("Aborted merge; restored {}", &id.to_hex()[..12]);
+            Ok(())
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "rebase" => {
             run_visible(repository, &["rebase", "--abort"])
