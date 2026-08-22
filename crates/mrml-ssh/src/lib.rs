@@ -15,7 +15,7 @@ pub use protocol::{
     encode_plain_packet, negotiate, parse_identification,
 };
 pub use session::{KexAlgorithms, NegotiatedAlgorithms, build_kex_init, negotiate_kex_init};
-pub use auth::{RsaPrivateKey, RsaPublicKey, build_publickey_auth, parse_rsa_public_key, sign_rsa_sha2_256, verify_rsa_sha2_256};
+pub use auth::{RsaPrivateKey, RsaPublicKey, build_publickey_auth, encode_rsa_public_key, parse_rsa_public_key, sign_rsa_sha2_256, verify_rsa_sha2_256};
 pub use channel::{ChannelEvent, ChannelState, GitService, build_channel_close, build_channel_data, build_channel_eof, build_channel_open, build_exec_request, build_service_request, build_window_adjust, parse_channel_event};
 pub use client::{AuthenticatedSsh, GitChannel, SshWire, WireError};
 pub use keyfile::{parse_rsa_private_pem, parse_rsa_public_line};

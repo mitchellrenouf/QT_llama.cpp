@@ -3,9 +3,9 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use mrml_error::{Context, Result, anyhow};
-use mrml_git::{Change, Cli, MergeOutcome, NativeChangeKind, RebaseOutcome, Repository, validate_positional};
-use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println};
-use mrml_ssh::SshRemote;
+use mrml_git::{Change, Cli, MergeOutcome, NativeChangeKind, RebaseOutcome, Repository, fetch_ssh, validate_positional};
+use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println,read_file_text_bounded};
+use mrml_ssh::{RsaPrivateKey,SshRemote,encode_rsa_public_key,parse_rsa_private_pem,parse_rsa_public_line};
 use mrml_terminal_style::Colorize;
 
 fn run(_repository: Option<&str>, args: &[&str]) -> Result<Text> {
@@ -194,7 +194,7 @@ fn help() {
         "[-C PATH] pull [remote] [branch]",
         "[-C PATH] push [remote] [branch]",
         "[-C PATH] remote",
-        "[-C PATH] ssh <add|set|info|check> ...",
+        "[-C PATH] ssh <add|set|auth|info|check> ...",
         "[-C PATH] signing <configure|auto|status|off|verify|verify-tag> ...",
         "[-C PATH] tag [name]",
         "[-C PATH] tag-sign <name> <message>",
@@ -265,6 +265,10 @@ fn print_ssh_remote(name: &str, url: &str, remote: &SshRemote) {
             .unwrap_or_else(|| "default".into())
     );
 }
+
+fn ssh_credentials(repository:&Repository)->Result<(RsaPrivateKey,Vector<u8>)>{let private_path=repository.config_value("ssh","privateKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;let host_path=repository.config_value("ssh","hostKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;let private=read_file_text_bounded(&private_path,64*1024).map_err(|_|anyhow!("cannot read SSH private key"))?;let host=read_file_text_bounded(&host_path,64*1024).map_err(|_|anyhow!("cannot read pinned SSH host key"))?;let private=parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid SSH private key: {}",error))?;let host=parse_rsa_public_line(&host).and_then(|key|encode_rsa_public_key(&key)).map_err(|error|anyhow!("invalid SSH host key: {}",error))?;Ok((private,host))}
+
+fn native_fetch(repository:Option<&str>,name:&str)->Result<()>{let repo=native_repository(repository)?;let (_,remote)=ssh_remote(repository,name)?;let(key,host)=ssh_credentials(&repo)?;let result=fetch_ssh(&repo,name,&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;println!("Fetched {} object(s) and {} branch ref(s) from {}",result.objects.len(),result.refs,name);Ok(())}
 
 fn config_value(repository: Option<&str>, key: &str) -> Option<Text> {
     let (section, name) = key.rsplit_once('.')?;
@@ -621,7 +625,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "fetch" if tail.len() <= 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &collect("fetch", &["--prune"], tail))
+            native_fetch(repository,tail.first().map(Text::as_str).unwrap_or("origin"))
         }
         "pull" if tail.len() <= 2 => {
             checked_positionals(tail)?;
@@ -656,6 +660,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
                 .map_err(|error| anyhow!("{}", error))?;
             Ok(())
         }
+        "ssh" if tail.len()==3&&tail[0]=="auth"=>{checked_positionals(&tail[1..])?;let repo=native_repository(repository)?;let private=read_file_text_bounded(&tail[1],64*1024).map_err(|_|anyhow!("cannot read SSH private key"))?;parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid SSH private key: {}",error))?;let host=read_file_text_bounded(&tail[2],64*1024).map_err(|_|anyhow!("cannot read SSH host key"))?;parse_rsa_public_line(&host).map_err(|error|anyhow!("invalid SSH host key: {}",error))?;repo.set_config_value("ssh","privateKey",&tail[1]).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("ssh","hostKey",&tail[2]).map_err(|error|anyhow!("{}",error))?;println!("{} repository-local SSH credentials configured","native".green().bold());Ok(())}
         "ssh" if matches!(tail.len(), 1 | 2) && tail[0] == "info" => {
             let name = tail.get(1).map(Text::as_str).unwrap_or("origin");
             checked_positionals(&tail[1..])?;

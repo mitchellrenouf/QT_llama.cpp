@@ -1302,6 +1302,14 @@ impl Repository {
         Ok(None)
     }
 
+    pub fn set_config_value(&self, section:&str,key:&str,value:&str)->Result<(),RepositoryError>{
+        validate_config_name(section)?;validate_config_name(key)?;
+        if value.is_empty()||value.chars().any(char::is_control){return Err(RepositoryError::InvalidReference);}
+        let path=join_path(&self.git_dir,"config");let config=read_file_text_bounded(&path,1024*1024)?;let target=mrml_runtime::mrml_format!("[{section}]");let mut output=Text::new();let mut active=false;let mut found_section=false;let mut wrote=false;
+        for raw in config.lines(){let line=raw.trim();if line.starts_with('['){if active&&!wrote{output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));wrote=true;}active=target==line;found_section|=active;}if active&&line.split_once('=').is_some_and(|(found,_)|found.trim()==key){output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));wrote=true;}else{output.push_str(raw);output.push('\n');}}
+        if active&&!wrote{output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));}if !found_section{output.push_str(&mrml_runtime::mrml_format!("\n{target}\n\t{key} = {value}\n"));}write_file(&path,output.as_bytes())?;Ok(())
+    }
+
     pub fn stage(&self, paths: &[Text]) -> Result<(), RepositoryError> {
         let mut index = self.index()?;
         for relative in paths {
@@ -2068,6 +2076,12 @@ mod tests {
         assert_eq!(remote_hex,read_file_text_bounded(&join_path(&repository.git_dir,"refs/remotes/origin/main"),64).unwrap().trim());
         assert!(repository.update_remote_ref("../escape", "refs/heads/main", remote_id).is_err());
         assert!(repository.update_remote_ref("origin", "refs/tags/not-a-branch", remote_id).is_err());
+        repository.set_config_value("ssh","privateKey","key.pem").unwrap();
+        repository.set_config_value("ssh","hostKey","host.pub").unwrap();
+        repository.set_config_value("ssh","privateKey","new.pem").unwrap();
+        assert_eq!(repository.config_value("ssh","privateKey").unwrap().as_deref(),Some("new.pem"));
+        assert_eq!(repository.config_value("ssh","hostKey").unwrap().as_deref(),Some("host.pub"));
+        assert!(repository.set_config_value("ssh","bad key","x").is_err());
         remove_dir_all(&path).unwrap();
     }
 
