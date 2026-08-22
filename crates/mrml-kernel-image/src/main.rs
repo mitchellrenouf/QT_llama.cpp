@@ -927,6 +927,8 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
             &normalized,
         )
         .unwrap_or_else(|_| halt());
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        uefi_service_trace(0x92);
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 2u32, options(nomem, nostack));
         let runtime_pointer = core::ptr::addr_of_mut!(PREEMPTION_RUNTIME);
         let runtime = (*runtime_pointer).as_mut().unwrap_or_else(|| halt());
@@ -934,6 +936,8 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
             Ok(ScheduleOutcome::Switch { to, .. }) => to,
             _ => halt(),
         };
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        uefi_service_trace(0x93);
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 3u32, options(nomem, nostack));
         let context = runtime
             .context(next)
@@ -941,6 +945,8 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
             .unwrap_or_else(|_| halt());
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 4u32, options(nomem, nostack));
         LocalApicTimer::acknowledge();
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        uefi_service_trace(0x94);
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 5u32, options(nomem, nostack));
         #[cfg(feature = "preemption-probe")]
         {
@@ -1823,6 +1829,8 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         Ok(value) => value,
         Err(_) => halt(),
     };
+    #[cfg(feature = "uefi-service-preemption-probe")]
+    uefi_service_trace(0xc0);
     smp_trace(0x02);
     if region_count != handoff.region_count() {
         halt();
@@ -2023,6 +2031,7 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         #[cfg(feature = "uefi-service-preemption-probe")]
         let (service_root, service_entry, service_stack_top) = {
             let service = handoff.service().unwrap_or_else(|| halt());
+            uefi_service_trace(0xc1);
             let artifact_length =
                 usize::try_from(service.artifact_length()).unwrap_or_else(|_| halt());
             let artifact = core::slice::from_raw_parts(
@@ -2040,14 +2049,18 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
                     ArtifactKind::ServiceImage,
                 )
                 .unwrap_or_else(|_| halt());
+            uefi_service_trace(0xc2);
             let plan = ServiceAddressSpace::<40>::from_handoff(service, &verified, &[])
                 .unwrap_or_else(|_| halt());
+            uefi_service_trace(0xc3);
             let store =
                 PreallocatedPageTableStore::new(service.table_physical(), service.table_pages())
                     .unwrap_or_else(|_| halt());
+            uefi_service_trace(0xc4);
             let tables = plan
                 .build_page_tables_with_current_kernel(store)
                 .unwrap_or_else(|_| halt());
+            uefi_service_trace(0xc5);
             (tables.root(), plan.entry(), plan.stack_top())
         };
         #[cfg(not(feature = "uefi-service-preemption-probe"))]
@@ -2058,6 +2071,8 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         );
         let first_context = UserContext::new(service_root, service_entry, service_stack_top)
             .unwrap_or_else(|_| halt());
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        uefi_service_trace(0xc6);
         let second_context = UserContext::new(
             service_root,
             service_entry.checked_add(0x80).unwrap_or_else(|| halt()),
@@ -2098,6 +2113,8 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
             .and_then(|runtime| runtime.context(first).ok())
             .map(|context| context as *const UserContext)
             .unwrap_or_else(|| halt());
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        uefi_service_trace(0xc7);
         enter_service_preemption_context(&*context)
     }
     #[cfg(feature = "preemption-probe")]
@@ -2332,6 +2349,11 @@ fn embedded_service_minimum_version() -> Option<u64> {
         value = value.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
     }
     (value != 0).then_some(value)
+}
+
+#[cfg(feature = "uefi-service-preemption-probe")]
+fn uefi_service_trace(stage: u8) {
+    unsafe { asm!("out dx, al", in("dx") 0xe9u16, in("al") stage, options(nomem, nostack)) };
 }
 
 #[cfg(feature = "user-probe")]

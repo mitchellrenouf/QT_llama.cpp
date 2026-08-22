@@ -742,6 +742,26 @@ on nested KVM. One authenticated service
 artifact supplies both instances; task identities, address spaces, physical
 copies, stacks, and table arenas remain separate.
 
+The real UEFI path now also requires `\EFI\MRML\SERVICE.SIGNED`. The loader
+checks a service-specific embedded root and version floor, extends both kernel
+and service payloads into PCR 11 when TCG2 is available, materializes the
+service at its signed preferred base, and reserves disjoint image, stack, and
+page-table arenas. Its canonical handoff carries both the immutable signed
+container and materialized pages. After `ExitBootServices`, the kernel repeats
+the service signature, kind, version, digest, and PE checks itself; reconstructs
+the section-level W^X plan; privately clones the live supervisor mappings into
+the bounded service table arena; adds only the service's user leaves; and enters
+CPL3 through the per-CPU transition stack. This private clone is necessary
+while the UEFI kernel still uses low identity mappings: sharing the hierarchy
+would let user-leaf insertion mutate the kernel CR3, while copying only the
+upper half would unmap the transition code. A disposable version-15 QEMU TCG
+run traversed loader stages `a1..b3`, repeated kernel verification stages
+`c0..c7`, entered the signed spinning service in CPL3, and received a real
+local-APIC timer interrupt there (`90`). The subsequent second-context/fault
+retirement portion of this new UEFI-specific probe is still being completed;
+the established signed KVM and WHP service-preemption probes continue to cover
+that full switch and recovery chain.
+
 `ServiceSupervisor` now binds each service object to exactly one live
 generational task identity. The signed exit syscall must resolve the current
 task through this table before `TaskRuntime` removes its context and capability

@@ -234,7 +234,7 @@ impl<const MAPPINGS: usize> ServiceAddressSpace<MAPPINGS> {
         &self,
         store: S,
     ) -> Result<PageTableBuilder<S>, ServiceSpaceError> {
-        let mut tables = unsafe { PageTableBuilder::new_with_current_supervisor_half(store) }
+        let mut tables = unsafe { PageTableBuilder::clone_current_supervisor_mappings(store) }
             .map_err(ServiceSpaceError::Tables)?;
         for mapping in self.space.mappings() {
             tables.map(mapping).map_err(ServiceSpaceError::Tables)?;

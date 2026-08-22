@@ -176,6 +176,25 @@ impl<S: PageTableStore> PageTableBuilder<S> {
         Self::new_with_supervisor_half_from(store, &IdentityMappedPageTables, source)
     }
 
+    /// Creates a private copy of every live supervisor mapping, including
+    /// lower-half identity mappings used during early boot.
+    ///
+    /// # Safety
+    ///
+    /// Every table reachable from the current CR3 must be identity mapped and
+    /// stable for the bounded clone. Current mappings must not be user-visible
+    /// or use huge-page entries.
+    pub unsafe fn clone_current_supervisor_mappings(
+        mut store: S,
+    ) -> Result<Self, PageTableBuildError> {
+        let source: u64;
+        unsafe { asm!("mov {}, cr3", out(reg) source, options(nomem, nostack, preserves_flags)) };
+        let source = PhysAddr::new(source & ADDRESS_MASK)
+            .map_err(|_| PageTableBuildError::InvalidIntermediate)?;
+        let root = clone_supervisor_table(&mut store, &IdentityMappedPageTables, source, 4)?;
+        Ok(Self { store, root })
+    }
+
     fn new_with_supervisor_half_from<R: PageTableStore>(
         mut store: S,
         source_store: &R,
@@ -361,6 +380,45 @@ impl<S: PageTableStore> PageTableBuilder<S> {
         }
         PhysAddr::new(current & ADDRESS_MASK).map_err(|_| PageTableBuildError::InvalidIntermediate)
     }
+}
+
+fn clone_supervisor_table<S: PageTableStore, R: PageTableStore>(
+    destination: &mut S,
+    source_store: &R,
+    source: PhysAddr,
+    level: u8,
+) -> Result<PhysAddr, PageTableBuildError> {
+    if !(1..=4).contains(&level) {
+        return Err(PageTableBuildError::InvalidIntermediate);
+    }
+    let clone = destination.allocate_zeroed()?;
+    for index in 0..512 {
+        let entry = source_store.read(source, index)?;
+        if entry & 1 == 0 {
+            if entry != 0 {
+                return Err(PageTableBuildError::InvalidIntermediate);
+            }
+            continue;
+        }
+        if entry & (1 << 2) != 0
+            || entry & !((1 << 63) | 0xfff | ADDRESS_MASK) != 0
+            || entry & ADDRESS_MASK == 0
+        {
+            return Err(PageTableBuildError::InvalidIntermediate);
+        }
+        if level == 1 {
+            destination.write(clone, index, entry)?;
+            continue;
+        }
+        if entry & (1 << 7) != 0 {
+            return Err(PageTableBuildError::InvalidIntermediate);
+        }
+        let child = PhysAddr::new(entry & ADDRESS_MASK)
+            .map_err(|_| PageTableBuildError::InvalidIntermediate)?;
+        let child_clone = clone_supervisor_table(destination, source_store, child, level - 1)?;
+        destination.write(clone, index, (entry & !ADDRESS_MASK) | child_clone.get())?;
+    }
+    Ok(clone)
 }
 
 struct IdentityMappedPageTables;
@@ -674,6 +732,38 @@ mod tests {
             PageTableBuilder::new_with_supervisor_half_from(destination, &source, source_root),
             Err(PageTableBuildError::InvalidIntermediate)
         ));
+    }
+
+    #[test]
+    fn supervisor_clone_is_private_and_retains_low_identity_mapping() {
+        let source_store = Tables {
+            pages: [[0; 512]; 8],
+            used: 0,
+        };
+        let address = VirtAddr::new(0x20_0000).unwrap();
+        let mapping = Mapping::new(
+            address,
+            PhysAddr::new(0x20_0000).unwrap(),
+            1,
+            PagePermissions::KERNEL_LOW_READ_EXECUTE,
+        )
+        .unwrap();
+        let mut source = PageTableBuilder::new(source_store).unwrap();
+        source.map(mapping).unwrap();
+        let source_root = source.root();
+        let source_store = source.into_store();
+        let mut destination = Tables {
+            pages: [[0; 512]; 8],
+            used: 0,
+        };
+        let cloned_root =
+            clone_supervisor_table(&mut destination, &source_store, source_root, 4).unwrap();
+        let cloned = PageTableBuilder::from_existing_root(destination, cloned_root);
+        let (table, index) = cloned.leaf_location(address).unwrap();
+        assert_eq!(
+            cloned.store().read(table, index).unwrap() & ADDRESS_MASK,
+            0x20_0000
+        );
     }
 
     #[test]
