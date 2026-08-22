@@ -4,12 +4,13 @@
 use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use mrml_kernel::{
-    ArtifactKind, FramebufferInfo, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
-    MAX_HANDOFF_MADT_BYTES, MAX_HANDOFF_REGIONS, MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion,
-    PeImage, PhysAddr, PixelFormat, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
+    ArtifactKind, FramebufferInfo, MAX_HANDOFF_BYTES, MAX_HANDOFF_MADT_BYTES, MAX_HANDOFF_REGIONS,
+    MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PeImage, PhysAddr, PixelFormat,
+    SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
     arch::x86_64::{
-        AcpiMemory, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
-        PerCpuPrivilegeStacks, VirtAddr, copy_madt,
+        AcpiMemory, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES, PagePermissions,
+        PageTableBuildError, PageTableBuilder, PageTableStore, PerCpuPrivilegeStacks, VirtAddr,
+        copy_madt,
     },
     encode_handoff_with_smp,
 };
@@ -30,8 +31,7 @@ const FILE_INFO_BYTES: usize = 1024;
 struct FileInfoBuffer(UnsafeCell<[u8; FILE_INFO_BYTES]>);
 unsafe impl Sync for FileInfoBuffer {}
 static FILE_INFO: FileInfoBuffer = FileInfoBuffer(UnsafeCell::new([0; FILE_INFO_BYTES]));
-const HANDOFF_BYTES: usize =
-    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES + 8;
+const HANDOFF_BYTES: usize = MAX_HANDOFF_BYTES;
 const PAGE_BYTES: usize = 4096;
 const HANDOFF_PAGES: usize = HANDOFF_BYTES.div_ceil(PAGE_BYTES);
 const HANDOFF_ALLOCATION_BYTES: usize = HANDOFF_PAGES * PAGE_BYTES;
@@ -44,7 +44,6 @@ const _: () = assert!(core::mem::size_of::<HandoffBuffer>() == HANDOFF_ALLOCATIO
 struct MadtBuffer(UnsafeCell<[u8; MAX_HANDOFF_MADT_BYTES]>);
 unsafe impl Sync for MadtBuffer {}
 static MADT: MadtBuffer = MadtBuffer(UnsafeCell::new([0; MAX_HANDOFF_MADT_BYTES]));
-const KERNEL_STACK_PAGES: usize = 32;
 const KERNEL_STACK_GUARD_PAGES: usize = 1;
 const KERNEL_PATH: &[u16] = &[
     92, 69, 70, 73, 92, 77, 82, 77, 76, 92, 75, 69, 82, 78, 69, 76, 46, 83, 73, 71, 78, 69, 68, 0,
@@ -67,6 +66,7 @@ struct Transition {
     entry_stack_top: u64,
     double_fault_stack_top: u64,
     ap_trampoline: u64,
+    ap_stack_arena: u64,
 }
 
 struct FirmwarePageTables {
@@ -759,6 +759,7 @@ fn enter_kernel(
         framebuffer_info,
         &kernel_regions[..regions.len()],
         transition.ap_trampoline,
+        transition.ap_stack_arena,
         madt,
         handoff,
     )
@@ -788,8 +789,9 @@ fn prepare_transition(
     image_address: u64,
     framebuffer: Framebuffer,
 ) -> Result<Transition, Status> {
-    let stack_allocation_pages = KERNEL_STACK_PAGES
-        .checked_add(KERNEL_STACK_GUARD_PAGES)
+    let stack_allocation_pages = (MAX_X86_64_CPUS as usize)
+        .checked_mul(PRIVILEGE_STACK_ARENA_PAGES as usize)
+        .and_then(|pages| pages.checked_add(KERNEL_STACK_GUARD_PAGES))
         .ok_or(LOAD_ERROR)?;
     let mut stack_allocation_base = 0u64;
     check(unsafe {
@@ -798,11 +800,16 @@ fn prepare_transition(
     let stack_base = stack_allocation_base
         .checked_add((KERNEL_STACK_GUARD_PAGES as u64) * 4096)
         .ok_or(LOAD_ERROR)?;
-    let stack_layout =
-        PerCpuPrivilegeStacks::<1>::new(stack_base, stack_base, KERNEL_STACK_PAGES as u64)
-            .and_then(|set| set.cpu(0))
-            .map(|cpu| cpu.virtual_layout())
-            .map_err(|_| LOAD_ERROR)?;
+    let stack_set = PerCpuPrivilegeStacks::<MAX_X86_64_CPUS>::new(
+        stack_base,
+        stack_base,
+        PRIVILEGE_STACK_ARENA_PAGES,
+    )
+    .map_err(|_| LOAD_ERROR)?;
+    let stack_layout = stack_set
+        .cpu(0)
+        .map(|cpu| cpu.virtual_layout())
+        .map_err(|_| LOAD_ERROR)?;
     let stack_top = stack_layout.early_top().map_err(|_| LOAD_ERROR)?;
     if stack_allocation_base == 0
         || !stack_allocation_base.is_multiple_of(4096)
@@ -842,18 +849,24 @@ fn prepare_transition(
         };
         map_identity(&mut tables, start, region.pages() as u64, permissions)?;
     }
-    for (base, pages) in [
-        (stack_layout.early_base(), stack_layout.early_pages()),
-        (
-            stack_layout.entry_base().map_err(|_| LOAD_ERROR)?,
-            stack_layout.entry_pages(),
-        ),
-        (
-            stack_layout.double_fault_base().map_err(|_| LOAD_ERROR)?,
-            stack_layout.double_fault_pages(),
-        ),
-    ] {
-        map_identity(&mut tables, base, pages, PagePermissions::KERNEL_READ_WRITE)?;
+    for cpu in 0..MAX_X86_64_CPUS {
+        let layout = stack_set
+            .cpu(cpu)
+            .map(|stacks| stacks.virtual_layout())
+            .map_err(|_| LOAD_ERROR)?;
+        for (base, pages) in [
+            (layout.early_base(), layout.early_pages()),
+            (
+                layout.entry_base().map_err(|_| LOAD_ERROR)?,
+                layout.entry_pages(),
+            ),
+            (
+                layout.double_fault_base().map_err(|_| LOAD_ERROR)?,
+                layout.double_fault_pages(),
+            ),
+        ] {
+            map_identity(&mut tables, base, pages, PagePermissions::KERNEL_READ_WRITE)?;
+        }
     }
     let handoff_address = HANDOFF.0.get() as u64;
     if !handoff_address.is_multiple_of(PAGE_BYTES as u64) {
@@ -911,6 +924,7 @@ fn prepare_transition(
         entry_stack_top: stack_layout.entry_top().map_err(|_| LOAD_ERROR)?,
         double_fault_stack_top: stack_layout.double_fault_top().map_err(|_| LOAD_ERROR)?,
         ap_trampoline,
+        ap_stack_arena: stack_base,
     })
 }
 

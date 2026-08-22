@@ -7,6 +7,8 @@ pub const HANDOFF_HEADER_BYTES: usize = 168;
 pub const HANDOFF_REGION_BYTES: usize = 24;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
 pub const MAX_HANDOFF_MADT_BYTES: usize = 8 * 1024;
+pub const MAX_HANDOFF_BYTES: usize =
+    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES + 16;
 
 const FLAG_SECURE_BOOT: u16 = 1;
 const FLAG_MEASURED_BOOT: u16 = 1 << 1;
@@ -43,6 +45,7 @@ pub struct BootHandoff {
     madt_offset: usize,
     madt_length: usize,
     ap_trampoline: Option<u64>,
+    ap_stack_arena: Option<u64>,
 }
 
 impl BootHandoff {
@@ -69,6 +72,10 @@ impl BootHandoff {
 
     pub const fn ap_trampoline(&self) -> Option<u64> {
         self.ap_trampoline
+    }
+
+    pub const fn ap_stack_arena(&self) -> Option<u64> {
+        self.ap_stack_arena
     }
 
     /// Parses a bounded canonical handoff and emits validated regions in
@@ -103,13 +110,16 @@ impl BootHandoff {
             .ok_or(HandoffError::NonCanonical)?;
         let madt_length = read_u16(input, 165) as usize;
         if (flags & FLAG_MADT_SNAPSHOT != 0) != (madt_length != 0)
+            || (flags & FLAG_AP_TRAMPOLINE != 0 && madt_length == 0)
             || madt_length > MAX_HANDOFF_MADT_BYTES
             || (madt_length != 0 && madt_length < 44)
             || input[167] != 0
         {
             return Err(HandoffError::NonCanonical);
         }
-        let trampoline_bytes = usize::from(flags & FLAG_AP_TRAMPOLINE != 0) * 8;
+        // SMP resources are one indivisible pair: a low SIPI page followed by
+        // the base of the bounded per-CPU privilege-stack arena.
+        let trampoline_bytes = usize::from(flags & FLAG_AP_TRAMPOLINE != 0) * 16;
         let madt_offset = regions_end
             .checked_add(trampoline_bytes)
             .ok_or(HandoffError::NonCanonical)?;
@@ -137,16 +147,20 @@ impl BootHandoff {
             return Err(HandoffError::MissingAcpiRoot);
         }
         let acpi_root = acpi_address;
-        let ap_trampoline = if trampoline_bytes != 0 {
+        let (ap_trampoline, ap_stack_arena) = if trampoline_bytes != 0 {
             let physical = read_u64(input, regions_end);
+            let stack_arena = read_u64(input, regions_end + 8);
             if !(crate::PAGE_SIZE..0x10_0000).contains(&physical)
                 || !physical.is_multiple_of(crate::PAGE_SIZE)
+                || stack_arena == 0
+                || !stack_arena.is_multiple_of(crate::PAGE_SIZE)
+                || stack_arena >> 52 != 0
             {
                 return Err(HandoffError::NonCanonical);
             }
-            Some(physical)
+            (Some(physical), Some(stack_arena))
         } else {
-            None
+            (None, None)
         };
         let pixel_format = match input[164] {
             0 => PixelFormat::RedGreenBlueReserved,
@@ -212,6 +226,7 @@ impl BootHandoff {
             madt_offset,
             madt_length,
             ap_trampoline,
+            ap_stack_arena,
         })
     }
 }
@@ -296,11 +311,15 @@ pub fn encode_handoff_with_smp(
     framebuffer: FramebufferInfo,
     regions: &[MemoryRegion],
     ap_trampoline: u64,
+    ap_stack_arena: u64,
     madt: &[u8],
     output: &mut [u8],
 ) -> Result<usize, HandoffError> {
     if !(crate::PAGE_SIZE..0x10_0000).contains(&ap_trampoline)
         || !ap_trampoline.is_multiple_of(crate::PAGE_SIZE)
+        || ap_stack_arena == 0
+        || !ap_stack_arena.is_multiple_of(crate::PAGE_SIZE)
+        || ap_stack_arena >> 52 != 0
         || !(44..=MAX_HANDOFF_MADT_BYTES).contains(&madt.len())
         || &madt[..4] != b"APIC"
         || read_u32(madt, 4) as usize != madt.len()
@@ -319,7 +338,7 @@ pub fn encode_handoff_with_smp(
         framebuffer,
         regions,
         Some(madt),
-        Some(ap_trampoline),
+        Some((ap_trampoline, ap_stack_arena)),
         output,
     )
 }
@@ -336,7 +355,7 @@ fn encode_handoff_inner(
     framebuffer: FramebufferInfo,
     regions: &[MemoryRegion],
     madt: Option<&[u8]>,
-    ap_trampoline: Option<u64>,
+    ap_resources: Option<(u64, u64)>,
     output: &mut [u8],
 ) -> Result<usize, HandoffError> {
     if regions.is_empty() || regions.len() > MAX_HANDOFF_REGIONS {
@@ -352,7 +371,7 @@ fn encode_handoff_inner(
         .ok_or(HandoffError::NonCanonical)?;
     let madt_length = madt.map_or(0, <[u8]>::len);
     let madt_offset = regions_end
-        .checked_add(usize::from(ap_trampoline.is_some()) * 8)
+        .checked_add(usize::from(ap_resources.is_some()) * 16)
         .ok_or(HandoffError::NonCanonical)?;
     let length = madt_offset
         .checked_add(madt_length)
@@ -385,7 +404,7 @@ fn encode_handoff_inner(
         | ((measured_boot as u16) * FLAG_MEASURED_BOOT)
         | ((rollback_protected as u16) * FLAG_ROLLBACK_PROTECTED)
         | ((madt.is_some() as u16) * FLAG_MADT_SNAPSHOT)
-        | ((ap_trampoline.is_some() as u16) * FLAG_AP_TRAMPOLINE);
+        | ((ap_resources.is_some() as u16) * FLAG_AP_TRAMPOLINE);
     output[22..24].copy_from_slice(&flags.to_le_bytes());
     output[24..32].copy_from_slice(&image_version.to_le_bytes());
     output[32..64].copy_from_slice(&entropy);
@@ -407,8 +426,9 @@ fn encode_handoff_inner(
         output[offset + 8..offset + 16].copy_from_slice(&region.pages().to_le_bytes());
         output[offset + 16] = region.kind() as u8;
     }
-    if let Some(physical) = ap_trampoline {
+    if let Some((physical, stack_arena)) = ap_resources {
         output[regions_end..regions_end + 8].copy_from_slice(&physical.to_le_bytes());
+        output[regions_end + 8..regions_end + 16].copy_from_slice(&stack_arena.to_le_bytes());
     }
     if let Some(madt) = madt {
         output[madt_offset..length].copy_from_slice(madt);
@@ -603,7 +623,7 @@ mod tests {
         );
         let decoded = BootHandoff::decode(&with_madt, |_| {}).unwrap();
         assert_eq!(decoded.madt(&with_madt), Some(madt.as_slice()));
-        let mut with_smp = [0u8; THREE_REGION_BYTES + 8 + 52];
+        let mut with_smp = [0u8; THREE_REGION_BYTES + 16 + 52];
         assert_eq!(
             encode_handoff_with_smp(
                 7,
@@ -616,6 +636,7 @@ mod tests {
                 handoff.framebuffer(),
                 &regions,
                 0x8000,
+                0x40_0000,
                 &madt,
                 &mut with_smp,
             ),
@@ -623,7 +644,13 @@ mod tests {
         );
         let smp = BootHandoff::decode(&with_smp, |_| {}).unwrap();
         assert_eq!(smp.ap_trampoline(), Some(0x8000));
+        assert_eq!(smp.ap_stack_arena(), Some(0x40_0000));
         assert_eq!(smp.madt(&with_smp), Some(madt.as_slice()));
+        with_smp[THREE_REGION_BYTES + 8..THREE_REGION_BYTES + 16].fill(0);
+        assert_eq!(
+            BootHandoff::decode(&with_smp, |_| {}).err(),
+            Some(HandoffError::NonCanonical)
+        );
         with_madt[165] = 51;
         assert_eq!(
             BootHandoff::decode(&with_madt, |_| {}).err(),

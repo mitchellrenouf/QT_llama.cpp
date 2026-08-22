@@ -34,7 +34,10 @@ use mrml_kernel::arch::x86_64::UserContext;
 use mrml_kernel::arch::x86_64::enter_user_context;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
-use mrml_kernel::arch::x86_64::{CpuDescriptorState, HardwareTrapFrame, X86CpuTopology};
+use mrml_kernel::arch::x86_64::{
+    CpuDescriptorState, HardwareTrapFrame, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES,
+    PerCpuPrivilegeStacks, X86CpuTopology,
+};
 #[cfg(any(
     feature = "timer-probe",
     feature = "preemption-probe",
@@ -43,8 +46,8 @@ use mrml_kernel::arch::x86_64::{CpuDescriptorState, HardwareTrapFrame, X86CpuTop
 use mrml_kernel::arch::x86_64::{LocalApicTimer, TimerDivide};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
-    BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_MADT_BYTES,
-    MAX_HANDOFF_REGIONS, MemoryKind, MemoryRegion, PhysAddr,
+    BootHandoff, HANDOFF_HEADER_BYTES, MAX_HANDOFF_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
+    MemoryRegion, PhysAddr,
 };
 #[cfg(feature = "service-probe")]
 use mrml_kernel::{
@@ -76,9 +79,6 @@ use mrml_kernel::{
 ))]
 use mrml_kernel::{Priority, ScheduleOutcome};
 
-#[cfg(not(feature = "fault-probe"))]
-const MAX_HANDOFF_BYTES: usize =
-    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES + 8;
 #[cfg(feature = "gpu-benchmark")]
 const GPU_COMMAND_BASE: usize = 0x00b0_0000;
 #[cfg(feature = "gpu-benchmark")]
@@ -810,8 +810,23 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         halt();
     }
     if let Some(madt) = handoff.madt(encoded) {
-        if X86CpuTopology::parse_madt(madt).is_err() {
-            halt();
+        let topology = X86CpuTopology::parse_madt(madt).unwrap_or_else(|_| halt());
+        match (handoff.ap_trampoline(), handoff.ap_stack_arena()) {
+            (Some(_), Some(base)) => {
+                let stacks = PerCpuPrivilegeStacks::<MAX_X86_64_CPUS>::new(
+                    base,
+                    base,
+                    PRIVILEGE_STACK_ARENA_PAGES,
+                )
+                .unwrap_or_else(|_| halt());
+                for cpu in 0..topology.len() {
+                    if stacks.cpu(cpu).is_err() {
+                        halt();
+                    }
+                }
+            }
+            (None, None) if topology.len() == 1 => {}
+            _ => halt(),
         }
     }
     #[cfg(feature = "service-probe")]

@@ -312,10 +312,14 @@ mapping against its exact physical frames and old permissions before replacing
 leaf permissions; missing, aliased, huge, or already-modified entries fail
 before the first logical update. A dedicated low-supervisor RX permission keeps
 the SIPI page executable without making it user-accessible or writable.
-The SMP handoff extension carries the exact firmware-selected low page and
-rejects absent, unaligned, zero-vector, or one-megabyte-and-above addresses.
-UEFI reserves one loader-owned page with `AllocateMaxAddress`, zeroes it, maps
-it supervisor-RW/NX, and identity-maps every page-table frame actually allocated
+The SMP handoff extension carries an indivisible pair containing the exact
+firmware-selected low page and the bounded AP privilege-stack arena; it rejects
+absent, unaligned, zero-vector, one-megabyte-and-above trampoline addresses,
+and invalid physical stack bases. UEFI reserves one loader-owned low page with
+`AllocateMaxAddress`, zeroes it, maps it supervisor-RW/NX, and provisions all
+256 bounded CPU slots with disjoint early, entry, and double-fault stacks while
+leaving both internal guard pages in every slot unmapped. It identity-maps every
+page-table frame actually allocated
 (including frames allocated while adding those mappings), so the relocated BSP
 can perform the checked seal. An `ActivePageTables` view opens CR3 without
 allocating, applies the same exact-match transition through identity-mapped
