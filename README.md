@@ -377,6 +377,14 @@ retains its current task, selects one non-running task, and transfers it to the
 one-task destination. Fresh policy-selected runs completed in 64,381
 microseconds on nested KVM and 62,785 microseconds on WHP. Periodic multi-peer
 balancing orchestration remains unfinished.
+The task runtime also has a non-copyable complete-domain migration ticket. It
+retires a non-current scheduler identity together with its saved CPL3 context,
+page-table root, capability space, and bounded IPC inbox; destination admission
+creates a fresh local identity, while failure leaves the entire ticket in
+caller-owned storage for retry. Windows and Linux tests cover preserved context,
+authority, queued messages, destination-full recovery, and rejection of a
+running-domain detach. Live cross-CPU CPL3 resumption of this complete ticket
+remains unfinished.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

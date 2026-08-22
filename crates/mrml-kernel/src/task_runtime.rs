@@ -2,8 +2,8 @@ use core::array;
 
 use crate::arch::x86_64::{TrapDisposition, UserContext};
 use crate::{
-    Capability, CapabilitySpace, Endpoint, IpcError, KernelScheduleError, KernelScheduler, Message,
-    Priority, Rights, ScheduleOutcome, TaskId,
+    Capability, CapabilitySpace, DetachedTask, Endpoint, IpcError, KernelScheduleError,
+    KernelScheduler, Message, Priority, Rights, ScheduleOutcome, TaskId, TaskMigration,
 };
 
 pub const TASK_INBOX_MESSAGES: usize = 2;
@@ -46,6 +46,11 @@ struct TaskDomain<const CAPS: usize> {
     inbox_head: u8,
     inbox_tail: u8,
     inbox_count: u8,
+}
+
+pub struct DetachedTaskDomain<const CAPS: usize> {
+    scheduling: DetachedTask,
+    domain: TaskDomain<CAPS>,
 }
 
 /// Owns the scheduler-visible identity, saved context, and capability space as
@@ -154,6 +159,61 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
 
     pub const fn current(&self) -> Option<TaskId> {
         self.scheduler.current()
+    }
+
+    /// Retires a non-current scheduler identity and removes its complete user
+    /// revocation domain as one linear object. On scheduler rejection the
+    /// untouched domain is restored to its exact slot.
+    pub fn detach_domain(
+        &mut self,
+        task: TaskId,
+    ) -> Result<DetachedTaskDomain<CAPS>, TaskRuntimeError> {
+        let slot = self
+            .domains
+            .iter()
+            .position(|domain| domain.as_ref().is_some_and(|domain| domain.task == task))
+            .ok_or(TaskRuntimeError::MissingTask)?;
+        let domain = self.domains[slot]
+            .take()
+            .ok_or(TaskRuntimeError::IntegrityFailure)?;
+        match self.scheduler.detach(task) {
+            Ok(scheduling) => Ok(DetachedTaskDomain { scheduling, domain }),
+            Err(error) => {
+                self.domains[slot] = Some(domain);
+                Err(TaskRuntimeError::Scheduler(error))
+            }
+        }
+    }
+
+    /// Admits a complete migrated user domain under a fresh local scheduler
+    /// identity. Capacity failure returns context, capabilities, inbox, and
+    /// scheduling ticket together so authority cannot be orphaned.
+    pub fn attach_domain(
+        &mut self,
+        ticket: &mut Option<DetachedTaskDomain<CAPS>>,
+    ) -> Result<TaskMigration, TaskRuntimeError> {
+        let Some(slot) = self.domains.iter().position(Option::is_none) else {
+            return Err(TaskRuntimeError::Full);
+        };
+        let task = ticket.take().ok_or(TaskRuntimeError::MissingTask)?;
+        let DetachedTaskDomain {
+            scheduling,
+            mut domain,
+        } = task;
+        let migration = match self.scheduler.attach(scheduling) {
+            Ok(migration) => migration,
+            Err(error) => {
+                let schedule_error = error.error();
+                *ticket = Some(DetachedTaskDomain {
+                    scheduling: error.into_task(),
+                    domain,
+                });
+                return Err(TaskRuntimeError::Scheduler(schedule_error));
+            }
+        };
+        domain.task = migration.destination();
+        self.domains[slot] = Some(domain);
+        Ok(migration)
     }
 
     pub fn capabilities_mut(
@@ -668,6 +728,120 @@ mod tests {
         assert_eq!(
             runtime.receive_ipc(receiver).err(),
             Some(TaskRuntimeError::InboxEmpty)
+        );
+    }
+
+    #[test]
+    fn migration_moves_context_authority_and_inbox_as_one_domain() {
+        let mut source = TaskRuntime::<2, 2>::new(1_000, 1).unwrap();
+        let mut destination = TaskRuntime::<2, 2>::new(1_000, 1).unwrap();
+        let sender = source
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let migrated = source
+            .create(Priority::RESPONSIVE, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        let retained_capability = source
+            .capabilities_mut(migrated)
+            .unwrap()
+            .insert(ObjectId(77), Rights::READ)
+            .unwrap();
+        let endpoint_object = ObjectId(88);
+        let endpoint_capability = source
+            .capabilities_mut(sender)
+            .unwrap()
+            .insert(endpoint_object, Rights::SIGNAL)
+            .unwrap();
+        let mut endpoint = Endpoint::new(endpoint_object);
+        source
+            .deliver_ipc(
+                sender,
+                migrated,
+                &mut endpoint,
+                endpoint_capability,
+                b"migrate",
+                &[],
+            )
+            .unwrap();
+        assert!(matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == sender));
+
+        let mut ticket = Some(source.detach_domain(migrated).unwrap());
+        assert_eq!(source.context(migrated), Err(TaskRuntimeError::MissingTask));
+        let migration = destination.attach_domain(&mut ticket).unwrap();
+        assert!(ticket.is_none());
+        let admitted = migration.destination();
+        assert_eq!(
+            destination.context(admitted).unwrap().instruction_pointer(),
+            0x50_0000
+        );
+        assert_eq!(
+            destination
+                .capabilities_mut(admitted)
+                .unwrap()
+                .authorize(retained_capability, Rights::READ),
+            Ok(ObjectId(77))
+        );
+        assert_eq!(
+            destination.receive_ipc(admitted).unwrap().payload(),
+            b"migrate"
+        );
+    }
+
+    #[test]
+    fn full_runtime_returns_the_complete_domain_for_retry() {
+        let mut source = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let mut full = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let mut fallback = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let task = source
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        full.create(Priority::NORMAL, context(0x30_0000, 0x50_0000))
+            .unwrap();
+
+        let mut ticket = Some(source.detach_domain(task).unwrap());
+        assert_eq!(full.attach_domain(&mut ticket), Err(TaskRuntimeError::Full));
+        assert!(ticket.is_some());
+        let migration = fallback.attach_domain(&mut ticket).unwrap();
+        assert!(ticket.is_none());
+        assert_eq!(
+            fallback
+                .context(migration.destination())
+                .unwrap()
+                .page_table(),
+            PhysAddr::new(0x20_0000).unwrap()
+        );
+    }
+
+    #[test]
+    fn running_domain_cannot_detach_and_remains_fully_live() {
+        let mut runtime = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let task = runtime
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let capability = runtime
+            .capabilities_mut(task)
+            .unwrap()
+            .insert(ObjectId(7), Rights::READ)
+            .unwrap();
+        runtime.start();
+
+        assert!(matches!(
+            runtime.detach_domain(task),
+            Err(TaskRuntimeError::Scheduler(
+                KernelScheduleError::CurrentTaskCannotMigrate
+            ))
+        ));
+        assert_eq!(runtime.current(), Some(task));
+        assert_eq!(
+            runtime
+                .capabilities_mut(task)
+                .unwrap()
+                .authorize(capability, Rights::READ),
+            Ok(ObjectId(7))
+        );
+        assert_eq!(
+            runtime.context(task).unwrap().instruction_pointer(),
+            0x40_0000
         );
     }
 }

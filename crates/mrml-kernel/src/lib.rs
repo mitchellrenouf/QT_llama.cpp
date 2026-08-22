@@ -73,7 +73,8 @@ pub use syscall::{
     MAX_SYSCALL_INLINE_PAYLOAD, SyscallError, SyscallRequest, UserCallFrame, X86_USER_CALL_VECTOR,
 };
 pub use task_runtime::{
-    FaultRetirement, TASK_INBOX_MESSAGES, TaskRuntime, TaskRuntimeError, TaskTermination,
+    DetachedTaskDomain, FaultRetirement, TASK_INBOX_MESSAGES, TaskRuntime, TaskRuntimeError,
+    TaskTermination,
 };
 pub use virtual_gpu::{
     BatchedDispatch, BufferAccess, BufferId, BufferMode, ControlBufferId, ControlBufferTable,

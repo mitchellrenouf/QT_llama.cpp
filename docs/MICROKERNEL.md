@@ -1456,6 +1456,15 @@ and transfers it to CPU 1. CPU 1 verifies the preserved priority and its new
 two-task load before switching. Fresh policy-selected runs measured
 `total=64381us` on nested KVM and `total=62785us` on WHP. Periodic multi-peer
 balancing orchestration remains pending. The
+task runtime now extends migration from scheduler metadata to a complete linear
+user-domain ticket containing the saved CPL3 context and page-table root,
+capability space, and bounded IPC inbox. Admission consumes the ticket only
+after both runtime and scheduler capacity checks; failure leaves it in
+caller-owned storage for retry without allocation or a large result value.
+Windows and Linux tests prove context, authority, and queued-message
+preservation, full-destination recovery, fresh destination identity, and exact
+restoration when detaching the current domain is rejected. Live cross-CPU CPL3
+resumption of this complete ticket remains pending. The
 bounded discovery foundation
 uses a parser that accepts only a complete loader-copied ACPI MADT with a
 valid signature, exact encoded length, checksum, entry geometry, reserved
