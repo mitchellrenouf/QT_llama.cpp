@@ -589,16 +589,11 @@ pub fn compile_x86_64_function_with_options<
                 | RuntimeReferenceTarget::Array { element, .. } => element,
             };
             match element {
-                RuntimeArrayElementType::Bool if returns_bool => continue,
-                RuntimeArrayElementType::Char if operand_type == "char" => continue,
-                RuntimeArrayElementType::Integer(Some(pointee))
-                    if (returns_value_free
-                        || returns_boolean_like
-                        || pointee.name() == operand_type)
-                        && integer_operand_type
-                            .is_none_or(|existing| existing == pointee.name()) =>
-                {
-                    integer_operand_type = Some(pointee.name());
+                RuntimeArrayElementType::Bool | RuntimeArrayElementType::Char => continue,
+                RuntimeArrayElementType::Integer(Some(pointee)) => {
+                    if integer_operand_type.is_none() {
+                        integer_operand_type = Some(pointee.name());
+                    }
                     continue;
                 }
                 _ => {
@@ -616,16 +611,11 @@ pub fn compile_x86_64_function_with_options<
                 continue;
             }
             match element {
-                RuntimeArrayElementType::Bool => continue,
-                RuntimeArrayElementType::Char if operand_type == "char" => continue,
-                RuntimeArrayElementType::Integer(Some(element))
-                    if (returns_value_free
-                        || returns_boolean_like
-                        || element.name() == operand_type)
-                        && integer_operand_type
-                            .is_none_or(|existing| existing == element.name()) =>
-                {
-                    integer_operand_type = Some(element.name());
+                RuntimeArrayElementType::Bool | RuntimeArrayElementType::Char => continue,
+                RuntimeArrayElementType::Integer(Some(element)) => {
+                    if integer_operand_type.is_none() {
+                        integer_operand_type = Some(element.name());
+                    }
                     continue;
                 }
                 _ => {
@@ -7761,6 +7751,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [i16; 3]) -> i16 { values[0] + values[2] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [char; 2]) -> char { values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [bool; 3]) -> bool { values[0] ^ values[2] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u32; 2]) -> u64 { values[0] as u64 }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(a: u64, empty: [u8; 0], b: u64, c: u64) -> u64 { a + b + c }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(a: u64, units: [(); 3], b: u64, c: u64) -> u64 { a + b + c }",
         ];
@@ -7774,21 +7765,6 @@ mod tests {
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
-
-        let unsupported = Parser::new(
-            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u32; 2]) -> u64 { values[0] as u64 }",
-        )
-        .parse_module::<2, 2>()
-        .unwrap();
-        let Some(Item::Function(function)) = unsupported.items()[0] else {
-            panic!("expected function")
-        };
-        assert_eq!(
-            compile_x86_64_function::<_, 256, 2, 32>(&function, &NoConstants, X86_64Abi::Windows,)
-                .unwrap_err()
-                .kind,
-            CodegenErrorKind::UnsupportedParameterType,
-        );
     }
 
     #[test]
@@ -8143,6 +8119,26 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, wide: u64, signed: i16) -> u8 { let adjusted = wide + 2; let negative: i16 = signed + 2; if adjusted == 258 && negative == -1 { input + 1 } else { input } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let wide: u64 = 256; let signed: i16 = -3; if wide + 2 == 258 && signed + 2 == -1 { input + 1 } else { input } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let values: [u16; 3] = [256, 257, 258]; if values[1] == 257 { input + 1 } else { input } }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1536, 4, 128>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn supports_independent_aggregate_parameter_widths() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, values: [u16; 3]) -> u8 { if values[1] == 257 { input + 1 } else { input } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, values: &[u16; 3], slice: &[i32]) -> u8 { if values[1] == 257 && slice[0] == -3 { input + 1 } else { input } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, flag: &bool, character: &char) -> u8 { if *flag && *character == 'z' { input + 1 } else { input } }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();

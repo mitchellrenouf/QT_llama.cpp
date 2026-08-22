@@ -1778,6 +1778,19 @@ fn rustc_independent_scalar_integer_widths_reach_native_objects() {
 }
 
 #[test]
+fn rustc_independent_aggregate_parameter_widths_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, values: [u16; 3]) -> u8 { if values[1] == 257 { input + 1 } else { input } }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, values: &[u16; 3], slice: &[i32]) -> u8 { if values[1] == 257 && slice[0] == -3 { input + 1 } else { input } }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, flag: &bool, character: &char) -> u8 { if *flag && *character == 'z' { input + 1 } else { input } }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_sixteen_element_fixed_arrays_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [u8; 16]) -> [u8; 16] { let mut copied = values; copied[15] += 1; copied }",
