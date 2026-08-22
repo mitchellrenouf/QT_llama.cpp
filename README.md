@@ -360,13 +360,18 @@ private IDT and privilege stack, advances exactly one local tick, acknowledges
 EOI, and emits a CPU-indexed proof while CPU 0 independently completes startup
 and trampoline revocation. The measured runs completed in 52,565 microseconds
 on nested KVM and 63,092 microseconds on WHP. A signed `smp-ipi-probe` adds
-directed rescheduling: CPU 0 publishes
-a one-shot request only after CPU 1 has release-published its APIC-bound
-two-task scheduler, then sends a directed fixed-delivery vector 33. CPU 1
-accepts it through its private interrupt state, atomically consumes the request,
-switches from task slot 0 to slot 1, acknowledges EOI, and emits a CPU/task-bound
-proof. KVM completed this in 50,690 microseconds and WHP in 63,173 microseconds.
-General task migration and load balancing remain unfinished.
+directed rescheduling and cross-CPU ownership transfer. CPU 0 creates a task in
+its local scheduler, retires that source identity into a non-copyable policy
+ticket, release-publishes the ticket through a bounded atomic mailbox, and
+sends directed fixed-delivery vector 33 only after CPU 1 has published its
+APIC-bound scheduler. CPU 1 accepts the exact ring-zero vector through its
+private interrupt state, atomically consumes the one-shot request and ticket,
+admits a fresh local identity, switches from its original task to the migrated
+task, acknowledges EOI, and emits a CPU/task-bound proof. Destination-full
+admission returns the linear ticket for retry instead of losing or duplicating
+the task; stale source identities remain retired. The 2026-08-22 signed
+migration runs completed in 82,233 microseconds on nested KVM and 28,172
+microseconds on WHP. Automatic load balancing remains unfinished.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

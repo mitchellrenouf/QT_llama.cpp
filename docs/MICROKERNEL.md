@@ -1435,16 +1435,21 @@ advances exactly one local scheduler tick, acknowledges EOI, and emits a
 CPU-indexed terminal proof. CPU 0 independently proves completed startup and
 trampoline revocation. The 2026-08-22 signed runs measured `total=52565us` on
 nested KVM and `total=63092us` on WHP. The signed `smp-ipi-probe` now implements
-and verifies directed rescheduling. CPU 1
-release-publishes an APIC-bound scheduler containing two runnable tasks, then
+and verifies directed rescheduling with cross-CPU ownership transfer. CPU 1
+release-publishes an APIC-bound scheduler containing one running task, then
 enables interrupt acceptance without programming an unrelated timer. CPU 0
-waits with a bounded calibrated deadline, publishes exactly one atomic request,
-and sends fixed-delivery vector 33 to the MADT-selected APIC destination. CPU 1
-requires an exact ring-zero vector, resolves exactly one APIC owner, consumes
-the request once, yields from task slot 0 to slot 1, acknowledges EOI, and emits
-a CPU/task-bound proof. The 2026-08-22 signed runs measured `total=50690us` on
-nested KVM and `total=63173us` on WHP. General task migration and load balancing
-remain pending. The
+waits with a bounded calibrated deadline, creates a task in its own scheduler,
+retires the source identity into a non-copyable policy ticket,
+release-publishes that ticket through a bounded atomic mailbox, publishes
+exactly one reschedule request, and sends fixed-delivery vector 33 to the
+MADT-selected APIC destination. CPU 1 requires an exact ring-zero vector,
+resolves exactly one APIC owner, consumes the request and ticket once, admits a
+fresh local identity, switches to it, acknowledges EOI, and emits a
+CPU/task-bound proof. Full mailboxes and destinations return the still-linear
+ticket rather than duplicating or losing ownership, and tests prove stale
+source identities cannot be revived. The 2026-08-22 freshly signed runs
+measured `total=82233us` on nested KVM and `total=28172us` on WHP. Automatic
+load balancing remains pending. The
 bounded discovery foundation
 uses a parser that accepts only a complete loader-copied ACPI MADT with a
 valid signature, exact encoded length, checksum, entry geometry, reserved

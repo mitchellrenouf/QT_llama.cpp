@@ -16,6 +16,8 @@ use mrml_kernel::BootPolicy;
     feature = "smp-ipi-probe"
 ))]
 use mrml_kernel::KernelScheduler;
+#[cfg(feature = "smp-ipi-probe")]
+use mrml_kernel::MigrationMailbox;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::SyscallRequest;
 #[cfg(any(
@@ -211,6 +213,8 @@ static AP_IPI_READY: [AtomicBool; MAX_X86_64_CPUS] =
 #[cfg(feature = "smp-ipi-probe")]
 static AP_RESCHEDULE_REQUEST: [AtomicBool; MAX_X86_64_CPUS] =
     [const { AtomicBool::new(false) }; MAX_X86_64_CPUS];
+#[cfg(feature = "smp-ipi-probe")]
+static SMP_MIGRATION_MAILBOX: MigrationMailbox = MigrationMailbox::new();
 #[cfg(not(feature = "fault-probe"))]
 struct ApStartupWorkspace(UnsafeCell<MaybeUninit<ApStartupTable<MAX_X86_64_CPUS>>>);
 #[cfg(not(feature = "fault-probe"))]
@@ -768,10 +772,16 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
             halt();
         }
         let scheduler = (&mut *slot.scheduler.get()).assume_init_mut();
+        let migration = scheduler
+            .attach(SMP_MIGRATION_MAILBOX.take().unwrap_or_else(|| halt()))
+            .unwrap_or_else(|_| halt());
         let next = match scheduler.yield_current().unwrap_or_else(|_| halt()) {
             ScheduleOutcome::Switch { to, .. } => to,
             _ => halt(),
         };
+        if next != migration.destination() {
+            halt();
+        }
         LocalApicTimer::acknowledge();
         asm!(
             "out dx, eax",
@@ -1063,11 +1073,8 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
         let first = scheduler
             .create(Priority::NORMAL)
             .unwrap_or_else(|_| halt());
-        let second = scheduler
-            .create(Priority::NORMAL)
-            .unwrap_or_else(|_| halt());
         if !matches!(scheduler.start(), ScheduleOutcome::Switch { to, .. } if to == first)
-            || second.token() as u32 != 1
+            || first.token() as u32 != 0
         {
             halt();
         }
@@ -1246,10 +1253,22 @@ unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
         }
         timing.wait_micros(100).unwrap_or_else(|_| halt());
     }
-    if !AP_IPI_READY[cpu].load(Ordering::Acquire)
-        || AP_RESCHEDULE_REQUEST[cpu]
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
+    if !AP_IPI_READY[cpu].load(Ordering::Acquire) {
+        halt();
+    }
+    let mut source = KernelScheduler::<1>::new(1_000, 1).unwrap_or_else(|_| halt());
+    let task = source
+        .create(Priority::RESPONSIVE)
+        .unwrap_or_else(|_| halt());
+    let detached = source.detach(task).unwrap_or_else(|_| halt());
+    if !matches!(source.start(), ScheduleOutcome::Idle)
+        || SMP_MIGRATION_MAILBOX.publish(detached).is_err()
+    {
+        halt();
+    }
+    if AP_RESCHEDULE_REQUEST[cpu]
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
     {
         halt();
     }
