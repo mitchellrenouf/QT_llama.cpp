@@ -61,9 +61,9 @@ pub use policy::{
     VmName, VmPolicy,
 };
 pub use scheduler::{
-    DetachedTask, KernelScheduleError, KernelScheduler, MigrationMailbox, MigrationMailboxError,
-    Priority, ScheduleOutcome, Scheduler, SchedulerError, TaskAttachError, TaskId, TaskMigration,
-    TaskState,
+    BalanceOutcome, DetachedTask, KernelScheduleError, KernelScheduler, MigrationMailbox,
+    MigrationMailboxError, Priority, ScheduleOutcome, Scheduler, SchedulerError, SchedulerLoad,
+    TaskAttachError, TaskId, TaskMigration, TaskState,
 };
 pub use service_lifecycle::{
     RestartPolicy, ServiceError, ServiceFault, ServiceId, ServiceRetirement, ServiceState,

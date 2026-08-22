@@ -58,7 +58,35 @@ pub enum KernelScheduleError {
     TickExhausted,
     NoCurrentTask,
     CurrentTaskCannotMigrate,
+    NoMigrationCandidate,
     Scheduler(SchedulerError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulerLoad {
+    occupied: usize,
+    runnable: usize,
+    capacity: usize,
+}
+
+impl SchedulerLoad {
+    pub const fn occupied(self) -> usize {
+        self.occupied
+    }
+
+    pub const fn runnable(self) -> usize {
+        self.runnable
+    }
+
+    pub const fn capacity(self) -> usize {
+        self.capacity
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BalanceOutcome {
+    Balanced,
+    Migrated(TaskMigration),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -302,6 +330,35 @@ impl<const TASKS: usize> Scheduler<TASKS> {
             .filter(|task| task.occupied && task.generation == id.generation)
             .ok_or(SchedulerError::InvalidTask)
     }
+
+    fn load(&self) -> SchedulerLoad {
+        let occupied = self.tasks.iter().filter(|task| task.occupied).count();
+        let runnable = self
+            .tasks
+            .iter()
+            .filter(|task| task.occupied && task.state == TaskState::Runnable)
+            .count();
+        SchedulerLoad {
+            occupied,
+            runnable,
+            capacity: TASKS,
+        }
+    }
+
+    fn migration_candidate(&self, excluded: Option<TaskId>) -> Option<TaskId> {
+        for distance in 0..TASKS {
+            let slot = (self.cursor + distance) % TASKS;
+            let task = &self.tasks[slot];
+            let id = TaskId {
+                slot: slot as u32,
+                generation: task.generation,
+            };
+            if task.occupied && task.state == TaskState::Runnable && Some(id) != excluded {
+                return Some(id);
+            }
+        }
+        None
+    }
 }
 
 impl<const TASKS: usize> Default for Scheduler<TASKS> {
@@ -349,6 +406,10 @@ impl<const TASKS: usize> KernelScheduler<TASKS> {
 
     pub const fn ticks(&self) -> u64 {
         self.ticks
+    }
+
+    pub fn load(&self) -> SchedulerLoad {
+        self.scheduler.load()
     }
 
     pub fn start(&mut self) -> ScheduleOutcome {
@@ -448,6 +509,26 @@ impl<const TASKS: usize> KernelScheduler<TASKS> {
             state,
             priority,
         })
+    }
+
+    /// Moves at most one runnable, non-current task when this scheduler has at
+    /// least two more runnable tasks than the destination. The hysteresis
+    /// prevents equal-load peers from repeatedly moving the same work.
+    pub fn rebalance_to<const DESTINATION_TASKS: usize>(
+        &mut self,
+        destination: &mut KernelScheduler<DESTINATION_TASKS>,
+    ) -> Result<BalanceOutcome, KernelScheduleError> {
+        let source_load = self.load();
+        let destination_load = destination.load();
+        if source_load.runnable <= destination_load.runnable.saturating_add(1) {
+            return Ok(BalanceOutcome::Balanced);
+        }
+        let candidate = self
+            .scheduler
+            .migration_candidate(self.current)
+            .ok_or(KernelScheduleError::NoMigrationCandidate)?;
+        self.migrate_to(destination, candidate)
+            .map(BalanceOutcome::Migrated)
     }
 
     /// Retires a non-running local identity and returns its scheduling policy
@@ -792,5 +873,60 @@ mod tests {
         );
         let migration = fallback.attach(error.into_task()).unwrap();
         assert_eq!(migration.source(), task);
+    }
+
+    #[test]
+    fn load_snapshot_counts_blocked_capacity_without_callers_inspecting_tasks() {
+        let mut scheduler = KernelScheduler::<3>::new(1_000, 3).unwrap();
+        let blocked = scheduler.create(Priority::NORMAL).unwrap();
+        scheduler.create(Priority::NORMAL).unwrap();
+        scheduler
+            .scheduler
+            .set_state(blocked, TaskState::Blocked)
+            .unwrap();
+
+        assert_eq!(
+            scheduler.load(),
+            SchedulerLoad {
+                occupied: 2,
+                runnable: 1,
+                capacity: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn rebalance_moves_one_non_running_task_only_across_real_imbalance() {
+        let mut source = KernelScheduler::<3>::new(1_000, 3).unwrap();
+        let mut destination = KernelScheduler::<3>::new(1_000, 3).unwrap();
+        let current = source.create(Priority::NORMAL).unwrap();
+        source.create(Priority::RESPONSIVE).unwrap();
+        source.create(Priority::BACKGROUND).unwrap();
+        assert!(matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == current));
+
+        let migration = match source.rebalance_to(&mut destination).unwrap() {
+            BalanceOutcome::Migrated(migration) => migration,
+            BalanceOutcome::Balanced => panic!("imbalanced schedulers were not balanced"),
+        };
+        assert_ne!(migration.source(), current);
+        assert_eq!(source.load().runnable(), 2);
+        assert_eq!(destination.load().runnable(), 1);
+        assert_eq!(
+            source.rebalance_to(&mut destination),
+            Ok(BalanceOutcome::Balanced)
+        );
+    }
+
+    #[test]
+    fn rebalance_does_not_move_work_between_nearly_equal_peers() {
+        let mut source = KernelScheduler::<2>::new(1_000, 3).unwrap();
+        let mut destination = KernelScheduler::<2>::new(1_000, 3).unwrap();
+        source.create(Priority::NORMAL).unwrap();
+        destination.create(Priority::NORMAL).unwrap();
+
+        assert_eq!(
+            source.rebalance_to(&mut destination),
+            Ok(BalanceOutcome::Balanced)
+        );
     }
 }
