@@ -4,6 +4,7 @@ use mrml_runtime::{
     path_is_directory, path_is_file, read_directory, read_file_bounded, read_file_text_bounded,
     write_file,
 };
+use mrml_ssh::{RsaPrivateKey,RsaPublicKey,sign_sshsig,verify_sshsig};
 
 use crate::{
     Commit, FileDiff, Index, IndexEntry, IndexError, Object, ObjectError, ObjectId, ObjectKind,
@@ -82,6 +83,7 @@ pub enum RepositoryError {
     Pack(PackError),
     WorktreeDirty,
     MergeRequired,
+    Signing,
 }
 
 impl Repository {
@@ -1422,6 +1424,12 @@ impl Repository {
         email: &str,
         timestamp: u64,
     ) -> Result<ObjectId, RepositoryError> {
+        self.commit_internal(message,name,email,timestamp,None)
+    }
+
+    pub fn commit_signed(&self,message:&str,name:&str,email:&str,timestamp:u64,key:&RsaPrivateKey)->Result<ObjectId,RepositoryError>{self.commit_internal(message,name,email,timestamp,Some(key))}
+
+    fn commit_internal(&self,message:&str,name:&str,email:&str,timestamp:u64,key:Option<&RsaPrivateKey>)->Result<ObjectId,RepositoryError>{
         validate_identity(name, email)?;
         if message.trim().is_empty() || message.chars().any(|character| character == '\0') {
             return Err(RepositoryError::InvalidIdentity);
@@ -1443,7 +1451,7 @@ impl Repository {
             contents.push_str(&mrml_runtime::mrml_format!("parent {merge_parent}\n"));
         }
         contents.push_str(&mrml_runtime::mrml_format!(
-            "author {} <{}> {} +0000\ncommitter {} <{}> {} +0000\n\n",
+            "author {} <{}> {} +0000\ncommitter {} <{}> {} +0000\n",
             name,
             email,
             timestamp,
@@ -1451,8 +1459,8 @@ impl Repository {
             email,
             timestamp
         ));
-        contents.push_str(message.trim());
-        contents.push('\n');
+        let mut unsigned=contents.clone();unsigned.push('\n');unsigned.push_str(message.trim());unsigned.push('\n');
+        if let Some(key)=key{let armor=sign_sshsig(key,"git",unsigned.as_bytes()).map_err(|_|RepositoryError::Signing)?;for(index,line)in armor.lines().enumerate(){if index==0{contents.push_str("gpgsig ");}else{contents.push(' ');}contents.push_str(line);contents.push('\n');}contents.push('\n');contents.push_str(message.trim());contents.push('\n');}else{contents=unsigned;}
         let id = self.write_object(ObjectKind::Commit, contents.as_bytes())?;
         let reference = mrml_runtime::mrml_format!("refs/heads/{}", branch);
         validate_reference(&reference)?;
@@ -1479,6 +1487,8 @@ impl Repository {
         }
         Ok(id)
     }
+
+    pub fn verify_commit_signature(&self,id:ObjectId,key:&RsaPublicKey)->Result<(),RepositoryError>{let object=self.read_object(id)?;if object.kind!=ObjectKind::Commit{return Err(RepositoryError::InvalidReference);}let(unsigned,armor)=split_commit_signature(&object.contents)?;verify_sshsig(key,"git",&unsigned,&armor).map_err(|_|RepositoryError::Signing)}
 
     fn create_commit_object(
         &self,
@@ -1776,6 +1786,8 @@ fn validate_config_name(value: &str) -> Result<(), RepositoryError> {
     }
 }
 
+fn split_commit_signature(contents:&[u8])->Result<(Vector<u8>,Text),RepositoryError>{let text=core::str::from_utf8(contents).map_err(|_|RepositoryError::Signing)?;let(headers,message)=text.split_once("\n\n").ok_or(RepositoryError::Signing)?;let mut unsigned=Text::new();let mut armor=Text::new();let mut signing=false;let mut found=false;for line in headers.split('\n'){if let Some(first)=line.strip_prefix("gpgsig "){if found{return Err(RepositoryError::Signing);}found=true;signing=true;armor.push_str(first);armor.push('\n');}else if signing&&line.starts_with(' '){armor.push_str(&line[1..]);armor.push('\n');}else{signing=false;unsigned.push_str(line);unsigned.push('\n');}}if !found{return Err(RepositoryError::Signing);}unsigned.push('\n');unsigned.push_str(message);let mut bytes=Vector::new();bytes.extend(unsigned.bytes());Ok((bytes,armor))}
+
 fn remote_section(line: &str) -> Option<&str> {
     line.strip_prefix("[remote \"")?
         .strip_suffix("\"]")
@@ -1856,6 +1868,7 @@ impl fmt::Display for RepositoryError {
             Self::MergeRequired => {
                 formatter.write_str("non-fast-forward merge requires native three-way merge")
             }
+            Self::Signing => formatter.write_str("Git SSH signature is missing or invalid"),
             Self::NotRepository => formatter.write_str("not an MRML Git repository"),
             Self::AlreadyExists => formatter.write_str("repository metadata already exists"),
             Self::UnsupportedLayout => {
@@ -1891,6 +1904,9 @@ impl core::error::Error for RepositoryError {}
 mod tests {
     use super::*;
     use mrml_runtime::{process_id, remove_dir_all, temporary_directory};
+
+    fn decode_hex(text:&str)->Vector<u8>{(0..text.len()/2).map(|i|u8::from_str_radix(&text[i*2..i*2+2],16).unwrap()).collect()}
+    fn signing_key()->RsaPrivateKey{RsaPrivateKey{public:RsaPublicKey{modulus:decode_hex("9eff1e540991fee9de7c7ed50d5da16508d610090a52c9aa4c41bc868e93e7cc03a6cc766fb2dab78ba91e4315f6524e355fda2c8a71b372f012d43460c2c425c2ae763d96a20584bc030e3595cc9f2352f51288f8db5d398d55efc566381707b4df848444641093fc5c48ca894db8397b252d00d5d606fe377b09f3609850fb"),exponent:Vector::from([1,0,1])},private_exponent:decode_hex("2187d1e08d2821e736497102035094a1d70c35d3823ed552b9c43f3aed4499e4b77c6cb0297c418de5c123a5a8330b467d111ad4bbd9a0ab839fa4eaeae108364d4ad3f439916be8a244f8071922b1918cce92b27fe5f6ed24a328b15030b3fb3e300166c651f5f457daef746c4051a7a0f035379dcacf3a164fb4aedd284a11")}}
 
     fn root(name: &str) -> Text {
         join_path(
@@ -1972,6 +1988,8 @@ mod tests {
         assert!(packed.iter().any(|object|object.kind==ObjectKind::Blob));
         remove_dir_all(&path).unwrap();
     }
+
+    #[test]fn creates_and_verifies_signed_commit(){let path=root("signed-commit");let repository=Repository::init(&path).unwrap();write_file(&join_path(&path,"tracked"),b"signed").unwrap();repository.stage(&Vector::from([Text::from("tracked")])).unwrap();let key=signing_key();let id=repository.commit_signed("signed","Signer","signer@example.invalid",7,&key).unwrap();repository.verify_commit_signature(id,&key.public).unwrap();let object=repository.read_object(id).unwrap();assert!(object.contents.windows(7).any(|part|part==b"gpgsig "));let mut wrong=key.public.clone();wrong.exponent=Vector::from([3]);assert_eq!(repository.verify_commit_signature(id,&wrong),Err(RepositoryError::Signing));remove_dir_all(&path).unwrap();}
 
     #[test]
     fn creates_lists_and_deletes_native_refs() {

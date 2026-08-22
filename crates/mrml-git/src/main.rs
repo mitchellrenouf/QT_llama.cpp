@@ -268,6 +268,7 @@ fn print_ssh_remote(name: &str, url: &str, remote: &SshRemote) {
 
 fn ssh_credentials_paths(private_path:&str,host_path:&str)->Result<(RsaPrivateKey,Vector<u8>)>{let private=read_file_text_bounded(private_path,64*1024).map_err(|_|anyhow!("cannot read SSH private key"))?;let host=read_file_text_bounded(host_path,64*1024).map_err(|_|anyhow!("cannot read pinned SSH host key"))?;let private=parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid SSH private key: {}",error))?;let host=parse_rsa_public_line(&host).and_then(|key|encode_rsa_public_key(&key)).map_err(|error|anyhow!("invalid SSH host key: {}",error))?;Ok((private,host))}
 fn ssh_credentials(repository:&Repository)->Result<(RsaPrivateKey,Vector<u8>)>{let private=repository.config_value("ssh","privateKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;let host=repository.config_value("ssh","hostKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;ssh_credentials_paths(&private,&host)}
+fn repository_signing_key(repository:&Repository)->Result<RsaPrivateKey>{let path=repository.config_value("user","signingkey").map_err(|error|anyhow!("{}",error))?.or_else(||repository.config_value("ssh","privateKey").ok().flatten()).ok_or_else(||anyhow!("run signing configure <private-key.pem> [allowed-signer] first"))?;let text=read_file_text_bounded(&path,64*1024).map_err(|_|anyhow!("cannot read signing key"))?;parse_rsa_private_pem(&text).map_err(|error|anyhow!("invalid signing key: {}",error))}
 
 fn native_fetch(repository:Option<&str>,name:&str)->Result<()>{let repo=native_repository(repository)?;let (_,remote)=ssh_remote(repository,name)?;let(key,host)=ssh_credentials(&repo)?;let result=fetch_ssh(&repo,name,&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;println!("Fetched {} object(s) and {} branch ref(s) from {}",result.objects.len(),result.branches.len(),name);Ok(())}
 fn native_push(repository:Option<&str>,name:&str,branch:Option<&str>)->Result<()>{let repo=native_repository(repository)?;let branch=branch.map(Into::into).or_else(||repo.current_branch().ok().flatten()).ok_or_else(||anyhow!("push requires a branch for detached HEAD"))?;let(_,remote)=ssh_remote(repository,name)?;let(key,host)=ssh_credentials(&repo)?;let result=push_ssh(&repo,name,&branch,&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;if result.old==result.new{println!("Everything up to date.");}else{println!("Pushed {} to {}/{}",&result.new.to_hex()[..12],name,branch);}Ok(())}
@@ -608,9 +609,6 @@ fn dispatch(cli: &Cli) -> Result<()> {
             };
             require_arguments("commit", words)?;
             let message = join_words(words);
-            if sign {
-                return Err(anyhow!("native commit signing is not implemented yet"));
-            }
             let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
                 .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
                 .unwrap_or_else(|| "MRML User".into());
@@ -619,9 +617,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
                 .unwrap_or_else(|| "mrml@localhost".into());
             let timestamp = mrml_runtime::unix_time_seconds()
                 .ok_or_else(|| anyhow!("system time is unavailable"))?;
-            let id = native_repository(repository)?
-                .commit(&message, &name, &email, timestamp)
-                .map_err(|error| anyhow!("{}", error))?;
+            let repo=native_repository(repository)?;let id=if sign{let key=repository_signing_key(&repo)?;repo.commit_signed(&message,&name,&email,timestamp,&key)}else{repo.commit(&message,&name,&email,timestamp)}.map_err(|error|anyhow!("{}",error))?;
             println!("[{}] {}", (&id.to_hex()[..12]).bright_green(), message);
             Ok(())
         }
