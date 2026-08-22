@@ -4802,6 +4802,18 @@ mod tests {
     }
 
     #[test]
+    fn emits_contextual_array_defaults_from_loop_breaks() {
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { (loop { break if true { break Default::default() } else { break [13u64, 14] }; })[0] + (loop { if false { break [1 / 0, 14] } else { break Default::default() } })[1] + (loop { break if false { break Default::default() } else { [42, 43] }; })[1] }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+            assert!(compile_x86_64_function::<_, 256, 2, 64>(&function, &NoConstants, abi).is_ok());
+        }
+    }
+
+    #[test]
     fn emits_unit_returning_functions() {
         let sources = [
             "#[unsafe(no_mangle)] pub extern \"C\" fn unit() -> () { () }",

@@ -282,29 +282,7 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
                     kind: IrErrorKind::InvalidExpressionTree,
                     span: index_expression.span,
                 })?;
-                let base_expression = self.tree.expression(base).ok_or(IrError {
-                    kind: IrErrorKind::MissingExpression,
-                    span: expression.span,
-                })?;
-                let ExprKind::Array {
-                    elements,
-                    element_count,
-                } = base_expression.kind
-                else {
-                    return Err(IrError {
-                        kind: IrErrorKind::InvalidExpressionTree,
-                        span: base_expression.span,
-                    });
-                };
-                let element = elements
-                    .get(index)
-                    .filter(|_| index < element_count)
-                    .and_then(|element| *element)
-                    .ok_or(IrError {
-                        kind: IrErrorKind::InvalidExpressionTree,
-                        span: index_expression.span,
-                    })?;
-                self.lower(element, depth + 1)?;
+                self.lower_array_element(base, index, depth + 1)?;
             }
             ExprKind::Integer(literal) => {
                 self.push(Instruction::PushInteger(literal.value), expression.span)?;
@@ -450,6 +428,80 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
                 self.lower(first, depth + 1)?;
                 self.push(Instruction::Pop, expression.span)?;
                 self.lower(then, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_array_element(
+        &mut self,
+        id: ExprId,
+        index: usize,
+        depth: usize,
+    ) -> Result<(), IrError> {
+        let expression = self.tree.expression(id).ok_or(IrError {
+            kind: IrErrorKind::MissingExpression,
+            span: Span { start: 0, end: 0 },
+        })?;
+        if depth == MAX_LOWERING_DEPTH {
+            return Err(IrError {
+                kind: IrErrorKind::NestingLimitExceeded,
+                span: expression.span,
+            });
+        }
+        match expression.kind {
+            ExprKind::DefaultValue => {
+                self.push(Instruction::PushInteger(0), expression.span)?;
+            }
+            ExprKind::Array {
+                elements,
+                element_count,
+            } => {
+                let element = elements
+                    .get(index)
+                    .filter(|_| index < element_count)
+                    .and_then(|element| *element)
+                    .ok_or(IrError {
+                        kind: IrErrorKind::InvalidExpressionTree,
+                        span: expression.span,
+                    })?;
+                self.lower(element, depth + 1)?;
+            }
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            }
+            | ExprKind::LoopBreakIf {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.lower(condition, depth + 1)?;
+                let false_branch = self.push(Instruction::JumpIfFalse(0), expression.span)?;
+                self.lower_array_element(then_branch, index, depth + 1)?;
+                let end_branch = self.push(Instruction::Jump(0), expression.span)?;
+                let else_start = self.program.instruction_count;
+                self.patch(false_branch, Instruction::JumpIfFalse(else_start));
+                self.lower_array_element(else_branch, index, depth + 1)?;
+                let end = self.program.instruction_count;
+                self.patch(end_branch, Instruction::Jump(end));
+            }
+            ExprKind::InlineConst { operand }
+            | ExprKind::LoopBreak { operand }
+            | ExprKind::Return { operand } => {
+                self.lower_array_element(operand, index, depth + 1)?;
+            }
+            ExprKind::Sequence { first, then } => {
+                self.lower(first, depth + 1)?;
+                self.push(Instruction::Pop, expression.span)?;
+                self.lower_array_element(then, index, depth + 1)?;
+            }
+            _ => {
+                return Err(IrError {
+                    kind: IrErrorKind::InvalidExpressionTree,
+                    span: expression.span,
+                });
             }
         }
         Ok(())

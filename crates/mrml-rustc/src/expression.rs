@@ -578,6 +578,12 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 let index = self.evaluate_node(index, resolver, depth + 1)?;
                 let index =
                     usize::try_from(index).map_err(|_| ConstEvalError::ArrayIndexOutOfBounds)?;
+                if self
+                    .array_length(base, depth + 1)
+                    .is_none_or(|length| index >= length)
+                {
+                    return Err(ConstEvalError::ArrayIndexOutOfBounds);
+                }
                 self.evaluate_array_element(base, index, resolver, depth + 1)
             }
             ExprKind::Integer(literal) => Ok(literal.value),
@@ -698,6 +704,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             .expression(id)
             .ok_or(ConstEvalError::InvalidExpressionTree)?;
         match expression.kind {
+            ExprKind::DefaultValue => Ok(0),
             ExprKind::Array {
                 elements,
                 element_count,
@@ -732,6 +739,38 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 self.evaluate_array_element(operand, index, resolver, depth + 1)
             }
             _ => Err(ConstEvalError::InvalidExpressionTree),
+        }
+    }
+
+    fn array_length(&self, id: ExprId, depth: usize) -> Option<usize> {
+        if depth == MAX_EXPRESSION_DEPTH {
+            return None;
+        }
+        let expression = self.expression(id)?;
+        match expression.kind {
+            ExprKind::Array { element_count, .. } => Some(element_count),
+            ExprKind::If {
+                then_branch,
+                else_branch,
+                ..
+            }
+            | ExprKind::LoopBreakIf {
+                then_branch,
+                else_branch,
+                ..
+            } => match (
+                self.array_length(then_branch, depth + 1),
+                self.array_length(else_branch, depth + 1),
+            ) {
+                (Some(left), Some(right)) if left == right => Some(left),
+                (Some(length), None) | (None, Some(length)) => Some(length),
+                _ => None,
+            },
+            ExprKind::InlineConst { operand }
+            | ExprKind::LoopBreak { operand }
+            | ExprKind::Return { operand } => self.array_length(operand, depth + 1),
+            ExprKind::Sequence { then, .. } => self.array_length(then, depth + 1),
+            _ => None,
         }
     }
 }
@@ -2982,6 +3021,18 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
     }
 
     fn loop_break_operand(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
+        if let Some(close) = self
+            .peek()?
+            .filter(|token| token.kind == TokenKind::CloseBrace)
+        {
+            return self.push(Expr {
+                kind: ExprKind::Unit,
+                span: Span {
+                    start: close.span.start,
+                    end: close.span.start,
+                },
+            });
+        }
         if let Some(semicolon) = self
             .peek()?
             .filter(|token| token.kind == TokenKind::Semicolon)
@@ -2996,6 +3047,12 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             });
         }
         let operand = self.expression(0, depth + 1)?;
+        if self
+            .peek()?
+            .is_some_and(|token| token.kind == TokenKind::CloseBrace)
+        {
+            return Ok(operand);
+        }
         let semicolon = self.take()?;
         if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
             return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
@@ -3542,10 +3599,7 @@ mod tests {
         assert!(boolean.is_boolean_expression(boolean.root(), 0));
         assert_eq!(boolean.evaluate(&NoConstants), Ok(1));
 
-        let missing_semicolon = ExpressionParser::<8>::new("loop { break 13 }")
-            .parse()
-            .unwrap_err();
-        assert_eq!(missing_semicolon.kind, ExpressionErrorKind::TrailingToken);
+        assert_eq!(evaluate("loop { break 13 }"), Ok(13));
         let missing_break = ExpressionParser::<8>::new("loop { 13 }")
             .parse()
             .unwrap_err();
@@ -3665,6 +3719,31 @@ mod tests {
                 .unwrap_err()
                 .kind,
             ExpressionErrorKind::TooManyArrayElements
+        );
+        assert_eq!(
+            evaluate(
+                "(loop { break if true { break Default::default() } else { break [13, 14] }; })[0]"
+            ),
+            Ok(0)
+        );
+        assert_eq!(
+            evaluate(
+                "(loop { if false { break [1 / 0, 14] } else { break Default::default() } })[1]"
+            ),
+            Ok(0)
+        );
+        assert_eq!(
+            evaluate(
+                "(loop { break if false { break Default::default() } else { [42, 43] }; })[1]"
+            ),
+            Ok(43)
+        );
+        assert_eq!(
+            ExpressionParser::<32>::new("(if true { Default::default() } else { [1, 2] })[2]")
+                .parse()
+                .unwrap()
+                .evaluate(&NoConstants),
+            Err(ConstEvalError::ArrayIndexOutOfBounds)
         );
     }
 

@@ -241,13 +241,16 @@ type until a scalar unit, integer, or Boolean context is available. It lowers
 to the corresponding zero representation; an unconstrained inferred local is
 rejected rather than silently choosing a type, and malformed method names or
 arguments fail during parsing. Nested unlabeled `break` operands share their
-single terminating semicolon with the enclosing break. Together these features
+single terminating semicolon with the enclosing break, while a value
+immediately before the closing brace accepts Rust's semicolonless tail form.
+Together these features
 cover the oracle's three remaining scalar unit/default shapes, including
 `break break Default::default()` and a break whose operand is an `if` with a
 nested valueless break. Their combined probe emitted 207-byte COFF and 600-byte
 ELF64 objects and returned 42 through independent Windows gnullvm and Arch
-Linux WSL callers. Aggregate defaults and general trait method dispatch remain
-outside this scalar implementation. An original labeled four-guard probe and
+Linux WSL callers. Unconstrained aggregate defaults and general trait method
+dispatch remain outside this scalar implementation. An original labeled
+four-guard probe and
 its structured-alternative counterpart each emitted
 deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
@@ -262,9 +265,15 @@ extraction lowers through IR and native code without representing the aggregate
 as a packed integer. The pinned `loop-break-value.rs` array literals therefore
 have an original scalar-index replacement: its 93-byte COFF and 488-byte ELF64
 objects returned the middle value `3` through independent Windows gnullvm and
-Arch Linux WSL callers. Runtime-variable indexes, array-valued locals and
-returns, array defaults, references, slices, and aggregate loop-break
-unification remain separate work.
+Arch Linux WSL callers. Array-valued conditional loop-break branches now also
+unify a `Default::default()` arm with a same-length fixed scalar array arm.
+Constant indexing preserves lazy selection, including an unselected trapping
+element, and materializes the selected default element as zero. A combined
+probe covering both branch orders and a semicolonless tail `break` emitted
+93-byte COFF and 488-byte ELF64 objects; independent pinned-nightly callers on
+both hosts observed 43. Runtime-variable indexes, array-valued locals and
+returns, unconstrained array defaults, references, slices, and general
+aggregate storage remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -619,14 +628,17 @@ its immediate scalar integer, Boolean, and valueless or explicit-unit
 break-value forms, including matching labels. The oracle file's array-valued
 breaks, references, trait coercions, never type, matches, and more general
 nested control-flow graphs are not claimed by this slice. Its fixed scalar
-array literals now have bounded direct-index coverage. Replacements cover
-bounded cross-nested value exits, terminating nested value-loop operands, up to five
-compatible competing scalar values, both sequential and structured alternative
-syntax, lazy selection of the taken break edge, and the oracle's labeled
+array literals now have bounded direct-index coverage, including contextual
+array defaults selected through conditional loop-break branches. Replacements
+cover bounded cross-nested value exits, terminating nested value-loop operands,
+up to five compatible competing scalar values, both sequential and structured
+alternative syntax, lazy selection of the taken break edge, and the oracle's labeled
 `break`-as-`while`-condition cases plus its two source orders for unreachable
-unit sibling breaks and its three scalar `Default::default()`/nested-break
-forms. General `while` condition expressions, aggregate defaults, and arbitrary
-nested value-loop graphs remain outside this bounded slice.
+unit sibling breaks, its three scalar `Default::default()`/nested-break forms,
+and the three directly indexed array/default branch shapes. General `while`
+condition expressions, stored or returned aggregates, unconstrained aggregate
+defaults, and arbitrary nested value-loop graphs remain outside this bounded
+slice.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate
@@ -749,7 +761,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 257 Windows library, conformance, rustc-nightly-replacement, and driver
+The 259 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1423,7 +1435,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 257 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 259 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
