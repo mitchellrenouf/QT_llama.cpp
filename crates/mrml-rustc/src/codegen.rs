@@ -734,13 +734,19 @@ pub fn compile_x86_64_function_with_options<
                     None
                 };
                 for action_index in 0..=block.action_count() {
-                    for (conditional, return_action_index) in block
+                    let continue_here = block.continue_condition.is_some()
+                        && action_index == block.continue_action_index;
+                    for ((conditional, return_action_index), return_control_order) in block
                         .conditional_returns()
                         .iter()
                         .flatten()
                         .zip(block.conditional_return_action_indices())
+                        .zip(block.conditional_return_control_orders())
                     {
-                        if action_index == *return_action_index {
+                        if action_index == *return_action_index
+                            && (!continue_here
+                                || *return_control_order < block.continue_control_order)
+                        {
                             emitter.emit_conditional_return::<MAX_EXPRESSION_NODES>(
                                 conditional,
                                 expected_type,
@@ -748,9 +754,7 @@ pub fn compile_x86_64_function_with_options<
                             )?;
                         }
                     }
-                    if block.continue_condition.is_some()
-                        && action_index == block.continue_action_index
-                    {
+                    if continue_here {
                         let condition = block.continue_condition.ok_or(CodegenError {
                             kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
                             span: function.body_expression_span,
@@ -795,6 +799,25 @@ pub fn compile_x86_64_function_with_options<
                         emitter.emit_stack_cleanup_to(nested_checkpoint)?;
                         emitter.emit_backward_branch(nested_start)?;
                         emitter.patch_forward_branch(skip_continue)?;
+                    }
+                    if continue_here {
+                        for ((conditional, return_action_index), return_control_order) in block
+                            .conditional_returns()
+                            .iter()
+                            .flatten()
+                            .zip(block.conditional_return_action_indices())
+                            .zip(block.conditional_return_control_orders())
+                        {
+                            if action_index == *return_action_index
+                                && *return_control_order > block.continue_control_order
+                            {
+                                emitter.emit_conditional_return::<MAX_EXPRESSION_NODES>(
+                                    conditional,
+                                    expected_type,
+                                    function.body_expression_span.start,
+                                )?;
+                            }
+                        }
                     }
                     if action_index == block.action_count() {
                         break;
@@ -4178,6 +4201,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_conditional_unit_return(limit: u64, stop: u64) { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == stop { return; } } outer += 1; inner = 0; } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_conditional_return(limit: u64, stop: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_ordered_returns(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == first { return outer + 40; } if inner == second { return outer + 50; } } outer += 1; inner = 0; } outer }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_continue_then_return(limit: u64, skip: u64, stop: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == skip { continue; } if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {

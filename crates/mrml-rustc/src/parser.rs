@@ -287,8 +287,10 @@ pub struct NestedLoopBlock<'source> {
     pub return_statement: Option<LoopReturn<'source>>,
     pub continue_condition: Option<ConditionalLoopControl<'source>>,
     pub continue_action_index: usize,
+    pub continue_control_order: usize,
     conditional_returns: [Option<ConditionalReturn<'source>>; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
     conditional_return_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
+    conditional_return_control_orders: [usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
     conditional_return_count: usize,
 }
 
@@ -307,6 +309,10 @@ impl<'source> NestedLoopBlock<'source> {
 
     pub fn conditional_return_action_indices(&self) -> &[usize] {
         &self.conditional_return_action_indices[..self.conditional_return_count]
+    }
+
+    pub fn conditional_return_control_orders(&self) -> &[usize] {
+        &self.conditional_return_control_orders[..self.conditional_return_count]
     }
 }
 
@@ -1488,8 +1494,12 @@ impl<'source> BodyParser<'source> {
                     let mut action_count = 0usize;
                     let mut continue_condition = None;
                     let mut continue_action_index = 0usize;
+                    let mut continue_control_order = 0usize;
+                    let mut control_order = 0usize;
                     let mut conditional_returns = [None; MAX_NESTED_LOOP_CONDITIONAL_RETURNS];
                     let mut conditional_return_action_indices =
+                        [0usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS];
+                    let mut conditional_return_control_orders =
                         [0usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS];
                     let mut conditional_return_count = 0usize;
                     let mut body_closed = false;
@@ -1563,6 +1573,8 @@ impl<'source> BodyParser<'source> {
                                 condition: &self.source[condition_span.start..condition_span.end],
                                 condition_span,
                             };
+                            let this_control_order = control_order;
+                            control_order += 1;
                             if inner_control.is_some_and(|token| token.text == "continue") {
                                 if continue_condition.is_some() {
                                     return Err(
@@ -1571,6 +1583,7 @@ impl<'source> BodyParser<'source> {
                                 }
                                 continue_condition = Some(condition);
                                 continue_action_index = action_count;
+                                continue_control_order = this_control_order;
                                 continue;
                             }
                             if let Some((value, value_span)) = return_value {
@@ -1589,6 +1602,8 @@ impl<'source> BodyParser<'source> {
                                     });
                                 conditional_return_action_indices[conditional_return_count] =
                                     action_count;
+                                conditional_return_control_orders[conditional_return_count] =
+                                    this_control_order;
                                 conditional_return_count += 1;
                                 continue;
                             }
@@ -1652,8 +1667,10 @@ impl<'source> BodyParser<'source> {
                                 return_statement,
                                 continue_condition,
                                 continue_action_index,
+                                continue_control_order,
                                 conditional_returns,
                                 conditional_return_action_indices,
+                                conditional_return_control_orders,
                                 conditional_return_count,
                             });
                             let index = nested_block_count;
@@ -3039,6 +3056,26 @@ mod tests {
         assert_eq!(inner.conditional_returns()[0].unwrap().value, "40");
         assert_eq!(inner.conditional_returns()[1].unwrap().value, "50");
         assert_eq!(inner.conditional_return_action_indices(), &[1, 1]);
+        assert_eq!(inner.conditional_return_control_orders(), &[0, 1]);
+
+        let continue_before_return = Parser::new(
+            "fn nested(limit: u64, skip: u64, stop: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == skip { continue; } if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = continue_before_return.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+            panic!("expected nested while block")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert_eq!(inner.continue_action_index, 1);
+        assert_eq!(inner.continue_control_order, 0);
+        assert_eq!(inner.conditional_return_action_indices(), &[1]);
+        assert_eq!(inner.conditional_return_control_orders(), &[1]);
 
         let crowded_returns = Parser::new(
             "fn nested(a: bool, b: bool, c: bool, d: bool) -> u64 { loop { loop { if a { return 1; } if b { return 2; } if c { return 3; } if d { return 4; } if true { return 5; } } } }",

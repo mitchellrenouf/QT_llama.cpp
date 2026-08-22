@@ -791,6 +791,25 @@ fn rustc_ordered_conditional_returns_in_nested_while_have_an_executable_replacem
 }
 
 #[test]
+fn rustc_nested_continue_precedes_later_return() {
+    // Original scalar replacement for ordered continue/return control in
+    // pinned tests/ui/for-loop-while/loop-break-cont.rs and nested cleanup in
+    // tests/ui/liveness/loop-no-reinit-needed-post-bot.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, skip: u32, stop: u32) -> u32 { let mut outer: u32 = 0; let mut inner: u32 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == skip { continue; } if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<3072, 2048, 4, 4, 4, 96>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",
