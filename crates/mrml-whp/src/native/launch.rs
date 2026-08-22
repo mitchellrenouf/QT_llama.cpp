@@ -1,9 +1,9 @@
+#[cfg(test)]
+use mrml_kernel::arch::x86_64::PRIVILEGE_STACK_ARENA_PAGES;
 use mrml_kernel::arch::x86_64::{
     AddressSpace, Mapping, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
     PerCpuPrivilegeStacks, PrivilegeStackLayout, VirtAddr,
 };
-#[cfg(test)]
-use mrml_kernel::arch::x86_64::PRIVILEGE_STACK_ARENA_PAGES;
 use mrml_kernel::{
     ArtifactKind, BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, MAX_PE_SECTIONS, PAGE_SIZE,
     PeImage, PhysAddr, VerifiedExecutable, VmBackend, VmExit,
@@ -21,6 +21,7 @@ struct KernelDevices {
     local_apic: bool,
     gpu_queue: Option<GpuSharedQueueLayout>,
     intercept_breakpoint: bool,
+    cpus: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +93,7 @@ pub struct PreparedWhpGuest<'system> {
     service_entry: [Option<u64>; 2],
     service_root: [Option<PhysAddr>; 2],
     service_instance: [Option<ServiceInstance>; 2],
+    ap_trampoline: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -174,6 +176,73 @@ impl PreparedWhpGuest<'_> {
     }
     pub fn run(&mut self) -> Result<VmExit, WhpError> {
         self.partition.run()
+    }
+    pub fn run_smp(&mut self) -> Result<(VmExit, VmExit), WhpError> {
+        let trampoline = self.ap_trampoline.ok_or(WhpError::InvalidMapping)?;
+        let mut secondary = None;
+        let result = mrml_runtime::Shared::new(mrml_runtime::SpinMutex::new(None));
+        let bootstrap = loop {
+            let exit = self.partition.run()?;
+            if let VmExit::Io {
+                port: 0x00e9,
+                size: 1,
+                write: true,
+                value,
+            } = exit
+            {
+                mrml_runtime::mrml_println!("WHP_SMP_TRACE stage={:#04x}", value);
+            }
+            if let VmExit::Io {
+                port: 0x00e9,
+                size: 1,
+                write: true,
+                value: 0x21,
+            } = exit
+            {
+                if secondary.is_some() {
+                    return Err(WhpError::InvalidVcpu);
+                }
+                self.partition
+                    .protect_runtime_trampoline(trampoline, true)?;
+                let mut runner = self.partition.secondary_runner(trampoline)?;
+                let worker_result = result.clone();
+                mrml_runtime::spawn_detached(move || {
+                    let first = runner.run();
+                    let exit = match first {
+                        Ok(VmExit::Io {
+                            port: 0x4d5d,
+                            size: 4,
+                            write: true,
+                            value: 0x0001_0001,
+                        }) => runner.restore_trampoline_rw().and_then(|()| runner.run()),
+                        Ok(_) => Err(WhpError::MalformedExit),
+                        Err(error) => Err(error),
+                    };
+                    *worker_result.lock() = Some(exit);
+                })
+                .map_err(|_| WhpError::PlatformUnavailable)?;
+                secondary = Some(());
+                continue;
+            }
+            if matches!(exit, VmExit::Io { port: 0x00e9, .. }) {
+                continue;
+            }
+            break exit;
+        };
+        if secondary.is_none() {
+            return Err(WhpError::InvalidVcpu);
+        }
+        let deadline = mrml_runtime::Instant::now();
+        while result.lock().is_none() && deadline.elapsed() < core::time::Duration::from_secs(2) {
+            mrml_runtime::yield_now();
+        }
+        let application = result
+            .lock()
+            .take()
+            .ok_or(WhpError::PlatformUnavailable)??;
+        self.partition
+            .protect_runtime_trampoline(trampoline, false)?;
+        Ok((bootstrap, application))
     }
     pub fn read_guest(&self, address: u64, output: &mut [u8]) -> Result<(), WhpError> {
         self.partition.read_guest(address, output)
@@ -497,6 +566,7 @@ impl WhpSystem {
                 local_apic: false,
                 gpu_queue: None,
                 intercept_breakpoint: true,
+                cpus: 1,
             },
         )
     }
@@ -518,6 +588,7 @@ impl WhpSystem {
                 local_apic: false,
                 gpu_queue: None,
                 intercept_breakpoint: false,
+                cpus: 1,
             },
         )
     }
@@ -538,6 +609,7 @@ impl WhpSystem {
                 local_apic: true,
                 gpu_queue: None,
                 intercept_breakpoint: true,
+                cpus: 1,
             },
         )
     }
@@ -558,6 +630,7 @@ impl WhpSystem {
                 local_apic: true,
                 gpu_queue: None,
                 intercept_breakpoint: false,
+                cpus: 1,
             },
         )
     }
@@ -581,6 +654,7 @@ impl WhpSystem {
                 local_apic: false,
                 gpu_queue: Some(queue),
                 intercept_breakpoint: true,
+                cpus: 1,
             },
         )
     }
@@ -603,6 +677,30 @@ impl WhpSystem {
                 local_apic: false,
                 gpu_queue: Some(queue),
                 intercept_breakpoint: true,
+                cpus: 1,
+            },
+        )
+    }
+
+    /// Prepares two WHP virtual processors behind the emulated local APIC.
+    /// The authenticated handoff must bind their MADT, trampoline, and stack
+    /// arena as one indivisible boot contract.
+    pub fn prepare_smp_kernel<'system>(
+        &'system self,
+        executable: &VerifiedExecutable<'_>,
+        handoff: &[u8],
+        layout: WhpLaunchLayout,
+    ) -> Result<PreparedWhpGuest<'system>, WhpError> {
+        self.prepare_guest_inner(
+            executable,
+            handoff,
+            layout,
+            KernelDevices {
+                framebuffer: true,
+                local_apic: true,
+                gpu_queue: None,
+                intercept_breakpoint: true,
+                cpus: 2,
             },
         )
     }
@@ -616,7 +714,26 @@ impl WhpSystem {
     ) -> Result<PreparedWhpGuest<'system>, WhpError> {
         let map_framebuffer = devices.framebuffer;
         let queue = devices.gpu_queue;
+        let smp = devices.cpus == 2;
+        if !matches!(devices.cpus, 1 | 2) {
+            return Err(WhpError::InvalidVcpu);
+        }
         let decoded = BootHandoff::decode(handoff, |_| {}).map_err(WhpError::Handoff)?;
+        let trampoline = match (
+            smp,
+            decoded.ap_trampoline(),
+            decoded.ap_stack_arena(),
+            decoded.madt(handoff),
+        ) {
+            (true, Some(page), Some(arena), Some(_))
+                if arena == layout.stack_physical
+                    && layout.stack_virtual == layout.stack_physical =>
+            {
+                Some(page)
+            }
+            (false, None, None, _) => None,
+            _ => return Err(WhpError::InvalidMapping),
+        };
         let image_bytes = page_bytes(executable.image().image_size() as u64)?;
         let handoff_bytes = page_bytes(handoff.len() as u64)?;
         let table_bytes = layout
@@ -625,8 +742,17 @@ impl WhpSystem {
             .ok_or(WhpError::MemoryOverflow)?;
         let stack_bytes = layout
             .stack_pages
-            .checked_mul(PAGE_SIZE)
+            .checked_mul(u64::from(devices.cpus))
+            .and_then(|pages| pages.checked_mul(PAGE_SIZE))
             .ok_or(WhpError::MemoryOverflow)?;
+        if smp {
+            PerCpuPrivilegeStacks::<2>::new(
+                layout.stack_physical,
+                layout.stack_virtual,
+                layout.stack_pages,
+            )
+            .map_err(|_| WhpError::InvalidMapping)?;
+        }
         let stack_layout = PrivilegeStackLayout::new(layout.stack_virtual, layout.stack_pages)
             .map_err(|_| WhpError::InvalidMapping)?;
         let physical_stack = PrivilegeStackLayout::new(layout.stack_physical, layout.stack_pages)
@@ -643,7 +769,7 @@ impl WhpSystem {
         let (command_base, completion_base) = queue
             .map(|value| (value.command_base(), value.completion_base()))
             .unwrap_or((0, 0));
-        let mut physical_ranges = [(0, 0); 7];
+        let mut physical_ranges = [(0, 0); 8];
         physical_ranges[..4].copy_from_slice(&[
             (layout.table_physical, table_bytes),
             (layout.image_physical, image_bytes),
@@ -660,8 +786,12 @@ impl WhpSystem {
             physical_ranges[physical_count + 1] = (completion_base, queue_bytes);
             physical_count += 2;
         }
+        if let Some(trampoline) = trampoline {
+            physical_ranges[physical_count] = (trampoline, PAGE_SIZE);
+            physical_count += 1;
+        }
         validate_ranges(&physical_ranges[..physical_count])?;
-        let mut virtual_ranges = [(0, 0); 7];
+        let mut virtual_ranges = [(0, 0); 8];
         virtual_ranges[..4].copy_from_slice(&[
             (layout.table_physical, PAGE_SIZE),
             (layout.image_virtual, image_bytes),
@@ -678,10 +808,17 @@ impl WhpSystem {
             virtual_ranges[virtual_count + 1] = (completion_base, queue_bytes);
             virtual_count += 2;
         }
+        if let Some(trampoline) = trampoline {
+            virtual_ranges[virtual_count] = (trampoline, PAGE_SIZE);
+            virtual_count += 1;
+        }
         validate_ranges(&virtual_ranges[..virtual_count])?;
 
-        let mut partition =
-            self.prepare_partition_with_breakpoint_exit(devices.intercept_breakpoint)?;
+        let mut partition = if smp {
+            self.prepare_smp_partition()?
+        } else {
+            self.prepare_partition_with_breakpoint_exit(devices.intercept_breakpoint)?
+        };
         partition.map_zeroed(range(
             layout.table_physical,
             table_bytes,
@@ -724,6 +861,9 @@ impl WhpSystem {
             stack_bytes,
             MapPermissions::read_write(),
         )?)?;
+        if let Some(trampoline) = trampoline {
+            partition.map_zeroed(range(trampoline, PAGE_SIZE, MapPermissions::read_write())?)?;
+        }
 
         let image = executable.image();
         let destination =
@@ -751,6 +891,8 @@ impl WhpSystem {
             map_framebuffer.then_some((framebuffer.base().get(), framebuffer_bytes)),
             devices.local_apic,
             queue,
+            devices.cpus,
+            trampoline,
         )?;
         partition.configure_long_mode(
             entry,
@@ -773,6 +915,7 @@ impl WhpSystem {
             service_entry: [None; 2],
             service_root: [None; 2],
             service_instance: [None; 2],
+            ap_trampoline: trampoline,
         })
     }
 }
@@ -785,6 +928,8 @@ fn build_page_tables(
     framebuffer: Option<(u64, u64)>,
     local_apic: bool,
     queue: Option<GpuSharedQueueLayout>,
+    cpus: u8,
+    trampoline: Option<u64>,
 ) -> Result<PhysAddr, WhpError> {
     partition.write_guest(layout.table_physical, &0u64.to_le_bytes())?;
     partition.write_guest(
@@ -853,48 +998,69 @@ fn build_page_tables(
             },
         )
         .map_err(|_| WhpError::PageTable)?;
-    let stack_permissions = PagePermissions::KERNEL_READ_WRITE;
-    let stack_layout = PrivilegeStackLayout::new(layout.stack_virtual, layout.stack_pages)
-        .map_err(|_| WhpError::InvalidMapping)?;
-    let physical_stack = PrivilegeStackLayout::new(layout.stack_physical, layout.stack_pages)
-        .map_err(|_| WhpError::InvalidMapping)?;
-    for (virtual_base, physical_base, pages, permissions) in [
-        (
-            stack_layout.early_base(),
-            physical_stack.early_base(),
-            stack_layout.early_pages(),
-            stack_permissions,
-        ),
-        (
-            stack_layout
-                .entry_base()
-                .map_err(|_| WhpError::MemoryOverflow)?,
-            physical_stack
-                .entry_base()
-                .map_err(|_| WhpError::MemoryOverflow)?,
-            stack_layout.entry_pages(),
-            PagePermissions::KERNEL_READ_WRITE,
-        ),
-        (
-            stack_layout
-                .double_fault_base()
-                .map_err(|_| WhpError::MemoryOverflow)?,
-            physical_stack
-                .double_fault_base()
-                .map_err(|_| WhpError::MemoryOverflow)?,
-            stack_layout.double_fault_pages(),
-            PagePermissions::KERNEL_READ_WRITE,
-        ),
-    ] {
-        tables
-            .map(
-                Mapping::new(
-                    VirtAddr::new(virtual_base).map_err(|_| WhpError::InvalidMapping)?,
-                    PhysAddr::new(physical_base).map_err(|_| WhpError::InvalidMapping)?,
-                    pages,
-                    permissions,
+    let stack_permissions = if cpus == 2 {
+        PagePermissions::KERNEL_LOW_READ_WRITE
+    } else {
+        PagePermissions::KERNEL_READ_WRITE
+    };
+    for cpu in 0..usize::from(cpus) {
+        let offset = (cpu as u64)
+            .checked_mul(layout.stack_pages)
+            .and_then(|pages| pages.checked_mul(PAGE_SIZE))
+            .ok_or(WhpError::MemoryOverflow)?;
+        let stack_layout =
+            PrivilegeStackLayout::new(layout.stack_virtual + offset, layout.stack_pages)
+                .map_err(|_| WhpError::InvalidMapping)?;
+        let physical_stack =
+            PrivilegeStackLayout::new(layout.stack_physical + offset, layout.stack_pages)
+                .map_err(|_| WhpError::InvalidMapping)?;
+        for (virtual_base, physical_base, pages, permissions) in [
+            (
+                stack_layout.early_base(),
+                physical_stack.early_base(),
+                stack_layout.early_pages(),
+                stack_permissions,
+            ),
+            (
+                stack_layout
+                    .entry_base()
+                    .map_err(|_| WhpError::MemoryOverflow)?,
+                physical_stack
+                    .entry_base()
+                    .map_err(|_| WhpError::MemoryOverflow)?,
+                stack_layout.entry_pages(),
+                stack_permissions,
+            ),
+            (
+                stack_layout
+                    .double_fault_base()
+                    .map_err(|_| WhpError::MemoryOverflow)?,
+                physical_stack
+                    .double_fault_base()
+                    .map_err(|_| WhpError::MemoryOverflow)?,
+                stack_layout.double_fault_pages(),
+                stack_permissions,
+            ),
+        ] {
+            tables
+                .map(
+                    Mapping::new(
+                        VirtAddr::new(virtual_base).map_err(|_| WhpError::InvalidMapping)?,
+                        PhysAddr::new(physical_base).map_err(|_| WhpError::InvalidMapping)?,
+                        pages,
+                        permissions,
+                    )
+                    .map_err(|_| WhpError::InvalidMapping)?,
                 )
-                .map_err(|_| WhpError::InvalidMapping)?,
+                .map_err(|_| WhpError::PageTable)?;
+        }
+    }
+    if let Some(trampoline) = trampoline {
+        tables
+            .map_page(
+                VirtAddr::new(trampoline).map_err(|_| WhpError::InvalidMapping)?,
+                PhysAddr::new(trampoline).map_err(|_| WhpError::InvalidMapping)?,
+                PagePermissions::KERNEL_LOW_READ_WRITE,
             )
             .map_err(|_| WhpError::PageTable)?;
     }
@@ -921,6 +1087,23 @@ fn build_page_tables(
                 .map_err(|_| WhpError::InvalidMapping)?,
             )
             .map_err(|_| WhpError::PageTable)?;
+    }
+    if cpus == 2 {
+        let mut frame_index = 0;
+        while frame_index < tables.store().allocated_pages() {
+            let frame = tables
+                .store()
+                .allocated_frame(frame_index)
+                .ok_or(WhpError::PageTable)?;
+            tables
+                .map_page(
+                    VirtAddr::new(frame.get()).map_err(|_| WhpError::InvalidMapping)?,
+                    frame,
+                    PagePermissions::KERNEL_LOW_READ_WRITE,
+                )
+                .map_err(|_| WhpError::PageTable)?;
+            frame_index += 1;
+        }
     }
     Ok(tables.root())
 }
@@ -965,6 +1148,16 @@ impl<'a, 'system> WhpPageTableStore<'a, 'system> {
             .get()
             .checked_add(index as u64 * 8)
             .ok_or(PageTableBuildError::AddressOverflow)
+    }
+
+    const fn allocated_pages(&self) -> u64 {
+        (self.next - self.start) / PAGE_SIZE
+    }
+
+    fn allocated_frame(&self, index: u64) -> Option<PhysAddr> {
+        (index < self.allocated_pages())
+            .then(|| self.start + index * PAGE_SIZE)
+            .and_then(|address| PhysAddr::new(address).ok())
     }
 }
 
@@ -1239,6 +1432,7 @@ mod tests {
             service_entry: [None; 2],
             service_root: [None; 2],
             service_instance: [None; 2],
+            ap_trampoline: None,
         };
         assert_eq!(VmBackend::run(&mut guest, 1), Err(WhpError::InvalidVcpu));
         assert_eq!(

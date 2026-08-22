@@ -19,6 +19,7 @@ whp-gpu-benchmark = ["gpu-benchmark"]
 emulated-ap-timing = ["kernel-image"]
 ap-startup-trace = ["emulated-ap-timing"]
 smp-probe = ["kernel-image"]
+whp-smp-probe = ["smp-probe", "ap-startup-trace"]
 
 [[bin]]
 name = "mrml-kernel-pe"

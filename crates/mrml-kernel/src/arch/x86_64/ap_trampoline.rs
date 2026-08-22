@@ -361,9 +361,9 @@ impl ApTrampolineImage {
         bytes[GDTR_OFFSET + 2..GDTR_OFFSET + 6]
             .copy_from_slice(&((physical + GDT_OFFSET as u64) as u32).to_le_bytes());
         bytes[GDT_OFFSET + 8..GDT_OFFSET + 16]
-            .copy_from_slice(&0x00af_9a00_0000_ffffu64.to_le_bytes());
+            .copy_from_slice(&0x00af_9b00_0000_ffffu64.to_le_bytes());
         bytes[GDT_OFFSET + 16..GDT_OFFSET + 24]
-            .copy_from_slice(&0x00cf_9200_0000_ffffu64.to_le_bytes());
+            .copy_from_slice(&0x00cf_9300_0000_ffffu64.to_le_bytes());
         Ok(Self { bytes, physical })
     }
 
@@ -472,7 +472,11 @@ mod tests {
         );
         assert_eq!(
             &image.bytes()[GDT_OFFSET + 8..GDT_OFFSET + 16],
-            &0x00af_9a00_0000_ffffu64.to_le_bytes()
+            &0x00af_9b00_0000_ffffu64.to_le_bytes()
+        );
+        assert_eq!(
+            &image.bytes()[GDT_OFFSET + 16..GDT_OFFSET + 24],
+            &0x00cf_9300_0000_ffffu64.to_le_bytes()
         );
     }
 

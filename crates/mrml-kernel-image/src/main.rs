@@ -124,6 +124,8 @@ const SERVICE_FRAME_PORT: u16 = 0x4d59;
 const SERVICE_CALL_PORT: u16 = 0x4d5a;
 #[cfg(feature = "smp-probe")]
 const SMP_PROBE_PORT: u16 = 0x4d5c;
+#[cfg(feature = "whp-smp-probe")]
+const WHP_SMP_HANDSHAKE_PORT: u16 = 0x4d5d;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
@@ -138,6 +140,10 @@ const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 static mut CPU0_DESCRIPTORS: CpuDescriptorState = CpuDescriptorState::empty(0);
 struct ApDescriptorSlots([UnsafeCell<MaybeUninit<CpuDescriptorState>>; MAX_X86_64_CPUS]);
 unsafe impl Sync for ApDescriptorSlots {}
+// This storage is initialized independently by application processors after
+// the image has been sealed. Force it into the writable PE data region;
+// interior mutability alone is not a PE section-permission contract.
+#[unsafe(link_section = ".data")]
 static AP_DESCRIPTORS: ApDescriptorSlots =
     ApDescriptorSlots([const { UnsafeCell::new(MaybeUninit::uninit()) }; MAX_X86_64_CPUS]);
 static AP_ONLINE: ApOnlineTable<MAX_X86_64_CPUS> = ApOnlineTable::empty();
@@ -829,6 +835,15 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
             state,
             stacks.entry_top().unwrap_or_else(|_| halt()),
             stacks.double_fault_top().unwrap_or_else(|_| halt()),
+        )
+    };
+    #[cfg(feature = "whp-smp-probe")]
+    unsafe {
+        asm!(
+            "out dx, eax",
+            in("dx") WHP_SMP_HANDSHAKE_PORT,
+            in("eax") ((cpu as u32) << 16) | generation,
+            options(nomem, nostack)
         )
     };
     if AP_ONLINE.acknowledge(cpu, generation).is_err() {

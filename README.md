@@ -348,8 +348,13 @@ state until INIT/SIPI makes it runnable, maps the authenticated low trampoline
 and identity-mapped privilege-stack arena, and checks independent terminal
 proofs from CPU 0 and CPU 1. The measured successful run spent 914 microseconds
 verifying, 11,061 microseconds preparing the VM, and 4,181 microseconds executing
-the guest. WHP multi-vCPU execution, per-CPU interrupt routing, and live SMP
-scheduling proofs remain unfinished.
+the guest. The Windows WHP backend now proves the same two-vCPU sequence while
+also enforcing second-level W^X: it switches the installed trampoline GPA from
+RW/NX to RX before VP1 runs, uses a pre-acknowledgement exit to restore RW/NX,
+then permits the BSP to zero and revoke the page. The trampoline GDT descriptors
+are pre-accessed so segment loading never attempts a hardware write to RX code.
+The signed WHP run completed in 64,164 microseconds. Per-CPU interrupt routing
+and live SMP scheduling proofs remain unfinished.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

@@ -16,6 +16,7 @@ use mrml_kernel::{
 #[cfg(any(test, target_os = "windows"))]
 use mrml_kernel::{
     FramebufferInfo, MemoryKind, MemoryRegion, PhysAddr, PixelFormat, encode_handoff,
+    encode_handoff_with_smp,
 };
 #[cfg(target_os = "windows")]
 use mrml_runtime::{Instant, Vector, mrml_println as println};
@@ -42,6 +43,8 @@ const TIMER_READY_PORT: u16 = 0x4d54;
 const TIMER_TICK_PORT: u16 = 0x4d55;
 #[cfg(target_os = "windows")]
 const PREEMPTION_PROBE_PORT: u16 = 0x4d5b;
+#[cfg(target_os = "windows")]
+const SMP_PROBE_PORT: u16 = 0x4d5c;
 #[cfg(target_os = "windows")]
 const SERVICE_PHYSICAL: u64 = 0x0060_0000;
 #[cfg(target_os = "windows")]
@@ -74,9 +77,15 @@ fn application_main() -> Result<()> {
     let service_artifact_mode = service_mode || service_preemption_mode;
     let timer_mode = arguments.len() == 5 && arguments[4] == "timer-probe";
     let preemption_mode = arguments.len() == 5 && arguments[4] == "preemption-probe";
-    if arguments.len() != 7 && !service_artifact_mode && !timer_mode && !preemption_mode {
+    let smp_mode = arguments.len() == 5 && arguments[4] == "smp-probe";
+    if arguments.len() != 7
+        && !service_artifact_mode
+        && !timer_mode
+        && !preemption_mode
+        && !smp_mode
+    {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -139,7 +148,7 @@ fn application_main() -> Result<()> {
         (None, None) => None,
         _ => return Err(anyhow!("incomplete service verification inputs")),
     };
-    let cuda_bundle = if service_artifact_mode || timer_mode || preemption_mode {
+    let cuda_bundle = if service_artifact_mode || timer_mode || preemption_mode || smp_mode {
         None
     } else {
         Some(verify_cuda_bundle(
@@ -152,12 +161,22 @@ fn application_main() -> Result<()> {
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
-    let handoff = boot_handoff(
-        executable.artifact().version(),
-        entropy,
-        *executable.artifact().digest(),
-    )?;
-    let (image_virtual, handoff_virtual, stack_virtual) = if preemption_mode {
+    let handoff = if smp_mode {
+        smp_boot_handoff(
+            executable.artifact().version(),
+            entropy,
+            *executable.artifact().digest(),
+        )?
+    } else {
+        boot_handoff(
+            executable.artifact().version(),
+            entropy,
+            *executable.artifact().digest(),
+        )?
+    };
+    let (image_virtual, handoff_virtual, stack_virtual) = if smp_mode {
+        (0xffff_8001_4000_0000, 0xffff_8001_5000_0000, 0x100_0000)
+    } else if preemption_mode {
         (0x0040_0000, 0x0200_0000, 0xffff_8001_6000_0000)
     } else {
         (
@@ -185,15 +204,17 @@ fn application_main() -> Result<()> {
         .map_err(|error| anyhow!("Windows Hypervisor Platform is unavailable: {:?}", error))?;
     let preparation_started = Instant::now();
     let mut guest = if service_mode {
-        system.prepare_isolated_service_kernel(&executable, &handoff, layout)
+        system.prepare_isolated_service_kernel(&executable, handoff.as_slice(), layout)
     } else if service_preemption_mode {
-        system.prepare_preemption_kernel(&executable, &handoff, layout)
+        system.prepare_preemption_kernel(&executable, handoff.as_slice(), layout)
     } else if timer_mode {
-        system.prepare_timer_kernel(&executable, &handoff, layout)
+        system.prepare_timer_kernel(&executable, handoff.as_slice(), layout)
     } else if preemption_mode {
-        system.prepare_preemption_kernel(&executable, &handoff, layout)
+        system.prepare_preemption_kernel(&executable, handoff.as_slice(), layout)
+    } else if smp_mode {
+        system.prepare_smp_kernel(&executable, handoff.as_slice(), layout)
     } else {
-        system.prepare_kernel_gpu_guest(&executable, &handoff, layout, queue)
+        system.prepare_kernel_gpu_guest(&executable, handoff.as_slice(), layout, queue)
     }
     .map_err(|error| anyhow!("verified WHP kernel preparation failed: {:?}", error))?;
     if service_artifact_mode {
@@ -249,16 +270,49 @@ fn application_main() -> Result<()> {
     }
     let preparation_micros = preparation_started.elapsed().as_micros();
     let execution_started = Instant::now();
-    let exit = match VmBackend::run(&mut guest, 0) {
-        Ok(exit) => exit,
-        Err(error) => {
-            let mut marker = [0u8; 4];
-            let _ = VmBackend::read_guest(&guest, FRAMEBUFFER, &mut marker);
+    let exit = if smp_mode {
+        let (bootstrap, application) = guest
+            .run_smp()
+            .map_err(|error| anyhow!("WHP SMP execution failed: {:?}", error))?;
+        let expected_bootstrap = VmExit::Io {
+            port: SMP_PROBE_PORT,
+            size: 4,
+            write: true,
+            value: 2,
+        };
+        let expected_application = VmExit::Io {
+            port: SMP_PROBE_PORT,
+            size: 4,
+            write: true,
+            value: 0x0001_0001,
+        };
+        if bootstrap != expected_bootstrap || application != expected_application {
             return Err(anyhow!(
-                "WHP execution failed: {:?}; framebuffer marker={:02x?}",
-                error,
-                marker
+                "WHP SMP proof mismatch: bootstrap={:?} application={:?}",
+                bootstrap,
+                application
             ));
+        }
+        println!(
+            "verified signed two-vCPU kernel startup under WHP: verify={}us prepare={}us execute={}us total={}us",
+            verification_micros,
+            preparation_micros,
+            execution_started.elapsed().as_micros(),
+            total_started.elapsed().as_micros()
+        );
+        return Ok(());
+    } else {
+        match VmBackend::run(&mut guest, 0) {
+            Ok(exit) => exit,
+            Err(error) => {
+                let mut marker = [0u8; 4];
+                let _ = VmBackend::read_guest(&guest, FRAMEBUFFER, &mut marker);
+                return Err(anyhow!(
+                    "WHP execution failed: {:?}; framebuffer marker={:02x?}",
+                    error,
+                    marker
+                ));
+            }
         }
     };
     if let VmExit::GuestMemoryFault { guest_address, .. } = exit {
@@ -770,7 +824,20 @@ fn application_main() -> Result<()> {
 }
 
 #[cfg(any(test, target_os = "windows"))]
-fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Result<[u8; 240]> {
+struct EncodedHandoff {
+    bytes: [u8; 316],
+    length: usize,
+}
+
+#[cfg(any(test, target_os = "windows"))]
+impl EncodedHandoff {
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Result<EncodedHandoff> {
     let framebuffer = FramebufferInfo::new(
         FRAMEBUFFER,
         0x1000,
@@ -789,7 +856,7 @@ fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Resul
         region(0x3000, 1, MemoryKind::Kernel)?,
         region(FRAMEBUFFER, 1, MemoryKind::Mmio)?,
     ];
-    let mut encoded = [0u8; 240];
+    let mut encoded = [0u8; 316];
     let length = encode_handoff(
         version,
         entropy,
@@ -803,10 +870,72 @@ fn boot_handoff(version: u64, entropy: [u8; 32], measurement: [u8; 64]) -> Resul
         &mut encoded,
     )
     .map_err(|_| anyhow!("handoff construction failed"))?;
-    if length != encoded.len() {
+    if length != 240 {
         return Err(anyhow!("unexpected handoff length"));
     }
-    Ok(encoded)
+    Ok(EncodedHandoff {
+        bytes: encoded,
+        length,
+    })
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn smp_boot_handoff(
+    version: u64,
+    entropy: [u8; 32],
+    measurement: [u8; 64],
+) -> Result<EncodedHandoff> {
+    let framebuffer = FramebufferInfo::new(
+        FRAMEBUFFER,
+        0x1000,
+        16,
+        16,
+        16,
+        PixelFormat::BlueGreenRedReserved,
+    )
+    .map_err(|_| anyhow!("invalid framebuffer description"))?;
+    let region = |address, pages, kind| {
+        let address = PhysAddr::new(address).map_err(|_| anyhow!("unaligned launch region"))?;
+        MemoryRegion::new(address, pages, kind).map_err(|_| anyhow!("invalid launch region"))
+    };
+    let regions = [
+        region(0x1000, 2, MemoryKind::Free)?,
+        region(0x3000, 1, MemoryKind::Kernel)?,
+        region(FRAMEBUFFER, 1, MemoryKind::Mmio)?,
+    ];
+    let mut madt = [0u8; 60];
+    madt[..4].copy_from_slice(b"APIC");
+    madt[4..8].copy_from_slice(&60u32.to_le_bytes());
+    madt[8] = 5;
+    madt[36..40].copy_from_slice(&0xfee0_0000u32.to_le_bytes());
+    madt[44..52].copy_from_slice(&[0, 8, 0, 0, 1, 0, 0, 0]);
+    madt[52..60].copy_from_slice(&[0, 8, 1, 1, 1, 0, 0, 0]);
+    let checksum = madt.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    madt[9] = madt[9].wrapping_sub(checksum);
+    let mut encoded = [0u8; 316];
+    let length = encode_handoff_with_smp(
+        version,
+        entropy,
+        measurement,
+        true,
+        false,
+        false,
+        0x9000,
+        framebuffer,
+        &regions,
+        0x8000,
+        0x100_0000,
+        &madt,
+        &mut encoded,
+    )
+    .map_err(|_| anyhow!("SMP handoff construction failed"))?;
+    if length != encoded.len() {
+        return Err(anyhow!("unexpected SMP handoff length"));
+    }
+    Ok(EncodedHandoff {
+        bytes: encoded,
+        length,
+    })
 }
 
 mrml_runtime::mrml_entrypoint!(application_main);
@@ -819,9 +948,22 @@ mod tests {
     #[test]
     fn handoff_binds_entropy_and_measurement() {
         let encoded = boot_handoff(9, [0x35; 32], [0xa7; 64]).unwrap();
-        let decoded = BootHandoff::decode(&encoded, |_| {}).unwrap();
+        let decoded = BootHandoff::decode(encoded.as_slice(), |_| {}).unwrap();
         assert_eq!(decoded.evidence().image_version(), 9);
         assert_eq!(decoded.evidence().entropy(), &[0x35; 32]);
         assert_eq!(decoded.evidence().image_measurement(), &[0xa7; 64]);
+    }
+
+    #[test]
+    fn smp_handoff_binds_two_cpus_and_launch_resources() {
+        let encoded = smp_boot_handoff(10, [0x36; 32], [0xa8; 64]).unwrap();
+        let decoded = BootHandoff::decode(encoded.as_slice(), |_| {}).unwrap();
+        let topology = decoded
+            .madt(encoded.as_slice())
+            .and_then(|madt| mrml_kernel::arch::x86_64::X86CpuTopology::parse_madt(madt).ok())
+            .unwrap();
+        assert_eq!(topology.len(), 2);
+        assert_eq!(decoded.ap_trampoline(), Some(0x8000));
+        assert_eq!(decoded.ap_stack_arena(), Some(0x100_0000));
     }
 }

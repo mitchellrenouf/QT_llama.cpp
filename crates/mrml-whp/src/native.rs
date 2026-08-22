@@ -146,10 +146,25 @@ impl WhpSystem {
         self.prepare_partition_with_breakpoint_exit(true)
     }
 
+    pub(crate) fn prepare_smp_partition(&self) -> Result<PreparedWhpPartition<'_>, WhpError> {
+        self.prepare_partition_inner(true, 2)
+    }
+
     pub(crate) fn prepare_partition_with_breakpoint_exit(
         &self,
         intercept_breakpoint: bool,
     ) -> Result<PreparedWhpPartition<'_>, WhpError> {
+        self.prepare_partition_inner(intercept_breakpoint, 1)
+    }
+
+    fn prepare_partition_inner(
+        &self,
+        intercept_breakpoint: bool,
+        processor_count: u32,
+    ) -> Result<PreparedWhpPartition<'_>, WhpError> {
+        if !matches!(processor_count, 1 | 2) {
+            return Err(WhpError::InvalidVcpu);
+        }
         if !self.hypervisor_present()? {
             return Err(WhpError::PlatformUnavailable);
         }
@@ -159,9 +174,8 @@ impl WhpSystem {
         let mut guard = PartitionGuard {
             partition,
             api: self.api,
-            vp: false,
+            vp_count: 0,
         };
-        let processor_count = 1u32;
         check(unsafe {
             (self.api.set_partition_property)(
                 partition.as_ptr(),
@@ -197,12 +211,15 @@ impl WhpSystem {
             )
         })?;
         check(unsafe { (self.api.setup_partition)(partition.as_ptr()) })?;
-        check(unsafe { (self.api.create_vp)(partition.as_ptr(), 0, 0) })?;
-        guard.vp = true;
+        for index in 0..processor_count {
+            check(unsafe { (self.api.create_vp)(partition.as_ptr(), index, 0) })?;
+            guard.vp_count += 1;
+        }
         let prepared = PreparedWhpPartition {
             partition,
             api: self.api,
             mappings: [const { None }; MAX_MAPPINGS],
+            vp_count: processor_count,
             _system: core::marker::PhantomData,
         };
         core::mem::forget(guard);
@@ -231,10 +248,132 @@ pub struct PreparedWhpPartition<'system> {
     partition: NonNull<c_void>,
     api: Api,
     mappings: [Option<OwnedMapping>; MAX_MAPPINGS],
+    vp_count: u32,
     _system: core::marker::PhantomData<&'system WhpSystem>,
 }
 
+struct WhpVcpuRunner {
+    partition: NonNull<c_void>,
+    api: Api,
+    index: u32,
+    trampoline: u64,
+    trampoline_host: NonNull<c_void>,
+}
+
+// SAFETY: WHP permits distinct virtual processors in one partition to run on
+// distinct host threads. This runner owns one immutable VP index, and the
+// partition outlives the bounded worker through `PreparedWhpGuest::run_smp`.
+unsafe impl Send for WhpVcpuRunner {}
+
+impl WhpVcpuRunner {
+    fn restore_trampoline_rw(&mut self) -> Result<(), WhpError> {
+        check(unsafe {
+            (self.api.unmap_gpa_range)(self.partition.as_ptr(), self.trampoline, PAGE_SIZE)
+        })?;
+        check(unsafe {
+            (self.api.map_gpa_range)(
+                self.partition.as_ptr(),
+                self.trampoline_host.as_ptr(),
+                self.trampoline,
+                PAGE_SIZE,
+                MapPermissions::read_write().bits(),
+            )
+        })
+    }
+
+    fn run(&mut self) -> Result<VmExit, WhpError> {
+        let mut context = [0u8; WHP_EXIT_CONTEXT_BYTES];
+        check(unsafe {
+            (self.api.run_vp)(
+                self.partition.as_ptr(),
+                self.index,
+                context.as_mut_ptr().cast(),
+                context.len() as u32,
+            )
+        })?;
+        let exit = decode_exit_context(&context)?;
+        if matches!(exit, VmExit::Io { write: true, .. }) {
+            let bytes = context[10] & 0x0f;
+            if bytes == 0 || bytes > 15 {
+                return Err(WhpError::MalformedExit);
+            }
+            let names = [REG_RIP];
+            let mut values = [RegisterValue::zero(); 1];
+            check(unsafe {
+                (self.api.get_registers)(
+                    self.partition.as_ptr(),
+                    self.index,
+                    names.as_ptr(),
+                    1,
+                    values.as_mut_ptr(),
+                )
+            })?;
+            values[0].low = values[0]
+                .low
+                .checked_add(u64::from(bytes))
+                .filter(|address| canonical(*address))
+                .ok_or(WhpError::InvalidRegisterState)?;
+            check(unsafe {
+                (self.api.set_registers)(
+                    self.partition.as_ptr(),
+                    self.index,
+                    names.as_ptr(),
+                    1,
+                    values.as_ptr(),
+                )
+            })?;
+        }
+        Ok(exit)
+    }
+}
+
 impl PreparedWhpPartition<'_> {
+    pub(crate) fn protect_runtime_trampoline(
+        &mut self,
+        physical: u64,
+        executable: bool,
+    ) -> Result<(), WhpError> {
+        let mapping = self
+            .mappings
+            .iter()
+            .position(|mapping| {
+                mapping.as_ref().is_some_and(|mapping| {
+                    mapping.range.guest_address() == physical && mapping.range.size() == PAGE_SIZE
+                })
+            })
+            .ok_or(WhpError::InvalidMapping)?;
+        let mut ranges = [const { None }; MAX_SUBMAPPINGS];
+        ranges[0] = Some(GuestRange::new(
+            physical,
+            PAGE_SIZE,
+            if executable {
+                MapPermissions::read_execute()
+            } else {
+                MapPermissions::read_write()
+            },
+        )?);
+        self.replace_subranges(mapping, ranges)
+    }
+    fn secondary_runner(&self, trampoline: u64) -> Result<WhpVcpuRunner, WhpError> {
+        if self.vp_count != 2 {
+            return Err(WhpError::InvalidVcpu);
+        }
+        let mapping = self
+            .mappings
+            .iter()
+            .flatten()
+            .find(|mapping| {
+                mapping.range.guest_address() == trampoline && mapping.range.size() == PAGE_SIZE
+            })
+            .ok_or(WhpError::InvalidMapping)?;
+        Ok(WhpVcpuRunner {
+            partition: self.partition,
+            api: self.api,
+            index: 1,
+            trampoline,
+            trampoline_host: mapping.address,
+        })
+    }
     pub(crate) fn map_zeroed(&mut self, range: GuestRange) -> Result<usize, WhpError> {
         self.map_initialized(range, &[])
     }
@@ -569,18 +708,25 @@ impl PreparedWhpPartition<'_> {
     }
 
     pub fn run(&mut self) -> Result<VmExit, WhpError> {
+        self.run_vp(0)
+    }
+
+    pub(crate) fn run_vp(&mut self, index: u32) -> Result<VmExit, WhpError> {
+        if index >= self.vp_count {
+            return Err(WhpError::InvalidVcpu);
+        }
         let mut context = [0u8; WHP_EXIT_CONTEXT_BYTES];
         check(unsafe {
             (self.api.run_vp)(
                 self.partition.as_ptr(),
-                0,
+                index,
                 context.as_mut_ptr().cast(),
                 context.len() as u32,
             )
         })?;
         let exit = decode_exit_context(&context)?;
         if matches!(exit, VmExit::Io { write: true, .. }) {
-            self.advance_output_instruction(context[10] & 0x0f)?;
+            self.advance_output_instruction(index, context[10] & 0x0f)?;
         }
         Ok(exit)
     }
@@ -588,11 +734,11 @@ impl PreparedWhpPartition<'_> {
     /// WHP leaves RIP at an intercepted OUT instruction. Advance it only after
     /// the strict exit decoder has accepted a scalar output operation; input
     /// emulation requires separately installing a result in RAX.
-    fn advance_output_instruction(&mut self, bytes: u8) -> Result<(), WhpError> {
+    fn advance_output_instruction(&mut self, index: u32, bytes: u8) -> Result<(), WhpError> {
         if bytes == 0 || bytes > 15 {
             return Err(WhpError::MalformedExit);
         }
-        let [current] = self.read_registers([REG_RIP])?;
+        let [current] = self.read_registers_at(index, [REG_RIP])?;
         let next = current
             .low
             .checked_add(u64::from(bytes))
@@ -602,7 +748,7 @@ impl PreparedWhpPartition<'_> {
         check(unsafe {
             (self.api.set_registers)(
                 self.partition.as_ptr(),
-                0,
+                index,
                 (&REG_RIP as *const u32).cast(),
                 1,
                 &value,
@@ -699,11 +845,22 @@ impl PreparedWhpPartition<'_> {
         &self,
         names: [u32; N],
     ) -> Result<[RegisterValue; N], WhpError> {
+        self.read_registers_at(0, names)
+    }
+
+    fn read_registers_at<const N: usize>(
+        &self,
+        index: u32,
+        names: [u32; N],
+    ) -> Result<[RegisterValue; N], WhpError> {
+        if index >= self.vp_count {
+            return Err(WhpError::InvalidVcpu);
+        }
         let mut values = [RegisterValue::zero(); N];
         check(unsafe {
             (self.api.get_registers)(
                 self.partition.as_ptr(),
-                0,
+                index,
                 names.as_ptr(),
                 N as u32,
                 values.as_mut_ptr(),
@@ -729,7 +886,9 @@ impl Drop for PreparedWhpPartition<'_> {
                 drop(value);
             }
         }
-        let _ = unsafe { (self.api.delete_vp)(self.partition.as_ptr(), 0) };
+        for index in (0..self.vp_count).rev() {
+            let _ = unsafe { (self.api.delete_vp)(self.partition.as_ptr(), index) };
+        }
         let _ = unsafe { (self.api.delete_partition)(self.partition.as_ptr()) };
     }
 }
@@ -737,12 +896,12 @@ impl Drop for PreparedWhpPartition<'_> {
 struct PartitionGuard {
     partition: NonNull<c_void>,
     api: Api,
-    vp: bool,
+    vp_count: u32,
 }
 impl Drop for PartitionGuard {
     fn drop(&mut self) {
-        if self.vp {
-            let _ = unsafe { (self.api.delete_vp)(self.partition.as_ptr(), 0) };
+        for index in (0..self.vp_count).rev() {
+            let _ = unsafe { (self.api.delete_vp)(self.partition.as_ptr(), index) };
         }
         let _ = unsafe { (self.api.delete_partition)(self.partition.as_ptr()) };
     }
