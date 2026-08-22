@@ -4,14 +4,14 @@
 use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use mrml_kernel::{
-    ArtifactKind, FramebufferInfo, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS,
-    MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PeImage, PhysAddr, PixelFormat,
-    SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
+    ArtifactKind, FramebufferInfo, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES,
+    MAX_HANDOFF_MADT_BYTES, MAX_HANDOFF_REGIONS, MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion,
+    PeImage, PhysAddr, PixelFormat, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
     arch::x86_64::{
-        PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
-        PerCpuPrivilegeStacks, VirtAddr,
+        AcpiMemory, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
+        PerCpuPrivilegeStacks, VirtAddr, copy_madt,
     },
-    encode_handoff,
+    encode_handoff_with_madt,
 };
 use mrml_uefi::tpm::{NvCounterError, TpmTransport, enforce_version};
 use mrml_uefi::*;
@@ -30,15 +30,20 @@ const FILE_INFO_BYTES: usize = 1024;
 struct FileInfoBuffer(UnsafeCell<[u8; FILE_INFO_BYTES]>);
 unsafe impl Sync for FileInfoBuffer {}
 static FILE_INFO: FileInfoBuffer = FileInfoBuffer(UnsafeCell::new([0; FILE_INFO_BYTES]));
-const HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
+const HANDOFF_BYTES: usize =
+    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES;
 const PAGE_BYTES: usize = 4096;
+const HANDOFF_PAGES: usize = HANDOFF_BYTES.div_ceil(PAGE_BYTES);
+const HANDOFF_ALLOCATION_BYTES: usize = HANDOFF_PAGES * PAGE_BYTES;
 #[repr(C, align(4096))]
-struct HandoffBuffer(UnsafeCell<[u8; PAGE_BYTES]>);
+struct HandoffBuffer(UnsafeCell<[u8; HANDOFF_ALLOCATION_BYTES]>);
 unsafe impl Sync for HandoffBuffer {}
-static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; PAGE_BYTES]));
-const _: () = assert!(HANDOFF_BYTES <= PAGE_BYTES);
+static HANDOFF: HandoffBuffer = HandoffBuffer(UnsafeCell::new([0; HANDOFF_ALLOCATION_BYTES]));
 const _: () = assert!(core::mem::align_of::<HandoffBuffer>() == PAGE_BYTES);
-const _: () = assert!(core::mem::size_of::<HandoffBuffer>() == PAGE_BYTES);
+const _: () = assert!(core::mem::size_of::<HandoffBuffer>() == HANDOFF_ALLOCATION_BYTES);
+struct MadtBuffer(UnsafeCell<[u8; MAX_HANDOFF_MADT_BYTES]>);
+unsafe impl Sync for MadtBuffer {}
+static MADT: MadtBuffer = MadtBuffer(UnsafeCell::new([0; MAX_HANDOFF_MADT_BYTES]));
 const KERNEL_STACK_PAGES: usize = 32;
 const KERNEL_STACK_GUARD_PAGES: usize = 1;
 const KERNEL_PATH: &[u16] = &[
@@ -376,6 +381,14 @@ unsafe fn launch_after_exit(
     if region_count == 0 {
         halt();
     }
+    let mut acpi_memory = FirmwareAcpiMemory {
+        regions: &regions[..region_count],
+    };
+    let madt_storage = unsafe { &mut *MADT.0.get() };
+    let madt_length = match copy_madt(&mut acpi_memory, acpi_root, madt_storage) {
+        Ok(length) => length,
+        Err(_) => halt(),
+    };
     if enter_kernel(
         transition,
         kernel_entry,
@@ -388,12 +401,47 @@ unsafe fn launch_after_exit(
         acpi_root,
         framebuffer,
         &regions[..region_count],
+        &madt_storage[..madt_length],
     )
     .is_err()
     {
         halt();
     }
     halt()
+}
+
+struct FirmwareAcpiMemory<'a> {
+    regions: &'a [NormalizedRegion],
+}
+
+impl AcpiMemory for FirmwareAcpiMemory<'_> {
+    fn read_exact(&mut self, physical: u64, output: &mut [u8]) -> bool {
+        let Some(end) = physical.checked_add(output.len() as u64) else {
+            return false;
+        };
+        let admitted = self.regions.iter().any(|region| {
+            region.kind == NormalizedMemoryKind::Acpi
+                && region.start <= physical
+                && region
+                    .pages
+                    .checked_mul(PAGE_BYTES as u64)
+                    .and_then(|bytes| region.start.checked_add(bytes))
+                    .is_some_and(|region_end| end <= region_end)
+        });
+        if !admitted {
+            return false;
+        }
+        // SAFETY: the post-ExitBootServices memory map proves the complete
+        // source range is ACPI memory, and the destination is loader-owned.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                physical as *const u8,
+                output.as_mut_ptr(),
+                output.len(),
+            );
+        }
+        true
+    }
 }
 
 fn embedded_kernel_root() -> Option<[u8; 64]> {
@@ -650,6 +698,7 @@ fn enter_kernel(
     acpi_root: u64,
     framebuffer: Framebuffer,
     regions: &[NormalizedRegion],
+    madt: &[u8],
 ) -> Result<(), Status> {
     let placeholder = MemoryRegion::new(
         PhysAddr::new(0).map_err(|_| LOAD_ERROR)?,
@@ -691,7 +740,7 @@ fn enter_kernel(
     let handoff_page = unsafe { &mut *HANDOFF.0.get() };
     handoff_page.fill(0);
     let handoff = &mut handoff_page[..HANDOFF_BYTES];
-    let handoff_length = encode_handoff(
+    let handoff_length = encode_handoff_with_madt(
         kernel_version,
         entropy,
         kernel_measurement,
@@ -701,6 +750,7 @@ fn enter_kernel(
         acpi_root,
         framebuffer_info,
         &kernel_regions[..regions.len()],
+        madt,
         handoff,
     )
     .map_err(|_| LOAD_ERROR)?;
@@ -793,7 +843,7 @@ fn prepare_transition(
     map_identity(
         &mut tables,
         handoff_address,
-        1,
+        HANDOFF_PAGES as u64,
         PagePermissions::KERNEL_READ,
     )?;
     map_containing_identity(

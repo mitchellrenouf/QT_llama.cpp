@@ -286,8 +286,11 @@ and copies the unique table into caller-owned memory with an independent final
 checksum. The canonical handoff can now append that snapshot with an explicit
 flag and bounded length; both encoder and kernel decoder recheck its APIC
 signature, exact internal length, checksum, and whole-message length while
-legacy handoffs remain canonical. The UEFI loader does not yet invoke discovery
-or select the extended encoder, and real INIT/SIPI delivery, per-CPU interrupt routing, and a live
+legacy handoffs remain canonical. The UEFI loader now traverses only ranges
+admitted as ACPI by the final post-`ExitBootServices` memory map, emits the
+snapshot from loader-owned storage, and maps the enlarged handoff read-only.
+Kernel entry parses the snapshot into the bounded topology before continuing.
+Real INIT/SIPI delivery, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of

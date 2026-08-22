@@ -34,7 +34,7 @@ use mrml_kernel::arch::x86_64::UserContext;
 use mrml_kernel::arch::x86_64::enter_user_context;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
-use mrml_kernel::arch::x86_64::{CpuDescriptorState, HardwareTrapFrame};
+use mrml_kernel::arch::x86_64::{CpuDescriptorState, HardwareTrapFrame, X86CpuTopology};
 #[cfg(any(
     feature = "timer-probe",
     feature = "preemption-probe",
@@ -808,6 +808,11 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     };
     if region_count != handoff.region_count() {
         halt();
+    }
+    if let Some(madt) = handoff.madt(encoded) {
+        if X86CpuTopology::parse_madt(madt).is_err() {
+            halt();
+        }
     }
     #[cfg(feature = "service-probe")]
     unsafe {

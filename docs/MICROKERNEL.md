@@ -1417,9 +1417,12 @@ and missing or duplicate MADTs, and independently revalidate the caller-owned
 MADT copy. The handoff ABI now optionally appends this snapshot under an
 explicit presence flag and 8 KiB bound. Its encoder and decoder independently
 enforce the APIC signature, internal and enclosing lengths, and checksum, while
-the original handoff remains valid when no snapshot is present. Invoking the
-extended path in the UEFI loader, hardware ICR delivery, AP trampoline
-execution, and SMP scheduling are still required. Platform-backed service page
+the original handoff remains valid when no snapshot is present. The UEFI loader
+now snapshots through ranges admitted as ACPI by the final memory map after
+`ExitBootServices`, uses the extended encoder, and maps every handoff page
+read-only. Kernel entry performs full bounded topology parsing before normal
+initialization. Hardware ICR delivery, AP trampoline execution, and SMP
+scheduling are still required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 
