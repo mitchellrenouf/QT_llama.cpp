@@ -249,7 +249,17 @@ validated frame is saved only into A's domain, and B is restored under
 `CR3=0xd00000`. Each root contains the supervisor kernel plus only its own user
 image and guarded stack; timer-enabled roots additionally receive the
 supervisor-only APIC page. The final cross-root proof completed in 2,063
-microseconds on nested KVM and 8,413 microseconds on WHP. Validated generational ring-three context
+microseconds on nested KVM and 8,413 microseconds on WHP. The real UEFI path
+now requires and measures a separately signed service, carries its signed
+container and reserved execution arenas across `ExitBootServices`, repeats
+service verification inside the kernel, privately clones supervisor mappings,
+and creates final W^X user mappings in a fresh CR3. A signed QEMU TCG run then
+entered CPL3, accepted a real APIC timer only through exact-vector context
+conversion, cleared the hardware Resume Flag before rescheduling, restored a
+second CPL3 context, and handled its user breakpoint without halting the
+kernel. Fresh post-change regressions completed the equivalent cross-root path
+in 2,125 microseconds on nested KVM and 8,428 microseconds on WHP.
+Validated generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
 supplies `RSP0`, and routes double fault through a dedicated IST stack. A
