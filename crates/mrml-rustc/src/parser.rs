@@ -278,6 +278,7 @@ impl<'source> ConditionalLoopArm<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NestedLoopBlock<'source> {
+    pub entry_condition: Option<ConditionalLoopControl<'source>>,
     actions: [Option<ConditionalLoopAction<'source>>; MAX_NESTED_LOOP_ACTIONS],
     action_count: usize,
     pub break_condition: Option<ConditionalLoopControl<'source>>,
@@ -1451,19 +1452,39 @@ impl<'source> BodyParser<'source> {
                 if operation_count == MAX_LOOP_OPERATIONS {
                     return Err(probe.error(ParseErrorKind::TooManyLoopOperations, next));
                 }
-                if next.is_some_and(|token| token.text == "loop") {
-                    probe.take()?;
-                    let open = probe.take()?;
-                    if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
-                        return Err(probe.error(ParseErrorKind::ExpectedBody, open));
-                    }
+                if next.is_some_and(|token| matches!(token.text, "loop" | "while")) {
+                    let inner_loop = probe.take()?.ok_or_else(|| {
+                        probe.error(ParseErrorKind::ExpectedBody, probe.lookahead)
+                    })?;
+                    let entry_condition = if inner_loop.text == "while" {
+                        let (span, _) = probe.delimited_until("{", ParseErrorKind::ExpectedBody)?;
+                        Some(ConditionalLoopControl {
+                            condition: &self.source[span.start..span.end],
+                            condition_span: span,
+                        })
+                    } else {
+                        let open = probe.take()?;
+                        if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+                            return Err(probe.error(ParseErrorKind::ExpectedBody, open));
+                        }
+                        None
+                    };
                     let mut actions = [None; MAX_NESTED_LOOP_ACTIONS];
                     let mut action_count = 0usize;
                     let mut continue_condition = None;
                     let mut continue_action_index = 0usize;
+                    let mut body_closed = false;
                     let break_condition;
                     loop {
                         let next = probe.peek()?;
+                        if entry_condition.is_some()
+                            && next.is_some_and(|token| token.kind == TokenKind::CloseBrace)
+                        {
+                            probe.take()?;
+                            body_closed = true;
+                            break_condition = None;
+                            break;
+                        }
                         if next.is_some_and(|token| token.text == "break") {
                             probe.take()?;
                             let semicolon = probe.take()?;
@@ -1544,12 +1565,19 @@ impl<'source> BodyParser<'source> {
                         actions[action_count] = Some(action);
                         action_count += 1;
                     }
-                    let close = probe.take()?;
-                    if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
-                        return Err(probe.error(ParseErrorKind::UnexpectedClosingDelimiter, close));
+                    if !body_closed {
+                        let close = probe.take()?;
+                        if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                            return Err(
+                                probe.error(ParseErrorKind::UnexpectedClosingDelimiter, close)
+                            );
+                        }
                     }
-                    operations[operation_count] =
-                        Some(if action_count == 0 && break_condition.is_none() {
+                    operations[operation_count] = Some(
+                        if entry_condition.is_none()
+                            && action_count == 0
+                            && break_condition.is_none()
+                        {
                             LoopOperation::NestedUnitLoop
                         } else {
                             if nested_block_count == MAX_NESTED_LOOP_BLOCKS {
@@ -1559,6 +1587,7 @@ impl<'source> BodyParser<'source> {
                                 ));
                             }
                             nested_blocks[nested_block_count] = Some(NestedLoopBlock {
+                                entry_condition,
                                 actions,
                                 action_count,
                                 break_condition,
@@ -1568,7 +1597,8 @@ impl<'source> BodyParser<'source> {
                             let index = nested_block_count;
                             nested_block_count += 1;
                             LoopOperation::NestedBlock(index)
-                        });
+                        },
+                    );
                     operation_count += 1;
                     continue;
                 }
@@ -2906,6 +2936,29 @@ mod tests {
             "selected % 2 == 0"
         );
         assert_eq!(nested.continue_action_index, 2);
+
+        let nested_while = Parser::new(
+            "fn nested(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 3 { inner += 1; total += inner; } outer += 1; inner = 0; } total }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = nested_while.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+            panic!("expected nested while block")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert_eq!(
+            inner
+                .entry_condition
+                .expect("expected while condition")
+                .condition,
+            "inner < 3"
+        );
+        assert_eq!(inner.break_condition, None);
         assert!(matches!(
             loop_statement.operations()[1],
             Some(LoopOperation::Assignment(_))

@@ -1411,6 +1411,21 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                             return Err(SemanticErrorKind::UnsupportedConstCall);
                         }
                         nested_iterations += 1;
+                        if let Some(condition) = block.entry_condition {
+                            let tree = condition
+                                .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
+                                .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
+                            if !evaluate_boolean_const_expression(
+                                context,
+                                symbol_count,
+                                &tree,
+                                tree.root(),
+                                resolver,
+                                depth,
+                            )? {
+                                break;
+                            }
+                        }
                         let nested_checkpoint = resolver.count;
                         for action_index in 0..=block.action_count() {
                             if block.continue_condition.is_some()
@@ -1481,7 +1496,7 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 depth,
                             )?
                         } else {
-                            true
+                            block.entry_condition.is_none()
                         };
                         resolver.truncate(nested_checkpoint)?;
                         if should_break {
@@ -3181,6 +3196,19 @@ mod tests {
         assert_eq!(values.resolve("ZERO"), Some(0));
         assert_eq!(values.resolve("ONE"), Some(9));
         assert_eq!(values.resolve("FIVE"), Some(45));
+    }
+
+    #[test]
+    fn evaluates_condition_headed_inner_while_loops() {
+        let module = Parser::new(
+            "const fn sum(limit: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < limit { while inner < 3 { inner += 1; total += inner as u16; } outer += 1; inner = 0; } total } const ZERO: u16 = sum(0); const ONE: u16 = sum(1); const FIVE: u16 = sum(5);",
+        )
+        .parse_module::<5, 4>()
+        .unwrap();
+        let values = analyze_constants::<3, 96, 5, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("ONE"), Some(6));
+        assert_eq!(values.resolve("FIVE"), Some(30));
     }
 
     #[test]

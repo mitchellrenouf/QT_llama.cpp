@@ -692,6 +692,47 @@ pub fn compile_x86_64_function_with_options<
                 })?;
                 let nested_checkpoint = emitter.saved_locals;
                 let nested_start = emitter.length;
+                let entry_exit = if let Some(condition) = block.entry_condition {
+                    let tree = condition
+                        .parse_condition::<MAX_EXPRESSION_NODES>()
+                        .map_err(|error| CodegenError {
+                            kind: CodegenErrorKind::Expression(error.kind),
+                            span: translate_span(
+                                function.body_expression_span.start
+                                    + condition.condition_span.start,
+                                error.span,
+                            ),
+                        })?;
+                    let condition_type = runtime_expression_type_with_locals(
+                        function,
+                        emitter.resolver,
+                        &emitter.locals[..emitter.saved_locals],
+                        &tree,
+                        tree.root(),
+                        0,
+                    )
+                    .map_err(|kind| CodegenError {
+                        kind,
+                        span: translate_span(
+                            function.body_expression_span.start,
+                            condition.condition_span,
+                        ),
+                    })?;
+                    if condition_type != RuntimeExpressionType::Bool {
+                        return Err(CodegenError {
+                            kind: CodegenErrorKind::RuntimeTypeMismatch,
+                            span: translate_span(
+                                function.body_expression_span.start,
+                                condition.condition_span,
+                            ),
+                        });
+                    }
+                    emitter.emit_expression(&tree, tree.root(), 0)?;
+                    emitter.emit(&[0x48, 0x85, 0xc0])?;
+                    Some(emitter.emit_forward_branch(0x84)?)
+                } else {
+                    None
+                };
                 for action_index in 0..=block.action_count() {
                     if block.continue_condition.is_some()
                         && action_index == block.continue_action_index
@@ -818,6 +859,11 @@ pub fn compile_x86_64_function_with_options<
                     let exit = emitter.emit_forward_branch(0x85)?;
                     emitter.emit_backward_branch(nested_start)?;
                     emitter.patch_forward_branch(exit)?;
+                } else if block.entry_condition.is_some() {
+                    emitter.emit_backward_branch(nested_start)?;
+                }
+                if let Some(entry_exit) = entry_exit {
+                    emitter.patch_forward_branch(entry_exit)?;
                 }
                 ends_with_unconditional_control = false;
                 continue;
