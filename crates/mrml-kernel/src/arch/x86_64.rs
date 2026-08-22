@@ -8,6 +8,7 @@ mod page_table;
 mod pe_mapping;
 mod privilege_stack;
 mod service_space;
+mod topology;
 mod trap;
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
 pub use context::{
@@ -28,6 +29,9 @@ pub use privilege_stack::{
     PrivilegeStackError, PrivilegeStackLayout,
 };
 pub use service_space::{ServiceAddressSpace, ServiceSpaceError};
+pub use topology::{
+    ApStartupTable, ApStartupToken, ApState, TopologyError, X86Cpu, X86CpuTopology,
+};
 pub use trap::{HardwareTrapFrame, TrapDisposition, TrapError, TrapFrame};
 
 const MAX_PHYSICAL_ADDRESS: u64 = (1u64 << 52) - PAGE_SIZE;

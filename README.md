@@ -273,8 +273,17 @@ and out-of-range CPU indices fail before mapping. CPU 0
 now owns its GDT, complete IDT, TSS, RSP0/IST1, and transition-stack pointer in
 one aligned non-copyable `CpuDescriptorState` rather than unrelated globals.
 WHP, KVM, and UEFI launch paths all obtain CPU 0 through the common allocator.
-Application-processor startup and a live multi-vCPU scheduling proof remain
-unfinished; the repository does not claim SMP execution yet. Platform-backed
+The architecture layer now parses a complete, loader-copied ACPI MADT into a
+bounded topology of at most 256 enabled legacy APIC or x2APIC CPUs. It verifies
+the table signature, exact length, checksum, entry sizes, reserved flags,
+unique APIC and firmware identities, and a single aligned local-APIC override
+before admitting the topology. A generational AP-startup state machine then
+enforces `offline -> INIT sent -> SIPI sent -> online`, rejects acknowledgements
+from the wrong APIC, and permanently invalidates stale attempts after failure.
+The loader does not yet copy MADT bytes from the RSDP/XSDT into the signed
+handoff, and real INIT/SIPI delivery, per-CPU interrupt routing, and a live
+multi-vCPU scheduling proof remain unfinished; the repository does not claim
+SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested
 service exit, generational ownership, and domain revocation are now

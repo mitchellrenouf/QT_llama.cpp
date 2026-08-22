@@ -1403,7 +1403,17 @@ privileged-path refactor. A QEMU 11.1 TCG/UEFI boot of the plain kernel produced
 1,022,848 background pixels at `RGB(11,59,90)` plus the exact 1,152-pixel gold
 kernel marker at `RGB(255,200,87)`. Application-processor discovery/startup,
 per-CPU interrupt routing, and live multi-vCPU scheduling remain pending, so
-MRML does not yet claim SMP execution. Platform-backed service page
+MRML does not yet claim SMP execution. The bounded discovery foundation is
+implemented: a parser accepts only a complete loader-copied ACPI MADT with a
+valid signature, exact encoded length, checksum, entry geometry, reserved
+fields, unique APIC/firmware identities, at least one enabled CPU, and at most
+256 CPUs. It supports legacy local-APIC entries, x2APIC entries, and one aligned
+52-bit local-APIC address override. An AP lifecycle requires ordered INIT and
+SIPI publication and an acknowledgement from the exact expected APIC;
+generational attempt tokens prevent late acknowledgements from reviving failed
+or retried slots. RSDP/XSDT traversal and MADT copying into the signed handoff,
+hardware ICR delivery, AP trampoline execution, and SMP scheduling are still
+required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 
