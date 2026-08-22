@@ -646,6 +646,15 @@ Parameterized functions emit same-width integer locals and Boolean locals into
 bounded stack slots. Later initializers and the tail can reload those slots;
 parameter offsets incorporate saved locals and temporary expression depth, and
 the epilogue checks and removes the complete combined frame. Mutable integer
+and array frames use signed-eight-bit stack displacements only through offset
+127 and switch to checked 32-bit displacements at 128 bytes. Array unpacking
+uses volatile `R10` scratch storage on both x86-64 ABIs so it cannot overwrite a
+later unsaved argument register. Independent callers exercised both an
+indirect eight-word array with a copied local at a 136-byte load and a packed
+four-byte array followed by a scalar argument. They observed 42 on both hosts;
+the corrected deep-array objects were 367-byte COFF and 784-byte ELF64, while
+the packed objects were 235 and 624 bytes.
+Mutable integer
 locals support `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, and
 `>>=` with the same checked or wrapping arithmetic policy as expressions.
 Boolean locals support simple assignment. Assignment to an immutable or unknown
@@ -866,7 +875,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 278 Windows library, conformance, rustc-nightly-replacement, and driver
+The 280 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1540,7 +1549,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 278 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 280 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

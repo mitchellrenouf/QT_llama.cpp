@@ -328,6 +328,18 @@ fn rustc_x86_64_abi_stack_arguments_reach_native_objects() {
 }
 
 #[test]
+fn rustc_deep_array_stack_slots_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [u64; 8], after: u64) -> u64 { let copied = values; copied[7] + values[0] + after }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [u8; 4], after: u8) -> u8 { values[0] + after }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_shift_cast_distance_reaches_both_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u8, distance: u8) -> u8 { value >> distance as usize }",

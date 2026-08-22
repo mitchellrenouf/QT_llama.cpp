@@ -2650,19 +2650,18 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             if byte_offset / 8 != word {
                 continue;
             }
-            self.emit(&[0x48, 0x89, 0xc2])?;
+            self.emit(&[0x49, 0x89, 0xc2])?;
             let shift = ((byte_offset % 8) * 8) as u8;
             if shift != 0 {
-                self.emit(&[0x48, 0xc1, 0xea, shift])?;
+                self.emit(&[0x49, 0xc1, 0xea, shift])?;
             }
             match element_bytes {
-                1 => self.emit(&[0x0f, 0xb6, 0xd2])?,
-                2 => self.emit(&[0x0f, 0xb7, 0xd2])?,
-                4 => self.emit(&[0x89, 0xd2])?,
-                8 => {}
+                1 => self.emit(&[0x45, 0x0f, 0xb6, 0xd2])?,
+                2 => self.emit(&[0x45, 0x0f, 0xb7, 0xd2])?,
+                4 | 8 => {}
                 _ => return Err(self.error(CodegenErrorKind::UnsupportedParameterType)),
             }
-            self.emit(&[0x52])?;
+            self.emit(&[0x41, 0x52])?;
         }
         Ok(())
     }
@@ -2690,14 +2689,14 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             let displacement = u8::try_from(index * element_bytes)
                 .map_err(|_| self.error(CodegenErrorKind::TooManyAbiParameters))?;
             match element_bytes {
-                1 => self.emit(&[0x0f, 0xb6, 0x50, displacement])?,
-                2 => self.emit(&[0x0f, 0xb7, 0x50, displacement])?,
-                4 => self.emit(&[0x8b, 0x50, displacement])?,
-                8 if displacement == 0 => self.emit(&[0x48, 0x8b, 0x10])?,
-                8 => self.emit(&[0x48, 0x8b, 0x50, displacement])?,
+                1 => self.emit(&[0x44, 0x0f, 0xb6, 0x50, displacement])?,
+                2 => self.emit(&[0x44, 0x0f, 0xb7, 0x50, displacement])?,
+                4 => self.emit(&[0x44, 0x8b, 0x50, displacement])?,
+                8 if displacement == 0 => self.emit(&[0x4c, 0x8b, 0x10])?,
+                8 => self.emit(&[0x4c, 0x8b, 0x50, displacement])?,
                 _ => return Err(self.error(CodegenErrorKind::UnsupportedParameterType)),
             }
-            self.emit(&[0x52])?;
+            self.emit(&[0x41, 0x52])?;
         }
         Ok(())
     }
@@ -2741,8 +2740,8 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let displacement = original_offset
             .checked_add(current_stack_delta)
             .ok_or(self.error(CodegenErrorKind::TooManyAbiParameters))?;
-        if let Ok(displacement) = u8::try_from(displacement) {
-            self.emit(&[0x48, 0x8b, 0x44, 0x24, displacement])?;
+        if displacement <= i8::MAX as usize {
+            self.emit(&[0x48, 0x8b, 0x44, 0x24, displacement as u8])?;
         } else {
             let displacement = u32::try_from(displacement)
                 .map_err(|_| self.error(CodegenErrorKind::TooManyAbiParameters))?;
@@ -3442,7 +3441,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let displacement = slots
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
-        if displacement <= usize::from(u8::MAX) {
+        if displacement <= i8::MAX as usize {
             self.emit(&[0x48, 0x8b, 0x44, 0x24, displacement as u8])
         } else {
             self.emit(&[0x48, 0x8b, 0x84, 0x24])?;
@@ -3458,7 +3457,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let displacement = slots
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
-        if displacement <= usize::from(u8::MAX) {
+        if displacement <= i8::MAX as usize {
             self.emit(&[0x48, 0x89, 0x44, 0x24, displacement as u8])
         } else {
             self.emit(&[0x48, 0x89, 0x84, 0x24])?;
@@ -4834,6 +4833,36 @@ mod tests {
                 .windows(6)
                 .any(|bytes| bytes == [0x48, 0x8b, 0x44, 0x24, 56, 0x50])
         );
+    }
+
+    #[test]
+    fn uses_wide_displacements_for_deep_array_stack_slots() {
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn deep(values: [u64; 8], after: u64) -> u64 { let copied = values; copied[7] + values[0] + after }";
+        let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+            let code =
+                compile_x86_64_function::<_, 2048, 4, 64>(&function, &NoConstants, abi).unwrap();
+            assert!(
+                code.bytes()
+                    .windows(8)
+                    .any(|bytes| bytes == [0x48, 0x8b, 0x84, 0x24, 136, 0, 0, 0])
+            );
+        }
+
+        let packed_source = "#[unsafe(no_mangle)] pub extern \"C\" fn packed(values: [u8; 4], after: u8) -> u8 { values[0] + after }";
+        let packed_module = Parser::new(packed_source).parse_module::<2, 4>().unwrap();
+        let Some(Item::Function(packed_function)) = packed_module.items()[0] else {
+            panic!("expected function")
+        };
+        for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+            assert!(
+                compile_x86_64_function::<_, 512, 4, 32>(&packed_function, &NoConstants, abi,)
+                    .is_ok()
+            );
+        }
     }
 
     #[test]
