@@ -1414,9 +1414,12 @@ generational attempt tokens prevent late acknowledgements from reviving failed
 or retried slots. The architecture layer can now traverse an RSDP through a
 checksummed XSDT or RSDT using bounded physical reads, reject malformed roots
 and missing or duplicate MADTs, and independently revalidate the caller-owned
-MADT copy. Invoking that path in the UEFI loader and adding the copy to the
-signed handoff, hardware ICR delivery, AP trampoline execution, and SMP
-scheduling are still required. Platform-backed service page
+MADT copy. The handoff ABI now optionally appends this snapshot under an
+explicit presence flag and 8 KiB bound. Its encoder and decoder independently
+enforce the APIC signature, internal and enclosing lengths, and checksum, while
+the original handoff remains valid when no snapshot is present. Invoking the
+extended path in the UEFI loader, hardware ICR delivery, AP trampoline
+execution, and SMP scheduling are still required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 

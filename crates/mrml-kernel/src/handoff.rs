@@ -6,11 +6,14 @@ use crate::{
 pub const HANDOFF_HEADER_BYTES: usize = 168;
 pub const HANDOFF_REGION_BYTES: usize = 24;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
+pub const MAX_HANDOFF_MADT_BYTES: usize = 8 * 1024;
 
 const FLAG_SECURE_BOOT: u16 = 1;
 const FLAG_MEASURED_BOOT: u16 = 1 << 1;
 const FLAG_ROLLBACK_PROTECTED: u16 = 1 << 2;
-const KNOWN_FLAGS: u16 = FLAG_SECURE_BOOT | FLAG_MEASURED_BOOT | FLAG_ROLLBACK_PROTECTED;
+const FLAG_MADT_SNAPSHOT: u16 = 1 << 3;
+const KNOWN_FLAGS: u16 =
+    FLAG_SECURE_BOOT | FLAG_MEASURED_BOOT | FLAG_ROLLBACK_PROTECTED | FLAG_MADT_SNAPSHOT;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandoffError {
@@ -33,6 +36,8 @@ pub struct BootHandoff {
     acpi_root: u64,
     framebuffer: FramebufferInfo,
     region_count: usize,
+    madt_offset: usize,
+    madt_length: usize,
 }
 
 impl BootHandoff {
@@ -50,6 +55,11 @@ impl BootHandoff {
 
     pub const fn framebuffer(&self) -> FramebufferInfo {
         self.framebuffer
+    }
+
+    pub fn madt<'a>(&self, encoded: &'a [u8]) -> Option<&'a [u8]> {
+        (self.madt_length != 0)
+            .then(|| &encoded[self.madt_offset..self.madt_offset + self.madt_length])
     }
 
     /// Parses a bounded canonical handoff and emits validated regions in
@@ -75,15 +85,35 @@ impl BootHandoff {
         if region_count == 0 || region_count > MAX_HANDOFF_REGIONS {
             return Err(HandoffError::TooManyRegions);
         }
-        let expected_length = HANDOFF_HEADER_BYTES
+        let regions_end = HANDOFF_HEADER_BYTES
             .checked_add(
                 region_count
                     .checked_mul(HANDOFF_REGION_BYTES)
                     .ok_or(HandoffError::NonCanonical)?,
             )
             .ok_or(HandoffError::NonCanonical)?;
+        let madt_length = read_u16(input, 165) as usize;
+        if (flags & FLAG_MADT_SNAPSHOT != 0) != (madt_length != 0)
+            || madt_length > MAX_HANDOFF_MADT_BYTES
+            || (madt_length != 0 && madt_length < 44)
+            || input[167] != 0
+        {
+            return Err(HandoffError::NonCanonical);
+        }
+        let expected_length = regions_end
+            .checked_add(madt_length)
+            .ok_or(HandoffError::NonCanonical)?;
         if encoded_length != expected_length || input.len() != expected_length {
             return Err(HandoffError::NonCanonical);
+        }
+        if madt_length != 0 {
+            let madt = &input[regions_end..expected_length];
+            if &madt[..4] != b"APIC"
+                || read_u32(madt, 4) as usize != madt_length
+                || madt.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) != 0
+            {
+                return Err(HandoffError::NonCanonical);
+            }
         }
 
         let image_version = read_u64(input, 24);
@@ -94,9 +124,6 @@ impl BootHandoff {
             return Err(HandoffError::MissingAcpiRoot);
         }
         let acpi_root = acpi_address;
-        if input[165..168].iter().any(|byte| *byte != 0) {
-            return Err(HandoffError::NonCanonical);
-        }
         let pixel_format = match input[164] {
             0 => PixelFormat::RedGreenBlueReserved,
             1 => PixelFormat::BlueGreenRedReserved,
@@ -158,6 +185,8 @@ impl BootHandoff {
             acpi_root,
             framebuffer,
             region_count,
+            madt_offset: regions_end,
+            madt_length,
         })
     }
 }
@@ -177,16 +206,85 @@ pub fn encode_handoff(
     regions: &[MemoryRegion],
     output: &mut [u8],
 ) -> Result<usize, HandoffError> {
+    encode_handoff_inner(
+        image_version,
+        entropy,
+        image_measurement,
+        secure_boot,
+        measured_boot,
+        rollback_protected,
+        acpi_root,
+        framebuffer,
+        regions,
+        None,
+        output,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn encode_handoff_with_madt(
+    image_version: u64,
+    entropy: [u8; 32],
+    image_measurement: [u8; 64],
+    secure_boot: bool,
+    measured_boot: bool,
+    rollback_protected: bool,
+    acpi_root: u64,
+    framebuffer: FramebufferInfo,
+    regions: &[MemoryRegion],
+    madt: &[u8],
+    output: &mut [u8],
+) -> Result<usize, HandoffError> {
+    if !(44..=MAX_HANDOFF_MADT_BYTES).contains(&madt.len())
+        || &madt[..4] != b"APIC"
+        || read_u32(madt, 4) as usize != madt.len()
+        || madt.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) != 0
+    {
+        return Err(HandoffError::NonCanonical);
+    }
+    encode_handoff_inner(
+        image_version,
+        entropy,
+        image_measurement,
+        secure_boot,
+        measured_boot,
+        rollback_protected,
+        acpi_root,
+        framebuffer,
+        regions,
+        Some(madt),
+        output,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_handoff_inner(
+    image_version: u64,
+    entropy: [u8; 32],
+    image_measurement: [u8; 64],
+    secure_boot: bool,
+    measured_boot: bool,
+    rollback_protected: bool,
+    acpi_root: u64,
+    framebuffer: FramebufferInfo,
+    regions: &[MemoryRegion],
+    madt: Option<&[u8]>,
+    output: &mut [u8],
+) -> Result<usize, HandoffError> {
     if regions.is_empty() || regions.len() > MAX_HANDOFF_REGIONS {
         return Err(HandoffError::TooManyRegions);
     }
-    let length = HANDOFF_HEADER_BYTES
+    let regions_end = HANDOFF_HEADER_BYTES
         .checked_add(
             regions
                 .len()
                 .checked_mul(HANDOFF_REGION_BYTES)
                 .ok_or(HandoffError::NonCanonical)?,
         )
+        .ok_or(HandoffError::NonCanonical)?;
+    let madt_length = madt.map_or(0, <[u8]>::len);
+    let length = regions_end
+        .checked_add(madt_length)
         .ok_or(HandoffError::NonCanonical)?;
     if output.len() < length || image_version == 0 || acpi_root == 0 {
         return Err(HandoffError::NonCanonical);
@@ -214,7 +312,8 @@ pub fn encode_handoff(
     output[20..22].copy_from_slice(&(regions.len() as u16).to_le_bytes());
     let flags = ((secure_boot as u16) * FLAG_SECURE_BOOT)
         | ((measured_boot as u16) * FLAG_MEASURED_BOOT)
-        | ((rollback_protected as u16) * FLAG_ROLLBACK_PROTECTED);
+        | ((rollback_protected as u16) * FLAG_ROLLBACK_PROTECTED)
+        | ((madt.is_some() as u16) * FLAG_MADT_SNAPSHOT);
     output[22..24].copy_from_slice(&flags.to_le_bytes());
     output[24..32].copy_from_slice(&image_version.to_le_bytes());
     output[32..64].copy_from_slice(&entropy);
@@ -229,11 +328,15 @@ pub fn encode_handoff(
         PixelFormat::RedGreenBlueReserved => 0,
         PixelFormat::BlueGreenRedReserved => 1,
     };
+    output[165..167].copy_from_slice(&(madt_length as u16).to_le_bytes());
     for (index, region) in regions.iter().copied().enumerate() {
         let offset = HANDOFF_HEADER_BYTES + index * HANDOFF_REGION_BYTES;
         output[offset..offset + 8].copy_from_slice(&region.start().get().to_le_bytes());
         output[offset + 8..offset + 16].copy_from_slice(&region.pages().to_le_bytes());
         output[offset + 16] = region.kind() as u8;
+    }
+    if let Some(madt) = madt {
+        output[regions_end..length].copy_from_slice(madt);
     }
     Ok(length)
 }
@@ -292,7 +395,7 @@ mod tests {
         encoded[..16].copy_from_slice(b"MRML-HANDOFF-v1\0");
         encoded[16..20].copy_from_slice(&(THREE_REGION_BYTES as u32).to_le_bytes());
         encoded[20..22].copy_from_slice(&3u16.to_le_bytes());
-        encoded[22..24].copy_from_slice(&KNOWN_FLAGS.to_le_bytes());
+        encoded[22..24].copy_from_slice(&(KNOWN_FLAGS & !FLAG_MADT_SNAPSHOT).to_le_bytes());
         encoded[24..32].copy_from_slice(&7u64.to_le_bytes());
         encoded[32..64].fill(1);
         encoded[64..128].fill(2);
@@ -386,6 +489,46 @@ mod tests {
         let encoded = valid_handoff();
         assert_eq!(
             BootHandoff::decode(&encoded[..encoded.len() - 1], |_| {}).err(),
+            Some(HandoffError::NonCanonical)
+        );
+    }
+
+    #[test]
+    fn appended_madt_is_canonical_and_bound_to_the_length() {
+        let encoded = valid_handoff();
+        let handoff = BootHandoff::decode(&encoded, |_| {}).unwrap();
+        let mut regions = [decode_region(&encoded, 0).unwrap(); 3];
+        for (index, region) in regions.iter_mut().enumerate() {
+            *region = decode_region(&encoded, index).unwrap();
+        }
+        let mut madt = [0u8; 52];
+        madt[..4].copy_from_slice(b"APIC");
+        madt[4..8].copy_from_slice(&52u32.to_le_bytes());
+        madt[36..40].copy_from_slice(&0xfee0_0000u32.to_le_bytes());
+        madt[44..].copy_from_slice(&[0, 8, 0, 1, 1, 0, 0, 0]);
+        madt[9] = 0u8.wrapping_sub(madt.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)));
+        let mut with_madt = [0u8; THREE_REGION_BYTES + 52];
+        assert_eq!(
+            encode_handoff_with_madt(
+                7,
+                [1; 32],
+                [2; 64],
+                true,
+                true,
+                true,
+                0x9000,
+                handoff.framebuffer(),
+                &regions,
+                &madt,
+                &mut with_madt,
+            ),
+            Ok(with_madt.len())
+        );
+        let decoded = BootHandoff::decode(&with_madt, |_| {}).unwrap();
+        assert_eq!(decoded.madt(&with_madt), Some(madt.as_slice()));
+        with_madt[165] = 51;
+        assert_eq!(
+            BootHandoff::decode(&with_madt, |_| {}).err(),
             Some(HandoffError::NonCanonical)
         );
     }

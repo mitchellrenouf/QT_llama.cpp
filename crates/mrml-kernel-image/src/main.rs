@@ -43,8 +43,8 @@ use mrml_kernel::arch::x86_64::{CpuDescriptorState, HardwareTrapFrame};
 use mrml_kernel::arch::x86_64::{LocalApicTimer, TimerDivide};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
-    BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
-    MemoryRegion, PhysAddr,
+    BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, MAX_HANDOFF_MADT_BYTES,
+    MAX_HANDOFF_REGIONS, MemoryKind, MemoryRegion, PhysAddr,
 };
 #[cfg(feature = "service-probe")]
 use mrml_kernel::{
@@ -77,7 +77,8 @@ use mrml_kernel::{
 use mrml_kernel::{Priority, ScheduleOutcome};
 
 #[cfg(not(feature = "fault-probe"))]
-const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES;
+const MAX_HANDOFF_BYTES: usize =
+    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES;
 #[cfg(feature = "gpu-benchmark")]
 const GPU_COMMAND_BASE: usize = 0x00b0_0000;
 #[cfg(feature = "gpu-benchmark")]
