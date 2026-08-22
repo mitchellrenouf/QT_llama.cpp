@@ -1,5 +1,9 @@
+use core::arch::asm;
+
 use super::{ADDRESS_MASK, Mapping, PageError, PagePermissions, PageTableEntry, VirtAddr};
 use crate::{PAGE_SIZE, PhysAddr};
+
+const LEAF_ACCESSED_DIRTY: u64 = (1 << 5) | (1 << 6);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PageTableBuildError {
@@ -41,6 +45,9 @@ impl<S: PageTableStore> PageTableBuilder<S> {
     }
     pub const fn store(&self) -> &S {
         &self.store
+    }
+    pub const fn from_existing_root(store: S, root: PhysAddr) -> Self {
+        Self { store, root }
     }
     pub fn into_store(self) -> S {
         self.store
@@ -108,7 +115,7 @@ impl<S: PageTableStore> PageTableBuilder<S> {
             let wanted = PageTableEntry::leaf(physical_address, expected.permissions())
                 .map_err(PageTableBuildError::Page)?
                 .bits();
-            if current != wanted {
+            if current & !LEAF_ACCESSED_DIRTY != wanted {
                 return Err(PageTableBuildError::MappingMismatch);
             }
             PageTableEntry::leaf(physical_address, final_permissions)
@@ -119,7 +126,9 @@ impl<S: PageTableStore> PageTableBuilder<S> {
             let (table, index) = self.leaf_location(virtual_address)?;
             let final_entry = PageTableEntry::leaf(physical_address, final_permissions)
                 .map_err(PageTableBuildError::Page)?;
-            self.store.write(table, index, final_entry.bits())?;
+            let accessed_dirty = self.store.read(table, index)? & LEAF_ACCESSED_DIRTY;
+            self.store
+                .write(table, index, final_entry.bits() | accessed_dirty)?;
         }
         Ok(())
     }
@@ -167,6 +176,89 @@ impl<S: PageTableStore> PageTableBuilder<S> {
             self.store.write(parent, index, current | (1 << 2))?;
         }
         PhysAddr::new(current & ADDRESS_MASK).map_err(|_| PageTableBuildError::InvalidIntermediate)
+    }
+}
+
+struct IdentityMappedPageTables;
+
+impl PageTableStore for IdentityMappedPageTables {
+    fn allocate_zeroed(&mut self) -> Result<PhysAddr, PageTableBuildError> {
+        Err(PageTableBuildError::Storage)
+    }
+
+    fn read(&self, table: PhysAddr, index: usize) -> Result<u64, PageTableBuildError> {
+        if index >= 512 {
+            return Err(PageTableBuildError::Storage);
+        }
+        Ok(unsafe { (table.get() as *const u64).add(index).read_volatile() })
+    }
+
+    fn write(
+        &mut self,
+        table: PhysAddr,
+        index: usize,
+        value: u64,
+    ) -> Result<(), PageTableBuildError> {
+        if index >= 512 {
+            return Err(PageTableBuildError::Storage);
+        }
+        unsafe { (table.get() as *mut u64).add(index).write_volatile(value) };
+        Ok(())
+    }
+}
+
+pub struct ActivePageTables {
+    root: PhysAddr,
+}
+
+impl ActivePageTables {
+    /// Opens the current CR3 for exact-match leaf protection without allocating
+    /// new page-table frames.
+    ///
+    /// # Safety
+    ///
+    /// Every page-table frame reachable from the current CR3 must be mapped at
+    /// its identical supervisor-writable virtual address and owned exclusively
+    /// by this CPU for the duration of each mutation. Interrupts and concurrent
+    /// address-space mutation must be excluded by the caller.
+    pub unsafe fn current() -> Result<Self, PageTableBuildError> {
+        let root: u64;
+        unsafe { asm!("mov {}, cr3", out(reg) root, options(nomem, nostack, preserves_flags)) };
+        let root = PhysAddr::new(root & ADDRESS_MASK)
+            .map_err(|_| PageTableBuildError::InvalidIntermediate)?;
+        Ok(Self { root })
+    }
+
+    pub const fn root(&self) -> PhysAddr {
+        self.root
+    }
+
+    /// Applies an exact-match permission transition and invalidates every
+    /// affected local translation before returning.
+    ///
+    /// # Safety
+    ///
+    /// The mapping and identity-map ownership requirements from
+    /// [`Self::current`] must still hold.
+    pub unsafe fn protect(
+        &mut self,
+        expected: Mapping,
+        final_permissions: PagePermissions,
+    ) -> Result<(), PageTableBuildError> {
+        let mut tables = PageTableBuilder::from_existing_root(IdentityMappedPageTables, self.root);
+        tables.protect(expected, final_permissions)?;
+        for page in 0..expected.pages() {
+            let address = expected
+                .virtual_start()
+                .get()
+                .checked_add(
+                    page.checked_mul(PAGE_SIZE)
+                        .ok_or(PageTableBuildError::AddressOverflow)?,
+                )
+                .ok_or(PageTableBuildError::AddressOverflow)?;
+            unsafe { asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags)) };
+        }
+        Ok(())
     }
 }
 
@@ -300,6 +392,21 @@ mod tests {
         )
         .unwrap();
         builder.map(mapping).unwrap();
+        let root = builder.root();
+        let mut store = builder.into_store();
+        let address = mapping.virtual_start();
+        let pml4 =
+            PhysAddr::new(store.read(root, address.pml4_index()).unwrap() & ADDRESS_MASK).unwrap();
+        let pdpt =
+            PhysAddr::new(store.read(pml4, address.pdpt_index()).unwrap() & ADDRESS_MASK).unwrap();
+        let directory =
+            PhysAddr::new(store.read(pdpt, address.directory_index()).unwrap() & ADDRESS_MASK)
+                .unwrap();
+        let leaf = store.read(directory, address.table_index()).unwrap();
+        store
+            .write(directory, address.table_index(), leaf | LEAF_ACCESSED_DIRTY)
+            .unwrap();
+        let mut builder = PageTableBuilder::from_existing_root(store, root);
         builder
             .protect(mapping, PagePermissions::KERNEL_LOW_READ_EXECUTE)
             .unwrap();

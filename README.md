@@ -317,7 +317,10 @@ rejects absent, unaligned, zero-vector, or one-megabyte-and-above addresses.
 UEFI reserves one loader-owned page with `AllocateMaxAddress`, zeroes it, maps
 it supervisor-RW/NX, and identity-maps every page-table frame actually allocated
 (including frames allocated while adding those mappings), so the relocated BSP
-can perform the checked seal. Completing the in-kernel UEFI adapter and KVM
+can perform the checked seal. An `ActivePageTables` view opens CR3 without
+allocating, applies the same exact-match transition through identity-mapped
+frames, preserves hardware Accessed/Dirty state, and invalidates every affected
+TLB entry before publication. Completing the in-kernel UEFI adapter and KVM
 page backend, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed

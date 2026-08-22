@@ -1444,7 +1444,10 @@ The canonical SMP handoff carries the exact selected low page. UEFI obtains it
 with `AllocateMaxAddress`, zeroes and maps it RW/NX, and iteratively
 identity-maps only the page-table frames its builder actually allocated, so new
 frames created during that operation are included without mapping unrelated
-loader storage. The in-kernel adapter still needs to apply the final seal.
+loader storage. A no-allocation active-CR3 view applies exact-match changes,
+accepts and preserves only hardware Accessed/Dirty leaf changes, and issues
+`invlpg` for every transitioned address. The in-kernel adapter still needs to
+apply the final seal.
 Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.

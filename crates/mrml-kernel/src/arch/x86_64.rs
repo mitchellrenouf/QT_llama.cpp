@@ -29,7 +29,7 @@ pub use descriptors::{
     write_task_state_descriptor,
 };
 pub use local_apic::{ApStartupTiming, ApicIpi, LocalApicError, LocalApicTimer, TimerDivide};
-pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
+pub use page_table::{ActivePageTables, PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
 pub use privilege_stack::{
     CpuPrivilegeStacks, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES, PerCpuPrivilegeStacks,
