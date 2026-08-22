@@ -17,6 +17,8 @@ unsafe extern "C" {
     fn native_exp(value: f32) -> f32;
     #[link_name = "roundf"]
     fn native_round(value: f32) -> f32;
+    #[link_name = "log2f"]
+    fn native_log2(value: f32) -> f32;
 }
 
 #[inline]
@@ -47,6 +49,10 @@ pub fn exp(value: f32) -> f32 {
 pub fn round(value: f32) -> f32 {
     unsafe { native_round(value) }
 }
+#[inline]
+pub fn log2(value: f32) -> f32 {
+    unsafe { native_log2(value) }
+}
 
 #[cfg(test)]
 mod tests {
@@ -57,5 +63,6 @@ mod tests {
         assert!((super::sin(0.0)).abs() < 1e-6);
         assert!((super::cos(0.0) - 1.0).abs() < 1e-6);
         assert_eq!(super::round(2.6), 3.0);
+        assert!((super::log2(8.0) - 3.0).abs() < 1e-6);
     }
 }

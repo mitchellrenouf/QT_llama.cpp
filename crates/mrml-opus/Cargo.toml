@@ -1,0 +1,13 @@
+[package]
+name = "mrml-opus"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Original allocation-free RFC 6716 Opus implementation"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mrml-math = { path = "../mrml-math" }

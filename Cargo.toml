@@ -38,6 +38,8 @@ members = [
     "crates/mrml-wikipedia",
     "crates/mrml-tokenizer",
     "crates/mrml-trainer",
+    "crates/mrml-opus",
+    "crates/mrml-opus",
 ]
 
 [workspace.package]

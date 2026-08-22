@@ -17,6 +17,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-opus"
+version = "0.4.0"
+dependencies = [
+ "mrml-math",
+]
+
+[[package]]
 name = "mrml-cli"
 version = "0.4.0"
 dependencies = [
@@ -136,6 +143,13 @@ dependencies = [
  "mrml-json",
  "mrml-runtime",
  "mrml-tensor",
+]
+
+[[package]]
+name = "mrml-opus"
+version = "0.4.0"
+dependencies = [
+ "mrml-math",
 ]
 
 [[package]]
