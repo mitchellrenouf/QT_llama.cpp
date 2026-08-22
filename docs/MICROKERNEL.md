@@ -598,7 +598,10 @@ across independently materialized service roots: A is interrupted under
 `CR3=0xd00000`. Each root maps the supervisor kernel and only its own user
 image/stack; timer-enabled roots add the APIC page supervisor-only. Final
 execution measured 2,063 microseconds on nested KVM and 8,413 microseconds on
-WHP.
+WHP. After the UEFI RF-sanitization work, freshly signed version-20/21
+regressions repeated the complete cross-root path in 2,125 microseconds on
+nested KVM (`verify=20445us`, `prepare=7190us`, `total=51691us`) and 8,428
+microseconds on WHP (`verify=17530us`, `prepare=4536us`, `total=34120us`).
 
 The `user-probe` diagnostic now gives the context and TSS work a live privilege-
 transition proof. Its signed PE is relocated into a bounded lower-half layout;

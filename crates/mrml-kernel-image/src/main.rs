@@ -199,13 +199,7 @@ const SMP_PERIODIC_BOOTSTRAP_PORT: u16 = 0x4d64;
     )
 ))]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
-#[cfg(any(
-    feature = "service-probe",
-    all(
-        feature = "service-preemption-probe",
-        not(feature = "uefi-service-preemption-probe")
-    )
-))]
+#[cfg(feature = "service-probe")]
 const SERVICE_B_ROOT: u64 = 0x00d0_0000;
 #[cfg(any(
     feature = "service-probe",
@@ -216,13 +210,7 @@ const SERVICE_B_ROOT: u64 = 0x00d0_0000;
     )
 ))]
 const SERVICE_ENTRY: u64 = 0x0000_0001_4000_1000;
-#[cfg(any(
-    feature = "service-probe",
-    all(
-        feature = "service-preemption-probe",
-        not(feature = "uefi-service-preemption-probe")
-    )
-))]
+#[cfg(feature = "service-probe")]
 const SERVICE_SENDER_ENTRY: u64 = SERVICE_ENTRY + 0x80;
 #[cfg(any(
     feature = "service-probe",
