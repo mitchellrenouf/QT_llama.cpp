@@ -3,12 +3,14 @@
 use mrml_runtime::Text;
 
 mod protocol;
+mod session;
 
 pub use protocol::{
     AlgorithmProposal, BinaryReader, BinaryWriter, ExchangeKeys, Identification, ProtocolError,
     EncryptedPacketReader, EncryptedPacketWriter, decode_plain_packet, derive_exchange_keys,
     encode_plain_packet, negotiate, parse_identification,
 };
+pub use session::{KexAlgorithms, NegotiatedAlgorithms, build_kex_init, negotiate_kex_init};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SshRemote {
