@@ -249,6 +249,8 @@ pub enum ConditionalLoopTerminal<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConditionalLoopArm<'source> {
+    pub condition: Option<&'source str>,
+    pub condition_span: Span,
     actions: [Option<ConditionalLoopAction<'source>>; MAX_CONDITIONAL_LOOP_ACTIONS],
     action_count: usize,
     pub terminal: Option<ConditionalLoopTerminal<'source>>,
@@ -262,6 +264,14 @@ impl<'source> ConditionalLoopArm<'source> {
     pub const fn action_count(&self) -> usize {
         self.action_count
     }
+
+    pub fn parse_condition<const MAX_NODES: usize>(
+        &self,
+    ) -> Result<Option<ExpressionTree<'source, MAX_NODES>>, ExpressionError> {
+        self.condition
+            .map(|condition| ExpressionParser::new(condition).parse())
+            .transpose()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -272,6 +282,7 @@ pub struct ConditionalLoopBlock<'source> {
     action_count: usize,
     pub terminal: Option<ConditionalLoopTerminal<'source>>,
     pub else_arm: Option<usize>,
+    pub else_arm_count: usize,
 }
 
 impl<'source> ConditionalLoopBlock<'source> {
@@ -912,6 +923,8 @@ impl<'source> BodyParser<'source> {
             if next.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
                 self.take()?;
                 return Ok(ConditionalLoopArm {
+                    condition: None,
+                    condition_span: Span { start: 0, end: 0 },
                     actions,
                     action_count,
                     terminal: None,
@@ -940,6 +953,8 @@ impl<'source> BodyParser<'source> {
                     return Err(self.error(ParseErrorKind::UnexpectedClosingDelimiter, close));
                 }
                 return Ok(ConditionalLoopArm {
+                    condition: None,
+                    condition_span: Span { start: 0, end: 0 },
                     actions,
                     action_count,
                     terminal: Some(terminal),
@@ -1476,45 +1491,51 @@ impl<'source> BodyParser<'source> {
                             );
                         }
                     }
-                    let else_arm_record = if probe.peek()?.is_some_and(|token| token.text == "else")
-                    {
+                    let else_arm_start = conditional_else_arm_count;
+                    while probe.peek()?.is_some_and(|token| token.text == "else") {
                         probe.take()?;
-                        let open = probe.take()?;
-                        if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
-                            return Err(probe.error(ParseErrorKind::ExpectedBody, open));
-                        }
-                        Some(probe.conditional_loop_arm(&mut assignment_count)?)
-                    } else {
-                        None
-                    };
-                    let conditional = ConditionalLoopControl {
-                        condition: &self.source[condition_span.start..condition_span.end],
-                        condition_span,
-                    };
-                    has_break |=
-                        control.is_some_and(|control| matches!(control.text, "break" | "return"));
-                    has_break |= else_arm_record.is_some_and(|arm| {
-                        matches!(
-                            arm.terminal,
-                            Some(
-                                ConditionalLoopTerminal::Break | ConditionalLoopTerminal::Return(_)
-                            )
-                        )
-                    });
-                    let else_arm = if let Some(arm) = else_arm_record {
                         if conditional_else_arm_count == MAX_CONDITIONAL_LOOP_ELSE_ARMS {
                             return Err(probe.error(
                                 ParseErrorKind::TooManyConditionalLoopElseArms,
                                 probe.lookahead,
                             ));
                         }
+                        let (arm_condition, arm_condition_span) =
+                            if probe.peek()?.is_some_and(|token| token.text == "if") {
+                                probe.take()?;
+                                let (span, _) =
+                                    probe.delimited_until("{", ParseErrorKind::ExpectedBody)?;
+                                (Some(&self.source[span.start..span.end]), span)
+                            } else {
+                                let open = probe.take()?;
+                                if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+                                    return Err(probe.error(ParseErrorKind::ExpectedBody, open));
+                                }
+                                (None, Span { start: 0, end: 0 })
+                            };
+                        let mut arm = probe.conditional_loop_arm(&mut assignment_count)?;
+                        arm.condition = arm_condition;
+                        arm.condition_span = arm_condition_span;
+                        has_break |= matches!(
+                            arm.terminal,
+                            Some(
+                                ConditionalLoopTerminal::Break | ConditionalLoopTerminal::Return(_)
+                            )
+                        );
                         conditional_else_arms[conditional_else_arm_count] = Some(arm);
-                        let index = conditional_else_arm_count;
                         conditional_else_arm_count += 1;
-                        Some(index)
-                    } else {
-                        None
+                        if arm.condition.is_none() {
+                            break;
+                        }
+                    }
+                    let else_arm_count = conditional_else_arm_count - else_arm_start;
+                    let else_arm = (else_arm_count != 0).then_some(else_arm_start);
+                    let conditional = ConditionalLoopControl {
+                        condition: &self.source[condition_span.start..condition_span.end],
+                        condition_span,
                     };
+                    has_break |=
+                        control.is_some_and(|control| matches!(control.text, "break" | "return"));
                     operations[operation_count] =
                         Some(if action_count != 0 || else_arm.is_some() {
                             conditional_blocks[conditional_block_count] =
@@ -1525,6 +1546,7 @@ impl<'source> BodyParser<'source> {
                                     action_count,
                                     terminal,
                                     else_arm,
+                                    else_arm_count,
                                 });
                             let index = conditional_block_count;
                             conditional_block_count += 1;
@@ -2674,7 +2696,7 @@ mod tests {
         assert_eq!(body.tail_expression, "total");
 
         let action_only = Parser::new(
-            "fn guarded(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { i += 1; if i % 2 == 0 { let selected: u64 = i; total += selected; } else { let fallback: u64 = 1; total += fallback; } total += 1; } total }",
+            "fn guarded(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { i += 1; if i % 2 == 0 { let selected: u64 = i; total += selected; } else if i % 3 == 0 { let third: u64 = 3; total += third; } else { let fallback: u64 = 1; total += fallback; } total + 1; } total }",
         )
         .parse_module::<2, 2>()
         .unwrap();
@@ -2693,6 +2715,10 @@ mod tests {
         let else_arm = loop_statement.conditional_else_arms()[else_index].unwrap();
         assert_eq!(else_arm.action_count(), 2);
         assert_eq!(else_arm.terminal, None);
+        assert_eq!(else_arm.condition, Some("i % 3 == 0"));
+        assert_eq!(block.else_arm_count, 2);
+        let final_arm = loop_statement.conditional_else_arms()[else_index + 1].unwrap();
+        assert_eq!(final_arm.condition, None);
 
         let too_many_conditional_actions = Parser::new(
             "fn crowded(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { i += 1; if i == limit { i + 1; i + 2; i + 3; i + 4; i + 5; break; } } i }",

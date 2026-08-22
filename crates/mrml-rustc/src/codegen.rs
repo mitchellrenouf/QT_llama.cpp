@@ -770,67 +770,118 @@ pub fn compile_x86_64_function_with_options<
                     None => emitter.emit_stack_cleanup_to(block_checkpoint)?,
                 }
                 emitter.truncate_scoped_locals(block_checkpoint)?;
-                let skip_else = block
-                    .else_arm
-                    .map(|_| emitter.emit_unconditional_forward_branch())
-                    .transpose()?;
+                let mut end_patches = [None; crate::MAX_CONDITIONAL_LOOP_ELSE_ARMS + 1];
+                let mut end_patch_count = 0usize;
+                if block.else_arm.is_some() {
+                    end_patches[end_patch_count] =
+                        Some(emitter.emit_unconditional_forward_branch()?);
+                    end_patch_count += 1;
+                }
                 emitter.patch_forward_branch(skip_block)?;
                 if let Some(else_index) = block.else_arm {
-                    let else_arm =
-                        loop_statement.conditional_else_arms()[else_index].ok_or(CodegenError {
-                            kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
-                            span: function.body_expression_span,
-                        })?;
-                    let else_checkpoint = emitter.saved_locals;
-                    for action in else_arm.actions().iter().flatten() {
-                        match action {
-                            crate::ConditionalLoopAction::Local(local) => {
-                                emitter.emit_local::<MAX_EXPRESSION_NODES>(
-                                    local,
-                                    operand_type,
+                    for else_arm in loop_statement.conditional_else_arms()
+                        [else_index..else_index + block.else_arm_count]
+                        .iter()
+                        .flatten()
+                    {
+                        let skip_arm = if let Some(condition_tree) = else_arm
+                            .parse_condition::<MAX_EXPRESSION_NODES>()
+                            .map_err(|error| CodegenError {
+                                kind: CodegenErrorKind::Expression(error.kind),
+                                span: translate_span(
+                                    function.body_expression_span.start
+                                        + else_arm.condition_span.start,
+                                    error.span,
+                                ),
+                            })? {
+                            let condition_type = runtime_expression_type_with_locals(
+                                function,
+                                emitter.resolver,
+                                &emitter.locals[..emitter.saved_locals],
+                                &condition_tree,
+                                condition_tree.root(),
+                                0,
+                            )
+                            .map_err(|kind| CodegenError {
+                                kind,
+                                span: translate_span(
                                     function.body_expression_span.start,
-                                    true,
+                                    else_arm.condition_span,
+                                ),
+                            })?;
+                            if condition_type != RuntimeExpressionType::Bool {
+                                return Err(CodegenError {
+                                    kind: CodegenErrorKind::RuntimeTypeMismatch,
+                                    span: translate_span(
+                                        function.body_expression_span.start,
+                                        else_arm.condition_span,
+                                    ),
+                                });
+                            }
+                            emitter.emit_expression(&condition_tree, condition_tree.root(), 0)?;
+                            emitter.emit(&[0x48, 0x85, 0xc0])?;
+                            Some(emitter.emit_forward_branch(0x84)?)
+                        } else {
+                            None
+                        };
+                        let else_checkpoint = emitter.saved_locals;
+                        for action in else_arm.actions().iter().flatten() {
+                            match action {
+                                crate::ConditionalLoopAction::Local(local) => {
+                                    emitter.emit_local::<MAX_EXPRESSION_NODES>(
+                                        local,
+                                        operand_type,
+                                        function.body_expression_span.start,
+                                        true,
+                                    )?;
+                                }
+                                crate::ConditionalLoopAction::Assignment(assignment) => {
+                                    emitter.emit_assignment::<MAX_EXPRESSION_NODES>(
+                                        assignment,
+                                        function.body_expression_span.start,
+                                    )?;
+                                }
+                                crate::ConditionalLoopAction::Expression(statement) => {
+                                    emitter.emit_expression_statement::<MAX_EXPRESSION_NODES>(
+                                        statement,
+                                        function.body_expression_span.start,
+                                    )?;
+                                }
+                            }
+                        }
+                        match else_arm.terminal {
+                            Some(crate::ConditionalLoopTerminal::Break) => {
+                                emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                                exit_patches[exit_count] =
+                                    Some(emitter.emit_unconditional_forward_branch()?);
+                                exit_count += 1;
+                            }
+                            Some(crate::ConditionalLoopTerminal::Continue) => {
+                                emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                                emitter.emit_backward_branch(loop_start)?;
+                            }
+                            Some(crate::ConditionalLoopTerminal::Return(return_statement)) => {
+                                emitter.emit_return::<MAX_EXPRESSION_NODES>(
+                                    &return_statement,
+                                    expected_type,
+                                    function.body_expression_span.start,
                                 )?;
                             }
-                            crate::ConditionalLoopAction::Assignment(assignment) => {
-                                emitter.emit_assignment::<MAX_EXPRESSION_NODES>(
-                                    assignment,
-                                    function.body_expression_span.start,
-                                )?;
-                            }
-                            crate::ConditionalLoopAction::Expression(statement) => {
-                                emitter.emit_expression_statement::<MAX_EXPRESSION_NODES>(
-                                    statement,
-                                    function.body_expression_span.start,
-                                )?;
-                            }
+                            None => emitter.emit_stack_cleanup_to(else_checkpoint)?,
+                        }
+                        emitter.truncate_scoped_locals(else_checkpoint)?;
+                        end_patches[end_patch_count] =
+                            Some(emitter.emit_unconditional_forward_branch()?);
+                        end_patch_count += 1;
+                        if let Some(skip_arm) = skip_arm {
+                            emitter.patch_forward_branch(skip_arm)?;
+                        } else {
+                            break;
                         }
                     }
-                    match else_arm.terminal {
-                        Some(crate::ConditionalLoopTerminal::Break) => {
-                            emitter.emit_stack_cleanup_to(local_checkpoint)?;
-                            exit_patches[exit_count] =
-                                Some(emitter.emit_unconditional_forward_branch()?);
-                            exit_count += 1;
-                        }
-                        Some(crate::ConditionalLoopTerminal::Continue) => {
-                            emitter.emit_stack_cleanup_to(local_checkpoint)?;
-                            emitter.emit_backward_branch(loop_start)?;
-                        }
-                        Some(crate::ConditionalLoopTerminal::Return(return_statement)) => {
-                            emitter.emit_return::<MAX_EXPRESSION_NODES>(
-                                &return_statement,
-                                expected_type,
-                                function.body_expression_span.start,
-                            )?;
-                        }
-                        None => emitter.emit_stack_cleanup_to(else_checkpoint)?,
+                    for patch in end_patches[..end_patch_count].iter().flatten() {
+                        emitter.patch_forward_branch(*patch)?;
                     }
-                    emitter.truncate_scoped_locals(else_checkpoint)?;
-                    emitter.patch_forward_branch(skip_else.ok_or(CodegenError {
-                        kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
-                        span: function.body_expression_span,
-                    })?)?;
                 }
                 ends_with_unconditional_control = false;
                 continue;
@@ -3896,7 +3947,7 @@ mod tests {
 
     #[test]
     fn emits_scoped_loop_locals_across_control_edges() {
-        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u64 = current; total += selected; } else { let fallback: u64 = 1; total += fallback; } if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; break; } total += current; } total }";
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u64 = current; total += selected; } else if i % 2 == 0 { let even: u64 = 2; total += even; } else { let fallback: u64 = 1; total += fallback; } if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; break; } total + current; } total }";
         let module = Parser::new(source).parse_module::<2, 4>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")

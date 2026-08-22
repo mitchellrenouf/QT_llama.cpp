@@ -1417,13 +1417,39 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                     )?;
                     let (actions, terminal) = if condition_selected {
                         (block.actions(), block.terminal)
-                    } else if let Some(else_index) = block.else_arm {
-                        let else_arm = loop_statement.conditional_else_arms()[else_index]
-                            .as_ref()
-                            .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
-                        (else_arm.actions(), else_arm.terminal)
                     } else {
-                        continue;
+                        let mut selected = None;
+                        if let Some(else_index) = block.else_arm {
+                            for arm in loop_statement.conditional_else_arms()
+                                [else_index..else_index + block.else_arm_count]
+                                .iter()
+                                .flatten()
+                            {
+                                let arm_selected = if let Some(condition) = arm
+                                    .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
+                                    .map_err(|error| SemanticErrorKind::Expression(error.kind))?
+                                {
+                                    evaluate_boolean_const_expression(
+                                        context,
+                                        symbol_count,
+                                        &condition,
+                                        condition.root(),
+                                        resolver,
+                                        depth,
+                                    )?
+                                } else {
+                                    true
+                                };
+                                if arm_selected {
+                                    selected = Some((arm.actions(), arm.terminal));
+                                    break;
+                                }
+                            }
+                        }
+                        let Some(selected) = selected else {
+                            continue;
+                        };
+                        selected
                     };
                     let block_checkpoint = resolver.count;
                     for action in actions.iter().flatten() {
@@ -3004,13 +3030,13 @@ mod tests {
     #[test]
     fn evaluates_scoped_loop_locals_and_expressions_in_const_functions() {
         let module = Parser::new(
-            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u8 = current; total += selected; } else { let fallback: u8 = 1; total += fallback; } if i % 2 == 0 { let skipped: u8 = current; skipped + 10; continue; } if i == stop { let selected: u8 = current; selected + 20; break; } total += current; } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99); const fn choose(value: u8) -> u8 { loop { if value == 0 { let selected: u8 = 42; selected + 1; return selected; } return value; } } const RETURNED: u8 = choose(0);",
+            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u8 = current; total += selected; } else if i % 2 == 0 { let even: u8 = 2; total += even; } else { let fallback: u8 = 1; total += fallback; } if i % 2 == 0 { let skipped: u8 = current; skipped + 10; continue; } if i == stop { let selected: u8 = current; selected + 20; break; } total + current; } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99); const fn choose(value: u8) -> u8 { loop { if value == 0 { let selected: u8 = 42; selected + 1; return selected; } return value; } } const RETURNED: u8 = choose(0);",
         )
         .parse_module::<6, 4>()
         .unwrap();
         let values = analyze_constants::<4, 96, 6, 4>(&module, TargetLayout::X86_64).unwrap();
         assert_eq!(values.resolve("STOPPED"), Some(6));
-        assert_eq!(values.resolve("COMPLETE"), Some(10));
+        assert_eq!(values.resolve("COMPLETE"), Some(8));
         assert_eq!(values.resolve("RETURNED"), Some(42));
     }
 
