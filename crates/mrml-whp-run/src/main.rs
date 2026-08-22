@@ -5,6 +5,7 @@
 #[cfg(target_os = "windows")]
 use mrml_crypto::{LAMPORT_PUBLIC_KEY_BYTES, Sha3_512};
 use mrml_error::{Result, anyhow};
+use mrml_kernel::arch::x86_64::PRIVILEGE_STACK_ARENA_PAGES;
 #[cfg(target_os = "windows")]
 use mrml_kernel::{
     ArtifactKind, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuQueueIdentity,
@@ -174,7 +175,7 @@ fn application_main() -> Result<()> {
         handoff_virtual,
         0x40_0000,
         stack_virtual,
-        32,
+        PRIVILEGE_STACK_ARENA_PAGES,
         preemption_mode,
     )
     .map_err(|_| anyhow!("invalid fixed WHP launch layout"))?;
