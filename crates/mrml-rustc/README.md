@@ -477,7 +477,11 @@ scalar references; writes through `*const T` are rejected. Native callers read
 188-byte COFF objects plus 496- and 584-byte ELF64 objects. This parser subset
 does not yet accept the `unsafe fn` qualifier, so callers remain responsible
 for placing generated raw-pointer operations behind their own unsafe boundary.
-Pointer arithmetic, casts, and comparison remain unsupported. Shared
+Pointers with compatible scalar pointees support `==`, `!=`, `<`, `<=`, `>`,
+and `>=`, using unsigned address ordering and mutable-to-const compatibility.
+An independent caller exercised equal, ascending, and descending addresses
+through a 206-byte COFF and 600-byte ELF64 object. Different pointee types and
+pointer arithmetic remain rejected; pointer casts remain unsupported. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1065,7 +1069,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 338 Windows library, conformance, rustc-nightly-replacement, and driver
+The 340 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1739,7 +1743,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 338 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 340 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

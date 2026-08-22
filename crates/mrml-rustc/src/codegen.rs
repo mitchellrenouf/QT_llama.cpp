@@ -3073,6 +3073,21 @@ fn runtime_expression_type_with_locals<
             }
             if matches!(
                 operator,
+                crate::BinaryOperator::Equal
+                    | crate::BinaryOperator::NotEqual
+                    | crate::BinaryOperator::Less
+                    | crate::BinaryOperator::LessEqual
+                    | crate::BinaryOperator::Greater
+                    | crate::BinaryOperator::GreaterEqual
+            ) && matches!(left_type, RuntimeExpressionType::RawPointer { .. })
+                && matches!(right_type, RuntimeExpressionType::RawPointer { .. })
+                && (runtime_types_compatible(left_type, right_type)
+                    || runtime_types_compatible(right_type, left_type))
+            {
+                return Ok(RuntimeExpressionType::Bool);
+            }
+            if matches!(
+                operator,
                 crate::BinaryOperator::BitAnd
                     | crate::BinaryOperator::BitOr
                     | crate::BinaryOperator::BitXor
@@ -8763,6 +8778,46 @@ mod tests {
                 .kind,
             CodegenErrorKind::ImmutableAssignment,
         );
+    }
+
+    #[test]
+    fn compares_scalar_raw_pointers() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(left: *const u16, right: *const u16) -> bool { left == right }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(left: *const u16, right: *const u16) -> bool { left < right }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(left: *mut u16, right: *const u16) -> bool { left != right }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1024, 4, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        for source in [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(left: *const u16, right: *const u8) -> bool { left == right }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(left: *const u16, right: *const u16) -> u16 { left + right }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            assert_eq!(
+                compile_x86_64_function::<_, 768, 2, 80>(
+                    &function,
+                    &NoConstants,
+                    X86_64Abi::Windows,
+                )
+                .unwrap_err()
+                .kind,
+                CodegenErrorKind::RuntimeTypeMismatch,
+            );
+        }
     }
 
     #[test]

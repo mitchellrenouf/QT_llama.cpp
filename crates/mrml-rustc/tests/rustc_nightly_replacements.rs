@@ -2004,6 +2004,19 @@ fn rustc_scalar_raw_pointer_dereferences_reach_native_objects() {
 }
 
 #[test]
+fn rustc_scalar_raw_pointer_comparisons_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(left: *const u16, right: *const u16) -> bool { left == right }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(left: *const u16, right: *const u16) -> bool { left < right }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(left: *mut u16, right: *const u16) -> bool { left != right }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",
