@@ -7,6 +7,7 @@ mod session;
 mod auth;
 mod channel;
 mod client;
+mod keyfile;
 
 pub use protocol::{
     AlgorithmProposal, BinaryReader, BinaryWriter, ExchangeKeys, Identification, ProtocolError,
@@ -17,6 +18,7 @@ pub use session::{KexAlgorithms, NegotiatedAlgorithms, build_kex_init, negotiate
 pub use auth::{RsaPrivateKey, RsaPublicKey, build_publickey_auth, parse_rsa_public_key, sign_rsa_sha2_256, verify_rsa_sha2_256};
 pub use channel::{ChannelEvent, ChannelState, GitService, build_channel_close, build_channel_data, build_channel_eof, build_channel_open, build_exec_request, build_service_request, parse_channel_event};
 pub use client::{AuthenticatedSsh, SshWire, WireError};
+pub use keyfile::{parse_rsa_private_pem, parse_rsa_public_line};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SshRemote {
