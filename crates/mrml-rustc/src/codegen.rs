@@ -914,6 +914,7 @@ pub fn compile_x86_64_function_with_options<
                 if (block.entry_condition.is_some() || nested_exit_count != 0)
                     && !block.unconditional_break
                     && block.return_statement.is_none()
+                    || block.unconditional_continue
                 {
                     emitter.emit_backward_branch(nested_start)?;
                 }
@@ -4215,6 +4216,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_continue_then_return(limit: u64, skip: u64, stop: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == skip { continue; } if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_multiple_continues(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { continue; } if inner == second { continue; } total += inner; } outer += 1; inner = 0; } total }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_multiple_breaks(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { break; } total += inner; if inner == second { break; } } outer += 1; inner = 0; } total }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_unconditional_continue(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; } outer += 1; inner = 0; } outer }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {

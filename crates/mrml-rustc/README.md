@@ -280,6 +280,10 @@ A nested `loop` or `while` body may terminate with a typed function `return`.
 Its value is checked and emitted while inner locals remain live, then the normal
 function epilogue removes the complete inner and outer frame. A false inner
 `while` head bypasses the return and resumes after the nested operation.
+An unconditional terminal `continue;` cleans the complete inner iteration
+scope and targets the nested loop's own head. For an inner `while`, the head
+condition is rechecked before the next iteration; it never skips the remaining
+operations of the containing loop.
 Up to four conditional function returns may occur at ordered positions among
 the inner actions. Each false guard advances to the next operation without
 changing the inner scope; the first true guard returns after full-frame cleanup.
@@ -643,7 +647,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 236 Windows library, conformance, rustc-nightly-replacement, and driver
+The 238 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -878,6 +882,12 @@ pinned `tests/ui/for-loop-while/break.rs` and `loop-break-cont.rs`. Its 442-byte
 COFF and 832-byte ELF64 objects passed independent nightly-built callers through
 early, middle, late, natural, zero-iteration, and 60,000-outer-iteration paths.
 Const evaluation produced zero, three, six, and fifteen for the bounded cases.
+The unconditional inner-continue replacement maps the nested backedge from
+pinned `tests/ui/for-loop-while/loop-break-cont.rs`. Its 319-byte COFF and
+712-byte ELF64 objects passed independent nightly-built callers at zero, one,
+five, and 60,000 outer iterations while rechecking the inner `while` head and
+cleaning a scoped local before every backedge. Const evaluation produced the
+same bounded results.
 The nested-while replacement maps nested scalar while flow from pinned
 `tests/ui/for-loop-while/while.rs` and the nested targeting observed in
 `nested-loop-break-unit.rs`. Its 361-byte COFF and 752-byte ELF64 objects passed
@@ -1279,7 +1289,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 236 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 238 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

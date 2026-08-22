@@ -285,6 +285,7 @@ pub struct NestedLoopBlock<'source> {
     actions: [Option<ConditionalLoopAction<'source>>; MAX_NESTED_LOOP_ACTIONS],
     action_count: usize,
     pub unconditional_break: bool,
+    pub unconditional_continue: bool,
     pub return_statement: Option<LoopReturn<'source>>,
     conditional_breaks:
         [Option<ConditionalLoopControl<'source>>; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
@@ -1547,6 +1548,7 @@ impl<'source> BodyParser<'source> {
                     let mut conditional_return_count = 0usize;
                     let mut body_closed = false;
                     let mut unconditional_break = false;
+                    let mut unconditional_continue = false;
                     let mut return_statement = None;
                     loop {
                         let next = probe.peek()?;
@@ -1566,6 +1568,17 @@ impl<'source> BodyParser<'source> {
                                 );
                             }
                             unconditional_break = true;
+                            break;
+                        }
+                        if next.is_some_and(|token| token.text == "continue") {
+                            probe.take()?;
+                            let semicolon = probe.take()?;
+                            if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
+                                return Err(
+                                    probe.error(ParseErrorKind::ExpectedSemicolon, semicolon)
+                                );
+                            }
+                            unconditional_continue = true;
                             break;
                         }
                         if next.is_some_and(|token| token.text == "return") {
@@ -1703,6 +1716,7 @@ impl<'source> BodyParser<'source> {
                         if entry_condition.is_none()
                             && action_count == 0
                             && return_statement.is_none()
+                            && !unconditional_continue
                             && conditional_break_count == 0
                             && conditional_continue_count == 0
                             && conditional_return_count == 0
@@ -1720,6 +1734,7 @@ impl<'source> BodyParser<'source> {
                                 actions,
                                 action_count,
                                 unconditional_break,
+                                unconditional_continue,
                                 return_statement,
                                 conditional_breaks,
                                 conditional_break_action_indices,
@@ -3153,6 +3168,24 @@ mod tests {
         assert_eq!(inner.conditional_continues().len(), 2);
         assert_eq!(inner.conditional_continue_action_indices(), &[1, 1]);
         assert_eq!(inner.conditional_continue_control_orders(), &[0, 1]);
+
+        let unconditional_continue = Parser::new(
+            "fn nested(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { let selected: u64 = inner + 1; inner = selected; continue; } outer += 1; inner = 0; } outer }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = unconditional_continue.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+            panic!("expected nested while block")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert!(inner.unconditional_continue);
+        assert!(!inner.unconditional_break);
+        assert_eq!(inner.action_count(), 2);
 
         let crowded_continues = Parser::new(
             "fn nested(a: bool, b: bool, c: bool, d: bool) { loop { loop { if a { continue; } if b { continue; } if c { continue; } if d { continue; } if true { continue; } } } }",

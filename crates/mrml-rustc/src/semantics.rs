@@ -1588,6 +1588,9 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                         if should_break {
                             break;
                         }
+                        if block.unconditional_continue {
+                            continue 'nested;
+                        }
                     }
                 }
                 crate::LoopOperation::ConditionalBlock(index) => {
@@ -3310,6 +3313,19 @@ mod tests {
         assert_eq!(values.resolve("SECOND"), Some(3));
         assert_eq!(values.resolve("LATE"), Some(6));
         assert_eq!(values.resolve("NATURAL"), Some(15));
+    }
+
+    #[test]
+    fn evaluates_unconditional_continue_inside_an_inner_while_loop() {
+        let module = Parser::new(
+            "const fn count(limit: u8) -> u8 { let mut outer: u8 = 0; let mut inner: u8 = 0; while outer < limit { while inner < 3 { let selected: u8 = inner + 1; inner = selected; continue; } outer += 1; inner = 0; } outer } const ZERO: u8 = count(0); const ONE: u8 = count(1); const FIVE: u8 = count(5);",
+        )
+        .parse_module::<5, 4>()
+        .unwrap();
+        let values = analyze_constants::<3, 96, 5, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("ONE"), Some(1));
+        assert_eq!(values.resolve("FIVE"), Some(5));
     }
 
     #[test]
