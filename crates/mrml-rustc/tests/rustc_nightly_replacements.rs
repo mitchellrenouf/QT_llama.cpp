@@ -1877,6 +1877,20 @@ fn rustc_fixed_array_reference_ranges_create_slices() {
 }
 
 #[test]
+fn rustc_runtime_fixed_array_reference_ranges_create_slices() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [usize; 4], start: usize, end: usize) -> usize { let slice: &mut [usize] = &mut values[start..end]; slice[0] += 2; slice.len() + slice[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize; 4], start: usize, end: usize) -> usize { let slice: &[usize] = &values[start..=end]; slice.len() + slice[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize; 4], end: usize) -> usize { let slice: &[usize] = &values[..end]; slice.len() + slice[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize; 4], start: usize) -> usize { let slice: &[usize] = &values[start..]; slice.len() + slice[0] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",

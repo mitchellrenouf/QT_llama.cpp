@@ -1988,44 +1988,6 @@ fn constant_range_bounds<R: ConstantResolver, const MAX_NODES: usize>(
     Ok((start, end))
 }
 
-fn constant_slice_length<
-    R: ConstantResolver,
-    const MAX_PARAMETERS: usize,
-    const MAX_NODES: usize,
->(
-    function: &Function<'_, MAX_PARAMETERS>,
-    resolver: &R,
-    locals: &[Option<RuntimeLocal<'_>>],
-    tree: &crate::ExpressionTree<'_, MAX_NODES>,
-    id: crate::ExprId,
-) -> Result<Option<usize>, CodegenErrorKind> {
-    let Some(ExprKind::Unary {
-        operator: crate::UnaryOperator::AddressOf | crate::UnaryOperator::AddressOfMut,
-        operand,
-    }) = tree.expression(id).map(|expression| expression.kind)
-    else {
-        return Ok(None);
-    };
-    let Some(ExprKind::RangeIndex {
-        base,
-        start,
-        end,
-        inclusive,
-    }) = tree.expression(operand).map(|expression| expression.kind)
-    else {
-        return Ok(None);
-    };
-    let RuntimeExpressionType::Reference {
-        target: RuntimeReferenceTarget::Array { count, .. },
-        ..
-    } = runtime_expression_type_with_locals(function, resolver, locals, tree, base, 0)?
-    else {
-        return Err(CodegenErrorKind::RuntimeTypeMismatch);
-    };
-    let (start, end) = constant_range_bounds(tree, start, end, inclusive, count, resolver)?;
-    Ok(Some(end - start))
-}
-
 fn unify_integer_types(
     left: RuntimeExpressionType,
     right: RuntimeExpressionType,
@@ -2731,7 +2693,29 @@ fn runtime_expression_type_with_locals<
                     if operator == crate::UnaryOperator::AddressOfMut && !mutable {
                         return Err(CodegenErrorKind::ImmutableAssignment);
                     }
-                    constant_range_bounds(tree, start, end, inclusive, count, resolver)?;
+                    if inclusive && end.is_none() {
+                        return Err(CodegenErrorKind::RuntimeExpressionUnsupported);
+                    }
+                    for endpoint in [start, end].into_iter().flatten() {
+                        if !matches!(
+                            runtime_expression_type_with_locals(
+                                function,
+                                resolver,
+                                locals,
+                                tree,
+                                endpoint,
+                                depth + 1,
+                            )?,
+                            RuntimeExpressionType::Integer(None)
+                                | RuntimeExpressionType::Integer(Some(crate::IntegerType::Usize))
+                        ) {
+                            return Err(CodegenErrorKind::RuntimeTypeMismatch);
+                        }
+                    }
+                    match constant_range_bounds(tree, start, end, inclusive, count, resolver) {
+                        Ok(_) | Err(CodegenErrorKind::RuntimeExpressionUnsupported) => {}
+                        Err(error) => return Err(error),
+                    }
                     RuntimeReferenceTarget::Slice(element)
                 }
                 _ => return Err(CodegenErrorKind::RuntimeExpressionUnsupported),
@@ -4348,6 +4332,97 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         self.emit_stack_slot(slots)
     }
 
+    fn emit_range_slice_to_stack<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        id: crate::ExprId,
+        depth: usize,
+    ) -> Result<bool, CodegenError> {
+        let Some(ExprKind::Unary {
+            operator: crate::UnaryOperator::AddressOf | crate::UnaryOperator::AddressOfMut,
+            operand,
+        }) = tree.expression(id).map(|expression| expression.kind)
+        else {
+            return Ok(false);
+        };
+        let Some(ExprKind::RangeIndex {
+            base,
+            start,
+            end,
+            inclusive,
+        }) = tree.expression(operand).map(|expression| expression.kind)
+        else {
+            return Ok(false);
+        };
+        let base_type = runtime_expression_type_with_locals(
+            self.function,
+            self.resolver,
+            &self.locals[..self.saved_locals],
+            tree,
+            base,
+            depth + 1,
+        )
+        .map_err(|kind| self.error(kind))?;
+        let RuntimeExpressionType::Reference {
+            target:
+                RuntimeReferenceTarget::Array {
+                    element,
+                    count,
+                    layout: RuntimeReferenceArrayLayout::Native,
+                },
+            ..
+        } = base_type
+        else {
+            return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+        };
+
+        if let Some(start) = start {
+            self.emit_expression(tree, start, depth + 1)?;
+        } else {
+            self.emit(&[0x31, 0xc0])?;
+        }
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        if let Some(end) = end {
+            self.emit_expression(tree, end, depth + 1)?;
+        } else {
+            let count =
+                u64::try_from(count).map_err(|_| self.error(CodegenErrorKind::ValueOutOfRange))?;
+            self.emit(&[0x48, 0xb8])?;
+            self.emit(&count.to_le_bytes())?;
+        }
+        if inclusive {
+            self.emit(&[0x48, 0x83, 0xc0, 0x01])?;
+            self.emit_trap_branch(0x82)?;
+        }
+        self.emit(&[0x48, 0x8b, 0x0c, 0x24, 0x48, 0x39, 0xc1])?;
+        self.emit_trap_branch(0x87)?;
+        let count =
+            u64::try_from(count).map_err(|_| self.error(CodegenErrorKind::ValueOutOfRange))?;
+        self.emit(&[0x48, 0xba])?;
+        self.emit(&count.to_le_bytes())?;
+        self.emit(&[0x48, 0x39, 0xd0])?;
+        self.emit_trap_branch(0x87)?;
+        self.emit(&[0x48, 0x29, 0xc8, 0x50])?;
+        self.evaluation_depth += 1;
+        self.emit_expression(tree, base, depth + 1)?;
+        self.emit(&[0x48, 0x8b, 0x4c, 0x24, 0x08])?;
+        match runtime_array_element_bytes(element)
+            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?
+        {
+            0 | 1 => {}
+            2 => self.emit(&[0x48, 0xc1, 0xe1, 0x01])?,
+            4 => self.emit(&[0x48, 0xc1, 0xe1, 0x02])?,
+            8 => self.emit(&[0x48, 0xc1, 0xe1, 0x03])?,
+            _ => return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+        }
+        self.emit(&[
+            0x48, 0x01, 0xc8, 0x48, 0x89, 0xc2, 0x59, 0x48, 0x83, 0xc4, 0x08, 0x52, 0x51,
+        ])?;
+        self.evaluation_depth -= 2;
+        Ok(true)
+    }
+
     fn emit_reference_load(
         &mut self,
         pointee: RuntimeArrayElementType,
@@ -4627,36 +4702,18 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 ..
             }
         ) {
-            let constant_length = constant_slice_length(
-                self.function,
-                self.resolver,
-                &self.locals[..self.saved_locals],
-                &tree,
-                tree.root(),
-            )
-            .map_err(|kind| CodegenError {
-                kind,
-                span: translate_span(body_start, local.initializer_span),
-            })?;
-            self.emit_expression(&tree, tree.root(), 0)?;
-            self.emit(&[0x50])?;
-            if let Some(length) = constant_length {
-                let length = u64::try_from(length).map_err(|_| CodegenError {
-                    kind: CodegenErrorKind::ValueOutOfRange,
-                    span: translate_span(body_start, local.initializer_span),
-                })?;
-                self.emit(&[0x48, 0xb8])?;
-                self.emit(&length.to_le_bytes())?;
-            } else {
+            if !self.emit_range_slice_to_stack(&tree, tree.root(), 0)? {
                 let source = reference_source_name(&tree, tree.root()).ok_or(CodegenError {
                     kind: CodegenErrorKind::RuntimeExpressionUnsupported,
                     span: translate_span(body_start, local.initializer_span),
                 })?;
+                self.emit_expression(&tree, tree.root(), 0)?;
+                self.emit(&[0x50])?;
                 self.evaluation_depth += 1;
                 self.emit_slice_length(source)?;
                 self.evaluation_depth -= 1;
+                self.emit(&[0x50])?;
             }
-            self.emit(&[0x50])?;
         } else {
             self.emit_expression(&tree, tree.root(), 0)?;
             self.emit(&[0x50])?;
@@ -7862,6 +7919,27 @@ mod tests {
                 .kind,
             CodegenErrorKind::ImmutableAssignment,
         );
+    }
+
+    #[test]
+    fn creates_slices_from_runtime_fixed_array_ranges() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [usize; 4], start: usize, end: usize) -> usize { let slice: &mut [usize] = &mut values[start..end]; slice[0] += 2; slice.len() + slice[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &[usize; 4], start: usize, end: usize) -> usize { let slice: &[usize] = &values[start..=end]; slice.len() + slice[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &[usize; 4], end: usize) -> usize { let slice: &[usize] = &values[..end]; slice.len() + slice[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &[usize; 4], start: usize) -> usize { let slice: &[usize] = &values[start..]; slice.len() + slice[0] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1536, 4, 128>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
     }
 
     #[test]
