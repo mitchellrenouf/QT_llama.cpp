@@ -3229,7 +3229,13 @@ mod tests {
                     .decode(&packet[..size], &mut decoded, 48_000),
                 Ok(960)
             );
-            assert!(decoded.chunks_exact(2).any(|pair| pair[0] != pair[1]));
+            assert!(
+                decoded
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|pair| pair[0] != pair[1])
+            );
         }
     }
 
@@ -3279,7 +3285,13 @@ mod tests {
                     .decode(&packet[..size], &mut decoded, 48_000),
                 Ok(960)
             );
-            assert!(decoded.chunks_exact(2).any(|pair| pair[0] != pair[1]));
+            assert!(
+                decoded
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|pair| pair[0] != pair[1])
+            );
         }
 
         let mut dtx = [0u8; 2];

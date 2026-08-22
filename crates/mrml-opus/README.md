@@ -41,3 +41,16 @@ never labels a private audio format as Opus. Parser and decoder validation
 exhaustively covers two-byte packets plus every truncation and single-bit
 mutation of representative SILK, Hybrid, and CELT packets with guarded output
 buffers.
+
+## RFC 8251 vector audit
+
+The dependency-free rfc8251_audit example reads the twelve official .bit
+files, decodes every packet statefully, and compares final_range() with the
+authoritative range stored in each record. Run it with:
+
+    cargo run -p mrml-opus --release --example rfc8251_audit -- <vector-directory>
+
+Pass --require-exact to make any decode or final-range mismatch fail the
+process. The current baseline decodes all 20,075 packets and matches 13,562
+final ranges; full exact-range coverage remains required before this crate is
+considered complete.
