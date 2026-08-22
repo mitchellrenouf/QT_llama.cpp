@@ -1,4 +1,6 @@
-use mrml_kernel::arch::x86_64::{Mapping, PagePermissions, PrivilegeStackLayout, VirtAddr};
+use mrml_kernel::arch::x86_64::{
+    Mapping, PagePermissions, PerCpuPrivilegeStacks, PrivilegeStackLayout, VirtAddr,
+};
 use mrml_kernel::{
     ArtifactKind, BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, PAGE_SIZE, PhysAddr,
     VerifiedExecutable, VmBackend, VmExit,
@@ -59,9 +61,8 @@ impl KvmLaunchLayout {
         {
             return Err(KvmError::InvalidMapping);
         }
-        PrivilegeStackLayout::new(stack_virtual, stack_pages)
-            .map_err(|_| KvmError::InvalidMapping)?;
-        PrivilegeStackLayout::new(stack_physical, stack_pages)
+        PerCpuPrivilegeStacks::<1>::new(stack_physical, stack_virtual, stack_pages)
+            .and_then(|set| set.cpu(0))
             .map_err(|_| KvmError::InvalidMapping)?;
         Ok(Self {
             table_physical,

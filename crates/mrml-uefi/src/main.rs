@@ -9,7 +9,7 @@ use mrml_kernel::{
     SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
     arch::x86_64::{
         PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
-        PrivilegeStackLayout, VirtAddr,
+        PerCpuPrivilegeStacks, VirtAddr,
     },
     encode_handoff,
 };
@@ -740,7 +740,10 @@ fn prepare_transition(
         .checked_add((KERNEL_STACK_GUARD_PAGES as u64) * 4096)
         .ok_or(LOAD_ERROR)?;
     let stack_layout =
-        PrivilegeStackLayout::new(stack_base, KERNEL_STACK_PAGES as u64).map_err(|_| LOAD_ERROR)?;
+        PerCpuPrivilegeStacks::<1>::new(stack_base, stack_base, KERNEL_STACK_PAGES as u64)
+            .and_then(|set| set.cpu(0))
+            .map(|cpu| cpu.virtual_layout())
+            .map_err(|_| LOAD_ERROR)?;
     let stack_top = stack_layout.early_top().map_err(|_| LOAD_ERROR)?;
     if stack_allocation_base == 0
         || !stack_allocation_base.is_multiple_of(4096)

@@ -265,9 +265,18 @@ termination policy under nested KVM. That proof temporarily maps the entire
 diagnostic PE in the lower half with user permissions and is therefore not an
 acceptable service isolation design. Separate signed user mappings and
 distinct CR3 roots are now exercised by both the service IPC and timer probes.
-Independent arenas for additional CPUs remain unfinished. Platform-backed
-writable-memory reprovisioning and one bounded supervised restart are now part
-of the live WHP/KVM proof. Clean user-requested
+Privilege-stack allocation is now CPU-indexed for 1--256 x86-64 CPUs. A checked
+stride reserves one complete 128 KiB guarded arena per CPU in both physical and
+virtual address spaces; invalid counts, short strides, arithmetic wrap,
+addresses beyond x86-64's 52-bit physical limit, noncanonical virtual coverage,
+and out-of-range CPU indices fail before mapping. CPU 0
+now owns its GDT, complete IDT, TSS, RSP0/IST1, and transition-stack pointer in
+one aligned non-copyable `CpuDescriptorState` rather than unrelated globals.
+WHP, KVM, and UEFI launch paths all obtain CPU 0 through the common allocator.
+Application-processor startup and a live multi-vCPU scheduling proof remain
+unfinished; the repository does not claim SMP execution yet. Platform-backed
+writable-memory reprovisioning and one bounded supervised restart are part of
+the live WHP/KVM proof. Clean user-requested
 service exit, generational ownership, and domain revocation are now
 part of the signed two-root IPC proof. The live
 probe now uses the reusable context transition that writes its validated CR3,

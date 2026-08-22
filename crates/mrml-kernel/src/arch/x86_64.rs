@@ -15,14 +15,18 @@ pub use context::{
     UserContextTable, enter_user_context, enter_user_context_on_stack,
 };
 pub use descriptors::{
-    AlignedTaskState, DescriptorError, InterruptGate, TaskStateSegment, install_exception_tables,
-    install_external_interrupt_gate, install_fail_stop_tables, install_user_call_gate,
-    load_task_register, task_state_descriptor, write_task_state_descriptor,
+    AlignedTaskState, CPU_GDT_ENTRIES, CPU_TSS_SELECTOR, CpuDescriptorState, DescriptorError,
+    InterruptGate, TaskStateSegment, install_exception_tables, install_external_interrupt_gate,
+    install_fail_stop_tables, install_user_call_gate, load_task_register, task_state_descriptor,
+    write_task_state_descriptor,
 };
 pub use local_apic::{LocalApicError, LocalApicTimer, TimerDivide};
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
-pub use privilege_stack::{PRIVILEGE_STACK_ARENA_PAGES, PrivilegeStackError, PrivilegeStackLayout};
+pub use privilege_stack::{
+    CpuPrivilegeStacks, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES, PerCpuPrivilegeStacks,
+    PrivilegeStackError, PrivilegeStackLayout,
+};
 pub use service_space::{ServiceAddressSpace, ServiceSpaceError};
 pub use trap::{HardwareTrapFrame, TrapDisposition, TrapError, TrapFrame};
 

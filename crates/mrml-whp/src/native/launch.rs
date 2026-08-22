@@ -1,6 +1,6 @@
 use mrml_kernel::arch::x86_64::{
     AddressSpace, Mapping, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
-    PrivilegeStackLayout, VirtAddr,
+    PerCpuPrivilegeStacks, PrivilegeStackLayout, VirtAddr,
 };
 use mrml_kernel::{
     ArtifactKind, BootHandoff, GpuSharedQueueLayout, GpuVmmMemory, MAX_PE_SECTIONS, PAGE_SIZE,
@@ -65,6 +65,9 @@ impl WhpLaunchLayout {
         {
             return Err(WhpError::InvalidMapping);
         }
+        PerCpuPrivilegeStacks::<1>::new(stack_physical, stack_virtual, stack_pages)
+            .and_then(|set| set.cpu(0))
+            .map_err(|_| WhpError::InvalidMapping)?;
         Ok(Self {
             table_physical,
             table_pages,

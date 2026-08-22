@@ -34,18 +34,7 @@ use mrml_kernel::arch::x86_64::UserContext;
 use mrml_kernel::arch::x86_64::enter_user_context;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
-#[cfg(any(
-    feature = "timer-probe",
-    feature = "preemption-probe",
-    feature = "service-preemption-probe"
-))]
-use mrml_kernel::arch::x86_64::install_external_interrupt_gate;
-#[cfg(any(feature = "user-probe", feature = "service-probe"))]
-use mrml_kernel::arch::x86_64::install_user_call_gate;
-use mrml_kernel::arch::x86_64::{
-    AlignedTaskState, HardwareTrapFrame, InterruptGate, TaskStateSegment, install_exception_tables,
-    load_task_register, write_task_state_descriptor,
-};
+use mrml_kernel::arch::x86_64::{CpuDescriptorState, HardwareTrapFrame};
 #[cfg(any(
     feature = "timer-probe",
     feature = "preemption-probe",
@@ -134,23 +123,7 @@ const SERVICE_SENDER_ENTRY: u64 = SERVICE_ENTRY + 0x80;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 
-const GDT_ENTRIES: usize = 8;
-const TSS_SELECTOR: u16 = 0x08;
-
-static mut GDT: [u64; GDT_ENTRIES] = [
-    0,
-    0,
-    0,
-    0x00cf_f300_0000_ffff,
-    0x00af_fb00_0000_ffff,
-    0,
-    0x00cf_9300_0000_ffff,
-    0x00af_9b00_0000_ffff,
-];
-static mut IDT: [InterruptGate; 256] = [InterruptGate::MISSING; 256];
-static mut TSS: AlignedTaskState = AlignedTaskState::zeroed();
-
-static mut KERNEL_ENTRY_STACK_TOP: u64 = 0;
+static mut CPU0_DESCRIPTORS: CpuDescriptorState = CpuDescriptorState::empty(0);
 #[cfg(feature = "timer-probe")]
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 #[cfg(any(feature = "preemption-probe", feature = "service-preemption-probe"))]
@@ -1225,10 +1198,10 @@ unsafe fn enter_user_probe_context(context: &UserContext) {
 
 #[cfg(feature = "service-probe")]
 unsafe fn enter_service_probe_context(context: &UserContext) -> ! {
-    let transition_stack = unsafe { core::ptr::addr_of!(KERNEL_ENTRY_STACK_TOP).read() };
-    if transition_stack == 0 {
-        halt();
-    }
+    let transition_stack = unsafe {
+        CpuDescriptorState::entry_stack_top_from(core::ptr::addr_of!(CPU0_DESCRIPTORS))
+            .unwrap_or_else(|_| halt())
+    };
     unsafe { enter_user_context_on_stack(context, transition_stack) }
 }
 
@@ -1365,10 +1338,10 @@ unsafe fn verify_restart_budget_exhausted(
 
 #[cfg(feature = "service-preemption-probe")]
 unsafe fn enter_service_preemption_context(context: &UserContext) -> ! {
-    let transition_stack = unsafe { core::ptr::addr_of!(KERNEL_ENTRY_STACK_TOP).read() };
-    if transition_stack == 0 {
-        halt();
-    }
+    let transition_stack = unsafe {
+        CpuDescriptorState::entry_stack_top_from(core::ptr::addr_of!(CPU0_DESCRIPTORS))
+            .unwrap_or_else(|_| halt())
+    };
     unsafe { enter_user_context_on_stack(context, transition_stack) }
 }
 
@@ -1448,54 +1421,16 @@ fn embedded_minimum_version() -> Option<u64> {
 unsafe fn install_descriptor_tables(kernel_stack: u64, double_fault_stack: u64) {
     let fallback = mrml_exception_fail_stop as *const () as usize as u64;
     let handlers = unsafe { &mrml_exception_table };
-    let task_state = match TaskStateSegment::new(kernel_stack, double_fault_stack) {
-        Ok(task_state) => task_state,
-        Err(_) => halt(),
+    let state = unsafe {
+        core::ptr::addr_of_mut!(CPU0_DESCRIPTORS)
+            .as_mut()
+            .unwrap_or_else(|| halt())
     };
-    unsafe { core::ptr::addr_of_mut!(KERNEL_ENTRY_STACK_TOP).write(kernel_stack) };
-    let task_state_pointer = unsafe { core::ptr::addr_of_mut!(TSS.0) };
-    unsafe { task_state_pointer.write(task_state) };
-    if unsafe {
-        write_task_state_descriptor(
-            core::ptr::addr_of_mut!(GDT).cast::<u64>(),
-            GDT_ENTRIES,
-            TSS_SELECTOR,
-            &*task_state_pointer,
-        )
-    }
-    .is_err()
-    {
-        halt();
-    }
-    if unsafe {
-        install_exception_tables(
-            core::ptr::addr_of!(GDT).cast::<u64>(),
-            GDT_ENTRIES,
-            core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
-            256,
-            handlers,
-            fallback,
-            0x38,
-        )
-    }
-    .is_err()
-    {
-        halt();
-    }
-    if unsafe { load_task_register(TSS_SELECTOR) }.is_err() {
+    if unsafe { state.install(kernel_stack, double_fault_stack, handlers, fallback) }.is_err() {
         halt();
     }
     #[cfg(any(feature = "user-probe", feature = "service-probe"))]
-    if unsafe {
-        install_user_call_gate(
-            core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
-            256,
-            mrml_user_call as *const () as usize as u64,
-            0x38,
-        )
-    }
-    .is_err()
-    {
+    if unsafe { state.install_user_call(mrml_user_call as *const () as usize as u64) }.is_err() {
         halt();
     }
     #[cfg(any(
@@ -1504,12 +1439,9 @@ unsafe fn install_descriptor_tables(kernel_stack: u64, double_fault_stack: u64) 
         feature = "service-preemption-probe"
     ))]
     if unsafe {
-        install_external_interrupt_gate(
-            core::ptr::addr_of_mut!(IDT).cast::<InterruptGate>(),
-            256,
+        state.install_external(
             TIMER_VECTOR,
             mrml_timer_interrupt as *const () as usize as u64,
-            0x38,
         )
     }
     .is_err()

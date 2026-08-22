@@ -1,5 +1,10 @@
 use core::arch::asm;
 
+use super::MAX_X86_64_CPUS;
+
+pub const CPU_GDT_ENTRIES: usize = 8;
+pub const CPU_TSS_SELECTOR: u16 = 0x08;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescriptorError {
     MissingTable,
@@ -11,6 +16,8 @@ pub enum DescriptorError {
     InvalidPrivilege,
     InvalidVector,
     InvalidTaskState,
+    InvalidCpu,
+    AlreadyInitialized,
 }
 
 #[repr(C, packed)]
@@ -33,6 +40,151 @@ pub struct TaskStateSegment {
 
 #[repr(C, align(16))]
 pub struct AlignedTaskState(pub TaskStateSegment);
+
+/// CPU-private architectural tables and privilege-transition state. This type
+/// is intentionally non-`Copy`: one live CPU owns one instance for its entire
+/// initialized lifetime, and no GDT/TSS descriptor may alias another CPU's
+/// storage.
+#[repr(C, align(4096))]
+pub struct CpuDescriptorState {
+    gdt: [u64; CPU_GDT_ENTRIES],
+    idt: [InterruptGate; 256],
+    task_state: AlignedTaskState,
+    entry_stack_top: u64,
+    cpu: u16,
+    initialized: bool,
+}
+
+impl CpuDescriptorState {
+    pub const fn empty(cpu: u16) -> Self {
+        Self {
+            gdt: [
+                0,
+                0,
+                0,
+                0x00cf_f300_0000_ffff,
+                0x00af_fb00_0000_ffff,
+                0,
+                0x00cf_9300_0000_ffff,
+                0x00af_9b00_0000_ffff,
+            ],
+            idt: [InterruptGate::MISSING; 256],
+            task_state: AlignedTaskState::zeroed(),
+            entry_stack_top: 0,
+            cpu,
+            initialized: false,
+        }
+    }
+
+    pub const fn cpu(&self) -> u16 {
+        self.cpu
+    }
+
+    pub const fn entry_stack_top(&self) -> Option<u64> {
+        if self.initialized {
+            Some(self.entry_stack_top)
+        } else {
+            None
+        }
+    }
+
+    /// Reads the installed entry stack without creating a reference to static
+    /// CPU-local storage.
+    ///
+    /// # Safety
+    ///
+    /// `state` must point to a live `CpuDescriptorState` owned by the current
+    /// CPU and remain valid for the read.
+    pub unsafe fn entry_stack_top_from(state: *const Self) -> Result<u64, DescriptorError> {
+        if state.is_null() || !unsafe { core::ptr::addr_of!((*state).initialized).read() } {
+            return Err(DescriptorError::InvalidTaskState);
+        }
+        let top = unsafe { core::ptr::addr_of!((*state).entry_stack_top).read() };
+        if !valid_stack(top) {
+            return Err(DescriptorError::InvalidTaskState);
+        }
+        Ok(top)
+    }
+
+    /// Builds and installs this CPU's private GDT, IDT, TSS, RSP0, and IST1.
+    ///
+    /// # Safety
+    ///
+    /// The caller must run on `self.cpu` with interrupts disabled. Handler and
+    /// stack mappings must remain valid until this CPU is stopped permanently.
+    pub unsafe fn install(
+        &mut self,
+        entry_stack_top: u64,
+        double_fault_stack_top: u64,
+        handlers: &[u64; 32],
+        fallback: u64,
+    ) -> Result<(), DescriptorError> {
+        if usize::from(self.cpu) >= MAX_X86_64_CPUS {
+            return Err(DescriptorError::InvalidCpu);
+        }
+        if self.initialized {
+            return Err(DescriptorError::AlreadyInitialized);
+        }
+        self.task_state.0 = TaskStateSegment::new(entry_stack_top, double_fault_stack_top)?;
+        unsafe {
+            write_task_state_descriptor(
+                self.gdt.as_mut_ptr(),
+                self.gdt.len(),
+                CPU_TSS_SELECTOR,
+                &self.task_state.0,
+            )?;
+            install_exception_tables(
+                self.gdt.as_ptr(),
+                self.gdt.len(),
+                self.idt.as_mut_ptr(),
+                self.idt.len(),
+                handlers,
+                fallback,
+                0x38,
+            )?;
+            load_task_register(CPU_TSS_SELECTOR)?;
+        }
+        self.entry_stack_top = entry_stack_top;
+        self.initialized = true;
+        Ok(())
+    }
+
+    /// Installs the fixed DPL3 call gate in this CPU's live private IDT.
+    ///
+    /// # Safety
+    ///
+    /// Interrupts must be disabled on the owning initialized CPU.
+    pub unsafe fn install_user_call(&mut self, handler: u64) -> Result<(), DescriptorError> {
+        if !self.initialized {
+            return Err(DescriptorError::InvalidTaskState);
+        }
+        unsafe { install_user_call_gate(self.idt.as_mut_ptr(), self.idt.len(), handler, 0x38) }
+    }
+
+    /// Installs one external interrupt in this CPU's live private IDT.
+    ///
+    /// # Safety
+    ///
+    /// Interrupts must be disabled on the owning initialized CPU.
+    pub unsafe fn install_external(
+        &mut self,
+        vector: u8,
+        handler: u64,
+    ) -> Result<(), DescriptorError> {
+        if !self.initialized {
+            return Err(DescriptorError::InvalidTaskState);
+        }
+        unsafe {
+            install_external_interrupt_gate(
+                self.idt.as_mut_ptr(),
+                self.idt.len(),
+                vector,
+                handler,
+                0x38,
+            )
+        }
+    }
+}
 
 impl TaskStateSegment {
     pub fn new(rsp0: u64, double_fault_stack: u64) -> Result<Self, DescriptorError> {
@@ -420,6 +572,34 @@ const fn valid_long_mode_code_descriptor(descriptor: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_descriptor_state_is_aligned_private_and_unreadable_before_install() {
+        assert_eq!(core::mem::align_of::<CpuDescriptorState>(), 4096);
+        let first = CpuDescriptorState::empty(0);
+        let second = CpuDescriptorState::empty(1);
+        assert_eq!(first.cpu(), 0);
+        assert_eq!(second.cpu(), 1);
+        assert_eq!(first.entry_stack_top(), None);
+        assert_ne!(
+            core::ptr::addr_of!(first) as usize,
+            core::ptr::addr_of!(second) as usize
+        );
+        assert_eq!(
+            unsafe { CpuDescriptorState::entry_stack_top_from(&first) },
+            Err(DescriptorError::InvalidTaskState)
+        );
+    }
+
+    #[test]
+    fn cpu_descriptor_state_rejects_out_of_range_owner_before_privileged_ops() {
+        let mut state = CpuDescriptorState::empty(MAX_X86_64_CPUS as u16);
+        assert_eq!(
+            unsafe { state.install(0x20_0000, 0x30_0000, &[0x1000; 32], 0x1000) },
+            Err(DescriptorError::InvalidCpu)
+        );
+        assert_eq!(state.entry_stack_top(), None);
+    }
 
     #[test]
     fn gate_encoding_is_exact_and_rejects_unsafe_inputs() {

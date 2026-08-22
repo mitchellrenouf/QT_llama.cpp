@@ -420,8 +420,8 @@ cargo build --release -p mrml-uefi --bin mrml-loader --features uefi-image --tar
 This remains a bring-up loader rather than a production boot chain. It loads,
 authenticates, relocates, and transfers to a separate kernel image under fresh
 loader-owned page tables. Persistent rollback state, measurement into a
-hardware trust anchor, recovery policy, and kernel-owned interrupt tables
-remain required.
+hardware trust anchor, and recovery policy remain required. The admitted kernel
+now installs and owns its interrupt tables independently of firmware.
 
 ACPI RSDP discovery is now implemented before firmware exit. The loader prefers
 the ACPI 2.0 configuration-table GUID, accepts ACPI 1.0 only as a fallback,
@@ -776,9 +776,9 @@ round-robin cursor. Checked stages prove both fresh generations exist and the
 replacement receiver is selected. The rebuilt pair then repeats the complete
 block, send, clean sender exit, receiver wakeup, CPL3 breakpoint, and fault
 retirement chain. The final bounded-policy artifact completed both generations
-in 375 microseconds on WHP (`verify=1749us`, `prepare=3020us`, `total=6998us`)
-and 587 microseconds on nested KVM (`verify=4376us`, `prepare=1576us`,
-`total=9927us`).
+in 390 microseconds on WHP (`verify=1910us`, `prepare=3428us`, `total=7630us`)
+and 570 microseconds on nested KVM (`verify=4018us`, `prepare=1358us`,
+`total=9797us`) after the CPU-private descriptor refactor.
 Every registration now binds a validated restart policy containing a nonzero
 maximum restart count, base delay, and maximum delay. Retirement computes the
 next eligible scheduler tick with checked arithmetic; delay doubles after each
@@ -1389,8 +1389,23 @@ slot. Windows and Linux tests exercise selector, flag, address, CR3, duplicate,
 revocation, and stale-generation rejection. GDT user descriptors, TSS/RSP0,
 assembly restore, CR3 switching, live ring-three entry, cross-root timer
 preemption, and guarded privilege stacks are exercised by signed KVM and WHP
-probes. Allocating one independent arena per additional CPU and platform-backed
-service page erasure/reprovisioning before restart remain pending.
+probes. Privilege-stack planning is now CPU-indexed for 1--256 CPUs. Its checked
+stride reserves disjoint physical and virtual 128 KiB arenas, including both
+internal guard pages, and rejects invalid counts, undersized strides, range
+wrap, addresses beyond the 52-bit physical limit, noncanonical virtual
+coverage, and invalid indices before page-table
+construction. CPU 0 now uses that allocator in UEFI, KVM, and WHP launches.
+Its GDT, complete IDT, TSS, RSP0/IST1 ownership, CPU identity, and transition
+stack are held in one 4 KiB-aligned non-copyable `CpuDescriptorState`; table
+installation refuses an out-of-range owner and repeat initialization. The
+signed service lifecycle still completes under WHP and nested KVM after this
+privileged-path refactor. A QEMU 11.1 TCG/UEFI boot of the plain kernel produced
+1,022,848 background pixels at `RGB(11,59,90)` plus the exact 1,152-pixel gold
+kernel marker at `RGB(255,200,87)`. Application-processor discovery/startup,
+per-CPU interrupt routing, and live multi-vCPU scheduling remain pending, so
+MRML does not yet claim SMP execution. Platform-backed service page
+erasure/reprovisioning and one bounded restart are complete for the hosted
+WHP/KVM proof.
 
 ## Milestones
 
