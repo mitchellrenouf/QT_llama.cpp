@@ -146,13 +146,23 @@ mod linux {
     }
 
     pub fn main() -> Result<(), String> {
-        let input = std::env::args()
-            .nth(1)
-            .ok_or_else(|| {
-                "usage: opus_range_diff <packet-hex> [--verbose]".to_owned()
-            })?;
-        let verbose = std::env::args().any(|argument| argument == "--verbose");
-        let mut packet = parse_hex(&input)?;
+        let mut verbose = false;
+        let mut packet_hex = None;
+        for argument in std::env::args().skip(1) {
+            if argument == "--verbose" {
+                verbose = true;
+            } else if argument == "--help" || argument == "-h" {
+                return Ok(println!("usage: opus_range_diff <packet-hex> [--verbose]"));
+            } else if packet_hex.is_none() {
+                packet_hex = Some(argument);
+            } else {
+                return Err(format!("unexpected argument: {argument}"));
+            }
+        }
+        let input = packet_hex.ok_or_else(|| {
+            "usage: opus_range_diff <packet-hex> [--verbose]".to_owned()
+        })?;
+        let packet = parse_hex(&input)?;
         let (minimal, reference, mrml) = minimize(packet, verbose)
             .ok_or_else(|| "packet is rejected by a decoder or final ranges already match".to_owned())?;
         print_packet(&minimal, reference, mrml);
