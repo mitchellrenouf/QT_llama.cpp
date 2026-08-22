@@ -9,6 +9,7 @@ pub const MAX_CONDITIONAL_LOOP_ACTIONS: usize = 4;
 pub const MAX_CONDITIONAL_LOOP_ELSE_ARMS: usize = 4;
 pub const MAX_NESTED_LOOP_ACTIONS: usize = 4;
 pub const MAX_NESTED_LOOP_BLOCKS: usize = 4;
+pub const MAX_NESTED_LOOP_CONDITIONAL_CONTINUES: usize = 4;
 pub const MAX_NESTED_LOOP_CONDITIONAL_RETURNS: usize = 4;
 pub const MAX_BODY_STATEMENTS: usize = 32;
 pub const MAX_BODY_EXPRESSION_STATEMENTS: usize = 8;
@@ -285,9 +286,11 @@ pub struct NestedLoopBlock<'source> {
     pub break_condition: Option<ConditionalLoopControl<'source>>,
     pub unconditional_break: bool,
     pub return_statement: Option<LoopReturn<'source>>,
-    pub continue_condition: Option<ConditionalLoopControl<'source>>,
-    pub continue_action_index: usize,
-    pub continue_control_order: usize,
+    conditional_continues:
+        [Option<ConditionalLoopControl<'source>>; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
+    conditional_continue_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
+    conditional_continue_control_orders: [usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
+    conditional_continue_count: usize,
     conditional_returns: [Option<ConditionalReturn<'source>>; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
     conditional_return_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
     conditional_return_control_orders: [usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
@@ -301,6 +304,18 @@ impl<'source> NestedLoopBlock<'source> {
 
     pub const fn action_count(&self) -> usize {
         self.action_count
+    }
+
+    pub fn conditional_continues(&self) -> &[Option<ConditionalLoopControl<'source>>] {
+        &self.conditional_continues[..self.conditional_continue_count]
+    }
+
+    pub fn conditional_continue_action_indices(&self) -> &[usize] {
+        &self.conditional_continue_action_indices[..self.conditional_continue_count]
+    }
+
+    pub fn conditional_continue_control_orders(&self) -> &[usize] {
+        &self.conditional_continue_control_orders[..self.conditional_continue_count]
     }
 
     pub fn conditional_returns(&self) -> &[Option<ConditionalReturn<'source>>] {
@@ -661,6 +676,7 @@ pub enum ParseErrorKind {
     TooManyConditionalLoopElseArms,
     TooManyNestedLoopActions,
     TooManyNestedLoopBlocks,
+    TooManyNestedLoopConditionalContinues,
     TooManyNestedLoopConditionalReturns,
     TooManyExpressionStatements,
     TooManyReturns,
@@ -1492,9 +1508,12 @@ impl<'source> BodyParser<'source> {
                     };
                     let mut actions = [None; MAX_NESTED_LOOP_ACTIONS];
                     let mut action_count = 0usize;
-                    let mut continue_condition = None;
-                    let mut continue_action_index = 0usize;
-                    let mut continue_control_order = 0usize;
+                    let mut conditional_continues = [None; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
+                    let mut conditional_continue_action_indices =
+                        [0usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
+                    let mut conditional_continue_control_orders =
+                        [0usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
+                    let mut conditional_continue_count = 0usize;
                     let mut control_order = 0usize;
                     let mut conditional_returns = [None; MAX_NESTED_LOOP_CONDITIONAL_RETURNS];
                     let mut conditional_return_action_indices =
@@ -1576,14 +1595,20 @@ impl<'source> BodyParser<'source> {
                             let this_control_order = control_order;
                             control_order += 1;
                             if inner_control.is_some_and(|token| token.text == "continue") {
-                                if continue_condition.is_some() {
-                                    return Err(
-                                        probe.error(ParseErrorKind::ExpectedBody, inner_control)
-                                    );
+                                if conditional_continue_count
+                                    == MAX_NESTED_LOOP_CONDITIONAL_CONTINUES
+                                {
+                                    return Err(probe.error(
+                                        ParseErrorKind::TooManyNestedLoopConditionalContinues,
+                                        inner_control,
+                                    ));
                                 }
-                                continue_condition = Some(condition);
-                                continue_action_index = action_count;
-                                continue_control_order = this_control_order;
+                                conditional_continues[conditional_continue_count] = Some(condition);
+                                conditional_continue_action_indices[conditional_continue_count] =
+                                    action_count;
+                                conditional_continue_control_orders[conditional_continue_count] =
+                                    this_control_order;
+                                conditional_continue_count += 1;
                                 continue;
                             }
                             if let Some((value, value_span)) = return_value {
@@ -1648,6 +1673,7 @@ impl<'source> BodyParser<'source> {
                             && action_count == 0
                             && break_condition.is_none()
                             && return_statement.is_none()
+                            && conditional_continue_count == 0
                             && conditional_return_count == 0
                         {
                             LoopOperation::NestedUnitLoop
@@ -1665,9 +1691,10 @@ impl<'source> BodyParser<'source> {
                                 break_condition,
                                 unconditional_break,
                                 return_statement,
-                                continue_condition,
-                                continue_action_index,
-                                continue_control_order,
+                                conditional_continues,
+                                conditional_continue_action_indices,
+                                conditional_continue_control_orders,
+                                conditional_continue_count,
                                 conditional_returns,
                                 conditional_return_action_indices,
                                 conditional_return_control_orders,
@@ -3008,13 +3035,12 @@ mod tests {
             "selected == 5"
         );
         assert_eq!(
-            nested
-                .continue_condition
+            nested.conditional_continues()[0]
                 .expect("expected conditional continue")
                 .condition,
             "selected % 2 == 0"
         );
-        assert_eq!(nested.continue_action_index, 2);
+        assert_eq!(nested.conditional_continue_action_indices(), &[2]);
 
         let nested_return = Parser::new(
             "fn nested(limit: u64, stop: u64) { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == stop { return; } } outer += 1; inner = 0; } }",
@@ -3072,10 +3098,41 @@ mod tests {
             panic!("expected nested while block")
         };
         let inner = outer.nested_blocks()[index].unwrap();
-        assert_eq!(inner.continue_action_index, 1);
-        assert_eq!(inner.continue_control_order, 0);
+        assert_eq!(inner.conditional_continue_action_indices(), &[1]);
+        assert_eq!(inner.conditional_continue_control_orders(), &[0]);
         assert_eq!(inner.conditional_return_action_indices(), &[1]);
         assert_eq!(inner.conditional_return_control_orders(), &[1]);
+
+        let multiple_continues = Parser::new(
+            "fn nested(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 4 { inner += 1; if inner == first { continue; } if inner == second { continue; } } outer += 1; inner = 0; } outer }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = multiple_continues.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+            panic!("expected nested while block")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert_eq!(inner.conditional_continues().len(), 2);
+        assert_eq!(inner.conditional_continue_action_indices(), &[1, 1]);
+        assert_eq!(inner.conditional_continue_control_orders(), &[0, 1]);
+
+        let crowded_continues = Parser::new(
+            "fn nested(a: bool, b: bool, c: bool, d: bool) { loop { loop { if a { continue; } if b { continue; } if c { continue; } if d { continue; } if true { continue; } } } }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = crowded_continues.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            function.parse_body::<4>().unwrap_err().kind,
+            ParseErrorKind::TooManyNestedLoopConditionalContinues
+        );
 
         let crowded_returns = Parser::new(
             "fn nested(a: bool, b: bool, c: bool, d: bool) -> u64 { loop { loop { if a { return 1; } if b { return 2; } if c { return 3; } if d { return 4; } if true { return 5; } } } }",

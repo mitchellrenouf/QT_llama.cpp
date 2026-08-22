@@ -1428,25 +1428,81 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                         }
                         let nested_checkpoint = resolver.count;
                         for action_index in 0..=block.action_count() {
-                            if block.continue_condition.is_some()
-                                && action_index == block.continue_action_index
-                            {
-                                let condition = block
-                                    .continue_condition
-                                    .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
-                                let tree = condition
-                                    .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
-                                    .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
-                                if evaluate_boolean_const_expression(
-                                    context,
-                                    symbol_count,
-                                    &tree,
-                                    tree.root(),
-                                    resolver,
-                                    depth,
-                                )? {
-                                    resolver.truncate(nested_checkpoint)?;
-                                    continue 'nested;
+                            let control_count = block
+                                .conditional_returns()
+                                .len()
+                                .checked_add(block.conditional_continues().len())
+                                .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
+                            for control_order in 0..control_count {
+                                for ((conditional, return_action_index), return_control_order) in
+                                    block
+                                        .conditional_returns()
+                                        .iter()
+                                        .flatten()
+                                        .zip(block.conditional_return_action_indices())
+                                        .zip(block.conditional_return_control_orders())
+                                {
+                                    if action_index == *return_action_index
+                                        && control_order == *return_control_order
+                                    {
+                                        let condition = conditional
+                                            .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>(
+                                            )
+                                            .map_err(|error| {
+                                                SemanticErrorKind::Expression(error.kind)
+                                            })?;
+                                        if evaluate_boolean_const_expression(
+                                            context,
+                                            symbol_count,
+                                            &condition,
+                                            condition.root(),
+                                            resolver,
+                                            depth,
+                                        )? {
+                                            let value = crate::LoopReturn {
+                                                value: conditional.value,
+                                                value_span: conditional.value_span,
+                                            };
+                                            return Ok(Some(evaluate_const_return_statement(
+                                                context,
+                                                symbol_count,
+                                                &value,
+                                                return_type,
+                                                resolver,
+                                                depth,
+                                            )?));
+                                        }
+                                    }
+                                }
+                                for ((condition, continue_action_index), continue_control_order) in
+                                    block
+                                        .conditional_continues()
+                                        .iter()
+                                        .flatten()
+                                        .zip(block.conditional_continue_action_indices())
+                                        .zip(block.conditional_continue_control_orders())
+                                {
+                                    if action_index == *continue_action_index
+                                        && control_order == *continue_control_order
+                                    {
+                                        let tree = condition
+                                            .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>(
+                                            )
+                                            .map_err(|error| {
+                                                SemanticErrorKind::Expression(error.kind)
+                                            })?;
+                                        if evaluate_boolean_const_expression(
+                                            context,
+                                            symbol_count,
+                                            &tree,
+                                            tree.root(),
+                                            resolver,
+                                            depth,
+                                        )? {
+                                            resolver.truncate(nested_checkpoint)?;
+                                            continue 'nested;
+                                        }
+                                    }
                                 }
                             }
                             if action_index == block.action_count() {
@@ -3206,6 +3262,20 @@ mod tests {
         assert_eq!(values.resolve("ZERO"), Some(0));
         assert_eq!(values.resolve("ONE"), Some(9));
         assert_eq!(values.resolve("FIVE"), Some(45));
+    }
+
+    #[test]
+    fn evaluates_ordered_continues_and_returns_inside_an_inner_loop() {
+        let module = Parser::new(
+            "const fn sum(limit: u8, first: u8, second: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { continue; } if inner == second { continue; } total += inner as u16; } outer += 1; inner = 0; } total } const fn choose(limit: u8, skip: u8, stop: u8) -> u8 { let mut outer: u8 = 0; let mut inner: u8 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == skip { continue; } if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer } const TWO_SKIPS: u16 = sum(1, 1, 2); const SAME_SKIP: u16 = sum(1, 2, 2); const CONTINUE_WINS: u8 = choose(5, 1, 1); const RETURN_WINS: u8 = choose(5, 4, 1);",
+        )
+        .parse_module::<8, 4>()
+        .unwrap();
+        let values = analyze_constants::<4, 192, 8, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("TWO_SKIPS"), Some(12));
+        assert_eq!(values.resolve("SAME_SKIP"), Some(13));
+        assert_eq!(values.resolve("CONTINUE_WINS"), Some(5));
+        assert_eq!(values.resolve("RETURN_WINS"), Some(40));
     }
 
     #[test]

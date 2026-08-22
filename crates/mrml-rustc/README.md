@@ -258,10 +258,11 @@ condition cleans the iteration's inner locals and repeats from the inner action
 block; a true condition performs the same cleanup and resumes the containing
 loop after the inner operation. Conditions are Boolean, may read inner locals,
 and use the existing 65,536-iteration const-evaluation bound.
-One ordered `if condition { continue; }` may split the inner action block. A
-taken edge cleans all inner locals and targets the inner backedge; a false
-condition retains them for the remaining actions and terminal conditional
-break. A repeated conditional-continue declaration is rejected before lowering.
+Up to four ordered `if condition { continue; }` edges may split the inner action
+block. A taken edge cleans all inner locals and targets the inner backedge; a
+false condition retains them for the remaining actions and controls. Continue
+and return edges share exact source ordering. A fifth conditional continue is
+rejected before lowering.
 An inner block may instead use a Boolean `while` head. The condition is checked
 before every inner iteration, false exits only the inner loop, and natural body
 fallthrough cleans inner locals before returning to the inner head. The same
@@ -637,7 +638,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 232 Windows library, conformance, rustc-nightly-replacement, and driver
+The 234 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -915,6 +916,12 @@ ELF64 objects. Pinned-nightly callers proved that an earlier taken continue
 suppresses a simultaneously true later return, while false and differently
 positioned continue guards preserve the later return. Zero and 60,000-iteration
 fallthrough paths also passed; the Windows caller used no CRT or SDK libraries.
+The multiple-continue extension emitted 442-byte COFF and 832-byte ELF64
+objects. Pinned-nightly callers distinguished first-only, second-only, and
+duplicate continue guards and passed a 60,000-outer-iteration path. Const
+evaluation independently produced matching 12, 13, 5, and 40 results across
+multiple continues and ordered continue/return edges. A fifth continue has a
+dedicated pre-lowering capacity diagnostic.
 A post-loop local-binding replacement emitted a 291-byte COFF object. Its
 independent caller observed 4 on the zero-iteration path and 42 after 19
 iterations, proving the initializer reads the loop's final value instead of a
@@ -1262,7 +1269,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 232 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 234 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
