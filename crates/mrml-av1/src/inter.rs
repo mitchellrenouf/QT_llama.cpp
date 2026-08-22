@@ -586,6 +586,11 @@ pub fn warp_prediction_unit(
     let integer_y = y4 >> 16;
     let fractional_x = x4 & 0xffff;
     let fractional_y = y4 & 0xffff;
+    let reduced_fractional_x =
+        (fractional_x - 4 * i64::from(config.shear.alpha) - 4 * i64::from(config.shear.beta)) & !63;
+    let reduced_fractional_y =
+        (fractional_y - 4 * i64::from(config.shear.gamma) - 4 * i64::from(config.shear.delta))
+            & !63;
     let last_x =
         i64::try_from(reference.width().saturating_sub(1)).map_err(|_| Error::LimitExceeded)?;
     let last_y =
@@ -596,10 +601,10 @@ pub fn warp_prediction_unit(
         for intermediate_column in 0..8usize {
             let i2 = i64::try_from(intermediate_column).map_err(|_| Error::LimitExceeded)? - 4;
             let phase = round2(
-                fractional_x
-                    + i64::from(config.shear.alpha) * i2
-                    + i64::from(config.shear.beta) * i1,
-                6,
+                reduced_fractional_x
+                    + i64::from(config.shear.alpha) * (i2 + 4)
+                    + i64::from(config.shear.beta) * (i1 + 4),
+                10,
             )?
             .checked_add(64)
             .ok_or(Error::LimitExceeded)?;
@@ -627,10 +632,10 @@ pub fn warp_prediction_unit(
         for local_x in 0..output_width {
             let i2 = i64::try_from(local_x).map_err(|_| Error::LimitExceeded)? - 4;
             let phase = round2(
-                fractional_y
-                    + i64::from(config.shear.gamma) * i2
-                    + i64::from(config.shear.delta) * i1,
-                6,
+                reduced_fractional_y
+                    + i64::from(config.shear.gamma) * (i2 + 4)
+                    + i64::from(config.shear.delta) * (i1 + 4),
+                10,
             )?
             .checked_add(64)
             .ok_or(Error::LimitExceeded)?;
@@ -1500,6 +1505,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prediction, [77; 64]);
+    }
+
+    #[test]
+    fn fractional_warp_uses_ten_bit_filter_phase() {
+        let reference = Plane::new(16, 16, 83).unwrap();
+        let mut warp = crate::motion::GlobalMotion::default().params;
+        warp[0] = 40_000;
+        let shear = crate::motion::setup_shear(warp).unwrap();
+        let mut prediction = [0i32; 64];
+        warp_prediction_unit(
+            &reference,
+            WarpBlockConfig {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+                unit_column: 0,
+                unit_row: 0,
+                subsampling_x: false,
+                subsampling_y: false,
+                warp,
+                shear,
+                rounding: InterRounding::derive(8, false).unwrap(),
+            },
+            &mut prediction,
+        )
+        .unwrap();
+        assert!(prediction.iter().all(|&sample| sample == prediction[0]));
     }
 
     #[test]
