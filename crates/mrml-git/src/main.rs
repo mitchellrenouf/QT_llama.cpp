@@ -239,8 +239,8 @@ fn checked_positionals(values: &[Text]) -> Result<&[Text]> {
 }
 
 fn ssh_remote(repository: Option<&str>, name: &str) -> Result<(Text, SshRemote)> {
-    let url = run(repository, &["remote", "get-url", "--", name])?;
-    let url: Text = url.trim().into();
+    let url = native_repository(repository)?.remotes().map_err(|error| anyhow!("{}", error))?
+        .into_iter().find(|(remote, _)| remote == name).map(|(_, url)| url).ok_or_else(|| anyhow!("remote '{}' does not exist", name))?;
     let parsed =
         SshRemote::parse(&url).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
     Ok((url, parsed))
@@ -262,13 +262,12 @@ fn print_ssh_remote(name: &str, url: &str, remote: &SshRemote) {
 }
 
 fn config_value(repository: Option<&str>, key: &str) -> Option<Text> {
-    run(repository, &["config", "--local", "--get", key])
-        .ok()
-        .map(|value| value.trim().into())
+    let (section, name) = key.rsplit_once('.')?;
+    native_repository(repository).ok()?.config_value(section, name).ok().flatten()
 }
 
 fn print_signing_status(repository: Option<&str>) -> Result<()> {
-    run(repository, &["rev-parse", "--show-toplevel"])?;
+    native_repository(repository)?;
     for (label, key) in [
         ("format", "gpg.format"),
         ("key", "user.signingkey"),
@@ -542,16 +541,21 @@ fn dispatch(cli: &Cli) -> Result<()> {
             checked_positionals(tail)?;
             run_visible(repository, &collect("push", &[], tail))
         }
-        "remote" if tail.is_empty() => run_visible(repository, &["remote", "--verbose"]),
+        "remote" if tail.is_empty() => {
+            for (name, url) in native_repository(repository)?.remotes().map_err(|error| anyhow!("{}", error))? { println!("{}\t{}", name, url); }
+            Ok(())
+        }
         "ssh" if tail.len() == 3 && tail[0] == "add" => {
             checked_positionals(&tail[1..2])?;
             SshRemote::parse(&tail[2]).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
-            run_visible(repository, &["remote", "add", "--", &tail[1], &tail[2]])
+            native_repository(repository)?.set_remote(&tail[1], &tail[2], false).map_err(|error| anyhow!("{}", error))?;
+            Ok(())
         }
         "ssh" if tail.len() == 3 && tail[0] == "set" => {
             checked_positionals(&tail[1..2])?;
             SshRemote::parse(&tail[2]).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
-            run_visible(repository, &["remote", "set-url", "--", &tail[1], &tail[2]])
+            native_repository(repository)?.set_remote(&tail[1], &tail[2], true).map_err(|error| anyhow!("{}", error))?;
+            Ok(())
         }
         "ssh" if matches!(tail.len(), 1 | 2) && tail[0] == "info" => {
             let name = tail.get(1).map(Text::as_str).unwrap_or("origin");

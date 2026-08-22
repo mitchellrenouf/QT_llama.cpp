@@ -412,6 +412,72 @@ impl Repository {
         Ok(id)
     }
 
+    pub fn remotes(&self) -> Result<Vector<(Text, Text)>, RepositoryError> {
+        let config = read_file_text_bounded(&join_path(&self.git_dir, "config"), 1024 * 1024)?;
+        let mut output = Vector::new();
+        let mut current: Option<Text> = None;
+        for raw in config.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') {
+                current = remote_section(line).map(Into::into);
+            } else if let Some(name) = &current {
+                if let Some((key, value)) = line.split_once('=') {
+                    if key.trim() == "url" { output.push((name.clone(), value.trim().into())); }
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    pub fn set_remote(&self, name: &str, url: &str, require_existing: bool) -> Result<(), RepositoryError> {
+        validate_config_name(name)?;
+        if url.is_empty() || url.chars().any(char::is_control) { return Err(RepositoryError::InvalidReference); }
+        let path = join_path(&self.git_dir, "config");
+        let config = read_file_text_bounded(&path, 1024 * 1024)?;
+        let target = mrml_runtime::mrml_format!("[remote \"{name}\"]");
+        let mut output = Text::new();
+        let mut in_target = false;
+        let mut found = false;
+        let mut wrote_url = false;
+        for raw in config.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') {
+                if in_target && !wrote_url { output.push_str(&mrml_runtime::mrml_format!("\turl = {url}\n")); }
+                in_target = target == line;
+                found |= in_target;
+                wrote_url = false;
+            }
+            if in_target && line.split_once('=').is_some_and(|(key, _)| key.trim() == "url") {
+                output.push_str(&mrml_runtime::mrml_format!("\turl = {url}\n"));
+                wrote_url = true;
+            } else {
+                output.push_str(raw); output.push('\n');
+            }
+        }
+        if in_target && !wrote_url { output.push_str(&mrml_runtime::mrml_format!("\turl = {url}\n")); }
+        if !found {
+            if require_existing { return Err(RepositoryError::ReferenceMissing); }
+            output.push_str(&mrml_runtime::mrml_format!("\n{target}\n\turl = {url}\n\tfetch = +refs/heads/*:refs/remotes/{name}/*\n"));
+        }
+        write_file(&path, output.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn config_value(&self, section: &str, key: &str) -> Result<Option<Text>, RepositoryError> {
+        validate_config_name(section)?; validate_config_name(key)?;
+        let config = read_file_text_bounded(&join_path(&self.git_dir, "config"), 1024 * 1024)?;
+        let target = mrml_runtime::mrml_format!("[{section}]");
+        let mut active = false;
+        for raw in config.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') { active = target == line; }
+            else if active {
+                if let Some((found, value)) = line.split_once('=') { if found.trim() == key { return Ok(Some(value.trim().into())); } }
+            }
+        }
+        Ok(None)
+    }
+
     pub fn stage(&self, paths: &[Text]) -> Result<(), RepositoryError> {
         let mut index = self.index()?;
         for relative in paths {
@@ -702,6 +768,16 @@ fn validate_identity(name: &str, email: &str) -> Result<(), RepositoryError> {
     }
 }
 
+fn validate_config_name(value: &str) -> Result<(), RepositoryError> {
+    if value.is_empty() || value.starts_with('-') || !value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')) {
+        Err(RepositoryError::InvalidReference)
+    } else { Ok(()) }
+}
+
+fn remote_section(line: &str) -> Option<&str> {
+    line.strip_prefix("[remote \"")?.strip_suffix("\"]").filter(|name| validate_config_name(name).is_ok())
+}
+
 impl From<FileError> for RepositoryError {
     fn from(value: FileError) -> Self {
         Self::File(value)
@@ -906,6 +982,18 @@ mod tests {
         assert_eq!(repository.index().unwrap().entry("tracked").unwrap().id, ObjectId::blob(b"base"));
         repository.restore(&paths).unwrap();
         assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"base");
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn adds_and_updates_remote_configuration_natively() {
+        let path = root("remote");
+        let repository = Repository::init(&path).unwrap();
+        repository.set_remote("origin", "git@example.invalid:owner/repo.git", false).unwrap();
+        assert_eq!(repository.remotes().unwrap()[0], (Text::from("origin"), Text::from("git@example.invalid:owner/repo.git")));
+        repository.set_remote("origin", "ssh://git@example.invalid/other/repo.git", true).unwrap();
+        assert_eq!(repository.remotes().unwrap()[0].1, "ssh://git@example.invalid/other/repo.git");
+        assert!(repository.set_remote("missing", "git@example.invalid:x/y", true).is_err());
         remove_dir_all(&path).unwrap();
     }
 }
