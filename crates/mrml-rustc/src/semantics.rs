@@ -1401,6 +1401,38 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                     )?;
                 }
                 crate::LoopOperation::NestedUnitLoop => {}
+                crate::LoopOperation::NestedBlock(index) => {
+                    let block = loop_statement.nested_blocks()[*index]
+                        .as_ref()
+                        .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
+                    let nested_checkpoint = resolver.count;
+                    for action in block.actions().iter().flatten() {
+                        match action {
+                            crate::ConditionalLoopAction::Local(local) => {
+                                evaluate_const_local(context, symbol_count, local, resolver, depth)?
+                            }
+                            crate::ConditionalLoopAction::Assignment(assignment) => {
+                                evaluate_const_assignment(
+                                    context,
+                                    symbol_count,
+                                    assignment,
+                                    resolver,
+                                    depth,
+                                )?;
+                            }
+                            crate::ConditionalLoopAction::Expression(statement) => {
+                                evaluate_const_expression_statement(
+                                    context,
+                                    symbol_count,
+                                    statement,
+                                    resolver,
+                                    depth,
+                                )?;
+                            }
+                        }
+                    }
+                    resolver.truncate(nested_checkpoint)?;
+                }
                 crate::LoopOperation::ConditionalBlock(index) => {
                     let block = loop_statement.conditional_blocks()[*index]
                         .as_ref()
@@ -3054,6 +3086,19 @@ mod tests {
         assert_eq!(values.resolve("REPEATED"), Some(10));
         assert_eq!(values.resolve("LATER"), Some(3));
         assert_eq!(values.resolve("RETURNED"), Some(41));
+    }
+
+    #[test]
+    fn evaluates_scoped_actions_before_an_inner_loop_break() {
+        let module = Parser::new(
+            "const fn sum(limit: u16) -> u32 { let mut i: u16 = 0; let mut total: u32 = 0; while i < limit { loop { let selected: u32 = i as u32 + 1; selected + 10; total += selected; break; } i += 1; } total } const ZERO: u32 = sum(0); const ONE: u32 = sum(1); const FIVE: u32 = sum(5);",
+        )
+        .parse_module::<5, 2>()
+        .unwrap();
+        let values = analyze_constants::<3, 64, 5, 2>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("ONE"), Some(1));
+        assert_eq!(values.resolve("FIVE"), Some(15));
     }
 
     #[test]

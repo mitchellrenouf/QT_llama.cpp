@@ -685,6 +685,41 @@ pub fn compile_x86_64_function_with_options<
                 ends_with_unconditional_control = false;
                 continue;
             }
+            if let LoopOperation::NestedBlock(index) = operation {
+                let block = loop_statement.nested_blocks()[*index].ok_or(CodegenError {
+                    kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
+                    span: function.body_expression_span,
+                })?;
+                let nested_checkpoint = emitter.saved_locals;
+                for action in block.actions().iter().flatten() {
+                    match action {
+                        crate::ConditionalLoopAction::Local(local) => {
+                            emitter.emit_local::<MAX_EXPRESSION_NODES>(
+                                local,
+                                operand_type,
+                                function.body_expression_span.start,
+                                true,
+                            )?;
+                        }
+                        crate::ConditionalLoopAction::Assignment(assignment) => {
+                            emitter.emit_assignment::<MAX_EXPRESSION_NODES>(
+                                assignment,
+                                function.body_expression_span.start,
+                            )?;
+                        }
+                        crate::ConditionalLoopAction::Expression(statement) => {
+                            emitter.emit_expression_statement::<MAX_EXPRESSION_NODES>(
+                                statement,
+                                function.body_expression_span.start,
+                            )?;
+                        }
+                    }
+                }
+                emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                emitter.truncate_scoped_locals(nested_checkpoint)?;
+                ends_with_unconditional_control = false;
+                continue;
+            }
             if matches!(operation, LoopOperation::NestedUnitLoop) {
                 ends_with_unconditional_control = false;
                 continue;
@@ -1017,6 +1052,7 @@ pub fn compile_x86_64_function_with_options<
                     LoopOperation::Local(_) => continue,
                     LoopOperation::Expression(_) => continue,
                     LoopOperation::NestedUnitLoop => continue,
+                    LoopOperation::NestedBlock(_) => continue,
                     LoopOperation::Assignment(_) => continue,
                 };
                 if let Some(control) = conditional {
