@@ -58,8 +58,10 @@ into the crate.
 - `av1-1-b8-00-quantizer-07.ivf` (`7f8113cd...`): its complete first frame now
   decodes after using the filter-intra directional equivalent to select the
   intra transform-type CDF. Correcting warped-prediction phase reduction then
-  advances the second frame through its first affine global-motion block; it
-  currently fails at later transform-size syntax, so this remains a failing
+  advances the second frame through its first affine global-motion block.
+  Clipping variable-transform lookup and inter prediction at the cropped right
+  edge now advances that frame through 211 blocks and 734 transform blocks
+  before the next tile-entropy divergence, so this remains a failing
   conformance target.
 
 The remaining q7 failure is explicit evidence that decoder conformance is not

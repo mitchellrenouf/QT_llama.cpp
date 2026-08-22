@@ -565,6 +565,51 @@ const fn coefficient_syntax_error(error: Error) -> Error {
     }
 }
 
+fn clipped_inter_prediction_region(
+    block: partition::BlockRect,
+    plane_size: partition::BlockSize,
+    frame_width: u32,
+    frame_height: u32,
+    subsampling_x: bool,
+    subsampling_y: bool,
+) -> Result<prediction::PredictionRegion, Error> {
+    let sub_x = u32::from(subsampling_x);
+    let sub_y = u32::from(subsampling_y);
+    let x = (block.column >> sub_x)
+        .checked_mul(4)
+        .ok_or(Error::LimitExceeded)?;
+    let y = (block.row >> sub_y)
+        .checked_mul(4)
+        .ok_or(Error::LimitExceeded)?;
+    let plane_frame_width = frame_width
+        .checked_add((1 << sub_x) - 1)
+        .ok_or(Error::LimitExceeded)?
+        >> sub_x;
+    let plane_frame_height = frame_height
+        .checked_add((1 << sub_y) - 1)
+        .ok_or(Error::LimitExceeded)?
+        >> sub_y;
+    let (nominal_width, nominal_height) = plane_size.dimensions();
+    Ok(prediction::PredictionRegion {
+        x: usize::try_from(x).map_err(|_| Error::LimitExceeded)?,
+        y: usize::try_from(y).map_err(|_| Error::LimitExceeded)?,
+        width: usize::try_from(
+            plane_frame_width
+                .checked_sub(x)
+                .ok_or(Error::InvalidObu)?
+                .min(u32::from(nominal_width)),
+        )
+        .map_err(|_| Error::LimitExceeded)?,
+        height: usize::try_from(
+            plane_frame_height
+                .checked_sub(y)
+                .ok_or(Error::InvalidObu)?
+                .min(u32::from(nominal_height)),
+        )
+        .map_err(|_| Error::LimitExceeded)?,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub max_width: u32,
@@ -1965,17 +2010,14 @@ impl Decoder {
                             chroma && subsampling_x,
                             chroma && subsampling_y,
                         )?;
-                        let (width, height) = plane_size.dimensions();
-                        let sub_x = u32::from(chroma && subsampling_x);
-                        let sub_y = u32::from(chroma && subsampling_y);
-                        let region = prediction::PredictionRegion {
-                            x: usize::try_from((block.column >> sub_x) * 4)
-                                .map_err(|_| Error::LimitExceeded)?,
-                            y: usize::try_from((block.row >> sub_y) * 4)
-                                .map_err(|_| Error::LimitExceeded)?,
-                            width: usize::from(width),
-                            height: usize::from(height),
-                        };
+                        let region = clipped_inter_prediction_region(
+                            block,
+                            plane_size,
+                            header.frame_width,
+                            header.frame_height,
+                            chroma && subsampling_x,
+                            chroma && subsampling_y,
+                        )?;
                         let reference_plane = match plane_index {
                             0 => &reference.y,
                             1 => reference.u.as_ref().ok_or(Error::InvalidObu)?,
@@ -2085,17 +2127,14 @@ impl Decoder {
                             chroma && subsampling_x,
                             chroma && subsampling_y,
                         )?;
-                        let (plane_width, plane_height) = plane_size.dimensions();
-                        let sub_x = u32::from(chroma && subsampling_x);
-                        let sub_y = u32::from(chroma && subsampling_y);
-                        let region = prediction::PredictionRegion {
-                            x: usize::try_from((block.column >> sub_x) * 4)
-                                .map_err(|_| Error::LimitExceeded)?,
-                            y: usize::try_from((block.row >> sub_y) * 4)
-                                .map_err(|_| Error::LimitExceeded)?,
-                            width: usize::from(plane_width),
-                            height: usize::from(plane_height),
-                        };
+                        let region = clipped_inter_prediction_region(
+                            block,
+                            plane_size,
+                            header.frame_width,
+                            header.frame_height,
+                            chroma && subsampling_x,
+                            chroma && subsampling_y,
+                        )?;
                         let source =
                             |list: usize| -> Result<inter::InterPredictionSource<'_>, Error> {
                                 let reference = usize::try_from(post.references[list] - 1)
@@ -3796,6 +3835,43 @@ fn vector_from_slice<T: Clone>(values: &[T]) -> Result<Vector<T>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inter_prediction_regions_clip_at_cropped_frame_edges() {
+        let block = partition::BlockRect::new(64, 0, partition::BlockSize::Block128x128);
+        assert_eq!(
+            clipped_inter_prediction_region(
+                block,
+                partition::BlockSize::Block128x128,
+                352,
+                288,
+                false,
+                false,
+            ),
+            Ok(prediction::PredictionRegion {
+                x: 256,
+                y: 0,
+                width: 96,
+                height: 128,
+            })
+        );
+        assert_eq!(
+            clipped_inter_prediction_region(
+                block,
+                partition::BlockSize::Block64x64,
+                352,
+                288,
+                true,
+                true,
+            ),
+            Ok(prediction::PredictionRegion {
+                x: 128,
+                y: 0,
+                width: 48,
+                height: 64,
+            })
+        );
+    }
 
     #[test]
     fn delta_syntax_is_suppressed_only_for_a_skipped_full_superblock() {

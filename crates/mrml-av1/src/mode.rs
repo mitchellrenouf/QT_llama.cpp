@@ -1431,11 +1431,20 @@ pub fn read_block_tx_size(
             }
             row += u32::from(step_height / 4);
         }
+        let last_row = config
+            .block
+            .row
+            .checked_add(u32::from(config.block.height_mi) - 1)
+            .ok_or(Error::LimitExceeded)?
+            .min(grid.rows().checked_sub(1).ok_or(Error::InvalidObu)?);
+        let last_column = config
+            .block
+            .column
+            .checked_add(u32::from(config.block.width_mi) - 1)
+            .ok_or(Error::LimitExceeded)?
+            .min(grid.columns().checked_sub(1).ok_or(Error::InvalidObu)?);
         return grid
-            .get(
-                config.block.row + u32::from(config.block.height_mi) - 1,
-                config.block.column + u32::from(config.block.width_mi) - 1,
-            )
+            .get(last_row, last_column)
             .and_then(|state| state.tx_size)
             .ok_or(Error::InvalidObu);
     }
@@ -2212,6 +2221,35 @@ mod tests {
                 assert_eq!(grid.get(row, column).unwrap().tx_size, Some(size));
             }
         }
+    }
+
+    #[test]
+    fn variable_tx_size_returns_last_visible_cell_for_cropped_edge_block() {
+        let mut grid = MiGrid::new(88, 72).unwrap();
+        let mut decoder = SymbolDecoder::new(&[0; 64], false).unwrap();
+        let mut cdfs = TileCdfs::default();
+        let block = BlockRect::new(64, 0, BlockSize::Block128x128);
+        let size = read_block_tx_size(
+            &mut decoder,
+            &mut cdfs,
+            &mut grid,
+            BlockTxSizeConfig {
+                block,
+                size: BlockSize::Block128x128,
+                tile: TileBounds {
+                    column_start: 0,
+                    column_end: 88,
+                    row_start: 0,
+                    row_end: 72,
+                },
+                lossless: false,
+                skip: false,
+                is_inter: true,
+                tx_mode_select: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(grid.get(31, 87).unwrap().tx_size, Some(size));
     }
 
     #[test]
