@@ -457,6 +457,10 @@ parameters without changing the arithmetic width; runtime range endpoints use
 that path while ordinary mixed-width arithmetic remains rejected. A dynamic
 `u8` local-range probe returned 32 through 744-byte COFF and 1,136-byte ELF64
 objects. Reversed endpoints reached Windows `0xC000001D` and Linux `SIGILL`.
+Typed and inferred `usize` locals in a narrow-return function retain their own
+per-expression arithmetic and comparison width. A computed-endpoint probe
+observed `254usize + 2 == 256` without a false `u8` overflow through 196-byte
+COFF and 584-byte ELF64 objects; `usize::MAX + 2` reached `UD2` on both hosts.
 Array elements are still evaluated left to right; completed temporary slots are
 packed or reordered only afterward when positive-stride local backing is
 required.

@@ -3311,6 +3311,50 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         id: crate::ExprId,
         depth: usize,
     ) -> Result<(), CodegenError> {
+        let previous_width = self.width;
+        let expression_type = runtime_expression_type_with_locals(
+            self.function,
+            self.resolver,
+            &self.locals[..self.saved_locals],
+            tree,
+            id,
+            depth,
+        )
+        .map_err(|kind| self.error(kind))?;
+        let operation_type = if expression_type == RuntimeExpressionType::Bool {
+            match tree.expression(id).map(|expression| expression.kind) {
+                Some(ExprKind::Binary { left, .. }) => runtime_expression_type_with_locals(
+                    self.function,
+                    self.resolver,
+                    &self.locals[..self.saved_locals],
+                    tree,
+                    left,
+                    depth + 1,
+                )
+                .map_err(|kind| self.error(kind))?,
+                _ => expression_type,
+            }
+        } else {
+            expression_type
+        };
+        if let RuntimeExpressionType::Integer(Some(integer_type)) = operation_type {
+            self.width = runtime_width(integer_type.name())
+                .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        } else if operation_type == RuntimeExpressionType::Char {
+            self.width = runtime_width("char")
+                .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+        }
+        let result = self.emit_expression_with_width(tree, id, depth);
+        self.width = previous_width;
+        result
+    }
+
+    fn emit_expression_with_width<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        id: crate::ExprId,
+        depth: usize,
+    ) -> Result<(), CodegenError> {
         if depth == 64 {
             return Err(self.error(CodegenErrorKind::Lowering(
                 IrErrorKind::NestingLimitExceeded,
@@ -4652,6 +4696,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     element: RuntimeArrayElementType::Integer(Some(element)),
                     ..
                 } = array
+                    && element.name() != "usize"
                     && runtime_width(element.name()) != Some(self.width)
                 {
                     return Err(CodegenError {
@@ -4673,7 +4718,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     kind: CodegenErrorKind::UnsupportedRuntimeType,
                     span: translate_span(body_start, ty.span),
                 })?;
-                if runtime_width(ty.text) != Some(self.width) {
+                if ty.text != "usize" && runtime_width(ty.text) != Some(self.width) {
                     return Err(CodegenError {
                         kind: CodegenErrorKind::RuntimeTypeMismatch,
                         span: translate_span(body_start, ty.span),
@@ -4693,7 +4738,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 RuntimeExpressionType::Bool => RuntimeExpressionType::Bool,
                 RuntimeExpressionType::Char => RuntimeExpressionType::Char,
                 RuntimeExpressionType::Integer(Some(ty)) => {
-                    if ty.bits(64) != Some(self.width.bits) {
+                    if ty.name() != "usize" && ty.bits(64) != Some(self.width.bits) {
                         return Err(CodegenError {
                             kind: CodegenErrorKind::RuntimeTypeMismatch,
                             span: translate_span(body_start, local.initializer_span),
@@ -8070,6 +8115,9 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> bool { let mut values = [input, false, true]; let slice: &mut [bool] = &mut values[1..]; slice[0] ^= true; values[1] && slice[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: char) -> char { let mut values = [input, 'x', 'y']; let slice: &mut [char] = &mut values[1..3]; slice[0] = 'z'; values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(start: usize, end: usize) -> u8 { let mut values = [7u8, 10, 20, 30]; let slice: &mut [u8] = &mut values[start..end]; slice[0] += 2; values[start] + slice[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(start: usize) -> u8 { let end: usize = start + 2; let mut values = [7u8, 10, 20, 30]; let slice: &mut [u8] = &mut values[start..end]; slice[0] += 2; values[start] + slice[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(start: usize) -> u8 { let end = start + 2; if end == 3 { 42u8 } else { 1 } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(start: usize) -> u8 { let end: usize = start + 2; if end == 3 { 42u8 } else { 1 } }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 8>().unwrap();
