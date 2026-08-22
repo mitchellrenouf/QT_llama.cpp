@@ -5,7 +5,10 @@ use mrml_runtime::{
     write_file,
 };
 
-use crate::{Index, IndexError, ObjectId, ObjectKind, encode_loose_object};
+use crate::{
+    Index, IndexError, Object, ObjectError, ObjectId, ObjectKind, decode_loose_object,
+    encode_loose_object,
+};
 
 const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKTREE_FILE: usize = 256 * 1024 * 1024;
@@ -51,6 +54,7 @@ pub enum RepositoryError {
     ReferenceExists,
     ReferenceMissing,
     CurrentBranch,
+    Object(ObjectError),
 }
 
 impl Repository {
@@ -161,6 +165,21 @@ impl Repository {
             write_file(&path, &encoded)?;
         }
         Ok(id)
+    }
+
+    pub fn read_object(&self, id: ObjectId) -> Result<Object, RepositoryError> {
+        let hex = id.to_hex();
+        let path = join_path(
+            &join_path(&self.git_dir, "objects"),
+            &mrml_runtime::mrml_format!("{}/{}", &hex[..2], &hex[2..]),
+        );
+        let encoded = read_file_bounded(&path, MAX_WORKTREE_FILE)?;
+        let object = decode_loose_object(&encoded)?;
+        let (computed, _) = encode_loose_object(object.kind, &object.contents);
+        if computed != id {
+            return Err(RepositoryError::InvalidHead);
+        }
+        Ok(object)
     }
 
     pub fn branches(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {
@@ -560,12 +579,18 @@ impl From<IndexError> for RepositoryError {
         Self::Index(value)
     }
 }
+impl From<ObjectError> for RepositoryError {
+    fn from(value: ObjectError) -> Self {
+        Self::Object(value)
+    }
+}
 
 impl fmt::Display for RepositoryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File(error) => write!(formatter, "{error}"),
             Self::Index(error) => write!(formatter, "{error}"),
+            Self::Object(error) => write!(formatter, "{error}"),
             Self::NotRepository => formatter.write_str("not an MRML Git repository"),
             Self::AlreadyExists => formatter.write_str("repository metadata already exists"),
             Self::UnsupportedLayout => {
@@ -684,12 +709,31 @@ mod tests {
         let path = root("refs");
         let repository = Repository::init(&path).unwrap();
         write_file(&join_path(&path, "tracked"), b"value").unwrap();
-        repository.stage(&Vector::from([Text::from("tracked")])).unwrap();
-        let head = repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
-        assert_eq!(repository.create_branch("topic/nested", false).unwrap(), head);
-        assert!(repository.branches().unwrap().iter().any(|(name, id)| name == "topic/nested" && *id == head));
+        repository
+            .stage(&Vector::from([Text::from("tracked")]))
+            .unwrap();
+        let head = repository
+            .commit("base", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        assert_eq!(
+            repository.create_branch("topic/nested", false).unwrap(),
+            head
+        );
+        assert!(
+            repository
+                .branches()
+                .unwrap()
+                .iter()
+                .any(|(name, id)| name == "topic/nested" && *id == head)
+        );
         repository.delete_branch("topic/nested").unwrap();
-        assert!(!repository.branches().unwrap().iter().any(|(name, _)| name == "topic/nested"));
+        assert!(
+            !repository
+                .branches()
+                .unwrap()
+                .iter()
+                .any(|(name, _)| name == "topic/nested")
+        );
         assert_eq!(repository.create_tag("v1").unwrap(), head);
         assert_eq!(repository.tags().unwrap()[0], (Text::from("v1"), head));
         remove_dir_all(&path).unwrap();
