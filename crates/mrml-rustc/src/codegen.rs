@@ -656,7 +656,10 @@ pub fn compile_x86_64_function_with_options<
             }
         }
         let loop_start = emitter.length;
-        let mut exit_patches = [None; 9];
+        let mut exit_patches = [None;
+            1 + crate::parser::MAX_LOOP_OPERATIONS
+                * (crate::MAX_NESTED_LOOP_CONDITIONAL_BREAKS
+                    + crate::MAX_NESTED_LOOP_UNCONDITIONAL_CONTROLS)];
         let mut exit_count = 0usize;
         if let Some(tree) = condition_tree.as_ref() {
             emitter.emit_expression(tree, tree.root(), 0)?;
@@ -762,15 +765,27 @@ pub fn compile_x86_64_function_with_options<
                                 continue;
                             }
                             match control {
-                                crate::NestedLoopUnconditionalControl::Break => {
-                                    emitter.emit_stack_cleanup_to(nested_checkpoint)?;
-                                    nested_exit_patches[nested_exit_count] =
-                                        Some(emitter.emit_unconditional_forward_branch()?);
-                                    nested_exit_count += 1;
+                                crate::NestedLoopUnconditionalControl::Break(target) => {
+                                    if *target == crate::NestedLoopControlTarget::Outer {
+                                        emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                                        exit_patches[exit_count] =
+                                            Some(emitter.emit_unconditional_forward_branch()?);
+                                        exit_count += 1;
+                                    } else {
+                                        emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                                        nested_exit_patches[nested_exit_count] =
+                                            Some(emitter.emit_unconditional_forward_branch()?);
+                                        nested_exit_count += 1;
+                                    }
                                 }
-                                crate::NestedLoopUnconditionalControl::Continue => {
-                                    emitter.emit_stack_cleanup_to(nested_checkpoint)?;
-                                    emitter.emit_backward_branch(nested_start)?;
+                                crate::NestedLoopUnconditionalControl::Continue(target) => {
+                                    if *target == crate::NestedLoopControlTarget::Outer {
+                                        emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                                        emitter.emit_backward_branch(loop_start)?;
+                                    } else {
+                                        emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                                        emitter.emit_backward_branch(nested_start)?;
+                                    }
                                 }
                                 crate::NestedLoopUnconditionalControl::Return(value) => {
                                     emitter.emit_return::<MAX_EXPRESSION_NODES>(
@@ -781,12 +796,14 @@ pub fn compile_x86_64_function_with_options<
                                 }
                             }
                         }
-                        for ((condition, break_action_index), break_control_order) in block
-                            .conditional_breaks()
-                            .iter()
-                            .flatten()
-                            .zip(block.conditional_break_action_indices())
-                            .zip(block.conditional_break_control_orders())
+                        for (((condition, break_action_index), break_control_order), target) in
+                            block
+                                .conditional_breaks()
+                                .iter()
+                                .flatten()
+                                .zip(block.conditional_break_action_indices())
+                                .zip(block.conditional_break_control_orders())
+                                .zip(block.conditional_break_targets())
                         {
                             if action_index != *break_action_index
                                 || control_order != *break_control_order
@@ -830,10 +847,17 @@ pub fn compile_x86_64_function_with_options<
                             emitter.emit_expression(&tree, tree.root(), 0)?;
                             emitter.emit(&[0x48, 0x85, 0xc0])?;
                             let skip_break = emitter.emit_forward_branch(0x84)?;
-                            emitter.emit_stack_cleanup_to(nested_checkpoint)?;
-                            nested_exit_patches[nested_exit_count] =
-                                Some(emitter.emit_unconditional_forward_branch()?);
-                            nested_exit_count += 1;
+                            if *target == crate::NestedLoopControlTarget::Outer {
+                                emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                                exit_patches[exit_count] =
+                                    Some(emitter.emit_unconditional_forward_branch()?);
+                                exit_count += 1;
+                            } else {
+                                emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                                nested_exit_patches[nested_exit_count] =
+                                    Some(emitter.emit_unconditional_forward_branch()?);
+                                nested_exit_count += 1;
+                            }
                             emitter.patch_forward_branch(skip_break)?;
                         }
                         for ((conditional, return_action_index), return_control_order) in block
@@ -853,12 +877,16 @@ pub fn compile_x86_64_function_with_options<
                                 )?;
                             }
                         }
-                        for ((condition, continue_action_index), continue_control_order) in block
+                        for (
+                            ((condition, continue_action_index), continue_control_order),
+                            target,
+                        ) in block
                             .conditional_continues()
                             .iter()
                             .flatten()
                             .zip(block.conditional_continue_action_indices())
                             .zip(block.conditional_continue_control_orders())
+                            .zip(block.conditional_continue_targets())
                         {
                             if action_index != *continue_action_index
                                 || control_order != *continue_control_order
@@ -902,8 +930,13 @@ pub fn compile_x86_64_function_with_options<
                             emitter.emit_expression(&tree, tree.root(), 0)?;
                             emitter.emit(&[0x48, 0x85, 0xc0])?;
                             let skip_continue = emitter.emit_forward_branch(0x84)?;
-                            emitter.emit_stack_cleanup_to(nested_checkpoint)?;
-                            emitter.emit_backward_branch(nested_start)?;
+                            if *target == crate::NestedLoopControlTarget::Outer {
+                                emitter.emit_stack_cleanup_to(local_checkpoint)?;
+                                emitter.emit_backward_branch(loop_start)?;
+                            } else {
+                                emitter.emit_stack_cleanup_to(nested_checkpoint)?;
+                                emitter.emit_backward_branch(nested_start)?;
+                            }
                             emitter.patch_forward_branch(skip_continue)?;
                         }
                     }
@@ -4362,6 +4395,26 @@ mod tests {
             assert!(
                 compile_x86_64_function::<_, 2048, 4, 64>(&function, &NoConstants, abi).is_ok()
             );
+        }
+    }
+
+    #[test]
+    fn emits_labeled_controls_targeting_inner_and_outer_loops() {
+        for source in [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u64, stop: u64) -> u64 { let mut outer: u64 = 0; let mut total: u64 = 0; 'outer: while outer < limit { outer += 1; 'inner: loop { let selected: u64 = outer; if selected == 0 { continue 'inner; } if selected % 2 == 0 { continue 'outer; } if selected == stop { break 'outer; } break 'inner; } total += outer; } total }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u64) -> u64 { let mut outer: u64 = 0; 'outer: while outer < limit { outer += 1; 'inner: loop { continue 'outer; } } outer }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn probe(enter: bool) -> u64 { let mut outer: u64 = 0; 'outer: while enter { outer += 1; 'inner: loop { break 'outer; } } outer }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                assert!(
+                    compile_x86_64_function::<_, 3072, 4, 96>(&function, &NoConstants, abi,)
+                        .is_ok()
+                );
+            }
         }
     }
 

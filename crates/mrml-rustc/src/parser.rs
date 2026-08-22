@@ -4,7 +4,7 @@ use crate::{
 
 const MAX_DELIMITER_DEPTH: usize = 64;
 const MAX_LOOP_ASSIGNMENTS: usize = 4;
-const MAX_LOOP_OPERATIONS: usize = 8;
+pub const MAX_LOOP_OPERATIONS: usize = 8;
 pub const MAX_CONDITIONAL_LOOP_ACTIONS: usize = 4;
 pub const MAX_CONDITIONAL_LOOP_ELSE_ARMS: usize = 4;
 pub const MAX_NESTED_LOOP_ACTIONS: usize = 4;
@@ -282,6 +282,7 @@ impl<'source> ConditionalLoopArm<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NestedLoopBlock<'source> {
+    pub label: Option<&'source str>,
     pub entry_condition: Option<ConditionalLoopControl<'source>>,
     actions: [Option<ConditionalLoopAction<'source>>; MAX_NESTED_LOOP_ACTIONS],
     action_count: usize,
@@ -294,11 +295,13 @@ pub struct NestedLoopBlock<'source> {
         [Option<ConditionalLoopControl<'source>>; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
     conditional_break_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
     conditional_break_control_orders: [usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
+    conditional_break_targets: [NestedLoopControlTarget; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
     conditional_break_count: usize,
     conditional_continues:
         [Option<ConditionalLoopControl<'source>>; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
     conditional_continue_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
     conditional_continue_control_orders: [usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
+    conditional_continue_targets: [NestedLoopControlTarget; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
     conditional_continue_count: usize,
     conditional_returns: [Option<ConditionalReturn<'source>>; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
     conditional_return_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_RETURNS],
@@ -308,9 +311,16 @@ pub struct NestedLoopBlock<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NestedLoopUnconditionalControl<'source> {
-    Break,
-    Continue,
+    Break(NestedLoopControlTarget),
+    Continue(NestedLoopControlTarget),
     Return(LoopReturn<'source>),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NestedLoopControlTarget {
+    #[default]
+    Inner,
+    Outer,
 }
 
 impl<'source> NestedLoopBlock<'source> {
@@ -346,6 +356,10 @@ impl<'source> NestedLoopBlock<'source> {
         &self.conditional_break_control_orders[..self.conditional_break_count]
     }
 
+    pub fn conditional_break_targets(&self) -> &[NestedLoopControlTarget] {
+        &self.conditional_break_targets[..self.conditional_break_count]
+    }
+
     pub fn conditional_continues(&self) -> &[Option<ConditionalLoopControl<'source>>] {
         &self.conditional_continues[..self.conditional_continue_count]
     }
@@ -356,6 +370,10 @@ impl<'source> NestedLoopBlock<'source> {
 
     pub fn conditional_continue_control_orders(&self) -> &[usize] {
         &self.conditional_continue_control_orders[..self.conditional_continue_count]
+    }
+
+    pub fn conditional_continue_targets(&self) -> &[NestedLoopControlTarget] {
+        &self.conditional_continue_targets[..self.conditional_continue_count]
     }
 
     pub fn conditional_returns(&self) -> &[Option<ConditionalReturn<'source>>] {
@@ -1043,6 +1061,27 @@ impl<'source> BodyParser<'source> {
         Ok(())
     }
 
+    fn nested_loop_control_target(
+        &mut self,
+        inner_label: Option<&'source str>,
+        outer_label: Option<&'source str>,
+    ) -> Result<NestedLoopControlTarget, ParseError> {
+        let Some(label) = self
+            .peek()?
+            .filter(|token| token.kind == TokenKind::Lifetime)
+        else {
+            return Ok(NestedLoopControlTarget::Inner);
+        };
+        self.take()?;
+        if inner_label == Some(label.text) {
+            Ok(NestedLoopControlTarget::Inner)
+        } else if outer_label == Some(label.text) {
+            Ok(NestedLoopControlTarget::Outer)
+        } else {
+            Err(self.error(ParseErrorKind::UnknownLoopLabel, Some(label)))
+        }
+    }
+
     fn conditional_loop_arm(
         &mut self,
         assignment_count: &mut usize,
@@ -1569,10 +1608,30 @@ impl<'source> BodyParser<'source> {
                 if operation_count == MAX_LOOP_OPERATIONS {
                     return Err(probe.error(ParseErrorKind::TooManyLoopOperations, next));
                 }
-                if next.is_some_and(|token| matches!(token.text, "loop" | "while")) {
+                if next.is_some_and(|token| {
+                    matches!(token.text, "loop" | "while") || token.kind == TokenKind::Lifetime
+                }) {
+                    let inner_label = if probe
+                        .peek()?
+                        .is_some_and(|token| token.kind == TokenKind::Lifetime)
+                    {
+                        let label = probe.take()?.ok_or_else(|| {
+                            probe.error(ParseErrorKind::ExpectedIdentifier, probe.lookahead)
+                        })?;
+                        let colon = probe.take()?;
+                        if !colon.is_some_and(|token| token.kind == TokenKind::Colon) {
+                            return Err(probe.error(ParseErrorKind::ExpectedColon, colon));
+                        }
+                        Some(label.text)
+                    } else {
+                        None
+                    };
                     let inner_loop = probe.take()?.ok_or_else(|| {
                         probe.error(ParseErrorKind::ExpectedBody, probe.lookahead)
                     })?;
+                    if !matches!(inner_loop.text, "loop" | "while") {
+                        return Err(probe.error(ParseErrorKind::ExpectedBody, Some(inner_loop)));
+                    }
                     let entry_condition = if inner_loop.text == "while" {
                         let (span, _) = probe.delimited_until("{", ParseErrorKind::ExpectedBody)?;
                         Some(ConditionalLoopControl {
@@ -1593,12 +1652,16 @@ impl<'source> BodyParser<'source> {
                         [0usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS];
                     let mut conditional_break_control_orders =
                         [0usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS];
+                    let mut conditional_break_targets =
+                        [NestedLoopControlTarget::Inner; MAX_NESTED_LOOP_CONDITIONAL_BREAKS];
                     let mut conditional_break_count = 0usize;
                     let mut conditional_continues = [None; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
                     let mut conditional_continue_action_indices =
                         [0usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
                     let mut conditional_continue_control_orders =
                         [0usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
+                    let mut conditional_continue_targets =
+                        [NestedLoopControlTarget::Inner; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
                     let mut conditional_continue_count = 0usize;
                     let mut control_order = 0usize;
                     let mut conditional_returns = [None; MAX_NESTED_LOOP_CONDITIONAL_RETURNS];
@@ -1621,6 +1684,7 @@ impl<'source> BodyParser<'source> {
                         }
                         if next.is_some_and(|token| token.text == "break") {
                             probe.take()?;
+                            let target = probe.nested_loop_control_target(inner_label, label)?;
                             let semicolon = probe.take()?;
                             if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
                                 return Err(
@@ -1635,7 +1699,7 @@ impl<'source> BodyParser<'source> {
                                 ));
                             }
                             unconditional_controls[unconditional_control_count] =
-                                Some(NestedLoopUnconditionalControl::Break);
+                                Some(NestedLoopUnconditionalControl::Break(target));
                             unconditional_control_action_indices[unconditional_control_count] =
                                 action_count;
                             unconditional_control_orders[unconditional_control_count] =
@@ -1646,6 +1710,7 @@ impl<'source> BodyParser<'source> {
                         }
                         if next.is_some_and(|token| token.text == "continue") {
                             probe.take()?;
+                            let target = probe.nested_loop_control_target(inner_label, label)?;
                             let semicolon = probe.take()?;
                             if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
                                 return Err(
@@ -1660,7 +1725,7 @@ impl<'source> BodyParser<'source> {
                                 ));
                             }
                             unconditional_controls[unconditional_control_count] =
-                                Some(NestedLoopUnconditionalControl::Continue);
+                                Some(NestedLoopUnconditionalControl::Continue(target));
                             unconditional_control_action_indices[unconditional_control_count] =
                                 action_count;
                             unconditional_control_orders[unconditional_control_count] =
@@ -1704,10 +1769,13 @@ impl<'source> BodyParser<'source> {
                                     probe.error(ParseErrorKind::ExpectedBody, inner_control)
                                 );
                             }
+                            let mut control_target = NestedLoopControlTarget::Inner;
                             let return_value =
                                 if inner_control.is_some_and(|token| token.text == "return") {
                                     Some(probe.return_value()?)
                                 } else {
+                                    control_target =
+                                        probe.nested_loop_control_target(inner_label, label)?;
                                     let semicolon = probe.take()?;
                                     if !semicolon
                                         .is_some_and(|token| token.kind == TokenKind::Semicolon)
@@ -1746,6 +1814,8 @@ impl<'source> BodyParser<'source> {
                                     action_count;
                                 conditional_continue_control_orders[conditional_continue_count] =
                                     this_control_order;
+                                conditional_continue_targets[conditional_continue_count] =
+                                    control_target;
                                 conditional_continue_count += 1;
                                 continue;
                             }
@@ -1781,6 +1851,7 @@ impl<'source> BodyParser<'source> {
                                 action_count;
                             conditional_break_control_orders[conditional_break_count] =
                                 this_control_order;
+                            conditional_break_targets[conditional_break_count] = control_target;
                             conditional_break_count += 1;
                             continue;
                         }
@@ -1815,7 +1886,9 @@ impl<'source> BodyParser<'source> {
                             && unconditional_control_count == 1
                             && matches!(
                                 unconditional_controls[0],
-                                Some(NestedLoopUnconditionalControl::Break)
+                                Some(NestedLoopUnconditionalControl::Break(
+                                    NestedLoopControlTarget::Inner
+                                ))
                             )
                             && conditional_break_count == 0
                             && conditional_continue_count == 0
@@ -1830,6 +1903,7 @@ impl<'source> BodyParser<'source> {
                                 ));
                             }
                             nested_blocks[nested_block_count] = Some(NestedLoopBlock {
+                                label: inner_label,
                                 entry_condition,
                                 actions,
                                 action_count,
@@ -1840,10 +1914,12 @@ impl<'source> BodyParser<'source> {
                                 conditional_breaks,
                                 conditional_break_action_indices,
                                 conditional_break_control_orders,
+                                conditional_break_targets,
                                 conditional_break_count,
                                 conditional_continues,
                                 conditional_continue_action_indices,
                                 conditional_continue_control_orders,
+                                conditional_continue_targets,
                                 conditional_continue_count,
                                 conditional_returns,
                                 conditional_return_action_indices,
@@ -3273,7 +3349,9 @@ mod tests {
         let inner = outer.nested_blocks()[index].unwrap();
         assert_eq!(
             inner.unconditional_controls(),
-            &[Some(NestedLoopUnconditionalControl::Continue)]
+            &[Some(NestedLoopUnconditionalControl::Continue(
+                NestedLoopControlTarget::Inner
+            ))]
         );
         assert_eq!(inner.unconditional_control_action_indices(), &[2]);
         assert_eq!(inner.action_count(), 4);
@@ -3709,6 +3787,70 @@ mod tests {
                 ParseErrorKind::ExpectedColon | ParseErrorKind::UnknownLoopLabel
             ));
         }
+    }
+
+    #[test]
+    fn resolves_inner_and_outer_targets_in_labeled_nested_loops() {
+        let module = Parser::new(
+            "fn sum(limit: u64) -> u64 { let mut outer: u64 = 0; let mut total: u64 = 0; 'outer: while outer < limit { outer += 1; 'inner: loop { let selected: u64 = outer; if selected == 0 { continue 'inner; } if selected % 2 == 0 { continue 'outer; } if selected == 5 { break 'outer; } break 'inner; } total += outer; } total }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        assert_eq!(outer.label, Some("'outer"));
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[1] else {
+            panic!("expected nested labeled loop")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert_eq!(inner.label, Some("'inner"));
+        assert_eq!(
+            inner.conditional_continue_targets(),
+            &[
+                NestedLoopControlTarget::Inner,
+                NestedLoopControlTarget::Outer
+            ]
+        );
+        assert_eq!(
+            inner.conditional_break_targets(),
+            &[NestedLoopControlTarget::Outer]
+        );
+        assert_eq!(
+            inner.unconditional_controls(),
+            &[Some(NestedLoopUnconditionalControl::Break(
+                NestedLoopControlTarget::Inner
+            ))]
+        );
+
+        let shadowed = Parser::new(
+            "fn shadow(enter: bool) -> u64 { 'same: while enter { 'same: loop { break 'same; } break 'same; } 42 }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = shadowed.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<2>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedUnitLoop) = outer.operations()[0] else {
+            panic!("expected shadowed label to target the inner loop")
+        };
+
+        let unknown = Parser::new(
+            "fn bad(enter: bool) { 'outer: while enter { 'inner: loop { break 'missing; } } }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = unknown.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            function.parse_body::<2>().unwrap_err().kind,
+            ParseErrorKind::UnknownLoopLabel
+        );
     }
 
     #[test]

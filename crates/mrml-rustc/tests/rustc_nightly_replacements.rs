@@ -945,6 +945,29 @@ fn rustc_labeled_statement_loop_controls_have_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_cross_nested_labeled_controls_have_an_executable_replacement() {
+    // Original scalar replacement for nested label targeting in pinned
+    // tests/ui/for-loop-while/loop-break-value.rs and loop-break-cont.rs.
+    for source in [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, stop: u32) -> u32 { let mut outer: u32 = 0; let mut total: u32 = 0; 'outer: while outer < limit { outer += 1; 'inner: loop { let selected: u32 = outer; if selected == 0 { continue 'inner; } if selected % 2 == 0 { continue 'outer; } if selected == stop { break 'outer; } break 'inner; } total += outer; } total }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32) -> u32 { let mut outer: u32 = 0; 'outer: while outer < limit { outer += 1; 'inner: loop { continue 'outer; } } outer }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(enter: bool) -> u32 { let mut outer: u32 = 0; 'outer: while enter { outer += 1; 'inner: loop { break 'outer; } } outer }",
+    ] {
+        for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+            assert!(
+                compile_source_function::<4096, 3072, 4, 4, 4, 128>(
+                    source,
+                    "probe",
+                    format,
+                    TargetLayout::X86_64,
+                )
+                .is_ok()
+            );
+        }
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

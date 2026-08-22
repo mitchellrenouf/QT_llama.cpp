@@ -1383,6 +1383,7 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
             .ok_or(SemanticErrorKind::ConstLoopLimitExceeded)?;
         let binding_checkpoint = resolver.count;
         let mut break_loop = false;
+        let mut continue_loop = false;
         for operation in loop_statement.operations().iter().flatten() {
             match operation {
                 crate::LoopOperation::Local(local) => {
@@ -1454,12 +1455,19 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                         continue;
                                     }
                                     match control {
-                                        crate::NestedLoopUnconditionalControl::Break => {
+                                        crate::NestedLoopUnconditionalControl::Break(target) => {
                                             resolver.truncate(nested_checkpoint)?;
+                                            if *target == crate::NestedLoopControlTarget::Outer {
+                                                break_loop = true;
+                                            }
                                             break 'nested;
                                         }
-                                        crate::NestedLoopUnconditionalControl::Continue => {
+                                        crate::NestedLoopUnconditionalControl::Continue(target) => {
                                             resolver.truncate(nested_checkpoint)?;
+                                            if *target == crate::NestedLoopControlTarget::Outer {
+                                                continue_loop = true;
+                                                break 'nested;
+                                            }
                                             continue 'nested;
                                         }
                                         crate::NestedLoopUnconditionalControl::Return(value) => {
@@ -1474,12 +1482,16 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                         }
                                     }
                                 }
-                                for ((condition, break_action_index), break_control_order) in block
+                                for (
+                                    ((condition, break_action_index), break_control_order),
+                                    target,
+                                ) in block
                                     .conditional_breaks()
                                     .iter()
                                     .flatten()
                                     .zip(block.conditional_break_action_indices())
                                     .zip(block.conditional_break_control_orders())
+                                    .zip(block.conditional_break_targets())
                                 {
                                     if action_index == *break_action_index
                                         && control_order == *break_control_order
@@ -1499,6 +1511,9 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                             depth,
                                         )? {
                                             resolver.truncate(nested_checkpoint)?;
+                                            if *target == crate::NestedLoopControlTarget::Outer {
+                                                break_loop = true;
+                                            }
                                             break 'nested;
                                         }
                                     }
@@ -1543,13 +1558,16 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                         }
                                     }
                                 }
-                                for ((condition, continue_action_index), continue_control_order) in
-                                    block
-                                        .conditional_continues()
-                                        .iter()
-                                        .flatten()
-                                        .zip(block.conditional_continue_action_indices())
-                                        .zip(block.conditional_continue_control_orders())
+                                for (
+                                    ((condition, continue_action_index), continue_control_order),
+                                    target,
+                                ) in block
+                                    .conditional_continues()
+                                    .iter()
+                                    .flatten()
+                                    .zip(block.conditional_continue_action_indices())
+                                    .zip(block.conditional_continue_control_orders())
+                                    .zip(block.conditional_continue_targets())
                                 {
                                     if action_index == *continue_action_index
                                         && control_order == *continue_control_order
@@ -1569,6 +1587,10 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                             depth,
                                         )? {
                                             resolver.truncate(nested_checkpoint)?;
+                                            if *target == crate::NestedLoopControlTarget::Outer {
+                                                continue_loop = true;
+                                                break 'nested;
+                                            }
                                             continue 'nested;
                                         }
                                     }
@@ -1609,6 +1631,9 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                             }
                         }
                         resolver.truncate(nested_checkpoint)?;
+                    }
+                    if break_loop || continue_loop {
+                        break;
                     }
                 }
                 crate::LoopOperation::ConditionalBlock(index) => {
@@ -3417,6 +3442,29 @@ mod tests {
         let values = analyze_constants::<3, 128, 4, 4>(&module, TargetLayout::X86_64).unwrap();
         assert_eq!(values.resolve("EARLY"), Some(1));
         assert_eq!(values.resolve("COMPLETE"), Some(9));
+    }
+
+    #[test]
+    fn evaluates_labeled_controls_targeting_inner_and_outer_loops() {
+        let module = Parser::new(
+            "const fn sum(limit: u8) -> u16 { let mut outer: u8 = 0; let mut total: u16 = 0; 'outer: while outer < limit { outer += 1; 'inner: loop { let selected: u8 = outer; if selected == 0 { continue 'inner; } if selected % 2 == 0 { continue 'outer; } if selected == 5 { break 'outer; } break 'inner; } total += outer as u16; } total } const ZERO: u16 = sum(0); const FOUR: u16 = sum(4); const TEN: u16 = sum(10);",
+        )
+        .parse_module::<5, 4>()
+        .unwrap();
+        let values = analyze_constants::<3, 160, 5, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("FOUR"), Some(4));
+        assert_eq!(values.resolve("TEN"), Some(4));
+
+        let direct = Parser::new(
+            "const fn count(limit: u8) -> u8 { let mut outer: u8 = 0; 'outer: while outer < limit { outer += 1; 'inner: loop { continue 'outer; } } outer } const fn once(enter: bool) -> u8 { let mut outer: u8 = 0; 'outer: while enter { outer += 1; 'inner: loop { break 'outer; } } outer } const COUNT: u8 = count(5); const BREAK: u8 = once(true); const SKIP: u8 = once(false);",
+        )
+        .parse_module::<7, 4>()
+        .unwrap();
+        let values = analyze_constants::<4, 160, 7, 4>(&direct, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("COUNT"), Some(5));
+        assert_eq!(values.resolve("BREAK"), Some(1));
+        assert_eq!(values.resolve("SKIP"), Some(0));
     }
 
     #[test]

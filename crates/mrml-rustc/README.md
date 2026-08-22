@@ -309,12 +309,18 @@ An unconditional inner `loop` may use only conditional continue and function
 return controls. False guards reach the inner backedge rather than escaping the
 loop, while the first true return performs full-frame cleanup. This preserves
 Rust's diverging-loop behavior without requiring a synthetic break edge.
-Statement-level `while` and `loop` may carry one Rust lifetime-style label.
-Matching labeled `break` and `continue` work in direct operations and bounded
-`if`/`else if`/`else` control arms; missing colons and unknown labels fail with
-dedicated bounded diagnostics. Cross-nested label targets, general deeper
-statement-loop nesting, and break values in statement-loop operations remain
-unsupported.
+Statement-level `while` and `loop`, plus their directly nested `while` or
+`loop`, may carry Rust lifetime-style labels. Matching labeled `break` and
+`continue` work in direct operations and bounded `if`/`else if`/`else` control
+arms. A nested control may target either its own label or the enclosing
+statement loop's label, with Rust-style inner-label shadowing; missing colons
+and unknown labels fail with dedicated bounded diagnostics. General deeper
+statement-loop nesting and break values in statement-loop operations remain
+unsupported. Three native probes cover conditional inner and outer targets,
+direct outer continue, and direct outer break. They emitted deterministic 439-,
+198-, and 181-byte COFF objects and 832-, 592-, and 576-byte ELF64 objects;
+independent pinned-nightly callers passed zero-iteration, ordinary, early-exit,
+and 60,000-iteration paths on both hosts.
 Conditional loop-control blocks may perform up to four local declarations,
 assignments, or discarded scalar expressions before a terminal `break`,
 `continue`, or typed function return. Their actions are lazy and receive a
@@ -668,7 +674,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 250 Windows library, conformance, rustc-nightly-replacement, and driver
+The 254 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1342,7 +1348,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 250 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 254 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
