@@ -575,7 +575,7 @@ pub fn compile_x86_64_function_with_options<
                 RuntimeArrayElementType::Bool
                     | RuntimeArrayElementType::Char
                     | RuntimeArrayElementType::Integer(Some(_))
-            )
+            ) | RuntimeReferenceTarget::Str
         )
     {
         return Err(CodegenError {
@@ -613,6 +613,7 @@ pub fn compile_x86_64_function_with_options<
                 RuntimeReferenceTarget::Scalar(element)
                 | RuntimeReferenceTarget::Slice(element)
                 | RuntimeReferenceTarget::Array { element, .. } => element,
+                RuntimeReferenceTarget::Str => continue,
             };
             match element {
                 RuntimeArrayElementType::Bool | RuntimeArrayElementType::Char => continue,
@@ -688,14 +689,14 @@ pub fn compile_x86_64_function_with_options<
         kind: CodegenErrorKind::UnsupportedRuntimeType,
         span: function.name_span,
     })?;
-    let returns_slice = matches!(
+    let returns_fat_reference = matches!(
         return_reference,
         Some(RuntimeExpressionType::Reference {
-            target: RuntimeReferenceTarget::Slice(_),
+            target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
             ..
         })
     );
-    let uses_sret = (abi == X86_64Abi::Windows && returns_slice)
+    let uses_sret = (abi == X86_64Abi::Windows && returns_fat_reference)
         || return_array.and_then(runtime_array_abi_layout).is_some_and(
             |(_, bytes, words)| match abi {
                 X86_64Abi::Windows => bytes != 0 && !matches!(bytes, 1 | 2 | 4 | 8),
@@ -1716,6 +1717,7 @@ enum RuntimeArrayElementType {
 enum RuntimeReferenceTarget {
     Scalar(RuntimeArrayElementType),
     Slice(RuntimeArrayElementType),
+    Str,
     Array {
         element: RuntimeArrayElementType,
         count: usize,
@@ -1733,7 +1735,9 @@ fn runtime_reference_target_type(
 ) -> Result<RuntimeExpressionType, CodegenErrorKind> {
     match target {
         RuntimeReferenceTarget::Scalar(element) => Ok(runtime_type_from_array_element(element)),
-        RuntimeReferenceTarget::Slice(_) => Err(CodegenErrorKind::RuntimeExpressionUnsupported),
+        RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str => {
+            Err(CodegenErrorKind::RuntimeExpressionUnsupported)
+        }
         RuntimeReferenceTarget::Array { element, count, .. } => {
             Ok(RuntimeExpressionType::Array { element, count })
         }
@@ -1818,6 +1822,7 @@ fn runtime_reference_type(text: &str) -> Option<RuntimeExpressionType> {
             count,
             layout: RuntimeReferenceArrayLayout::Native,
         },
+        _ if target == "str" => RuntimeReferenceTarget::Str,
         _ if target.starts_with('[') && target.ends_with(']') => {
             let element = match target.strip_prefix('[')?.strip_suffix(']')?.trim() {
                 "()" => RuntimeArrayElementType::Unit,
@@ -1842,7 +1847,7 @@ fn runtime_type_stack_slots(ty: RuntimeExpressionType) -> usize {
     match ty {
         RuntimeExpressionType::Array { count, .. } => count,
         RuntimeExpressionType::Reference {
-            target: RuntimeReferenceTarget::Slice(_),
+            target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
             ..
         } => 2,
         _ => 1,
@@ -1933,6 +1938,7 @@ fn runtime_types_compatible(left: RuntimeExpressionType, right: RuntimeExpressio
                 (RuntimeReferenceTarget::Slice(left), RuntimeReferenceTarget::Slice(right)) => {
                     left == right
                 }
+                (RuntimeReferenceTarget::Str, RuntimeReferenceTarget::Str) => true,
                 (
                     RuntimeReferenceTarget::Array {
                         element: left,
@@ -2408,7 +2414,7 @@ fn runtime_expression_type_with_locals<
             if !matches!(
                 base_type,
                 RuntimeExpressionType::Reference {
-                    target: RuntimeReferenceTarget::Slice(_),
+                    target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                     ..
                 }
             ) {
@@ -2430,7 +2436,7 @@ fn runtime_expression_type_with_locals<
             if !matches!(
                 base_type,
                 RuntimeExpressionType::Reference {
-                    target: RuntimeReferenceTarget::Slice(_),
+                    target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                     ..
                 }
             ) {
@@ -3044,7 +3050,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     if matches!(
                         runtime_reference_type(parameter.ty.text),
                         Some(RuntimeExpressionType::Reference {
-                            target: RuntimeReferenceTarget::Slice(_),
+                            target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                             ..
                         })
                     ) {
@@ -3090,7 +3096,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     if matches!(
                         runtime_reference_type(parameter.ty.text),
                         Some(RuntimeExpressionType::Reference {
-                            target: RuntimeReferenceTarget::Slice(_),
+                            target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                             ..
                         })
                     ) {
@@ -3596,7 +3602,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 if !matches!(
                     base_type,
                     RuntimeExpressionType::Reference {
-                        target: RuntimeReferenceTarget::Slice(_),
+                        target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                         ..
                     }
                 ) {
@@ -3619,7 +3625,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 if !matches!(
                     base_type,
                     RuntimeExpressionType::Reference {
-                        target: RuntimeReferenceTarget::Slice(_),
+                        target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                         ..
                     }
                 ) {
@@ -4436,7 +4442,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             let slots = if matches!(
                 local.ty,
                 RuntimeExpressionType::Reference {
-                    target: RuntimeReferenceTarget::Slice(_),
+                    target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                     ..
                 }
             ) {
@@ -4478,7 +4484,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             let slots = if matches!(
                 reference_type,
                 Some(RuntimeExpressionType::Reference {
-                    target: RuntimeReferenceTarget::Slice(_),
+                    target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                     ..
                 })
             ) {
@@ -4543,7 +4549,8 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                             && matches!(
                                 local.ty,
                                 RuntimeExpressionType::Reference {
-                                    target: RuntimeReferenceTarget::Slice(_),
+                                    target: RuntimeReferenceTarget::Slice(_)
+                                        | RuntimeReferenceTarget::Str,
                                     ..
                                 }
                             )
@@ -4562,7 +4569,8 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                         && matches!(
                             runtime_reference_type(parameter.ty.text),
                             Some(RuntimeExpressionType::Reference {
-                                target: RuntimeReferenceTarget::Slice(_),
+                                target: RuntimeReferenceTarget::Slice(_)
+                                    | RuntimeReferenceTarget::Str,
                                 ..
                             })
                         )
@@ -4977,7 +4985,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             } else if matches!(
                 local_type,
                 RuntimeExpressionType::Reference {
-                    target: RuntimeReferenceTarget::Slice(_),
+                    target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                     ..
                 }
             ) {
@@ -5186,7 +5194,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             if matches!(
                 target.ty,
                 RuntimeExpressionType::Reference {
-                    target: RuntimeReferenceTarget::Slice(_),
+                    target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                     ..
                 }
             ) {
@@ -6184,7 +6192,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         if matches!(
             expected_type,
             RuntimeExpressionType::Reference {
-                target: RuntimeReferenceTarget::Slice(_),
+                target: RuntimeReferenceTarget::Slice(_) | RuntimeReferenceTarget::Str,
                 ..
             }
         ) {
@@ -8282,6 +8290,41 @@ mod tests {
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
+    }
+
+    #[test]
+    fn supports_string_slice_references() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> usize { input.len() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> bool { input.is_empty() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> &str { input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, select: bool) -> &str { let selected: &str = if select { input } else { input }; selected }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut str) -> &str { input }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 2048, 4, 160>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let source =
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> u8 { input[0] }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 512, 2, 64>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch,
+        );
     }
 
     #[test]

@@ -438,7 +438,15 @@ slice-reference bindings may replace both pointer and length through ordinary
 or conditional assignment. Independent callers observed both the original and
 replaced values through a 355-byte COFF and 728-byte ELF64 object. Explicitly
 shared locals initialized from mutable references retain shared mutability
-metadata after the permitted one-way coercion. Shared
+metadata after the permitted one-way coercion. Shared and mutable string-slice
+references use a distinct two-word `str` target while sharing the native fat-
+pointer ABI. Parameters, typed and conditional locals, `len()`, `is_empty()`,
+returns, and mutable-to-shared coercion are supported. Independent callers
+observed byte length 8 for `"rust🦀"`, empty/nonempty results, and pointer/length
+identity through 106-byte, 128-byte, 141-byte, and 194-byte COFF objects plus
+504-byte, 512-byte, 512-byte, and 568-byte ELF64 objects. Integer indexing is
+rejected because Rust strings are not byte-indexable; UTF-8-boundary-checked
+string ranges are not claimed. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1026,7 +1034,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 326 Windows library, conformance, rustc-nightly-replacement, and driver
+The 328 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1700,7 +1708,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 326 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 328 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

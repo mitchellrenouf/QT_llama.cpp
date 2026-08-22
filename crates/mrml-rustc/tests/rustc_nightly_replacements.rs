@@ -1919,6 +1919,21 @@ fn rustc_slice_reference_local_replacements_reach_native_objects() {
 }
 
 #[test]
+fn rustc_string_slice_references_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str) -> usize { input.len() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str) -> bool { input.is_empty() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str) -> &str { input }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str, select: bool) -> &str { let selected: &str = if select { input } else { input }; selected }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut str) -> &str { input }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",
