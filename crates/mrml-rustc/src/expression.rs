@@ -108,6 +108,7 @@ impl ExprId {
 pub enum UnaryOperator {
     Negate,
     Not,
+    Dereference,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -428,7 +429,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 operand,
             } => self.is_boolean_expression(operand, depth + 1),
             ExprKind::Unary {
-                operator: UnaryOperator::Negate,
+                operator: UnaryOperator::Negate | UnaryOperator::Dereference,
                 ..
             } => false,
             ExprKind::Binary { operator, .. } => matches!(
@@ -653,6 +654,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                         Ok(u128::from(value == 0))
                     }
                     UnaryOperator::Not => Ok(!value),
+                    UnaryOperator::Dereference => Err(ConstEvalError::InvalidExpressionTree),
                 }
             }
             ExprKind::Binary {
@@ -3178,13 +3180,14 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             return Err(self.error(ExpressionErrorKind::NestingLimitExceeded, self.lookahead));
         }
         if let Some(token) = self.peek()?
-            && matches!(token.text, "-" | "!")
+            && matches!(token.text, "-" | "!" | "*")
         {
             self.take()?;
-            let operator = if token.text == "-" {
-                UnaryOperator::Negate
-            } else {
-                UnaryOperator::Not
+            let operator = match token.text {
+                "-" => UnaryOperator::Negate,
+                "!" => UnaryOperator::Not,
+                "*" => UnaryOperator::Dereference,
+                _ => unreachable!(),
             };
             let operand = self.unary(depth + 1)?;
             let end = self.node_span(operand)?.end;
@@ -3469,6 +3472,23 @@ mod tests {
         assert_eq!(evaluate("(2 + 3) * 4"), Ok(20));
         assert_eq!(evaluate("1 << 4 + 1"), Ok(32));
         assert_eq!(evaluate("1 | 2 == 3 && 7 > 2"), Ok(1));
+    }
+
+    #[test]
+    fn parses_unary_dereference() {
+        let tree = ExpressionParser::<4>::new("*value + 1").parse().unwrap();
+        let Some(ExprKind::Binary { left, .. }) =
+            tree.expression(tree.root()).map(|expr| expr.kind)
+        else {
+            panic!("expected binary expression")
+        };
+        assert!(matches!(
+            tree.expression(left).map(|expr| expr.kind),
+            Some(ExprKind::Unary {
+                operator: UnaryOperator::Dereference,
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -1759,6 +1759,20 @@ fn rustc_sixteen_element_fixed_arrays_reach_native_objects() {
 }
 
 #[test]
+fn rustc_immutable_scalar_references_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(before: usize, input: &usize, after: usize) -> usize { let copied = input; before + *copied + after }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &i16) -> i16 { *input }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &bool) -> bool { *input }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &char) -> char { *input }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",
