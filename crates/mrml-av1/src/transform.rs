@@ -1269,6 +1269,34 @@ mod tests {
     }
 
     #[test]
+    fn q7_four_by_eight_dct_matches_normative_residual() {
+        let mut coefficients = [
+            -1736, -70, 0, 35, -35, 0, 0, 0, -70, 0, 0, 0, 70, -35, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        inverse_2d(
+            &mut coefficients,
+            InverseTransformConfig {
+                width: 4,
+                height: 8,
+                row: Transform1d::Dct,
+                column: Transform1d::Dct,
+                row_shift: TxSize::Tx4x8.row_shift(),
+                bit_depth: 8,
+                lossless: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            coefficients,
+            [
+                -42, -42, -37, -37, -42, -42, -39, -39, -40, -42, -39, -40, -39, -39, -36, -37,
+                -37, -37, -33, -32, -38, -37, -32, -32, -40, -40, -36, -36, -41, -42, -40, -41,
+            ]
+        );
+    }
+
+    #[test]
     fn invalid_transform_geometry_is_rejected() {
         let mut coefficients = [0; 64];
         assert_eq!(

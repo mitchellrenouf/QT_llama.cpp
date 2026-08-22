@@ -65,6 +65,9 @@ into the crate.
   reconstruction remains non-conformant: MRML's two planar outputs differ
   from the independent decoder's 304128-byte I420 output, so this remains a
   failing conformance target.
+  Disabling the luma deblocking pass when both signaled luma base levels are
+  zero, before applying block or segmentation deltas, advances the first-frame
+  byte-exact prefix from 3 to 96 samples.
 
 The remaining q7 pixel failure is explicit evidence that decoder conformance
 is not complete.

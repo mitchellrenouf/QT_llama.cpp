@@ -24,7 +24,9 @@ pub fn apply_frame(
     };
     let bit_depth = frame.bit_depth();
     for plane_index in 0..planes {
-        if plane_index != 0 && parameters.level[plane_index + 1] == 0 {
+        if (plane_index == 0 && parameters.level[0] == 0 && parameters.level[1] == 0)
+            || (plane_index != 0 && parameters.level[plane_index + 1] == 0)
+        {
             continue;
         }
         let chroma = plane_index != 0;
@@ -539,6 +541,44 @@ mod tests {
         .unwrap();
         assert_ne!(frame.y.sample(7, 0), Ok(100));
         assert_ne!(frame.y.sample(8, 0), Ok(104));
+    }
+
+    #[test]
+    fn zero_luma_base_levels_disable_filter_even_with_block_delta() {
+        let mut frame = FrameBuffer::new(16, 8, 8, ChromaSampling::Cs400).unwrap();
+        for y in 0..8 {
+            for x in 0..16 {
+                frame
+                    .y
+                    .set_sample(x, y, if x < 8 { 100 } else { 104 })
+                    .unwrap();
+            }
+        }
+        let original = frame.clone();
+        let mut grid = MiGrid::new(4, 2).unwrap();
+        for column in [0, 2] {
+            grid.fill(
+                BlockRect::new(column, 0, BlockSize::Block8x8),
+                BlockState {
+                    size: Some(BlockSize::Block8x8),
+                    loop_filter_tx_sizes: [TxSize::Tx8x8; 3],
+                    delta_lf: [20; 4],
+                    ..BlockState::default()
+                },
+            )
+            .unwrap();
+        }
+        apply_frame(
+            &mut frame,
+            &grid,
+            &LoopFilter::default(),
+            &Segmentation::default(),
+            true,
+            16,
+            8,
+        )
+        .unwrap();
+        assert_eq!(frame, original);
     }
 
     #[test]
