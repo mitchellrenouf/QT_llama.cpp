@@ -180,10 +180,21 @@ fn help() {
         "[-C PATH] init [path]",
         "[-C PATH] clone <url> [path]",
         "[-C PATH] log [count]",
-        "[-C PATH] diff [--staged] [args...]",
+        "[-C PATH] diff [--staged] [path]...",
+        "[-C PATH] diff-ref <revision> [path]...",
         "[-C PATH] show [revision]",
+        "[-C PATH] history <path>",
+        "[-C PATH] blame <path>",
+        "[-C PATH] conflicts",
         "[-C PATH] branch [new-name]",
+        "[-C PATH] branch-delete <name>",
         "[-C PATH] switch <name>",
+        "[-C PATH] upstream <remote/branch>",
+        "[-C PATH] publish <remote> <branch>",
+        "[-C PATH] merge <branch>",
+        "[-C PATH] rebase <branch>",
+        "[-C PATH] cherry-pick <revision>",
+        "[-C PATH] operation-abort <merge|rebase|cherry-pick>",
         "[-C PATH] stage <path>...",
         "[-C PATH] unstage <path>...",
         "[-C PATH] restore <path>...",
@@ -283,6 +294,29 @@ fn print_signing_status(repository: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn conflicts(repository: Option<&str>) -> Result<()> {
+    let changes = status(repository)?;
+    let conflicted = changes
+        .iter()
+        .filter(|change| change.conflicted())
+        .collect::<Vector<_>>();
+    if conflicted.is_empty() {
+        println!("{}", "no unresolved conflicts".green());
+    } else {
+        println!("{} unresolved conflict(s)", conflicted.len());
+        for change in conflicted {
+            println!(
+                "  {}  {}{}  {}",
+                "conflict".red().bold(),
+                change.index,
+                change.worktree,
+                change.path
+            );
+        }
+    }
+    Ok(())
+}
+
 fn dispatch(cli: &Cli) -> Result<()> {
     let repository = cli.repository.as_deref();
     let tail: &[Text] = &cli.arguments;
@@ -332,14 +366,26 @@ fn dispatch(cli: &Cli) -> Result<()> {
             )
         }
         "diff" => {
+            let staged = tail.first().is_some_and(|argument| argument == "--staged");
+            let paths = if staged { &tail[1..] } else { tail };
+            checked_positionals(paths)?;
             let mut args = Vector::from(["diff", "--color=always"]);
-            args.extend(tail.iter().map(|arg| {
-                if arg == "--staged" {
-                    "--cached"
-                } else {
-                    arg.as_str()
-                }
-            }));
+            if staged {
+                args.push("--cached");
+            }
+            if !paths.is_empty() {
+                args.push("--");
+                args.extend(paths.iter().map(Text::as_str));
+            }
+            run_visible(repository, &args)
+        }
+        "diff-ref" if !tail.is_empty() => {
+            checked_positionals(tail)?;
+            let mut args = Vector::from(["diff", "--color=always", tail[0].as_str()]);
+            if tail.len() > 1 {
+                args.push("--");
+                args.extend(tail[1..].iter().map(Text::as_str));
+            }
             run_visible(repository, &args)
         }
         "show" if tail.len() <= 1 => {
@@ -355,14 +401,68 @@ fn dispatch(cli: &Cli) -> Result<()> {
                 ],
             )
         }
+        "history" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(
+                repository,
+                &[
+                    "log",
+                    "--follow",
+                    "--decorate",
+                    "--color=always",
+                    "--oneline",
+                    "--",
+                    &tail[0],
+                ],
+            )
+        }
+        "blame" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["blame", "--color-lines", "--", &tail[0]])
+        }
+        "conflicts" if tail.is_empty() => conflicts(repository),
         "branch" if tail.is_empty() => run_visible(repository, &["branch", "--all", "--verbose"]),
         "branch" if tail.len() == 1 => {
             checked_positionals(tail)?;
             run_visible(repository, &["switch", "-c", &tail[0]])
         }
+        "branch-delete" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["branch", "-d", "--", &tail[0]])
+        }
         "switch" if tail.len() == 1 => {
             checked_positionals(tail)?;
             run_visible(repository, &["switch", &tail[0]])
+        }
+        "upstream" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            let setting = format!("--set-upstream-to={}", tail[0]);
+            run_visible(repository, &["branch", &setting])
+        }
+        "publish" if tail.len() == 2 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["push", "--set-upstream", &tail[0], &tail[1]])
+        }
+        "merge" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["merge", "--no-edit", "--", &tail[0]])
+        }
+        "rebase" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["rebase", "--", &tail[0]])
+        }
+        "cherry-pick" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["cherry-pick", "--", &tail[0]])
+        }
+        "operation-abort" if tail.len() == 1 && tail[0] == "merge" => {
+            run_visible(repository, &["merge", "--abort"])
+        }
+        "operation-abort" if tail.len() == 1 && tail[0] == "rebase" => {
+            run_visible(repository, &["rebase", "--abort"])
+        }
+        "operation-abort" if tail.len() == 1 && tail[0] == "cherry-pick" => {
+            run_visible(repository, &["cherry-pick", "--abort"])
         }
         "stage" => run_visible(
             repository,
