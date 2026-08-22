@@ -1190,7 +1190,27 @@ impl<const N: usize> KvmBackend<N> {
                         mrml_runtime::yield_now();
                     }
                     Ok(KVM_MP_STATE_UNINITIALIZED) => break Err(KvmError::InvalidVcpu),
-                    Ok(_) => break application.run(),
+                    Ok(_) => {
+                        let exit = loop {
+                            let exit = match application.run() {
+                                Ok(exit) => exit,
+                                Err(error) => break Err(error),
+                            };
+                            if matches!(
+                                exit,
+                                VmExit::Io {
+                                    port: 0x4d5e,
+                                    size: 4,
+                                    write: true,
+                                    ..
+                                }
+                            ) {
+                                continue;
+                            }
+                            break Ok(exit);
+                        };
+                        break exit;
+                    }
                     Err(error) => break Err(error),
                 }
             };

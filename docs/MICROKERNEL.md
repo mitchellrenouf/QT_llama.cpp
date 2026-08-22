@@ -1425,7 +1425,17 @@ and revokes the page. The trampoline's GDT descriptors are constructed with
 their accessed bits already set, preventing the processor from attempting a
 write to sealed RX storage during segment loads. The 2026-08-22 signed run
 measured `verify=16945us`, `prepare=4261us`, `execute=39653us`, and
-`total=64164us`. Per-CPU interrupt routing and live multi-vCPU scheduling remain pending. The
+`total=64164us`. The signed `smp-scheduler-probe` then advances beyond boot-only
+AP acknowledgement on both native hypervisors. CPU 1 initializes a scheduler
+instance in its exclusively owned slot, binds that slot to the observed local
+APIC identity before publication, programs its own periodic local-APIC timer,
+and enables interrupts. Vector 32 enters CPU 1's private IDT, TSS entry stack,
+and dispatcher; the dispatcher resolves exactly one published APIC owner,
+advances exactly one local scheduler tick, acknowledges EOI, and emits a
+CPU-indexed terminal proof. CPU 0 independently proves completed startup and
+trampoline revocation. The 2026-08-22 signed runs measured `total=52565us` on
+nested KVM and `total=63092us` on WHP. Cross-CPU task migration, load balancing,
+and interprocessor reschedule interrupts remain pending. The
 bounded discovery foundation
 uses a parser that accepts only a complete loader-copied ACPI MADT with a
 valid signature, exact encoded length, checksum, entry geometry, reserved

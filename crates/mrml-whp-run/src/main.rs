@@ -78,14 +78,16 @@ fn application_main() -> Result<()> {
     let timer_mode = arguments.len() == 5 && arguments[4] == "timer-probe";
     let preemption_mode = arguments.len() == 5 && arguments[4] == "preemption-probe";
     let smp_mode = arguments.len() == 5 && arguments[4] == "smp-probe";
+    let smp_scheduler_mode = arguments.len() == 5 && arguments[4] == "smp-scheduler-probe";
     if arguments.len() != 7
         && !service_artifact_mode
         && !timer_mode
         && !preemption_mode
         && !smp_mode
+        && !smp_scheduler_mode
     {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-scheduler-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -148,20 +150,23 @@ fn application_main() -> Result<()> {
         (None, None) => None,
         _ => return Err(anyhow!("incomplete service verification inputs")),
     };
-    let cuda_bundle = if service_artifact_mode || timer_mode || preemption_mode || smp_mode {
-        None
-    } else {
-        Some(verify_cuda_bundle(
-            &arguments[4],
-            &arguments[5],
-            &arguments[6],
-        )?)
-    };
+    let cuda_bundle =
+        if service_artifact_mode || timer_mode || preemption_mode || smp_mode || smp_scheduler_mode
+        {
+            None
+        } else {
+            Some(verify_cuda_bundle(
+                &arguments[4],
+                &arguments[5],
+                &arguments[6],
+            )?)
+        };
     let verification_micros = verification_started.elapsed().as_micros();
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
-    let handoff = if smp_mode {
+    let hosted_smp = smp_mode || smp_scheduler_mode;
+    let handoff = if hosted_smp {
         smp_boot_handoff(
             executable.artifact().version(),
             entropy,
@@ -174,7 +179,7 @@ fn application_main() -> Result<()> {
             *executable.artifact().digest(),
         )?
     };
-    let (image_virtual, handoff_virtual, stack_virtual) = if smp_mode {
+    let (image_virtual, handoff_virtual, stack_virtual) = if hosted_smp {
         (0xffff_8001_4000_0000, 0xffff_8001_5000_0000, 0x100_0000)
     } else if preemption_mode {
         (0x0040_0000, 0x0200_0000, 0xffff_8001_6000_0000)
@@ -211,7 +216,7 @@ fn application_main() -> Result<()> {
         system.prepare_timer_kernel(&executable, handoff.as_slice(), layout)
     } else if preemption_mode {
         system.prepare_preemption_kernel(&executable, handoff.as_slice(), layout)
-    } else if smp_mode {
+    } else if hosted_smp {
         system.prepare_smp_kernel(&executable, handoff.as_slice(), layout)
     } else {
         system.prepare_kernel_gpu_guest(&executable, handoff.as_slice(), layout, queue)
@@ -270,18 +275,26 @@ fn application_main() -> Result<()> {
     }
     let preparation_micros = preparation_started.elapsed().as_micros();
     let execution_started = Instant::now();
-    let exit = if smp_mode {
+    let exit = if hosted_smp {
         let (bootstrap, application) = guest
             .run_smp()
             .map_err(|error| anyhow!("WHP SMP execution failed: {:?}", error))?;
         let expected_bootstrap = VmExit::Io {
-            port: SMP_PROBE_PORT,
+            port: if smp_scheduler_mode {
+                0x4d5e
+            } else {
+                SMP_PROBE_PORT
+            },
             size: 4,
             write: true,
             value: 2,
         };
         let expected_application = VmExit::Io {
-            port: SMP_PROBE_PORT,
+            port: if smp_scheduler_mode {
+                0x4d5f
+            } else {
+                SMP_PROBE_PORT
+            },
             size: 4,
             write: true,
             value: 0x0001_0001,

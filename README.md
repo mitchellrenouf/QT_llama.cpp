@@ -353,8 +353,14 @@ also enforcing second-level W^X: it switches the installed trampoline GPA from
 RW/NX to RX before VP1 runs, uses a pre-acknowledgement exit to restore RW/NX,
 then permits the BSP to zero and revoke the page. The trampoline GDT descriptors
 are pre-accessed so segment loading never attempts a hardware write to RX code.
-The signed WHP run completed in 64,164 microseconds. Per-CPU interrupt routing
-and live SMP scheduling proofs remain unfinished.
+The signed WHP run completed in 64,164 microseconds. A separate signed
+`smp-scheduler-probe` now runs on both KVM and WHP: CPU 1 owns a disjoint bounded
+scheduler, programs its own local-APIC timer, receives vector 32 through its
+private IDT and privilege stack, advances exactly one local tick, acknowledges
+EOI, and emits a CPU-indexed proof while CPU 0 independently completes startup
+and trampoline revocation. The measured runs completed in 52,565 microseconds
+on nested KVM and 63,092 microseconds on WHP. Cross-CPU task migration,
+load balancing, and interprocessor reschedule interrupts remain unfinished.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

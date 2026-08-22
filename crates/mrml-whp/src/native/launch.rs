@@ -214,7 +214,23 @@ impl PreparedWhpGuest<'_> {
                             size: 4,
                             write: true,
                             value: 0x0001_0001,
-                        }) => runner.restore_trampoline_rw().and_then(|()| runner.run()),
+                        }) => runner.restore_trampoline_rw().and_then(|()| {
+                            loop {
+                                let exit = runner.run()?;
+                                if matches!(
+                                    exit,
+                                    VmExit::Io {
+                                        port: 0x4d5e,
+                                        size: 4,
+                                        write: true,
+                                        ..
+                                    }
+                                ) {
+                                    continue;
+                                }
+                                break Ok(exit);
+                            }
+                        }),
                         Ok(_) => Err(WhpError::MalformedExit),
                         Err(error) => Err(error),
                     };
