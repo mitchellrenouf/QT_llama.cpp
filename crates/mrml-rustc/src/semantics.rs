@@ -1483,6 +1483,16 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 }
                             }
                         }
+                        if let Some(return_statement) = block.return_statement {
+                            return Ok(Some(evaluate_const_return_statement(
+                                context,
+                                symbol_count,
+                                &return_statement,
+                                return_type,
+                                resolver,
+                                depth,
+                            )?));
+                        }
                         let should_break = if let Some(condition) = block.break_condition {
                             let tree = condition
                                 .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
@@ -3236,6 +3246,18 @@ mod tests {
         let values = analyze_constants::<2, 48, 4, 2>(&module, TargetLayout::X86_64).unwrap();
         assert_eq!(values.resolve("FALSE_HEAD"), Some(5));
         assert_eq!(values.resolve("TRUE_BREAK"), Some(5));
+    }
+
+    #[test]
+    fn evaluates_typed_return_from_an_inner_loop_body() {
+        let module = Parser::new(
+            "const fn probe(limit: u8, enter: bool) -> u8 { let mut i: u8 = 0; while i < limit { while enter { let selected: u8 = i + 40; return selected; } i += 1; } i } const FALSE_HEAD: u8 = probe(5, false); const TRUE_RETURN: u8 = probe(5, true);",
+        )
+        .parse_module::<4, 2>()
+        .unwrap();
+        let values = analyze_constants::<2, 64, 4, 2>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("FALSE_HEAD"), Some(5));
+        assert_eq!(values.resolve("TRUE_RETURN"), Some(40));
     }
 
     #[test]

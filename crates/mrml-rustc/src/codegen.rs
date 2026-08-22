@@ -812,6 +812,13 @@ pub fn compile_x86_64_function_with_options<
                         }
                     }
                 }
+                if let Some(return_statement) = block.return_statement {
+                    emitter.emit_return::<MAX_EXPRESSION_NODES>(
+                        &return_statement,
+                        expected_type,
+                        function.body_expression_span.start,
+                    )?;
+                }
                 let conditional_exit = if let Some(condition) = block.break_condition {
                     let tree = condition
                         .parse_condition::<MAX_EXPRESSION_NODES>()
@@ -859,7 +866,10 @@ pub fn compile_x86_64_function_with_options<
                     let exit = emitter.emit_forward_branch(0x85)?;
                     emitter.emit_backward_branch(nested_start)?;
                     emitter.patch_forward_branch(exit)?;
-                } else if block.entry_condition.is_some() && !block.unconditional_break {
+                } else if block.entry_condition.is_some()
+                    && !block.unconditional_break
+                    && block.return_statement.is_none()
+                {
                     emitter.emit_backward_branch(nested_start)?;
                 }
                 if let Some(entry_exit) = entry_exit {

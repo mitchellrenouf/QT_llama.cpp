@@ -283,6 +283,7 @@ pub struct NestedLoopBlock<'source> {
     action_count: usize,
     pub break_condition: Option<ConditionalLoopControl<'source>>,
     pub unconditional_break: bool,
+    pub return_statement: Option<LoopReturn<'source>>,
     pub continue_condition: Option<ConditionalLoopControl<'source>>,
     pub continue_action_index: usize,
 }
@@ -1476,6 +1477,7 @@ impl<'source> BodyParser<'source> {
                     let mut continue_action_index = 0usize;
                     let mut body_closed = false;
                     let mut unconditional_break = false;
+                    let mut return_statement = None;
                     let break_condition;
                     loop {
                         let next = probe.peek()?;
@@ -1497,6 +1499,13 @@ impl<'source> BodyParser<'source> {
                             }
                             break_condition = None;
                             unconditional_break = true;
+                            break;
+                        }
+                        if next.is_some_and(|token| token.text == "return") {
+                            probe.take()?;
+                            let (value, value_span) = probe.return_value()?;
+                            return_statement = Some(LoopReturn { value, value_span });
+                            break_condition = None;
                             break;
                         }
                         if next.is_some_and(|token| token.text == "if") {
@@ -1580,6 +1589,7 @@ impl<'source> BodyParser<'source> {
                         if entry_condition.is_none()
                             && action_count == 0
                             && break_condition.is_none()
+                            && return_statement.is_none()
                         {
                             LoopOperation::NestedUnitLoop
                         } else {
@@ -1595,6 +1605,7 @@ impl<'source> BodyParser<'source> {
                                 action_count,
                                 break_condition,
                                 unconditional_break,
+                                return_statement,
                                 continue_condition,
                                 continue_action_index,
                             });
