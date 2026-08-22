@@ -1690,13 +1690,20 @@ enum RuntimeReferenceTarget {
     Array {
         element: RuntimeArrayElementType,
         count: usize,
+        layout: RuntimeReferenceArrayLayout,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeReferenceArrayLayout {
+    Native,
+    ExpandedStack,
 }
 
 fn runtime_reference_target_type(target: RuntimeReferenceTarget) -> RuntimeExpressionType {
     match target {
         RuntimeReferenceTarget::Scalar(element) => runtime_type_from_array_element(element),
-        RuntimeReferenceTarget::Array { element, count } => {
+        RuntimeReferenceTarget::Array { element, count, .. } => {
             RuntimeExpressionType::Array { element, count }
         }
     }
@@ -1706,7 +1713,12 @@ fn runtime_reference_target_from_type(
     ty: RuntimeExpressionType,
 ) -> Result<RuntimeReferenceTarget, CodegenErrorKind> {
     match ty {
-        RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference { .. } => {
+        RuntimeExpressionType::Array { element, count } => Ok(RuntimeReferenceTarget::Array {
+            element,
+            count,
+            layout: RuntimeReferenceArrayLayout::ExpandedStack,
+        }),
+        RuntimeExpressionType::Reference { .. } => {
             Err(CodegenErrorKind::RuntimeExpressionUnsupported)
         }
         scalar => Ok(RuntimeReferenceTarget::Scalar(runtime_array_element_type(
@@ -1770,9 +1782,11 @@ fn runtime_reference_type(text: &str) -> Option<RuntimeExpressionType> {
         .strip_prefix("mut ")
         .map_or((target, false), |target| (target.trim(), true));
     let target = match runtime_array_type(target) {
-        Some(RuntimeExpressionType::Array { element, count }) => {
-            RuntimeReferenceTarget::Array { element, count }
-        }
+        Some(RuntimeExpressionType::Array { element, count }) => RuntimeReferenceTarget::Array {
+            element,
+            count,
+            layout: RuntimeReferenceArrayLayout::Native,
+        },
         _ => RuntimeReferenceTarget::Scalar(match target {
             "bool" => RuntimeArrayElementType::Bool,
             "char" => RuntimeArrayElementType::Char,
@@ -1836,7 +1850,27 @@ fn runtime_types_compatible(left: RuntimeExpressionType, right: RuntimeExpressio
                 target: right,
                 mutable: right_mutable,
             },
-        ) => left == right && left_mutable == right_mutable,
+        ) => {
+            let targets_compatible = match (left, right) {
+                (RuntimeReferenceTarget::Scalar(left), RuntimeReferenceTarget::Scalar(right)) => {
+                    left == right
+                }
+                (
+                    RuntimeReferenceTarget::Array {
+                        element: left,
+                        count: left_count,
+                        ..
+                    },
+                    RuntimeReferenceTarget::Array {
+                        element: right,
+                        count: right_count,
+                        ..
+                    },
+                ) => left == right && left_count == right_count,
+                _ => false,
+            };
+            targets_compatible && left_mutable == right_mutable
+        }
         (RuntimeExpressionType::Integer(left), RuntimeExpressionType::Integer(right)) => {
             left.is_none() || right.is_none() || left == right
         }
@@ -3033,7 +3067,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 )
                 .map_err(|kind| self.error(kind))?;
                 if let RuntimeExpressionType::Reference {
-                    target: RuntimeReferenceTarget::Array { element, count },
+                    target:
+                        RuntimeReferenceTarget::Array {
+                            element,
+                            count,
+                            layout,
+                        },
                     ..
                 } = base_type
                 {
@@ -3053,6 +3092,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                                 base,
                                 element,
                                 index,
+                                layout,
                                 depth + 1,
                             )?;
                         }
@@ -3061,8 +3101,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                                 tree,
                                 base,
                                 index,
-                                element,
-                                count,
+                                RuntimeReferenceTarget::Array {
+                                    element,
+                                    count,
+                                    layout,
+                                },
                                 depth + 1,
                             )?;
                         }
@@ -3595,19 +3638,41 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         base: crate::ExprId,
         element: RuntimeArrayElementType,
         index: usize,
+        layout: RuntimeReferenceArrayLayout,
         depth: usize,
     ) -> Result<(), CodegenError> {
         self.emit_expression(tree, base, depth + 1)?;
         let element_bytes = runtime_array_element_bytes(element)
             .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
-        let displacement = element_bytes
+        let stride = if layout == RuntimeReferenceArrayLayout::Native {
+            element_bytes
+        } else {
+            8
+        };
+        let displacement = stride
             .checked_mul(index)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
         if displacement != 0 {
             if displacement <= i8::MAX as usize {
-                self.emit(&[0x48, 0x83, 0xc0, displacement as u8])?;
+                self.emit(&[
+                    0x48,
+                    0x83,
+                    if layout == RuntimeReferenceArrayLayout::Native {
+                        0xc0
+                    } else {
+                        0xe8
+                    },
+                    displacement as u8,
+                ])?;
             } else {
-                self.emit(&[0x48, 0x05])?;
+                self.emit(&[
+                    0x48,
+                    if layout == RuntimeReferenceArrayLayout::Native {
+                        0x05
+                    } else {
+                        0x2d
+                    },
+                ])?;
                 self.emit(
                     &u32::try_from(displacement)
                         .map_err(|_| self.error(CodegenErrorKind::OutputTooSmall))?
@@ -3627,10 +3692,17 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         tree: &crate::ExpressionTree<'_, MAX_NODES>,
         base: crate::ExprId,
         index: crate::ExprId,
-        element: RuntimeArrayElementType,
-        count: usize,
+        target: RuntimeReferenceTarget,
         depth: usize,
     ) -> Result<(), CodegenError> {
+        let RuntimeReferenceTarget::Array {
+            element,
+            count,
+            layout,
+        } = target
+        else {
+            return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+        };
         self.emit_expression(tree, base, depth + 1)?;
         self.emit(&[0x50])?;
         self.evaluation_depth += 1;
@@ -3648,12 +3720,16 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         }
         self.emit(&[0x48, 0x89, 0xc1, 0x58])?;
         self.evaluation_depth -= 1;
-        match element_bytes {
-            1 => self.emit(&[0x48, 0x01, 0xc8])?,
-            2 => self.emit(&[0x48, 0x8d, 0x04, 0x48])?,
-            4 => self.emit(&[0x48, 0x8d, 0x04, 0x88])?,
-            8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8])?,
-            _ => return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+        if layout == RuntimeReferenceArrayLayout::ExpandedStack {
+            self.emit(&[0x48, 0xc1, 0xe1, 0x03, 0x48, 0x29, 0xc8])?;
+        } else {
+            match element_bytes {
+                1 => self.emit(&[0x48, 0x01, 0xc8])?,
+                2 => self.emit(&[0x48, 0x8d, 0x04, 0x48])?,
+                4 => self.emit(&[0x48, 0x8d, 0x04, 0x88])?,
+                8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8])?,
+                _ => return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+            }
         }
         self.emit_reference_load(element)
     }
@@ -3861,14 +3937,23 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     }
 
     fn emit_identifier_address(&mut self, name: &str) -> Result<(), CodegenError> {
-        let slots = if let Some(index) = self.locals[..self.saved_locals]
+        let slots = if let Some((index, local)) = self.locals[..self.saved_locals]
             .iter()
             .enumerate()
             .rev()
-            .find_map(|(index, local)| local.filter(|local| local.name == name).map(|_| index))
-        {
+            .find_map(|(index, local)| {
+                local
+                    .filter(|local| local.name == name)
+                    .map(|local| (index, local))
+            }) {
             self.local_stack_slots_from(index + 1)?
                 .checked_add(self.evaluation_depth)
+                .and_then(|slots| match local.ty {
+                    RuntimeExpressionType::Array { count, .. } => {
+                        slots.checked_add(count.saturating_sub(1))
+                    }
+                    _ => Some(slots),
+                })
         } else if let Some(index) = self
             .function
             .parameters()
@@ -4051,6 +4136,17 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, local.initializer_span),
             });
         }
+        let local_type = if matches!(
+            (initializer_type, local_type),
+            (
+                RuntimeExpressionType::Reference { .. },
+                RuntimeExpressionType::Reference { .. }
+            )
+        ) {
+            initializer_type
+        } else {
+            local_type
+        };
         let stack_slots = runtime_type_stack_slots(local_type);
         if let RuntimeExpressionType::Array { count, .. } = local_type {
             self.emit_array_to_stack(&tree, tree.root(), count)?;
@@ -4160,12 +4256,17 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                         .and_then(|parameter| runtime_reference_type(parameter.ty.text))
                 });
             if let Some(RuntimeExpressionType::Reference {
-                target: RuntimeReferenceTarget::Array { element, count },
+                target:
+                    RuntimeReferenceTarget::Array {
+                        element,
+                        count,
+                        layout,
+                    },
                 mutable,
             }) = target_type
             {
                 return self.emit_reference_array_assignment::<MAX_EXPRESSION_NODES>(
-                    assignment, body_start, element, count, mutable,
+                    assignment, body_start, element, count, layout, mutable,
                 );
             }
         }
@@ -4269,6 +4370,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         body_start: usize,
         element: RuntimeArrayElementType,
         count: usize,
+        layout: RuntimeReferenceArrayLayout,
         mutable: bool,
     ) -> Result<(), CodegenError> {
         if !mutable {
@@ -4311,7 +4413,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let element_bytes = runtime_array_element_bytes(element)
             .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
         if assignment.operator != crate::AssignmentOperator::Assign {
-            self.emit_reference_array_address_from_stack_index(element_bytes, 1)?;
+            self.emit_reference_array_address_from_stack_index(element_bytes, layout, 1)?;
             if element_bytes == 0 {
                 self.emit(&[0x31, 0xc0])?;
             } else {
@@ -4333,7 +4435,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         }
         if element_bytes != 0 {
             self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
-            self.emit_reference_array_store_address_from_stack_index(element_bytes, 1)?;
+            self.emit_reference_array_store_address_from_stack_index(element_bytes, layout, 1)?;
             self.emit_reference_store(element)?;
         }
         self.emit(&[0x48, 0x83, 0xc4, 16])?;
@@ -4344,31 +4446,41 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     fn emit_reference_array_address_from_stack_index(
         &mut self,
         element_bytes: usize,
+        layout: RuntimeReferenceArrayLayout,
         index_slot: u8,
     ) -> Result<(), CodegenError> {
         self.emit(&[0x48, 0x8b, 0x4c, 0x24, index_slot * 8])?;
-        match element_bytes {
-            0 => Ok(()),
-            1 => self.emit(&[0x48, 0x01, 0xc8]),
-            2 => self.emit(&[0x48, 0x8d, 0x04, 0x48]),
-            4 => self.emit(&[0x48, 0x8d, 0x04, 0x88]),
-            8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8]),
-            _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+        if layout == RuntimeReferenceArrayLayout::ExpandedStack {
+            self.emit(&[0x48, 0xc1, 0xe1, 0x03, 0x48, 0x29, 0xc8])
+        } else {
+            match element_bytes {
+                0 => Ok(()),
+                1 => self.emit(&[0x48, 0x01, 0xc8]),
+                2 => self.emit(&[0x48, 0x8d, 0x04, 0x48]),
+                4 => self.emit(&[0x48, 0x8d, 0x04, 0x88]),
+                8 => self.emit(&[0x48, 0x8d, 0x04, 0xc8]),
+                _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+            }
         }
     }
 
     fn emit_reference_array_store_address_from_stack_index(
         &mut self,
         element_bytes: usize,
+        layout: RuntimeReferenceArrayLayout,
         index_slot: u8,
     ) -> Result<(), CodegenError> {
         self.emit(&[0x48, 0x8b, 0x4c, 0x24, index_slot * 8])?;
-        match element_bytes {
-            1 => self.emit(&[0x48, 0x01, 0xca]),
-            2 => self.emit(&[0x48, 0x8d, 0x14, 0x4a]),
-            4 => self.emit(&[0x48, 0x8d, 0x14, 0x8a]),
-            8 => self.emit(&[0x48, 0x8d, 0x14, 0xca]),
-            _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+        if layout == RuntimeReferenceArrayLayout::ExpandedStack {
+            self.emit(&[0x48, 0xc1, 0xe1, 0x03, 0x48, 0x29, 0xca])
+        } else {
+            match element_bytes {
+                1 => self.emit(&[0x48, 0x01, 0xca]),
+                2 => self.emit(&[0x48, 0x8d, 0x14, 0x4a]),
+                4 => self.emit(&[0x48, 0x8d, 0x14, 0x8a]),
+                8 => self.emit(&[0x48, 0x8d, 0x14, 0xca]),
+                _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+            }
         }
     }
 
@@ -6980,6 +7092,28 @@ mod tests {
                 .kind,
             CodegenErrorKind::ImmutableAssignment,
         );
+    }
+
+    #[test]
+    fn takes_references_to_expanded_fixed_array_locals() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize, index: usize) -> usize { let values = [input, 10, 20, 30]; let reference: &[usize; 4] = &values; reference[index] + reference[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize, index: usize) -> usize { let mut values = [input, 10, 20, 30]; let reference: &mut [usize; 4] = &mut values; let copied: &mut [usize; 4] = &mut *reference; copied[index] += 2; copied[index] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: i16) -> i16 { let mut values = [input, 0, 0]; let reference: &mut [i16; 3] = &mut values; reference[1] = -12; reference[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> bool { let mut values = [input, false, true]; let reference: &mut [bool; 3] = &mut values; reference[1] ^= true; reference[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: char) -> char { let mut values = [input, 'a']; let reference: &mut [char; 2] = &mut values; reference[1] = 'z'; reference[1] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 8>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1024, 8, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
     }
 
     #[test]

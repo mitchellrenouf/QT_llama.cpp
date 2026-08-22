@@ -1828,6 +1828,21 @@ fn rustc_fixed_array_references_reach_native_objects() {
 }
 
 #[test]
+fn rustc_expanded_fixed_array_local_references_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize, index: usize) -> usize { let values = [input, 10, 20, 30]; let reference: &[usize; 4] = &values; reference[index] + reference[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize, index: usize) -> usize { let mut values = [input, 10, 20, 30]; let reference: &mut [usize; 4] = &mut values; let copied: &mut [usize; 4] = &mut *reference; copied[index] += 2; copied[index] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: i16) -> i16 { let mut values = [input, 0, 0]; let reference: &mut [i16; 3] = &mut values; reference[1] = -12; reference[1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: bool) -> bool { let mut values = [input, false, true]; let reference: &mut [bool; 3] = &mut values; reference[1] ^= true; reference[1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: char) -> char { let mut values = [input, 'a']; let reference: &mut [char; 2] = &mut values; reference[1] = 'z'; reference[1] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",
