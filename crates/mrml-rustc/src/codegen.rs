@@ -6205,6 +6205,19 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         tree: &crate::ExpressionTree<'_, MAX_NODES>,
         root: crate::ExprId,
     ) -> Result<(), CodegenError> {
+        if let Some(ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        }) = tree.expression(root).map(|expression| expression.kind)
+        {
+            self.emit_expression(tree, condition, 0)?;
+            self.emit(&[0x48, 0x85, 0xc0])?;
+            let else_patch = self.emit_forward_branch(0x84)?;
+            self.emit_slice_return(tree, then_branch)?;
+            self.patch_forward_branch(else_patch)?;
+            return self.emit_slice_return(tree, else_branch);
+        }
         let stacked = self.emit_range_slice_to_stack(tree, root, 0)?;
         if stacked {
             self.emit_stack_slot(1)?;
@@ -8168,6 +8181,26 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch,
         );
+    }
+
+    #[test]
+    fn returns_conditional_slice_references() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16], select: bool) -> &[u16] { if select { &input[..1] } else { &input[1..] } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16], select: bool) -> &mut [u16] { if select { &mut input[..1] } else { &mut input[1..] } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16], select: bool) -> &[u16] { if select { input } else { &input[1..] } }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 3072, 4, 192>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
     }
 
     #[test]

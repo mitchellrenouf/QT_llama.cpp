@@ -1880,6 +1880,19 @@ fn rustc_indexed_element_references_reach_native_objects() {
 }
 
 #[test]
+fn rustc_conditional_slice_reference_returns_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &[u16], select: bool) -> &[u16] { if select { &input[..1] } else { &input[1..] } }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut [u16], select: bool) -> &mut [u16] { if select { &mut input[..1] } else { &mut input[1..] } }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut [u16], select: bool) -> &[u16] { if select { input } else { &input[1..] } }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",
