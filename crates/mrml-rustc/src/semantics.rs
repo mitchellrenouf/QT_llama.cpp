@@ -3041,6 +3041,21 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_terminal_control_from_loop_alternative_arms() {
+        let module = Parser::new(
+            "const fn probe(limit: u8, mode: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { i += 1; if mode == 0 { let selected: u8 = i; total += selected; break; } else if mode == 1 { let repeated: u8 = 2; total += repeated; continue; } else if mode == 2 { let stopped: u8 = 3; total += stopped; break; } else { let returned: u8 = i + 40; return returned; } } total } const ZERO: u8 = probe(0, 99); const PRIMARY: u8 = probe(5, 0); const REPEATED: u8 = probe(5, 1); const LATER: u8 = probe(5, 2); const RETURNED: u8 = probe(5, 99);",
+        )
+        .parse_module::<8, 4>()
+        .unwrap();
+        let values = analyze_constants::<5, 96, 8, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("PRIMARY"), Some(1));
+        assert_eq!(values.resolve("REPEATED"), Some(10));
+        assert_eq!(values.resolve("LATER"), Some(3));
+        assert_eq!(values.resolve("RETURNED"), Some(41));
+    }
+
+    #[test]
     fn evaluates_bounded_boolean_const_function_calls_and_parameters() {
         let module = Parser::new(
             "const fn invert(value: bool) -> bool { !value } const fn both(left: bool, right: bool) -> bool { left && right } const fn positive(value: i32) -> bool { value > 0 } const fn choose(condition: bool, left: u8, right: u8) -> u8 { if condition { left } else { right } } const FLAG: bool = invert(false) && both(true, positive(42)); const VALUE: u8 = choose(FLAG, 42, 0);",

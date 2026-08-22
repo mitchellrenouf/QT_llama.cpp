@@ -550,6 +550,25 @@ fn rustc_loop_else_if_chain_has_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_loop_alternative_terminals_have_an_executable_replacement() {
+    // Original scalar replacement for conditional break/continue ordering in
+    // tests/ui/for-loop-while/loop-break-cont.rs and the alternative continue
+    // edge in loop-no-reinit-needed-post-bot.rs at the pinned nightly commit.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, mode: u32) -> u32 { let mut i: u32 = 0; let mut total: u32 = 0; while i < limit { i += 1; if mode == 0 { let selected: u32 = i; total += selected; break; } else if mode == 1 { let repeated: u32 = 2; total += repeated; continue; } else if mode == 2 { let stopped: u32 = 3; total += stopped; break; } else { let returned: u32 = i + 40; return returned; } } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<2048, 1536, 4, 4, 4, 64>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",
