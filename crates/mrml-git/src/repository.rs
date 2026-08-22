@@ -4,12 +4,12 @@ use mrml_runtime::{
     path_is_directory, path_is_file, read_directory, read_file_bounded, read_file_text_bounded,
     write_file,
 };
-use mrml_ssh::{RsaPrivateKey,RsaPublicKey,sign_sshsig,verify_sshsig};
+use mrml_ssh::{RsaPrivateKey, RsaPublicKey, sign_sshsig, verify_sshsig};
 
 use crate::{
     Commit, FileDiff, Index, IndexEntry, IndexError, Object, ObjectError, ObjectId, ObjectKind,
-    decode_loose_object, encode_loose_object, encode_pack, parse_pack, parse_tree, PackError,
-    PackObject,
+    PackError, PackObject, decode_loose_object, encode_loose_object, encode_pack, parse_pack,
+    parse_tree,
 };
 
 const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
@@ -216,13 +216,56 @@ impl Repository {
         let mut ids = Vector::new();
         for object in objects {
             let id = self.write_object(object.kind, &object.contents)?;
-            if id != object.id { return Err(RepositoryError::InvalidHead); }
+            if id != object.id {
+                return Err(RepositoryError::InvalidHead);
+            }
             ids.push(id);
         }
         Ok(ids)
     }
 
-    pub fn pack_reachable(&self,tip:ObjectId)->Result<Vector<u8>,RepositoryError>{let mut pending=Vector::from([tip]);let mut seen=Vector::new();let mut objects=Vector::new();while let Some(id)=pending.pop(){if seen.contains(&id){continue;}if seen.len()>=1_000_000{return Err(RepositoryError::TooManyFiles);}let object=self.read_object(id)?;match object.kind{ObjectKind::Commit=>{let commit=Commit::parse(&object.contents)?;pending.push(commit.tree);pending.extend(commit.parents.iter().copied());},ObjectKind::Tree=>pending.extend(parse_tree(&object.contents)?.iter().map(|entry|entry.id)),ObjectKind::Tag=>{let text=core::str::from_utf8(&object.contents).map_err(|_|RepositoryError::InvalidReference)?;let target=text.lines().find_map(|line|line.strip_prefix("object ")).and_then(ObjectId::parse).ok_or(RepositoryError::InvalidReference)?;pending.push(target);},ObjectKind::Blob=>{}}seen.push(id);objects.push(PackObject{id,kind:object.kind,contents:object.contents});}encode_pack(&objects).map_err(Into::into)}
+    pub fn pack_reachable(&self, tip: ObjectId) -> Result<Vector<u8>, RepositoryError> {
+        let mut pending = Vector::from([tip]);
+        let mut seen = Vector::new();
+        let mut objects = Vector::new();
+        while let Some(id) = pending.pop() {
+            if seen.contains(&id) {
+                continue;
+            }
+            if seen.len() >= 1_000_000 {
+                return Err(RepositoryError::TooManyFiles);
+            }
+            let object = self.read_object(id)?;
+            match object.kind {
+                ObjectKind::Commit => {
+                    let commit = Commit::parse(&object.contents)?;
+                    pending.push(commit.tree);
+                    pending.extend(commit.parents.iter().copied());
+                }
+                ObjectKind::Tree => {
+                    pending.extend(parse_tree(&object.contents)?.iter().map(|entry| entry.id))
+                }
+                ObjectKind::Tag => {
+                    let text = core::str::from_utf8(&object.contents)
+                        .map_err(|_| RepositoryError::InvalidReference)?;
+                    let target = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("object "))
+                        .and_then(ObjectId::parse)
+                        .ok_or(RepositoryError::InvalidReference)?;
+                    pending.push(target);
+                }
+                ObjectKind::Blob => {}
+            }
+            seen.push(id);
+            objects.push(PackObject {
+                id,
+                kind: object.kind,
+                contents: object.contents,
+            });
+        }
+        encode_pack(&objects).map_err(Into::into)
+    }
 
     pub fn resolve_revision(&self, revision: &str) -> Result<ObjectId, RepositoryError> {
         if revision == "HEAD" {
@@ -233,7 +276,7 @@ impl Repository {
         }
         if revision.starts_with("refs/") {
             validate_reference(revision)?;
-            let value=read_file_text_bounded(&join_path(&self.git_dir,revision),4096)?;
+            let value = read_file_text_bounded(&join_path(&self.git_dir, revision), 4096)?;
             return ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference);
         }
         for prefix in ["refs/heads", "refs/tags"] {
@@ -368,9 +411,55 @@ impl Repository {
         Ok(id)
     }
 
-    pub fn checkout_branch_at(&self,branch:&str,id:ObjectId)->Result<ObjectId,RepositoryError>{let reference=mrml_runtime::mrml_format!("refs/heads/{branch}");validate_reference(&reference)?;self.read_commit(id)?;if !self.changes()?.is_empty(){return Err(RepositoryError::WorktreeDirty);}let path=join_path(&self.git_dir,&reference);if let Some(parent)=parent_path(&path){create_dir_all(parent)?;}write_file(&path,mrml_runtime::mrml_format!("{id}\n").as_bytes())?;self.switch_branch(branch)}
+    pub fn checkout_branch_at(
+        &self,
+        branch: &str,
+        id: ObjectId,
+    ) -> Result<ObjectId, RepositoryError> {
+        let reference = mrml_runtime::mrml_format!("refs/heads/{branch}");
+        validate_reference(&reference)?;
+        self.read_commit(id)?;
+        if !self.changes()?.is_empty() {
+            return Err(RepositoryError::WorktreeDirty);
+        }
+        let path = join_path(&self.git_dir, &reference);
+        if let Some(parent) = parent_path(&path) {
+            create_dir_all(parent)?;
+        }
+        write_file(&path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
+        self.switch_branch(branch)
+    }
 
-    pub fn fast_forward(&self,revision:&str)->Result<MergeOutcome,RepositoryError>{if !self.changes()?.is_empty(){return Err(RepositoryError::WorktreeDirty);}let current=self.head()?.ok_or(RepositoryError::ReferenceMissing)?;let target=self.resolve_revision(revision)?;if self.is_ancestor(target,current)?{return Ok(MergeOutcome::UpToDate);}if !self.is_ancestor(current,target)?{return Err(RepositoryError::MergeRequired);}let commit=self.read_commit(target)?;let index=self.tree_index(commit.tree)?;self.materialize_index(&index)?;let branch=self.current_branch()?.ok_or(RepositoryError::DetachedHead)?;let path=join_path(&self.git_dir,&mrml_runtime::mrml_format!("refs/heads/{branch}"));let lock=mrml_runtime::mrml_format!("{path}.lock");if path_exists(&lock){return Err(RepositoryError::AlreadyExists);}write_file(&lock,mrml_runtime::mrml_format!("{target}\n").as_bytes())?;mrml_runtime::rename_file(&lock,&path)?;Ok(MergeOutcome::FastForward(target))}
+    pub fn fast_forward(&self, revision: &str) -> Result<MergeOutcome, RepositoryError> {
+        if !self.changes()?.is_empty() {
+            return Err(RepositoryError::WorktreeDirty);
+        }
+        let current = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let target = self.resolve_revision(revision)?;
+        if self.is_ancestor(target, current)? {
+            return Ok(MergeOutcome::UpToDate);
+        }
+        if !self.is_ancestor(current, target)? {
+            return Err(RepositoryError::MergeRequired);
+        }
+        let commit = self.read_commit(target)?;
+        let index = self.tree_index(commit.tree)?;
+        self.materialize_index(&index)?;
+        let branch = self
+            .current_branch()?
+            .ok_or(RepositoryError::DetachedHead)?;
+        let path = join_path(
+            &self.git_dir,
+            &mrml_runtime::mrml_format!("refs/heads/{branch}"),
+        );
+        let lock = mrml_runtime::mrml_format!("{path}.lock");
+        if path_exists(&lock) {
+            return Err(RepositoryError::AlreadyExists);
+        }
+        write_file(&lock, mrml_runtime::mrml_format!("{target}\n").as_bytes())?;
+        mrml_runtime::rename_file(&lock, &path)?;
+        Ok(MergeOutcome::FastForward(target))
+    }
 
     pub fn is_ancestor(
         &self,
@@ -768,27 +857,94 @@ impl Repository {
         self.abort_operation("CHERRY_PICK_HEAD")
     }
 
-    pub fn rebase(&self, revision: &str, committer_name: &str, committer_email: &str, timestamp: u64) -> Result<RebaseOutcome, RepositoryError> {
+    pub fn rebase(
+        &self,
+        revision: &str,
+        committer_name: &str,
+        committer_email: &str,
+        timestamp: u64,
+    ) -> Result<RebaseOutcome, RepositoryError> {
         validate_identity(committer_name, committer_email)?;
-        if !self.changes()?.is_empty() { return Err(RepositoryError::WorktreeDirty); }
-        let original=self.head()?.ok_or(RepositoryError::ReferenceMissing)?;let target=self.resolve_revision(revision)?;
-        if self.is_ancestor(target,original)? { return Ok(RebaseOutcome::UpToDate); }
-        let base=self.merge_base(original,target)?;let mut commits=Vector::new();let mut cursor=original;
-        while cursor!=base {let commit=self.read_commit(cursor)?;if commit.parents.len()!=1{return Err(RepositoryError::MergeRequired);}commits.push(cursor);cursor=commit.parents[0];if commits.len()>1_000_000{return Err(RepositoryError::TooManyFiles);}}
+        if !self.changes()?.is_empty() {
+            return Err(RepositoryError::WorktreeDirty);
+        }
+        let original = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let target = self.resolve_revision(revision)?;
+        if self.is_ancestor(target, original)? {
+            return Ok(RebaseOutcome::UpToDate);
+        }
+        let base = self.merge_base(original, target)?;
+        let mut commits = Vector::new();
+        let mut cursor = original;
+        while cursor != base {
+            let commit = self.read_commit(cursor)?;
+            if commit.parents.len() != 1 {
+                return Err(RepositoryError::MergeRequired);
+            }
+            commits.push(cursor);
+            cursor = commit.parents[0];
+            if commits.len() > 1_000_000 {
+                return Err(RepositoryError::TooManyFiles);
+            }
+        }
         commits.reverse();
-        write_file(&join_path(&self.git_dir,"REBASE_ORIG_HEAD"),mrml_runtime::mrml_format!("{original}\n").as_bytes())?;
-        let target_index=self.tree_index(self.read_commit(target)?.tree)?;self.materialize_index(&target_index)?;self.update_current_branch(target)?;
-        let mut head=target;
-        for(offset,commit)in commits.iter().enumerate(){write_file(&join_path(&self.git_dir,"REBASE_HEAD"),mrml_runtime::mrml_format!("{commit}\n").as_bytes())?;match self.cherry_pick(&commit.to_hex(),committer_name,committer_email,timestamp.saturating_add(offset as u64))?{MergeOutcome::Merged(id)=>head=id,MergeOutcome::Conflicts(count)=>return Ok(RebaseOutcome::Conflicts(count)),_=>return Err(RepositoryError::MergeRequired)}}
-        for name in ["REBASE_HEAD","REBASE_ORIG_HEAD"]{let path=join_path(&self.git_dir,name);if path_is_file(&path){mrml_runtime::remove_file(&path)?;}}
-        Ok(RebaseOutcome::Rebased{count:commits.len(),head})
+        write_file(
+            &join_path(&self.git_dir, "REBASE_ORIG_HEAD"),
+            mrml_runtime::mrml_format!("{original}\n").as_bytes(),
+        )?;
+        let target_index = self.tree_index(self.read_commit(target)?.tree)?;
+        self.materialize_index(&target_index)?;
+        self.update_current_branch(target)?;
+        let mut head = target;
+        for (offset, commit) in commits.iter().enumerate() {
+            write_file(
+                &join_path(&self.git_dir, "REBASE_HEAD"),
+                mrml_runtime::mrml_format!("{commit}\n").as_bytes(),
+            )?;
+            match self.cherry_pick(
+                &commit.to_hex(),
+                committer_name,
+                committer_email,
+                timestamp.saturating_add(offset as u64),
+            )? {
+                MergeOutcome::Merged(id) => head = id,
+                MergeOutcome::Conflicts(count) => return Ok(RebaseOutcome::Conflicts(count)),
+                _ => return Err(RepositoryError::MergeRequired),
+            }
+        }
+        for name in ["REBASE_HEAD", "REBASE_ORIG_HEAD"] {
+            let path = join_path(&self.git_dir, name);
+            if path_is_file(&path) {
+                mrml_runtime::remove_file(&path)?;
+            }
+        }
+        Ok(RebaseOutcome::Rebased {
+            count: commits.len(),
+            head,
+        })
     }
 
     pub fn abort_rebase(&self) -> Result<ObjectId, RepositoryError> {
-        let original_path=join_path(&self.git_dir,"REBASE_ORIG_HEAD");if !path_is_file(&original_path){return Err(RepositoryError::ReferenceMissing);}
-        let value=read_file_text_bounded(&original_path,4096)?;let original=ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
-        let index=self.tree_index(self.read_commit(original)?.tree)?;self.materialize_index(&index)?;self.update_current_branch(original)?;
-        for name in ["REBASE_HEAD","REBASE_ORIG_HEAD","CHERRY_PICK_HEAD","ORIG_HEAD"]{let path=join_path(&self.git_dir,name);if path_is_file(&path){mrml_runtime::remove_file(&path)?;}}
+        let original_path = join_path(&self.git_dir, "REBASE_ORIG_HEAD");
+        if !path_is_file(&original_path) {
+            return Err(RepositoryError::ReferenceMissing);
+        }
+        let value = read_file_text_bounded(&original_path, 4096)?;
+        let original = ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
+        let index = self.tree_index(self.read_commit(original)?.tree)?;
+        self.materialize_index(&index)?;
+        self.update_current_branch(original)?;
+        for name in [
+            "REBASE_HEAD",
+            "REBASE_ORIG_HEAD",
+            "CHERRY_PICK_HEAD",
+            "ORIG_HEAD",
+        ] {
+            let path = join_path(&self.git_dir, name);
+            if path_is_file(&path) {
+                mrml_runtime::remove_file(&path)?;
+            }
+        }
         Ok(original)
     }
 
@@ -1210,6 +1366,67 @@ impl Repository {
         Ok(id)
     }
 
+    pub fn create_signed_tag(
+        &self,
+        name: &str,
+        message: &str,
+        tagger: &str,
+        email: &str,
+        timestamp: u64,
+        key: &RsaPrivateKey,
+    ) -> Result<ObjectId, RepositoryError> {
+        let reference = mrml_runtime::mrml_format!("refs/tags/{name}");
+        validate_reference(&reference)?;
+        let path = join_path(&self.git_dir, &reference);
+        if path_exists(&path) {
+            return Err(RepositoryError::ReferenceExists);
+        }
+        validate_identity(tagger, email)?;
+        if message.trim().is_empty() || message.contains('\0') {
+            return Err(RepositoryError::InvalidIdentity);
+        }
+        let target = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let mut unsigned = mrml_runtime::mrml_format!(
+            "object {target}\ntype commit\ntag {name}\ntagger {tagger} <{email}> {timestamp} +0000\n\n"
+        );
+        unsigned.push_str(message.trim());
+        unsigned.push('\n');
+        let signature =
+            sign_sshsig(key, "git", unsigned.as_bytes()).map_err(|_| RepositoryError::Signing)?;
+        let mut contents = unsigned;
+        contents.push_str(&signature);
+        let id = self.write_object(ObjectKind::Tag, contents.as_bytes())?;
+        if let Some(parent) = parent_path(&path) {
+            create_dir_all(parent)?;
+        }
+        write_file(&path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
+        Ok(id)
+    }
+
+    pub fn verify_tag_signature(
+        &self,
+        id: ObjectId,
+        key: &RsaPublicKey,
+    ) -> Result<(), RepositoryError> {
+        let object = self.read_object(id)?;
+        if object.kind != ObjectKind::Tag {
+            return Err(RepositoryError::InvalidReference);
+        }
+        let marker = b"-----BEGIN SSH SIGNATURE-----";
+        let offset = object
+            .contents
+            .windows(marker.len())
+            .position(|part| part == marker)
+            .ok_or(RepositoryError::Signing)?;
+        if offset == 0 || object.contents[offset - 1] != b'\n' {
+            return Err(RepositoryError::Signing);
+        }
+        let unsigned = &object.contents[..offset];
+        let armor = core::str::from_utf8(&object.contents[offset..])
+            .map_err(|_| RepositoryError::Signing)?;
+        verify_sshsig(key, "git", unsigned, armor).map_err(|_| RepositoryError::Signing)
+    }
+
     pub fn remotes(&self) -> Result<Vector<(Text, Text)>, RepositoryError> {
         let config = read_file_text_bounded(&join_path(&self.git_dir, "config"), 1024 * 1024)?;
         let mut output = Vector::new();
@@ -1283,14 +1500,23 @@ impl Repository {
         Ok(())
     }
 
-    pub fn update_remote_ref(&self, remote: &str, source: &str, id: ObjectId) -> Result<(), RepositoryError> {
+    pub fn update_remote_ref(
+        &self,
+        remote: &str,
+        source: &str,
+        id: ObjectId,
+    ) -> Result<(), RepositoryError> {
         validate_config_name(remote)?;
-        let branch = source.strip_prefix("refs/heads/").ok_or(RepositoryError::InvalidReference)?;
+        let branch = source
+            .strip_prefix("refs/heads/")
+            .ok_or(RepositoryError::InvalidReference)?;
         validate_reference(source)?;
         let reference = mrml_runtime::mrml_format!("refs/remotes/{remote}/{branch}");
         validate_reference(&reference)?;
         let path = join_path(&self.git_dir, &reference);
-        if let Some(parent) = parent_path(&path) { create_dir_all(parent)?; }
+        if let Some(parent) = parent_path(&path) {
+            create_dir_all(parent)?;
+        }
         write_file(&path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
         Ok(())
     }
@@ -1316,12 +1542,56 @@ impl Repository {
         Ok(None)
     }
 
-    pub fn set_config_value(&self, section:&str,key:&str,value:&str)->Result<(),RepositoryError>{
-        validate_config_name(section)?;validate_config_name(key)?;
-        if value.is_empty()||value.chars().any(char::is_control){return Err(RepositoryError::InvalidReference);}
-        let path=join_path(&self.git_dir,"config");let config=read_file_text_bounded(&path,1024*1024)?;let target=mrml_runtime::mrml_format!("[{section}]");let mut output=Text::new();let mut active=false;let mut found_section=false;let mut wrote=false;
-        for raw in config.lines(){let line=raw.trim();if line.starts_with('['){if active&&!wrote{output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));wrote=true;}active=target==line;found_section|=active;}if active&&line.split_once('=').is_some_and(|(found,_)|found.trim()==key){output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));wrote=true;}else{output.push_str(raw);output.push('\n');}}
-        if active&&!wrote{output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));}if !found_section{output.push_str(&mrml_runtime::mrml_format!("\n{target}\n\t{key} = {value}\n"));}write_file(&path,output.as_bytes())?;Ok(())
+    pub fn set_config_value(
+        &self,
+        section: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), RepositoryError> {
+        validate_config_name(section)?;
+        validate_config_name(key)?;
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(RepositoryError::InvalidReference);
+        }
+        let path = join_path(&self.git_dir, "config");
+        let config = read_file_text_bounded(&path, 1024 * 1024)?;
+        let target = mrml_runtime::mrml_format!("[{section}]");
+        let mut output = Text::new();
+        let mut active = false;
+        let mut found_section = false;
+        let mut wrote = false;
+        for raw in config.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') {
+                if active && !wrote {
+                    output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));
+                    wrote = true;
+                }
+                active = target == line;
+                found_section |= active;
+            }
+            if active
+                && line
+                    .split_once('=')
+                    .is_some_and(|(found, _)| found.trim() == key)
+            {
+                output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));
+                wrote = true;
+            } else {
+                output.push_str(raw);
+                output.push('\n');
+            }
+        }
+        if active && !wrote {
+            output.push_str(&mrml_runtime::mrml_format!("\t{key} = {value}\n"));
+        }
+        if !found_section {
+            output.push_str(&mrml_runtime::mrml_format!(
+                "\n{target}\n\t{key} = {value}\n"
+            ));
+        }
+        write_file(&path, output.as_bytes())?;
+        Ok(())
     }
 
     pub fn stage(&self, paths: &[Text]) -> Result<(), RepositoryError> {
@@ -1424,12 +1694,28 @@ impl Repository {
         email: &str,
         timestamp: u64,
     ) -> Result<ObjectId, RepositoryError> {
-        self.commit_internal(message,name,email,timestamp,None)
+        self.commit_internal(message, name, email, timestamp, None)
     }
 
-    pub fn commit_signed(&self,message:&str,name:&str,email:&str,timestamp:u64,key:&RsaPrivateKey)->Result<ObjectId,RepositoryError>{self.commit_internal(message,name,email,timestamp,Some(key))}
+    pub fn commit_signed(
+        &self,
+        message: &str,
+        name: &str,
+        email: &str,
+        timestamp: u64,
+        key: &RsaPrivateKey,
+    ) -> Result<ObjectId, RepositoryError> {
+        self.commit_internal(message, name, email, timestamp, Some(key))
+    }
 
-    fn commit_internal(&self,message:&str,name:&str,email:&str,timestamp:u64,key:Option<&RsaPrivateKey>)->Result<ObjectId,RepositoryError>{
+    fn commit_internal(
+        &self,
+        message: &str,
+        name: &str,
+        email: &str,
+        timestamp: u64,
+        key: Option<&RsaPrivateKey>,
+    ) -> Result<ObjectId, RepositoryError> {
         validate_identity(name, email)?;
         if message.trim().is_empty() || message.chars().any(|character| character == '\0') {
             return Err(RepositoryError::InvalidIdentity);
@@ -1459,8 +1745,28 @@ impl Repository {
             email,
             timestamp
         ));
-        let mut unsigned=contents.clone();unsigned.push('\n');unsigned.push_str(message.trim());unsigned.push('\n');
-        if let Some(key)=key{let armor=sign_sshsig(key,"git",unsigned.as_bytes()).map_err(|_|RepositoryError::Signing)?;for(index,line)in armor.lines().enumerate(){if index==0{contents.push_str("gpgsig ");}else{contents.push(' ');}contents.push_str(line);contents.push('\n');}contents.push('\n');contents.push_str(message.trim());contents.push('\n');}else{contents=unsigned;}
+        let mut unsigned = contents.clone();
+        unsigned.push('\n');
+        unsigned.push_str(message.trim());
+        unsigned.push('\n');
+        if let Some(key) = key {
+            let armor = sign_sshsig(key, "git", unsigned.as_bytes())
+                .map_err(|_| RepositoryError::Signing)?;
+            for (index, line) in armor.lines().enumerate() {
+                if index == 0 {
+                    contents.push_str("gpgsig ");
+                } else {
+                    contents.push(' ');
+                }
+                contents.push_str(line);
+                contents.push('\n');
+            }
+            contents.push('\n');
+            contents.push_str(message.trim());
+            contents.push('\n');
+        } else {
+            contents = unsigned;
+        }
         let id = self.write_object(ObjectKind::Commit, contents.as_bytes())?;
         let reference = mrml_runtime::mrml_format!("refs/heads/{}", branch);
         validate_reference(&reference)?;
@@ -1488,7 +1794,18 @@ impl Repository {
         Ok(id)
     }
 
-    pub fn verify_commit_signature(&self,id:ObjectId,key:&RsaPublicKey)->Result<(),RepositoryError>{let object=self.read_object(id)?;if object.kind!=ObjectKind::Commit{return Err(RepositoryError::InvalidReference);}let(unsigned,armor)=split_commit_signature(&object.contents)?;verify_sshsig(key,"git",&unsigned,&armor).map_err(|_|RepositoryError::Signing)}
+    pub fn verify_commit_signature(
+        &self,
+        id: ObjectId,
+        key: &RsaPublicKey,
+    ) -> Result<(), RepositoryError> {
+        let object = self.read_object(id)?;
+        if object.kind != ObjectKind::Commit {
+            return Err(RepositoryError::InvalidReference);
+        }
+        let (unsigned, armor) = split_commit_signature(&object.contents)?;
+        verify_sshsig(key, "git", &unsigned, &armor).map_err(|_| RepositoryError::Signing)
+    }
 
     fn create_commit_object(
         &self,
@@ -1786,7 +2103,40 @@ fn validate_config_name(value: &str) -> Result<(), RepositoryError> {
     }
 }
 
-fn split_commit_signature(contents:&[u8])->Result<(Vector<u8>,Text),RepositoryError>{let text=core::str::from_utf8(contents).map_err(|_|RepositoryError::Signing)?;let(headers,message)=text.split_once("\n\n").ok_or(RepositoryError::Signing)?;let mut unsigned=Text::new();let mut armor=Text::new();let mut signing=false;let mut found=false;for line in headers.split('\n'){if let Some(first)=line.strip_prefix("gpgsig "){if found{return Err(RepositoryError::Signing);}found=true;signing=true;armor.push_str(first);armor.push('\n');}else if signing&&line.starts_with(' '){armor.push_str(&line[1..]);armor.push('\n');}else{signing=false;unsigned.push_str(line);unsigned.push('\n');}}if !found{return Err(RepositoryError::Signing);}unsigned.push('\n');unsigned.push_str(message);let mut bytes=Vector::new();bytes.extend(unsigned.bytes());Ok((bytes,armor))}
+fn split_commit_signature(contents: &[u8]) -> Result<(Vector<u8>, Text), RepositoryError> {
+    let text = core::str::from_utf8(contents).map_err(|_| RepositoryError::Signing)?;
+    let (headers, message) = text.split_once("\n\n").ok_or(RepositoryError::Signing)?;
+    let mut unsigned = Text::new();
+    let mut armor = Text::new();
+    let mut signing = false;
+    let mut found = false;
+    for line in headers.split('\n') {
+        if let Some(first) = line.strip_prefix("gpgsig ") {
+            if found {
+                return Err(RepositoryError::Signing);
+            }
+            found = true;
+            signing = true;
+            armor.push_str(first);
+            armor.push('\n');
+        } else if signing && line.starts_with(' ') {
+            armor.push_str(&line[1..]);
+            armor.push('\n');
+        } else {
+            signing = false;
+            unsigned.push_str(line);
+            unsigned.push('\n');
+        }
+    }
+    if !found {
+        return Err(RepositoryError::Signing);
+    }
+    unsigned.push('\n');
+    unsigned.push_str(message);
+    let mut bytes = Vector::new();
+    bytes.extend(unsigned.bytes());
+    Ok((bytes, armor))
+}
 
 fn remote_section(line: &str) -> Option<&str> {
     line.strip_prefix("[remote \"")?
@@ -1855,7 +2205,11 @@ impl From<ObjectError> for RepositoryError {
         Self::Object(value)
     }
 }
-impl From<PackError> for RepositoryError { fn from(value: PackError) -> Self { Self::Pack(value) } }
+impl From<PackError> for RepositoryError {
+    fn from(value: PackError) -> Self {
+        Self::Pack(value)
+    }
+}
 
 impl fmt::Display for RepositoryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1905,8 +2259,24 @@ mod tests {
     use super::*;
     use mrml_runtime::{process_id, remove_dir_all, temporary_directory};
 
-    fn decode_hex(text:&str)->Vector<u8>{(0..text.len()/2).map(|i|u8::from_str_radix(&text[i*2..i*2+2],16).unwrap()).collect()}
-    fn signing_key()->RsaPrivateKey{RsaPrivateKey{public:RsaPublicKey{modulus:decode_hex("9eff1e540991fee9de7c7ed50d5da16508d610090a52c9aa4c41bc868e93e7cc03a6cc766fb2dab78ba91e4315f6524e355fda2c8a71b372f012d43460c2c425c2ae763d96a20584bc030e3595cc9f2352f51288f8db5d398d55efc566381707b4df848444641093fc5c48ca894db8397b252d00d5d606fe377b09f3609850fb"),exponent:Vector::from([1,0,1])},private_exponent:decode_hex("2187d1e08d2821e736497102035094a1d70c35d3823ed552b9c43f3aed4499e4b77c6cb0297c418de5c123a5a8330b467d111ad4bbd9a0ab839fa4eaeae108364d4ad3f439916be8a244f8071922b1918cce92b27fe5f6ed24a328b15030b3fb3e300166c651f5f457daef746c4051a7a0f035379dcacf3a164fb4aedd284a11")}}
+    fn decode_hex(text: &str) -> Vector<u8> {
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).unwrap())
+            .collect()
+    }
+    fn signing_key() -> RsaPrivateKey {
+        RsaPrivateKey {
+            public: RsaPublicKey {
+                modulus: decode_hex(
+                    "9eff1e540991fee9de7c7ed50d5da16508d610090a52c9aa4c41bc868e93e7cc03a6cc766fb2dab78ba91e4315f6524e355fda2c8a71b372f012d43460c2c425c2ae763d96a20584bc030e3595cc9f2352f51288f8db5d398d55efc566381707b4df848444641093fc5c48ca894db8397b252d00d5d606fe377b09f3609850fb",
+                ),
+                exponent: Vector::from([1, 0, 1]),
+            },
+            private_exponent: decode_hex(
+                "2187d1e08d2821e736497102035094a1d70c35d3823ed552b9c43f3aed4499e4b77c6cb0297c418de5c123a5a8330b467d111ad4bbd9a0ab839fa4eaeae108364d4ad3f439916be8a244f8071922b1918cce92b27fe5f6ed24a328b15030b3fb3e300166c651f5f457daef746c4051a7a0f035379dcacf3a164fb4aedd284a11",
+            ),
+        }
+    }
 
     fn root(name: &str) -> Text {
         join_path(
@@ -1982,14 +2352,44 @@ mod tests {
                 &commit.to_hex()[2..]
             )
         )));
-        let packed=parse_pack(&repository.pack_reachable(commit).unwrap()).unwrap();
-        assert!(packed.iter().any(|object|object.id==commit&&object.kind==ObjectKind::Commit));
-        assert!(packed.iter().any(|object|object.kind==ObjectKind::Tree));
-        assert!(packed.iter().any(|object|object.kind==ObjectKind::Blob));
+        let packed = parse_pack(&repository.pack_reachable(commit).unwrap()).unwrap();
+        assert!(
+            packed
+                .iter()
+                .any(|object| object.id == commit && object.kind == ObjectKind::Commit)
+        );
+        assert!(packed.iter().any(|object| object.kind == ObjectKind::Tree));
+        assert!(packed.iter().any(|object| object.kind == ObjectKind::Blob));
         remove_dir_all(&path).unwrap();
     }
 
-    #[test]fn creates_and_verifies_signed_commit(){let path=root("signed-commit");let repository=Repository::init(&path).unwrap();write_file(&join_path(&path,"tracked"),b"signed").unwrap();repository.stage(&Vector::from([Text::from("tracked")])).unwrap();let key=signing_key();let id=repository.commit_signed("signed","Signer","signer@example.invalid",7,&key).unwrap();repository.verify_commit_signature(id,&key.public).unwrap();let object=repository.read_object(id).unwrap();assert!(object.contents.windows(7).any(|part|part==b"gpgsig "));let mut wrong=key.public.clone();wrong.exponent=Vector::from([3]);assert_eq!(repository.verify_commit_signature(id,&wrong),Err(RepositoryError::Signing));remove_dir_all(&path).unwrap();}
+    #[test]
+    fn creates_and_verifies_signed_commit() {
+        let path = root("signed-commit");
+        let repository = Repository::init(&path).unwrap();
+        write_file(&join_path(&path, "tracked"), b"signed").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("tracked")]))
+            .unwrap();
+        let key = signing_key();
+        let id = repository
+            .commit_signed("signed", "Signer", "signer@example.invalid", 7, &key)
+            .unwrap();
+        repository.verify_commit_signature(id, &key.public).unwrap();
+        let object = repository.read_object(id).unwrap();
+        assert!(object.contents.windows(7).any(|part| part == b"gpgsig "));
+        let tag=repository.create_signed_tag("v1","release","Signer","signer@example.invalid",8,&key).unwrap();
+        repository.verify_tag_signature(tag,&key.public).unwrap();
+        assert_eq!(repository.resolve_revision("v1"),Ok(tag));
+        let mut wrong = key.public.clone();
+        wrong.exponent = Vector::from([3]);
+        assert_eq!(
+            repository.verify_commit_signature(id, &wrong),
+            Err(RepositoryError::Signing)
+        );
+        assert_eq!(repository.verify_tag_signature(tag,&wrong),Err(RepositoryError::Signing));
+        remove_dir_all(&path).unwrap();
+    }
 
     #[test]
     fn creates_lists_and_deletes_native_refs() {
@@ -2105,17 +2505,53 @@ mod tests {
                 .is_err()
         );
         let remote_id = ObjectId::blob(b"remote-tip");
-        repository.update_remote_ref("origin", "refs/heads/main", remote_id).unwrap();
-        let remote_hex=remote_id.to_hex();
-        assert_eq!(remote_hex,read_file_text_bounded(&join_path(&repository.git_dir,"refs/remotes/origin/main"),64).unwrap().trim());
-        assert!(repository.update_remote_ref("../escape", "refs/heads/main", remote_id).is_err());
-        assert!(repository.update_remote_ref("origin", "refs/tags/not-a-branch", remote_id).is_err());
-        repository.set_config_value("ssh","privateKey","key.pem").unwrap();
-        repository.set_config_value("ssh","hostKey","host.pub").unwrap();
-        repository.set_config_value("ssh","privateKey","new.pem").unwrap();
-        assert_eq!(repository.config_value("ssh","privateKey").unwrap().as_deref(),Some("new.pem"));
-        assert_eq!(repository.config_value("ssh","hostKey").unwrap().as_deref(),Some("host.pub"));
-        assert!(repository.set_config_value("ssh","bad key","x").is_err());
+        repository
+            .update_remote_ref("origin", "refs/heads/main", remote_id)
+            .unwrap();
+        let remote_hex = remote_id.to_hex();
+        assert_eq!(
+            remote_hex,
+            read_file_text_bounded(
+                &join_path(&repository.git_dir, "refs/remotes/origin/main"),
+                64
+            )
+            .unwrap()
+            .trim()
+        );
+        assert!(
+            repository
+                .update_remote_ref("../escape", "refs/heads/main", remote_id)
+                .is_err()
+        );
+        assert!(
+            repository
+                .update_remote_ref("origin", "refs/tags/not-a-branch", remote_id)
+                .is_err()
+        );
+        repository
+            .set_config_value("ssh", "privateKey", "key.pem")
+            .unwrap();
+        repository
+            .set_config_value("ssh", "hostKey", "host.pub")
+            .unwrap();
+        repository
+            .set_config_value("ssh", "privateKey", "new.pem")
+            .unwrap();
+        assert_eq!(
+            repository
+                .config_value("ssh", "privateKey")
+                .unwrap()
+                .as_deref(),
+            Some("new.pem")
+        );
+        assert_eq!(
+            repository
+                .config_value("ssh", "hostKey")
+                .unwrap()
+                .as_deref(),
+            Some("host.pub")
+        );
+        assert!(repository.set_config_value("ssh", "bad key", "x").is_err());
         remove_dir_all(&path).unwrap();
     }
 
@@ -2223,8 +2659,14 @@ mod tests {
             repository.fast_forward("topic").unwrap(),
             MergeOutcome::UpToDate
         );
-        assert_eq!(repository.checkout_branch_at("clone-tip",topic).unwrap(),topic);
-        assert_eq!(repository.current_branch().unwrap().as_deref(),Some("clone-tip"));
+        assert_eq!(
+            repository.checkout_branch_at("clone-tip", topic).unwrap(),
+            topic
+        );
+        assert_eq!(
+            repository.current_branch().unwrap().as_deref(),
+            Some("clone-tip")
+        );
         remove_dir_all(&path).unwrap();
     }
 
@@ -2346,23 +2788,95 @@ mod tests {
 
     #[test]
     fn cherry_picks_commit_as_new_one_parent_commit() {
-        let path=root("cherry");let repository=Repository::init(&path).unwrap();
-        let base=join_path(&path,"base");write_file(&base,b"base").unwrap();repository.stage(&Vector::from([Text::from("base")])).unwrap();repository.commit("base","MRML","mrml@example.invalid",1).unwrap();
-        repository.create_branch("topic",true).unwrap();let added=join_path(&path,"added");write_file(&added,b"picked").unwrap();repository.stage(&Vector::from([Text::from("added")])).unwrap();let picked=repository.commit("picked","Original","original@example.invalid",2).unwrap();
-        repository.switch_branch("main").unwrap();let own=join_path(&path,"own");write_file(&own,b"own").unwrap();repository.stage(&Vector::from([Text::from("own")])).unwrap();let parent=repository.commit("own","MRML","mrml@example.invalid",3).unwrap();
-        let id=match repository.cherry_pick(&picked.to_hex(),"Committer","committer@example.invalid",4).unwrap(){MergeOutcome::Merged(id)=>id,other=>panic!("unexpected {other:?}")};
-        let commit=repository.read_commit(id).unwrap();assert_eq!(&commit.parents[..],&[parent]);assert!(commit.author.starts_with("Original "));assert!(path_is_file(&added));assert!(path_is_file(&own));
+        let path = root("cherry");
+        let repository = Repository::init(&path).unwrap();
+        let base = join_path(&path, "base");
+        write_file(&base, b"base").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("base")]))
+            .unwrap();
+        repository
+            .commit("base", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        repository.create_branch("topic", true).unwrap();
+        let added = join_path(&path, "added");
+        write_file(&added, b"picked").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("added")]))
+            .unwrap();
+        let picked = repository
+            .commit("picked", "Original", "original@example.invalid", 2)
+            .unwrap();
+        repository.switch_branch("main").unwrap();
+        let own = join_path(&path, "own");
+        write_file(&own, b"own").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("own")]))
+            .unwrap();
+        let parent = repository
+            .commit("own", "MRML", "mrml@example.invalid", 3)
+            .unwrap();
+        let id = match repository
+            .cherry_pick(
+                &picked.to_hex(),
+                "Committer",
+                "committer@example.invalid",
+                4,
+            )
+            .unwrap()
+        {
+            MergeOutcome::Merged(id) => id,
+            other => panic!("unexpected {other:?}"),
+        };
+        let commit = repository.read_commit(id).unwrap();
+        assert_eq!(&commit.parents[..], &[parent]);
+        assert!(commit.author.starts_with("Original "));
+        assert!(path_is_file(&added));
+        assert!(path_is_file(&own));
         remove_dir_all(&path).unwrap();
     }
 
     #[test]
     fn rebases_linear_commits_onto_target() {
-        let path=root("rebase");let repository=Repository::init(&path).unwrap();
-        let base=join_path(&path,"base");write_file(&base,b"base").unwrap();repository.stage(&Vector::from([Text::from("base")])).unwrap();repository.commit("base","MRML","mrml@example.invalid",1).unwrap();
-        repository.create_branch("topic",true).unwrap();let topic_file=join_path(&path,"topic");write_file(&topic_file,b"topic").unwrap();repository.stage(&Vector::from([Text::from("topic")])).unwrap();let topic=repository.commit("topic","Topic","topic@example.invalid",2).unwrap();
-        repository.switch_branch("main").unwrap();let main_file=join_path(&path,"main");write_file(&main_file,b"main").unwrap();repository.stage(&Vector::from([Text::from("main")])).unwrap();let original=repository.commit("main","Main","main@example.invalid",3).unwrap();
-        let head=match repository.rebase("topic","Committer","committer@example.invalid",4).unwrap(){RebaseOutcome::Rebased{count:1,head}=>head,other=>panic!("unexpected {other:?}")};
-        assert_ne!(head,original);assert_eq!(repository.read_commit(head).unwrap().parents[0],topic);assert!(path_is_file(&topic_file));assert!(path_is_file(&main_file));
+        let path = root("rebase");
+        let repository = Repository::init(&path).unwrap();
+        let base = join_path(&path, "base");
+        write_file(&base, b"base").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("base")]))
+            .unwrap();
+        repository
+            .commit("base", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        repository.create_branch("topic", true).unwrap();
+        let topic_file = join_path(&path, "topic");
+        write_file(&topic_file, b"topic").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("topic")]))
+            .unwrap();
+        let topic = repository
+            .commit("topic", "Topic", "topic@example.invalid", 2)
+            .unwrap();
+        repository.switch_branch("main").unwrap();
+        let main_file = join_path(&path, "main");
+        write_file(&main_file, b"main").unwrap();
+        repository
+            .stage(&Vector::from([Text::from("main")]))
+            .unwrap();
+        let original = repository
+            .commit("main", "Main", "main@example.invalid", 3)
+            .unwrap();
+        let head = match repository
+            .rebase("topic", "Committer", "committer@example.invalid", 4)
+            .unwrap()
+        {
+            RebaseOutcome::Rebased { count: 1, head } => head,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_ne!(head, original);
+        assert_eq!(repository.read_commit(head).unwrap().parents[0], topic);
+        assert!(path_is_file(&topic_file));
+        assert!(path_is_file(&main_file));
         remove_dir_all(&path).unwrap();
     }
 }

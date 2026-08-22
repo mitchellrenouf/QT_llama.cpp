@@ -3,9 +3,16 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use mrml_error::{Context, Result, anyhow};
-use mrml_git::{Change, Cli, MergeOutcome, NativeChangeKind, RebaseOutcome, Repository, fetch_ssh,push_ssh, validate_positional};
-use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println,read_file_text_bounded};
-use mrml_ssh::{RsaPrivateKey,SshRemote,encode_rsa_public_key,parse_rsa_private_pem,parse_rsa_public_line};
+use mrml_git::{
+    Change, Cli, MergeOutcome, NativeChangeKind, RebaseOutcome, Repository, fetch_ssh, push_ssh,
+    validate_positional,
+};
+use mrml_runtime::{
+    Text, Vector, mrml_format as format, mrml_println as println, read_file_text_bounded,
+};
+use mrml_ssh::{
+    RsaPrivateKey, SshRemote, encode_rsa_public_key, parse_rsa_private_pem, parse_rsa_public_line,
+};
 use mrml_terminal_style::Colorize;
 
 fn run(_repository: Option<&str>, args: &[&str]) -> Result<Text> {
@@ -266,12 +273,80 @@ fn print_ssh_remote(name: &str, url: &str, remote: &SshRemote) {
     );
 }
 
-fn ssh_credentials_paths(private_path:&str,host_path:&str)->Result<(RsaPrivateKey,Vector<u8>)>{let private=read_file_text_bounded(private_path,64*1024).map_err(|_|anyhow!("cannot read SSH private key"))?;let host=read_file_text_bounded(host_path,64*1024).map_err(|_|anyhow!("cannot read pinned SSH host key"))?;let private=parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid SSH private key: {}",error))?;let host=parse_rsa_public_line(&host).and_then(|key|encode_rsa_public_key(&key)).map_err(|error|anyhow!("invalid SSH host key: {}",error))?;Ok((private,host))}
-fn ssh_credentials(repository:&Repository)->Result<(RsaPrivateKey,Vector<u8>)>{let private=repository.config_value("ssh","privateKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;let host=repository.config_value("ssh","hostKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;ssh_credentials_paths(&private,&host)}
-fn repository_signing_key(repository:&Repository)->Result<RsaPrivateKey>{let path=repository.config_value("user","signingkey").map_err(|error|anyhow!("{}",error))?.or_else(||repository.config_value("ssh","privateKey").ok().flatten()).ok_or_else(||anyhow!("run signing configure <private-key.pem> [allowed-signer] first"))?;let text=read_file_text_bounded(&path,64*1024).map_err(|_|anyhow!("cannot read signing key"))?;parse_rsa_private_pem(&text).map_err(|error|anyhow!("invalid signing key: {}",error))}
+fn ssh_credentials_paths(
+    private_path: &str,
+    host_path: &str,
+) -> Result<(RsaPrivateKey, Vector<u8>)> {
+    let private = read_file_text_bounded(private_path, 64 * 1024)
+        .map_err(|_| anyhow!("cannot read SSH private key"))?;
+    let host = read_file_text_bounded(host_path, 64 * 1024)
+        .map_err(|_| anyhow!("cannot read pinned SSH host key"))?;
+    let private = parse_rsa_private_pem(&private)
+        .map_err(|error| anyhow!("invalid SSH private key: {}", error))?;
+    let host = parse_rsa_public_line(&host)
+        .and_then(|key| encode_rsa_public_key(&key))
+        .map_err(|error| anyhow!("invalid SSH host key: {}", error))?;
+    Ok((private, host))
+}
+fn ssh_credentials(repository: &Repository) -> Result<(RsaPrivateKey, Vector<u8>)> {
+    let private = repository
+        .config_value("ssh", "privateKey")
+        .map_err(|error| anyhow!("{}", error))?
+        .ok_or_else(|| anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;
+    let host = repository
+        .config_value("ssh", "hostKey")
+        .map_err(|error| anyhow!("{}", error))?
+        .ok_or_else(|| anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;
+    ssh_credentials_paths(&private, &host)
+}
+fn repository_signing_key(repository: &Repository) -> Result<RsaPrivateKey> {
+    let path = repository
+        .config_value("user", "signingkey")
+        .map_err(|error| anyhow!("{}", error))?
+        .or_else(|| repository.config_value("ssh", "privateKey").ok().flatten())
+        .ok_or_else(|| anyhow!("run signing configure <private-key.pem> [allowed-signer] first"))?;
+    let text =
+        read_file_text_bounded(&path, 64 * 1024).map_err(|_| anyhow!("cannot read signing key"))?;
+    parse_rsa_private_pem(&text).map_err(|error| anyhow!("invalid signing key: {}", error))
+}
+fn repository_verification_key(repository:&Repository)->Result<mrml_ssh::RsaPublicKey>{let path=repository.config_value("gpg.ssh","allowedSignersFile").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("signing verification requires an allowed signer file"))?;let text=read_file_text_bounded(&path,64*1024).map_err(|_|anyhow!("cannot read allowed signer"))?;parse_rsa_public_line(&text).map_err(|error|anyhow!("invalid allowed signer: {}",error))}
 
-fn native_fetch(repository:Option<&str>,name:&str)->Result<()>{let repo=native_repository(repository)?;let (_,remote)=ssh_remote(repository,name)?;let(key,host)=ssh_credentials(&repo)?;let result=fetch_ssh(&repo,name,&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;println!("Fetched {} object(s) and {} branch ref(s) from {}",result.objects.len(),result.branches.len(),name);Ok(())}
-fn native_push(repository:Option<&str>,name:&str,branch:Option<&str>)->Result<()>{let repo=native_repository(repository)?;let branch=branch.map(Into::into).or_else(||repo.current_branch().ok().flatten()).ok_or_else(||anyhow!("push requires a branch for detached HEAD"))?;let(_,remote)=ssh_remote(repository,name)?;let(key,host)=ssh_credentials(&repo)?;let result=push_ssh(&repo,name,&branch,&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;if result.old==result.new{println!("Everything up to date.");}else{println!("Pushed {} to {}/{}",&result.new.to_hex()[..12],name,branch);}Ok(())}
+fn native_fetch(repository: Option<&str>, name: &str) -> Result<()> {
+    let repo = native_repository(repository)?;
+    let (_, remote) = ssh_remote(repository, name)?;
+    let (key, host) = ssh_credentials(&repo)?;
+    let result =
+        fetch_ssh(&repo, name, &remote, &key, &host).map_err(|error| anyhow!("{}", error))?;
+    println!(
+        "Fetched {} object(s) and {} branch ref(s) from {}",
+        result.objects.len(),
+        result.branches.len(),
+        name
+    );
+    Ok(())
+}
+fn native_push(repository: Option<&str>, name: &str, branch: Option<&str>) -> Result<()> {
+    let repo = native_repository(repository)?;
+    let branch = branch
+        .map(Into::into)
+        .or_else(|| repo.current_branch().ok().flatten())
+        .ok_or_else(|| anyhow!("push requires a branch for detached HEAD"))?;
+    let (_, remote) = ssh_remote(repository, name)?;
+    let (key, host) = ssh_credentials(&repo)?;
+    let result = push_ssh(&repo, name, &branch, &remote, &key, &host)
+        .map_err(|error| anyhow!("{}", error))?;
+    if result.old == result.new {
+        println!("Everything up to date.");
+    } else {
+        println!(
+            "Pushed {} to {}/{}",
+            &result.new.to_hex()[..12],
+            name,
+            branch
+        );
+    }
+    Ok(())
+}
 
 fn config_value(repository: Option<&str>, key: &str) -> Option<Text> {
     let (section, name) = key.rsplit_once('.')?;
@@ -359,7 +434,48 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "clone" if matches!(tail.len(), 1 | 2) => {
             checked_positionals(tail)?;
-            let remote=SshRemote::parse(&tail[0]).map_err(|error|anyhow!("invalid SSH remote: {}",error))?;let target=tail.get(1).cloned().unwrap_or_else(||remote.path.rsplit('/').next().unwrap_or("repository").trim_end_matches(".git").into());let private_path=mrml_runtime::environment_variable("MRML_GIT_SSH_KEY").ok_or_else(||anyhow!("clone requires MRML_GIT_SSH_KEY"))?;let host_path=mrml_runtime::environment_variable("MRML_GIT_SSH_HOST_KEY").ok_or_else(||anyhow!("clone requires MRML_GIT_SSH_HOST_KEY"))?;let(key,host)=ssh_credentials_paths(&private_path,&host_path)?;let repo=Repository::init(&target).map_err(|error|anyhow!("{}",error))?;repo.set_remote("origin",&tail[0],false).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("ssh","privateKey",&private_path).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("ssh","hostKey",&host_path).map_err(|error|anyhow!("{}",error))?;let result=fetch_ssh(&repo,"origin",&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;let branch=result.default_branch.as_ref().and_then(|name|result.branches.iter().find(|(branch,_)|branch==name)).or_else(||result.branches.iter().find(|(branch,_)|branch=="main")).or_else(||result.branches.iter().find(|(branch,_)|branch=="master")).or_else(||result.branches.first()).ok_or_else(||anyhow!("remote has no branch to check out"))?;repo.checkout_branch_at(&branch.0,branch.1).map_err(|error|anyhow!("{}",error))?;println!("Cloned {} into {} on branch {}",tail[0],target,branch.0);Ok(())
+            let remote = SshRemote::parse(&tail[0])
+                .map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
+            let target = tail.get(1).cloned().unwrap_or_else(|| {
+                remote
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("repository")
+                    .trim_end_matches(".git")
+                    .into()
+            });
+            let private_path = mrml_runtime::environment_variable("MRML_GIT_SSH_KEY")
+                .ok_or_else(|| anyhow!("clone requires MRML_GIT_SSH_KEY"))?;
+            let host_path = mrml_runtime::environment_variable("MRML_GIT_SSH_HOST_KEY")
+                .ok_or_else(|| anyhow!("clone requires MRML_GIT_SSH_HOST_KEY"))?;
+            let (key, host) = ssh_credentials_paths(&private_path, &host_path)?;
+            let repo = Repository::init(&target).map_err(|error| anyhow!("{}", error))?;
+            repo.set_remote("origin", &tail[0], false)
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("ssh", "privateKey", &private_path)
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("ssh", "hostKey", &host_path)
+                .map_err(|error| anyhow!("{}", error))?;
+            let result = fetch_ssh(&repo, "origin", &remote, &key, &host)
+                .map_err(|error| anyhow!("{}", error))?;
+            let branch = result
+                .default_branch
+                .as_ref()
+                .and_then(|name| result.branches.iter().find(|(branch, _)| branch == name))
+                .or_else(|| result.branches.iter().find(|(branch, _)| branch == "main"))
+                .or_else(|| {
+                    result
+                        .branches
+                        .iter()
+                        .find(|(branch, _)| branch == "master")
+                })
+                .or_else(|| result.branches.first())
+                .ok_or_else(|| anyhow!("remote has no branch to check out"))?;
+            repo.checkout_branch_at(&branch.0, branch.1)
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("Cloned {} into {} on branch {}", tail[0], target, branch.0);
+            Ok(())
         }
         "log" => {
             let count = tail.first().map(Text::as_str).unwrap_or("12");
@@ -522,7 +638,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "publish" if tail.len() == 2 => {
             checked_positionals(tail)?;
-            native_push(repository,&tail[0],Some(&tail[1]))
+            native_push(repository, &tail[0], Some(&tail[1]))
         }
         "merge" if tail.len() == 1 => {
             checked_positionals(tail)?;
@@ -549,20 +665,51 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "rebase" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            let name=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(||"MRML User".into());
-            let email=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(||"mrml@localhost".into());
-            let timestamp=mrml_runtime::unix_time_seconds().ok_or_else(||anyhow!("system time is unavailable"))?;
-            match native_repository(repository)?.rebase(&tail[0],&name,&email,timestamp).map_err(|error|anyhow!("{}",error))?{RebaseOutcome::UpToDate=>println!("Current branch is up to date."),RebaseOutcome::Rebased{count,head}=>println!("Rebased {} commit(s); HEAD is {}",count,&head.to_hex()[..12]),RebaseOutcome::Conflicts(count)=>println!("Rebase stopped with {} conflict(s)",count)}Ok(())
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
+                .unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
+                .unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds()
+                .ok_or_else(|| anyhow!("system time is unavailable"))?;
+            match native_repository(repository)?
+                .rebase(&tail[0], &name, &email, timestamp)
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                RebaseOutcome::UpToDate => println!("Current branch is up to date."),
+                RebaseOutcome::Rebased { count, head } => println!(
+                    "Rebased {} commit(s); HEAD is {}",
+                    count,
+                    &head.to_hex()[..12]
+                ),
+                RebaseOutcome::Conflicts(count) => {
+                    println!("Rebase stopped with {} conflict(s)", count)
+                }
+            }
+            Ok(())
         }
         "cherry-pick" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            let name=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(||"MRML User".into());
-            let email=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(||"mrml@localhost".into());
-            let timestamp=mrml_runtime::unix_time_seconds().ok_or_else(||anyhow!("system time is unavailable"))?;
-            match native_repository(repository)?.cherry_pick(&tail[0],&name,&email,timestamp).map_err(|error|anyhow!("{}",error))? {
-                MergeOutcome::Merged(id)=>println!("Cherry-picked {} as {}",tail[0],&id.to_hex()[..12]),
-                MergeOutcome::Conflicts(count)=>println!("Cherry-pick has {} conflict(s); resolve and commit",count),
-                _=>return Err(anyhow!("unexpected cherry-pick outcome")),
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
+                .unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
+                .unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds()
+                .ok_or_else(|| anyhow!("system time is unavailable"))?;
+            match native_repository(repository)?
+                .cherry_pick(&tail[0], &name, &email, timestamp)
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                MergeOutcome::Merged(id) => {
+                    println!("Cherry-picked {} as {}", tail[0], &id.to_hex()[..12])
+                }
+                MergeOutcome::Conflicts(count) => {
+                    println!("Cherry-pick has {} conflict(s); resolve and commit", count)
+                }
+                _ => return Err(anyhow!("unexpected cherry-pick outcome")),
             }
             Ok(())
         }
@@ -574,11 +721,18 @@ fn dispatch(cli: &Cli) -> Result<()> {
             Ok(())
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "rebase" => {
-            let id=native_repository(repository)?.abort_rebase().map_err(|error|anyhow!("{}",error))?;println!("Aborted rebase; restored {}",&id.to_hex()[..12]);Ok(())
+            let id = native_repository(repository)?
+                .abort_rebase()
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("Aborted rebase; restored {}", &id.to_hex()[..12]);
+            Ok(())
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "cherry-pick" => {
-            let id=native_repository(repository)?.abort_cherry_pick().map_err(|error|anyhow!("{}",error))?;
-            println!("Aborted cherry-pick; restored {}",&id.to_hex()[..12]);Ok(())
+            let id = native_repository(repository)?
+                .abort_cherry_pick()
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("Aborted cherry-pick; restored {}", &id.to_hex()[..12]);
+            Ok(())
         }
         "stage" => {
             checked_positionals(require_arguments("stage", tail)?)?;
@@ -617,21 +771,53 @@ fn dispatch(cli: &Cli) -> Result<()> {
                 .unwrap_or_else(|| "mrml@localhost".into());
             let timestamp = mrml_runtime::unix_time_seconds()
                 .ok_or_else(|| anyhow!("system time is unavailable"))?;
-            let repo=native_repository(repository)?;let id=if sign{let key=repository_signing_key(&repo)?;repo.commit_signed(&message,&name,&email,timestamp,&key)}else{repo.commit(&message,&name,&email,timestamp)}.map_err(|error|anyhow!("{}",error))?;
+            let repo = native_repository(repository)?;
+            let sign=sign||repo.config_value("commit","gpgsign").ok().flatten().is_some_and(|value|value.eq_ignore_ascii_case("true"));
+            let id = if sign {
+                let key = repository_signing_key(&repo)?;
+                repo.commit_signed(&message, &name, &email, timestamp, &key)
+            } else {
+                repo.commit(&message, &name, &email, timestamp)
+            }
+            .map_err(|error| anyhow!("{}", error))?;
             println!("[{}] {}", (&id.to_hex()[..12]).bright_green(), message);
             Ok(())
         }
         "fetch" if tail.len() <= 1 => {
             checked_positionals(tail)?;
-            native_fetch(repository,tail.first().map(Text::as_str).unwrap_or("origin"))
+            native_fetch(
+                repository,
+                tail.first().map(Text::as_str).unwrap_or("origin"),
+            )
         }
         "pull" if tail.len() <= 2 => {
             checked_positionals(tail)?;
-            let remote=tail.first().map(Text::as_str).unwrap_or("origin");native_fetch(repository,remote)?;let repo=native_repository(repository)?;let branch=tail.get(1).cloned().or_else(||repo.current_branch().ok().flatten()).ok_or_else(||anyhow!("pull requires a branch for detached HEAD"))?;let revision=format!("refs/remotes/{remote}/{branch}");match repo.fast_forward(&revision).map_err(|error|anyhow!("fast-forward pull failed: {}",error))?{MergeOutcome::UpToDate=>println!("Already up to date."),MergeOutcome::FastForward(id)=>println!("Fast-forward to {}",&id.to_hex()[..12]),_=>return Err(anyhow!("unexpected pull outcome"))}Ok(())
+            let remote = tail.first().map(Text::as_str).unwrap_or("origin");
+            native_fetch(repository, remote)?;
+            let repo = native_repository(repository)?;
+            let branch = tail
+                .get(1)
+                .cloned()
+                .or_else(|| repo.current_branch().ok().flatten())
+                .ok_or_else(|| anyhow!("pull requires a branch for detached HEAD"))?;
+            let revision = format!("refs/remotes/{remote}/{branch}");
+            match repo
+                .fast_forward(&revision)
+                .map_err(|error| anyhow!("fast-forward pull failed: {}", error))?
+            {
+                MergeOutcome::UpToDate => println!("Already up to date."),
+                MergeOutcome::FastForward(id) => println!("Fast-forward to {}", &id.to_hex()[..12]),
+                _ => return Err(anyhow!("unexpected pull outcome")),
+            }
+            Ok(())
         }
         "push" if tail.len() <= 2 => {
             checked_positionals(tail)?;
-            native_push(repository,tail.first().map(Text::as_str).unwrap_or("origin"),tail.get(1).map(Text::as_str))
+            native_push(
+                repository,
+                tail.first().map(Text::as_str).unwrap_or("origin"),
+                tail.get(1).map(Text::as_str),
+            )
         }
         "remote" if tail.is_empty() => {
             for (name, url) in native_repository(repository)?
@@ -658,7 +844,27 @@ fn dispatch(cli: &Cli) -> Result<()> {
                 .map_err(|error| anyhow!("{}", error))?;
             Ok(())
         }
-        "ssh" if tail.len()==3&&tail[0]=="auth"=>{checked_positionals(&tail[1..])?;let repo=native_repository(repository)?;let private=read_file_text_bounded(&tail[1],64*1024).map_err(|_|anyhow!("cannot read SSH private key"))?;parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid SSH private key: {}",error))?;let host=read_file_text_bounded(&tail[2],64*1024).map_err(|_|anyhow!("cannot read SSH host key"))?;parse_rsa_public_line(&host).map_err(|error|anyhow!("invalid SSH host key: {}",error))?;repo.set_config_value("ssh","privateKey",&tail[1]).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("ssh","hostKey",&tail[2]).map_err(|error|anyhow!("{}",error))?;println!("{} repository-local SSH credentials configured","native".green().bold());Ok(())}
+        "ssh" if tail.len() == 3 && tail[0] == "auth" => {
+            checked_positionals(&tail[1..])?;
+            let repo = native_repository(repository)?;
+            let private = read_file_text_bounded(&tail[1], 64 * 1024)
+                .map_err(|_| anyhow!("cannot read SSH private key"))?;
+            parse_rsa_private_pem(&private)
+                .map_err(|error| anyhow!("invalid SSH private key: {}", error))?;
+            let host = read_file_text_bounded(&tail[2], 64 * 1024)
+                .map_err(|_| anyhow!("cannot read SSH host key"))?;
+            parse_rsa_public_line(&host)
+                .map_err(|error| anyhow!("invalid SSH host key: {}", error))?;
+            repo.set_config_value("ssh", "privateKey", &tail[1])
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("ssh", "hostKey", &tail[2])
+                .map_err(|error| anyhow!("{}", error))?;
+            println!(
+                "{} repository-local SSH credentials configured",
+                "native".green().bold()
+            );
+            Ok(())
+        }
         "ssh" if matches!(tail.len(), 1 | 2) && tail[0] == "info" => {
             let name = tail.get(1).map(Text::as_str).unwrap_or("origin");
             checked_positionals(&tail[1..])?;
@@ -679,24 +885,12 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "signing" if tail.len() == 2 && tail[0] == "configure" => {
             checked_positionals(&tail[1..])?;
-            run_visible(repository, &["config", "--local", "gpg.format", "ssh"])?;
-            run_visible(
-                repository,
-                &["config", "--local", "user.signingkey", &tail[1]],
-            )?;
+            let repo=native_repository(repository)?;let text=read_file_text_bounded(&tail[1],64*1024).map_err(|_|anyhow!("cannot read signing key"))?;parse_rsa_private_pem(&text).map_err(|error|anyhow!("invalid signing key: {}",error))?;repo.set_config_value("gpg","format","ssh").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("user","signingkey",&tail[1]).map_err(|error|anyhow!("{}",error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 3 && tail[0] == "configure" => {
             checked_positionals(&tail[1..])?;
-            run_visible(repository, &["config", "--local", "gpg.format", "ssh"])?;
-            run_visible(
-                repository,
-                &["config", "--local", "user.signingkey", &tail[1]],
-            )?;
-            run_visible(
-                repository,
-                &["config", "--local", "gpg.ssh.allowedSignersFile", &tail[2]],
-            )?;
+            let repo=native_repository(repository)?;let private=read_file_text_bounded(&tail[1],64*1024).map_err(|_|anyhow!("cannot read signing key"))?;parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid signing key: {}",error))?;let allowed=read_file_text_bounded(&tail[2],64*1024).map_err(|_|anyhow!("cannot read allowed signer"))?;parse_rsa_public_line(&allowed).map_err(|error|anyhow!("invalid allowed signer: {}",error))?;repo.set_config_value("gpg","format","ssh").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("user","signingkey",&tail[1]).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("gpg.ssh","allowedSignersFile",&tail[2]).map_err(|error|anyhow!("{}",error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 1 && tail[0] == "auto" => {
@@ -707,26 +901,21 @@ fn dispatch(cli: &Cli) -> Result<()> {
                     "run signing configure <key> [allowed-signers] first"
                 ));
             }
-            run_visible(repository, &["config", "--local", "commit.gpgsign", "true"])?;
-            run_visible(repository, &["config", "--local", "tag.gpgsign", "true"])?;
+            let repo=native_repository(repository)?;repo.set_config_value("commit","gpgsign","true").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("tag","gpgsign","true").map_err(|error|anyhow!("{}",error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 1 && tail[0] == "status" => print_signing_status(repository),
         "signing" if tail.len() == 1 && tail[0] == "off" => {
-            run_visible(
-                repository,
-                &["config", "--local", "commit.gpgsign", "false"],
-            )?;
-            run_visible(repository, &["config", "--local", "tag.gpgsign", "false"])?;
+            let repo=native_repository(repository)?;repo.set_config_value("commit","gpgsign","false").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("tag","gpgsign","false").map_err(|error|anyhow!("{}",error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 2 && tail[0] == "verify" => {
             checked_positionals(&tail[1..])?;
-            run_visible(repository, &["verify-commit", "--", &tail[1]])
+            let repo=native_repository(repository)?;let id=repo.resolve_revision(&tail[1]).map_err(|error|anyhow!("{}",error))?;let key=repository_verification_key(&repo)?;repo.verify_commit_signature(id,&key).map_err(|error|anyhow!("{}",error))?;println!("{} commit {}","valid SSH signature".green().bold(),&id.to_hex()[..12]);Ok(())
         }
         "signing" if tail.len() == 2 && tail[0] == "verify-tag" => {
             checked_positionals(&tail[1..])?;
-            run_visible(repository, &["verify-tag", "--", &tail[1]])
+            let repo=native_repository(repository)?;let id=repo.resolve_revision(&tail[1]).map_err(|error|anyhow!("{}",error))?;let key=repository_verification_key(&repo)?;repo.verify_tag_signature(id,&key).map_err(|error|anyhow!("{}",error))?;println!("{} tag {}","valid SSH signature".green().bold(),tail[1]);Ok(())
         }
         "tag" if tail.is_empty() => {
             for (name, _) in native_repository(repository)?
@@ -748,10 +937,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
         "tag-sign" if tail.len() >= 2 => {
             checked_positionals(&tail[..1])?;
             let message = join_words(&tail[1..]);
-            run_visible(
-                repository,
-                &["tag", "--sign", "-m", &message, "--", &tail[0]],
-            )
+            let repo=native_repository(repository)?;let key=repository_signing_key(&repo)?;let name=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(||"MRML User".into());let email=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(||"mrml@localhost".into());let timestamp=mrml_runtime::unix_time_seconds().ok_or_else(||anyhow!("system time is unavailable"))?;let id=repo.create_signed_tag(&tail[0],&message,&name,&email,timestamp,&key).map_err(|error|anyhow!("{}",error))?;println!("Signed tag {} at {}",tail[0],&id.to_hex()[..12]);Ok(())
         }
         "stash" if tail.is_empty() || (tail.len() == 1 && tail[0] == "list") => {
             for (index, (id, commit)) in native_repository(repository)?
