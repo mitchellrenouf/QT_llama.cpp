@@ -460,7 +460,7 @@ fn two_domains_mut<const TASKS: usize, const CAPS: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ObjectId, PhysAddr, Rights};
+    use crate::{ObjectId, OwnershipMailbox, PhysAddr, Rights};
 
     fn context(root: u64, entry: u64) -> UserContext {
         UserContext::new(PhysAddr::new(root).unwrap(), entry, 0x0000_7000_0000_0000).unwrap()
@@ -843,5 +843,33 @@ mod tests {
             runtime.context(task).unwrap().instruction_pointer(),
             0x40_0000
         );
+    }
+
+    #[test]
+    fn complete_domain_crosses_typed_linear_mailbox() {
+        let mut source = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let mut destination = TaskRuntime::<1, 1>::new(1_000, 1).unwrap();
+        let task = source
+            .create(Priority::RESPONSIVE, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        let mailbox = OwnershipMailbox::new();
+        mailbox
+            .publish(source.detach_domain(task).unwrap())
+            .ok()
+            .unwrap();
+
+        let mut ticket = mailbox.take();
+        let migration = destination.attach_domain(&mut ticket).unwrap();
+        assert!(ticket.is_none());
+        assert_eq!(migration.source(), task);
+        assert_eq!(migration.priority(), Priority::RESPONSIVE);
+        assert_eq!(
+            destination
+                .context(migration.destination())
+                .unwrap()
+                .page_table(),
+            PhysAddr::new(0x20_0000).unwrap()
+        );
+        assert!(mailbox.take().is_none());
     }
 }

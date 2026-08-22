@@ -116,9 +116,11 @@ pub struct DetachedTask {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MigrationMailboxError {
+pub enum OwnershipMailboxError {
     Occupied,
 }
+
+pub type MigrationMailboxError = OwnershipMailboxError;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct TaskAttachError {
@@ -144,15 +146,15 @@ const MAILBOX_READING: u8 = 3;
 /// Allocation-free multi-producer, multi-consumer ownership transfer slot.
 /// Atomic state transitions ensure only the successful publisher writes the
 /// slot and only the successful receiver takes its non-copyable task ticket.
-pub struct MigrationMailbox {
+pub struct OwnershipMailbox<T> {
     state: AtomicU8,
-    task: UnsafeCell<MaybeUninit<DetachedTask>>,
+    task: UnsafeCell<MaybeUninit<T>>,
 }
 
 // SAFETY: access to `task` is exclusively granted by the atomic state machine.
-unsafe impl Sync for MigrationMailbox {}
+unsafe impl<T: Send> Sync for OwnershipMailbox<T> {}
 
-impl MigrationMailbox {
+impl<T> OwnershipMailbox<T> {
     pub const fn new() -> Self {
         Self {
             state: AtomicU8::new(MAILBOX_EMPTY),
@@ -160,7 +162,7 @@ impl MigrationMailbox {
         }
     }
 
-    pub fn publish(&self, task: DetachedTask) -> Result<(), (MigrationMailboxError, DetachedTask)> {
+    pub fn publish(&self, task: T) -> Result<(), (OwnershipMailboxError, T)> {
         if self
             .state
             .compare_exchange(
@@ -171,7 +173,7 @@ impl MigrationMailbox {
             )
             .is_err()
         {
-            return Err((MigrationMailboxError::Occupied, task));
+            return Err((OwnershipMailboxError::Occupied, task));
         }
 
         // SAFETY: the EMPTY -> WRITING transition grants this publisher the
@@ -181,7 +183,7 @@ impl MigrationMailbox {
         Ok(())
     }
 
-    pub fn take(&self) -> Option<DetachedTask> {
+    pub fn take(&self) -> Option<T> {
         self.state
             .compare_exchange(
                 MAILBOX_FULL,
@@ -198,11 +200,23 @@ impl MigrationMailbox {
     }
 }
 
-impl Default for MigrationMailbox {
+impl<T> Default for OwnershipMailbox<T> {
     fn default() -> Self {
         Self::new()
     }
 }
+
+impl<T> Drop for OwnershipMailbox<T> {
+    fn drop(&mut self) {
+        if *self.state.get_mut() == MAILBOX_FULL {
+            // SAFETY: exclusive mailbox ownership prevents concurrent state
+            // transitions, and FULL proves the slot contains one value.
+            unsafe { self.task.get_mut().assume_init_drop() };
+        }
+    }
+}
+
+pub type MigrationMailbox = OwnershipMailbox<DetachedTask>;
 
 impl TaskMigration {
     pub const fn source(self) -> TaskId {
