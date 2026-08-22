@@ -1891,6 +1891,19 @@ fn rustc_runtime_fixed_array_reference_ranges_create_slices() {
 }
 
 #[test]
+fn rustc_contiguous_fixed_array_local_ranges_create_slices() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize, start: usize, end: usize) -> usize { let values = [input, 10, 20, 30]; let slice: &[usize] = &values[start..end]; slice.len() + slice[0] + values[2] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize, start: usize, end: usize) -> usize { let mut values = [input, 10, 20, 30]; let slice: &mut [usize] = &mut values[start..=end]; slice[1] += 2; values[2] + slice.len() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: i64) -> i64 { let values = [input, 10, 20, 30]; let slice: &[i64] = &values[1..3]; slice[0] + slice[1] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",

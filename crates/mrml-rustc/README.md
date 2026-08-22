@@ -439,8 +439,12 @@ range forms. Each endpoint is evaluated once; inclusive-end overflow,
 callers selected elements 1 through 2 dynamically, observed length 2, changed
 20 to 22, and returned 34 through 422-byte COFF and 808-byte ELF64 objects. A
 reversed range produced Windows `0xC000001D` and Linux `SIGILL`. Ranges over
-expanded array locals and general aggregate ABI transport remain separate
-work.
+eight-byte-element array locals use positive-stride contiguous stack backing,
+so shared and mutable slices preserve aliasing with the original local. Native
+callers dynamically selected elements 1 through 2, mutated 20 to 22 through
+the slice, then observed that value through the array and returned 34 through
+439-byte COFF and 832-byte ELF64 objects. Packed backing for narrower local
+elements and general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -940,7 +944,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 303 Windows library, conformance, rustc-nightly-replacement, and driver
+The 305 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1614,7 +1618,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 303 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 305 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
