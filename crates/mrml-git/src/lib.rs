@@ -9,6 +9,7 @@ mod object;
 mod pack;
 mod repository;
 mod sha1;
+mod transport;
 
 pub use diff::FileDiff;
 pub use index::{Index, IndexEntry, IndexError};
@@ -22,6 +23,7 @@ pub use repository::{
     RepositoryError,
 };
 pub use sha1::{ObjectId, Sha1};
+pub use transport::{Advertisement, RemoteRef, TransportError, decode_packets, encode_flush, encode_packet, extract_pack_response, fetch_request, parse_advertisement};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cli {
