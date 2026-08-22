@@ -915,6 +915,8 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
         if normalized.vector != u64::from(TIMER_VECTOR) || normalized.cs & 3 != 3 {
             halt();
         }
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        asm!("out dx, al", in("dx") 0xe9u16, in("al") 0x90u8, options(nomem, nostack));
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 1u32, options(nomem, nostack));
         let page_table: u64;
         asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags));
@@ -1146,6 +1148,8 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
             options(nomem, nostack)
         );
         if proof == 6 {
+            #[cfg(feature = "uefi-service-preemption-probe")]
+            asm!("out dx, al", in("dx") 0xe9u16, in("al") 0x91u8, options(nomem, nostack));
             halt();
         }
     }
