@@ -464,6 +464,7 @@ impl<'source> ExpressionStatement<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WhileLoop<'source> {
+    pub label: Option<&'source str>,
     pub condition: Option<&'source str>,
     pub condition_span: Span,
     operations: [Option<LoopOperation<'source>>; MAX_LOOP_OPERATIONS],
@@ -703,7 +704,9 @@ pub enum ParseErrorKind {
     ExpectedEquals,
     ExpectedInitializer,
     ExpectedSemicolon,
+    ExpectedColon,
     ExpectedBody,
+    UnknownLoopLabel,
     UnexpectedClosingDelimiter,
     UnterminatedDelimiter,
     NestingLimitExceeded,
@@ -1023,9 +1026,27 @@ impl<'source> BodyParser<'source> {
         }))
     }
 
+    fn matching_loop_control_label(
+        &mut self,
+        loop_label: Option<&'source str>,
+    ) -> Result<(), ParseError> {
+        let Some(label) = self
+            .peek()?
+            .filter(|token| token.kind == TokenKind::Lifetime)
+        else {
+            return Ok(());
+        };
+        self.take()?;
+        if loop_label != Some(label.text) {
+            return Err(self.error(ParseErrorKind::UnknownLoopLabel, Some(label)));
+        }
+        Ok(())
+    }
+
     fn conditional_loop_arm(
         &mut self,
         assignment_count: &mut usize,
+        loop_label: Option<&'source str>,
     ) -> Result<ConditionalLoopArm<'source>, ParseError> {
         let mut actions = [None; MAX_CONDITIONAL_LOOP_ACTIONS];
         let mut action_count = 0usize;
@@ -1049,6 +1070,7 @@ impl<'source> BodyParser<'source> {
                     let (value, value_span) = self.return_value()?;
                     ConditionalLoopTerminal::Return(LoopReturn { value, value_span })
                 } else {
+                    self.matching_loop_control_label(loop_label)?;
                     let semicolon = self.take()?;
                     if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
                         return Err(self.error(ParseErrorKind::ExpectedSemicolon, semicolon));
@@ -1492,14 +1514,31 @@ impl<'source> BodyParser<'source> {
             }
         }
         let mut tail = self.peek()?;
-        while self
-            .peek()?
-            .is_some_and(|token| matches!(token.text, "while" | "loop"))
-        {
+        while self.peek()?.is_some_and(|token| {
+            matches!(token.text, "while" | "loop") || token.kind == TokenKind::Lifetime
+        }) {
             let mut probe = self.clone();
+            let label = if probe
+                .peek()?
+                .is_some_and(|token| token.kind == TokenKind::Lifetime)
+            {
+                let label = probe.take()?.ok_or_else(|| {
+                    probe.error(ParseErrorKind::ExpectedIdentifier, probe.lookahead)
+                })?;
+                let colon = probe.take()?;
+                if !colon.is_some_and(|token| token.kind == TokenKind::Colon) {
+                    return Err(probe.error(ParseErrorKind::ExpectedColon, colon));
+                }
+                Some(label.text)
+            } else {
+                None
+            };
             let loop_token = probe
                 .take()?
                 .ok_or_else(|| probe.error(ParseErrorKind::ExpectedBody, probe.lookahead))?;
+            if !matches!(loop_token.text, "while" | "loop") {
+                return Err(probe.error(ParseErrorKind::ExpectedBody, Some(loop_token)));
+            }
             let condition_span = if loop_token.text == "while" {
                 probe.delimited_until("{", ParseErrorKind::ExpectedBody)?.0
             } else {
@@ -1841,6 +1880,7 @@ impl<'source> BodyParser<'source> {
                                 let (value, value_span) = probe.return_value()?;
                                 ConditionalLoopTerminal::Return(LoopReturn { value, value_span })
                             } else {
+                                probe.matching_loop_control_label(label)?;
                                 let semicolon = probe.take()?;
                                 if !semicolon
                                     .is_some_and(|token| token.kind == TokenKind::Semicolon)
@@ -1914,7 +1954,7 @@ impl<'source> BodyParser<'source> {
                                 }
                                 (None, Span { start: 0, end: 0 })
                             };
-                        let mut arm = probe.conditional_loop_arm(&mut assignment_count)?;
+                        let mut arm = probe.conditional_loop_arm(&mut assignment_count, label)?;
                         arm.condition = arm_condition;
                         arm.condition_span = arm_condition_span;
                         conditional_else_arms[conditional_else_arm_count] = Some(arm);
@@ -1977,6 +2017,7 @@ impl<'source> BodyParser<'source> {
                         operations[operation_count] =
                             Some(LoopOperation::Return(LoopReturn { value, value_span }));
                     } else {
+                        probe.matching_loop_control_label(label)?;
                         let semicolon = probe.take()?;
                         if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
                             return Err(probe.error(ParseErrorKind::ExpectedSemicolon, semicolon));
@@ -2019,6 +2060,7 @@ impl<'source> BodyParser<'source> {
                 return Err(probe.error(ParseErrorKind::TooManyLocals, Some(loop_token)));
             }
             let loop_statement = WhileLoop {
+                label,
                 condition: (loop_token.text == "while")
                     .then_some(&self.source[condition_span.start..condition_span.end]),
                 condition_span,
@@ -3634,6 +3676,38 @@ mod tests {
                 body.while_loops()[0].unwrap().operation_count(),
                 usize::from(source.contains("1;"))
             );
+        }
+    }
+
+    #[test]
+    fn parses_matching_labels_on_statement_loop_controls() {
+        let module = Parser::new(
+            "fn sum(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; 'count: while i < limit { i += 1; if i % 2 == 0 { continue 'count; } else if i == stop { break 'count; } total += i; } 'once: loop { break 'once; } total }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        assert_eq!(body.while_loop_count(), 2);
+        assert_eq!(body.while_loops()[0].unwrap().label, Some("'count"));
+        assert_eq!(body.while_loops()[1].unwrap().label, Some("'once"));
+
+        for source in [
+            "fn bad() { 'outer loop { break 'missing; } }",
+            "fn bad() { 'outer: loop { continue 'missing; } }",
+            "fn bad() { 'outer: loop { if true { break 'missing; } } }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            let error = function.parse_body::<2>().unwrap_err();
+            assert!(matches!(
+                error.kind,
+                ParseErrorKind::ExpectedColon | ParseErrorKind::UnknownLoopLabel
+            ));
         }
     }
 

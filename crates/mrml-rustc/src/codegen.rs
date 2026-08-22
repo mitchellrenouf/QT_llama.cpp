@@ -4352,6 +4352,20 @@ mod tests {
     }
 
     #[test]
+    fn emits_matching_labels_on_statement_loop_controls() {
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; 'count: while i < limit { i += 1; if i % 2 == 0 { continue 'count; } else if i == stop { break 'count; } total += i; } 'once: loop { break 'once; } total }";
+        let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+            assert!(
+                compile_x86_64_function::<_, 2048, 4, 64>(&function, &NoConstants, abi).is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn emits_bounded_unconditional_loops_and_explicit_continue() {
         let sources = [
             "#[unsafe(no_mangle)] pub extern \"C\" fn once() -> u64 { let mut value: u64 = 0; loop { value += 1; if value == 1 { break; } } value }",

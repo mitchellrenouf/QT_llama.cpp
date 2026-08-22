@@ -309,8 +309,12 @@ An unconditional inner `loop` may use only conditional continue and function
 return controls. False guards reach the inner backedge rather than escaping the
 loop, while the first true return performs full-frame cleanup. This preserves
 Rust's diverging-loop behavior without requiring a synthetic break edge.
-General nested statement loops, labels, and break values in statement-loop
-operations remain unsupported.
+Statement-level `while` and `loop` may carry one Rust lifetime-style label.
+Matching labeled `break` and `continue` work in direct operations and bounded
+`if`/`else if`/`else` control arms; missing colons and unknown labels fail with
+dedicated bounded diagnostics. Cross-nested label targets, general deeper
+statement-loop nesting, and break values in statement-loop operations remain
+unsupported.
 Conditional loop-control blocks may perform up to four local declarations,
 assignments, or discarded scalar expressions before a terminal `break`,
 `continue`, or typed function return. Their actions are lazy and receive a
@@ -664,7 +668,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 246 Windows library, conformance, rustc-nightly-replacement, and driver
+The 250 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -930,6 +934,13 @@ COFF and 512-byte ELF64 empty-while objects passed independent nightly-built
 callers through the false head and returned 42. Both object backends contain
 checked negative backedges for the diverging forms, and const evaluation stops
 them at the exact shared iteration limit.
+The same-loop-label replacement maps labels from pinned
+`tests/ui/for-loop-while/loop-break-value.rs` and `loop-break-cont.rs`. Its
+379-byte COFF and 776-byte ELF64 objects passed independent nightly-built
+callers through labeled conditional continue, labeled else-if break, a labeled
+immediate loop exit, zero iterations, and two 60,000-iteration paths. Const
+evaluation produced one and nine for early and complete bounded cases; parser
+regressions reject a missing colon and unknown direct or conditional labels.
 The nested-while replacement maps nested scalar while flow from pinned
 `tests/ui/for-loop-while/while.rs` and the nested targeting observed in
 `nested-loop-break-unit.rs`. Its 361-byte COFF and 752-byte ELF64 objects passed
@@ -1331,7 +1342,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 246 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 250 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

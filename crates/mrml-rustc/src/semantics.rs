@@ -3408,6 +3408,18 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_matching_labels_on_statement_loop_controls() {
+        let module = Parser::new(
+            "const fn sum(limit: u8, stop: u8) -> u16 { let mut i: u8 = 0; let mut total: u16 = 0; 'count: while i < limit { i += 1; if i % 2 == 0 { continue 'count; } else if i == stop { break 'count; } total += i as u16; } 'once: loop { break 'once; } total } const EARLY: u16 = sum(5, 3); const COMPLETE: u16 = sum(5, 99);",
+        )
+        .parse_module::<4, 4>()
+        .unwrap();
+        let values = analyze_constants::<3, 128, 4, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("EARLY"), Some(1));
+        assert_eq!(values.resolve("COMPLETE"), Some(9));
+    }
+
+    #[test]
     fn evaluates_condition_headed_inner_while_loops() {
         let module = Parser::new(
             "const fn sum(limit: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < limit { while inner < 3 { inner += 1; total += inner as u16; } outer += 1; inner = 0; } total } const ZERO: u16 = sum(0); const ONE: u16 = sum(1); const FIVE: u16 = sum(5);",

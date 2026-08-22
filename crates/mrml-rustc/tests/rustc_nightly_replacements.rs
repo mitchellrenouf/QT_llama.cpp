@@ -927,6 +927,24 @@ fn rustc_empty_while_and_top_level_diverging_loops_have_executable_replacements(
 }
 
 #[test]
+fn rustc_labeled_statement_loop_controls_have_an_executable_replacement() {
+    // Original scalar replacement for same-loop labels in pinned
+    // tests/ui/for-loop-while/loop-break-value.rs and loop-break-cont.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, stop: u32) -> u32 { let mut i: u32 = 0; let mut total: u32 = 0; 'count: while i < limit { i += 1; if i % 2 == 0 { continue 'count; } else if i == stop { break 'count; } total += i; } 'once: loop { break 'once; } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<3072, 2048, 4, 4, 4, 96>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",
