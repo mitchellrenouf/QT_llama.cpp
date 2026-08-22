@@ -459,9 +459,14 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "merge" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            match native_repository(repository)?.merge(&tail[0]).map_err(|error| anyhow!("{}", error))? {
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds().ok_or_else(|| anyhow!("system time is unavailable"))?;
+            match native_repository(repository)?.merge(&tail[0], &name, &email, timestamp).map_err(|error| anyhow!("{}", error))? {
                 MergeOutcome::UpToDate => println!("Already up to date."),
                 MergeOutcome::FastForward(id) => println!("Fast-forward to {}", &id.to_hex()[..12]),
+                MergeOutcome::Merged(id) => println!("Merge made commit {}", &id.to_hex()[..12]),
+                MergeOutcome::Conflicts(count) => println!("Merge has {} conflict(s); resolve and commit", count),
             }
             Ok(())
         }

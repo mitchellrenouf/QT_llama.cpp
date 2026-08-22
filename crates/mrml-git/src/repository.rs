@@ -43,7 +43,7 @@ pub struct BlameLine {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MergeOutcome { UpToDate, FastForward(ObjectId) }
+pub enum MergeOutcome { UpToDate, FastForward(ObjectId), Merged(ObjectId), Conflicts(usize) }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RepositoryError {
@@ -297,15 +297,16 @@ impl Repository {
         Ok(false)
     }
 
-    pub fn merge(&self, revision: &str) -> Result<MergeOutcome, RepositoryError> {
+    pub fn merge(&self, revision: &str, name: &str, email: &str, timestamp: u64) -> Result<MergeOutcome, RepositoryError> {
+        validate_identity(name, email)?;
         if !self.changes()?.is_empty() { return Err(RepositoryError::WorktreeDirty); }
         let current = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
         let target = self.resolve_revision(revision)?;
         if self.is_ancestor(target, current)? { return Ok(MergeOutcome::UpToDate); }
-        if !self.is_ancestor(current, target)? { return Err(RepositoryError::MergeRequired); }
-        let commit = self.read_commit(target)?;
-        let target_index = self.tree_index(commit.tree)?;
-        self.materialize_index(&target_index)?;
+        if !self.is_ancestor(current, target)? {
+            return self.three_way_merge(current, target, revision, name, email, timestamp);
+        }
+        let commit = self.read_commit(target)?; let target_index = self.tree_index(commit.tree)?; self.materialize_index(&target_index)?;
         let branch = self.current_branch()?.ok_or(RepositoryError::DetachedHead)?;
         let reference = mrml_runtime::mrml_format!("refs/heads/{branch}");
         let path = join_path(&self.git_dir, &reference);
@@ -314,6 +315,61 @@ impl Repository {
         write_file(&lock, mrml_runtime::mrml_format!("{target}\n").as_bytes())?;
         mrml_runtime::rename_file(&lock, &path)?;
         Ok(MergeOutcome::FastForward(target))
+    }
+
+    fn merge_base(&self, ours: ObjectId, theirs: ObjectId) -> Result<ObjectId, RepositoryError> {
+        const LIMIT: usize = 1_000_000;
+        let mut ours_seen = Vector::new(); let mut pending = Vector::from([ours]);
+        while let Some(id) = pending.pop() { if ours_seen.iter().any(|value| *value == id) { continue; } if ours_seen.len() >= LIMIT { return Err(RepositoryError::TooManyFiles); } ours_seen.push(id); pending.extend(self.read_commit(id)?.parents.iter().copied()); }
+        let mut theirs_seen = Vector::new(); let mut queue = Vector::from([theirs]); let mut cursor = 0;
+        while cursor < queue.len() { let id = queue[cursor]; cursor += 1; if ours_seen.iter().any(|value| *value == id) { return Ok(id); } if theirs_seen.iter().any(|value| *value == id) { continue; } if theirs_seen.len() >= LIMIT { return Err(RepositoryError::TooManyFiles); } theirs_seen.push(id); queue.extend(self.read_commit(id)?.parents.iter().copied()); }
+        Err(RepositoryError::MergeRequired)
+    }
+
+    fn three_way_merge(&self, ours: ObjectId, theirs: ObjectId, label: &str, name: &str, email: &str, timestamp: u64) -> Result<MergeOutcome, RepositoryError> {
+        let base = self.merge_base(ours, theirs)?;
+        let base_index = self.tree_index(self.read_commit(base)?.tree)?;
+        let ours_index = self.tree_index(self.read_commit(ours)?.tree)?;
+        let theirs_index = self.tree_index(self.read_commit(theirs)?.tree)?;
+        let mut names: Vector<Text> = base_index.entries.iter().map(|entry| entry.path.clone()).collect();
+        for source in [&ours_index, &theirs_index] { for entry in &source.entries { if !names.iter().any(|path| path == &entry.path) { names.push(entry.path.clone()); } } }
+        names.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        let mut merged = Index::empty(); let mut conflicts: Vector<(Text, Option<Vector<u8>>, Option<Vector<u8>>)> = Vector::new();
+        for path in names {
+            let b = base_index.entry(&path); let o = ours_index.entry(&path); let t = theirs_index.entry(&path);
+            let chosen = if same_entry(o, t) { o } else if same_entry(o, b) { t } else if same_entry(t, b) { o } else { None };
+            if same_entry(o, t) || same_entry(o, b) || same_entry(t, b) {
+                if let Some(entry) = chosen { merged.upsert(entry.clone()); }
+            } else {
+                if let Some(entry) = b { let mut value = entry.clone(); value.stage = 1; merged.upsert(value); }
+                if let Some(entry) = o { let mut value = entry.clone(); value.stage = 2; merged.upsert(value); }
+                if let Some(entry) = t { let mut value = entry.clone(); value.stage = 3; merged.upsert(value); }
+                conflicts.push((path, match o { Some(e) => Some(self.read_blob(e.id)?), None => None }, match t { Some(e) => Some(self.read_blob(e.id)?), None => None }));
+            }
+        }
+        if !conflicts.is_empty() {
+            let clean = Index { version: 2, entries: merged.entries.iter().filter(|entry| entry.stage == 0).cloned().collect() };
+            self.materialize_index(&clean)?;
+            for (path, ours_bytes, theirs_bytes) in &conflicts {
+                let disk = join_path(&self.worktree, path);
+                if let Some(parent) = parent_path(&disk) { create_dir_all(parent)?; }
+                let ours_text = ours_bytes.as_deref().and_then(|bytes| core::str::from_utf8(bytes).ok());
+                let theirs_text = theirs_bytes.as_deref().and_then(|bytes| core::str::from_utf8(bytes).ok());
+                if let (Some(ours_text), Some(theirs_text)) = (ours_text, theirs_text) {
+                    let marked = mrml_runtime::mrml_format!("<<<<<<< HEAD\n{}=======\n{}>>>>>>> {}\n", ours_text, theirs_text, label);
+                    write_file(&disk, marked.as_bytes())?;
+                } else if let Some(bytes) = ours_bytes { write_file(&disk, bytes)?; }
+            }
+            self.write_index(&merged)?;
+            write_file(&join_path(&self.git_dir, "MERGE_HEAD"), mrml_runtime::mrml_format!("{theirs}\n").as_bytes())?;
+            return Ok(MergeOutcome::Conflicts(conflicts.len()));
+        }
+        self.materialize_index(&merged)?;
+        let tree = self.write_tree_from_index(&merged)?;
+        let message = mrml_runtime::mrml_format!("Merge {label}");
+        let id = self.create_commit_object(tree, &[ours, theirs], &message, name, email, timestamp)?;
+        self.update_current_branch(id)?;
+        Ok(MergeOutcome::Merged(id))
     }
 
     fn materialize_index(&self, target: &Index) -> Result<(), RepositoryError> {
@@ -783,6 +839,24 @@ impl Repository {
         Ok(id)
     }
 
+    fn create_commit_object(&self, tree: ObjectId, parents: &[ObjectId], message: &str, name: &str, email: &str, timestamp: u64) -> Result<ObjectId, RepositoryError> {
+        validate_identity(name, email)?;
+        let mut contents = mrml_runtime::mrml_format!("tree {tree}\n");
+        for parent in parents { contents.push_str(&mrml_runtime::mrml_format!("parent {parent}\n")); }
+        contents.push_str(&mrml_runtime::mrml_format!("author {name} <{email}> {timestamp} +0000\ncommitter {name} <{email}> {timestamp} +0000\n\n{}\n", message.trim()));
+        self.write_object(ObjectKind::Commit, contents.as_bytes())
+    }
+
+    fn update_current_branch(&self, id: ObjectId) -> Result<(), RepositoryError> {
+        let branch = self.current_branch()?.ok_or(RepositoryError::DetachedHead)?;
+        let path = join_path(&self.git_dir, &mrml_runtime::mrml_format!("refs/heads/{branch}"));
+        let lock = mrml_runtime::mrml_format!("{path}.lock");
+        if path_exists(&lock) { return Err(RepositoryError::AlreadyExists); }
+        write_file(&lock, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
+        mrml_runtime::rename_file(&lock, &path)?;
+        Ok(())
+    }
+
     pub fn stash_push(&self, message: &str, name: &str, email: &str, timestamp: u64) -> Result<ObjectId, RepositoryError> {
         validate_identity(name, email)?;
         let head = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
@@ -987,6 +1061,10 @@ fn validate_identity(name: &str, email: &str) -> Result<(), RepositoryError> {
     } else {
         Ok(())
     }
+}
+
+fn same_entry(left: Option<&IndexEntry>, right: Option<&IndexEntry>) -> bool {
+    match (left, right) { (None, None) => true, (Some(left), Some(right)) => left.id == right.id && left.mode == right.mode, _ => false }
 }
 
 fn validate_config_name(value: &str) -> Result<(), RepositoryError> {
@@ -1287,9 +1365,9 @@ mod tests {
         write_file(&file, b"base").unwrap(); repository.stage(&paths).unwrap(); repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
         repository.create_branch("topic", true).unwrap(); write_file(&file, b"topic").unwrap(); repository.stage(&paths).unwrap(); let topic = repository.commit("topic", "MRML", "mrml@example.invalid", 2).unwrap();
         repository.switch_branch("main").unwrap();
-        assert_eq!(repository.merge("topic").unwrap(), MergeOutcome::FastForward(topic));
+        assert_eq!(repository.merge("topic", "MRML", "mrml@example.invalid", 3).unwrap(), MergeOutcome::FastForward(topic));
         assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"topic"); assert_eq!(repository.head().unwrap(), Some(topic));
-        assert_eq!(repository.merge("topic").unwrap(), MergeOutcome::UpToDate);
+        assert_eq!(repository.merge("topic", "MRML", "mrml@example.invalid", 4).unwrap(), MergeOutcome::UpToDate);
         remove_dir_all(&path).unwrap();
     }
 
@@ -1302,6 +1380,18 @@ mod tests {
         assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"base"); assert_eq!(repository.stash_list(10).unwrap()[0].0, stash);
         assert_eq!(repository.stash_pop().unwrap(), stash); assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"saved");
         assert!(repository.stash_list(10).unwrap().is_empty());
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn creates_native_two_parent_three_way_merge() {
+        let path = root("merge-three"); let repository = Repository::init(&path).unwrap();
+        let base_file = join_path(&path, "base"); write_file(&base_file, b"base").unwrap(); repository.stage(&Vector::from([Text::from("base")])).unwrap(); repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
+        repository.create_branch("topic", true).unwrap(); let topic_file = join_path(&path, "topic"); write_file(&topic_file, b"topic").unwrap(); repository.stage(&Vector::from([Text::from("topic")])).unwrap(); let topic = repository.commit("topic", "MRML", "mrml@example.invalid", 2).unwrap();
+        repository.switch_branch("main").unwrap(); let main_file = join_path(&path, "main"); write_file(&main_file, b"main").unwrap(); repository.stage(&Vector::from([Text::from("main")])).unwrap(); let ours = repository.commit("main", "MRML", "mrml@example.invalid", 3).unwrap();
+        let merged = match repository.merge("topic", "MRML", "mrml@example.invalid", 4).unwrap() { MergeOutcome::Merged(id) => id, other => panic!("unexpected {other:?}") };
+        let commit = repository.read_commit(merged).unwrap(); assert_eq!(&commit.parents[..], &[ours, topic]);
+        assert!(path_is_file(&topic_file)); assert!(path_is_file(&main_file));
         remove_dir_all(&path).unwrap();
     }
 }
