@@ -351,18 +351,14 @@ fn dispatch(cli: &Cli) -> Result<()> {
             if tail.len() > 1 || count.parse::<usize>().is_err() {
                 return Err(anyhow!("log accepts one numeric count"));
             }
-            run_visible(
-                repository,
-                &[
-                    "log",
-                    "--graph",
-                    "--decorate",
-                    "--date=relative",
-                    "--pretty=format:%C(auto)%h%Creset %C(magenta)%d%Creset %s %C(dim white)— %an, %ar%Creset",
-                    "-n",
-                    count,
-                ],
-            )
+            let limit = count.parse::<usize>().map_err(|_| anyhow!("invalid log count"))?;
+            let repository = native_repository(repository)?;
+            let head = repository.head().map_err(|error| anyhow!("{}", error))?.ok_or_else(|| anyhow!("no commits yet"))?;
+            for (id, commit) in repository.history(head, limit).map_err(|error| anyhow!("{}", error))? {
+                println!("{} {}", (&id.to_hex()[..12]).bright_yellow(), commit.message.lines().next().unwrap_or(""));
+                println!("  {}", commit.author.dimmed());
+            }
+            Ok(())
         }
         "diff" => {
             let staged = tail.first().is_some_and(|argument| argument == "--staged");
@@ -389,16 +385,15 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "show" if tail.len() <= 1 => {
             checked_positionals(tail)?;
-            run_visible(
-                repository,
-                &[
-                    "show",
-                    "--color=always",
-                    "--stat",
-                    tail.first().map(Text::as_str).unwrap_or("HEAD"),
-                    "--",
-                ],
-            )
+            let repository = native_repository(repository)?;
+            let id = repository.resolve_revision(tail.first().map(Text::as_str).unwrap_or("HEAD")).map_err(|error| anyhow!("{}", error))?;
+            let commit = repository.read_commit(id).map_err(|error| anyhow!("{}", error))?;
+            println!("{} {}", "commit".yellow(), id);
+            println!("{} {}", "Author:".dimmed(), commit.author);
+            println!("{} {}", "Tree:".dimmed(), commit.tree);
+            for parent in commit.parents { println!("{} {}", "Parent:".dimmed(), parent); }
+            println!("\n{}", commit.message);
+            Ok(())
         }
         "history" if tail.len() == 1 => {
             checked_positionals(tail)?;

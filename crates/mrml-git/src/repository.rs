@@ -6,7 +6,7 @@ use mrml_runtime::{
 };
 
 use crate::{
-    Index, IndexError, Object, ObjectError, ObjectId, ObjectKind, decode_loose_object,
+    Commit, Index, IndexError, Object, ObjectError, ObjectId, ObjectKind, decode_loose_object,
     encode_loose_object,
 };
 
@@ -180,6 +180,39 @@ impl Repository {
             return Err(RepositoryError::InvalidHead);
         }
         Ok(object)
+    }
+
+    pub fn resolve_revision(&self, revision: &str) -> Result<ObjectId, RepositoryError> {
+        if revision == "HEAD" { return self.head()?.ok_or(RepositoryError::ReferenceMissing); }
+        if let Some(id) = ObjectId::parse(revision) { return Ok(id); }
+        for prefix in ["refs/heads", "refs/tags"] {
+            let reference = mrml_runtime::mrml_format!("{prefix}/{revision}");
+            validate_reference(&reference)?;
+            let path = join_path(&self.git_dir, &reference);
+            if path_is_file(&path) {
+                let value = read_file_text_bounded(&path, 4096)?;
+                return ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference);
+            }
+        }
+        Err(RepositoryError::ReferenceMissing)
+    }
+
+    pub fn read_commit(&self, id: ObjectId) -> Result<Commit, RepositoryError> {
+        let object = self.read_object(id)?;
+        if object.kind != ObjectKind::Commit { return Err(RepositoryError::InvalidReference); }
+        Ok(Commit::parse(&object.contents)?)
+    }
+
+    pub fn history(&self, start: ObjectId, limit: usize) -> Result<Vector<(ObjectId, Commit)>, RepositoryError> {
+        let mut history = Vector::new();
+        let mut next = Some(start);
+        while let Some(id) = next {
+            if history.len() >= limit { break; }
+            let commit = self.read_commit(id)?;
+            next = commit.parents.first().copied();
+            history.push((id, commit));
+        }
+        Ok(history)
     }
 
     pub fn branches(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {

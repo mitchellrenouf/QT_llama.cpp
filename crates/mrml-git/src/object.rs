@@ -1,5 +1,5 @@
 use core::fmt;
-use mrml_runtime::Vector;
+use mrml_runtime::{Text, Vector};
 
 use crate::inflate::inflate_zlib;
 use crate::{ObjectId, Sha1};
@@ -16,6 +16,14 @@ pub enum ObjectKind {
 pub struct Object {
     pub kind: ObjectKind,
     pub contents: Vector<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Commit {
+    pub tree: ObjectId,
+    pub parents: Vector<ObjectId>,
+    pub author: Text,
+    pub message: Text,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +117,22 @@ impl fmt::Display for ObjectError {
 }
 impl core::error::Error for ObjectError {}
 
+impl Commit {
+    pub fn parse(contents: &[u8]) -> Result<Self, ObjectError> {
+        let text = core::str::from_utf8(contents).map_err(|_| ObjectError::InvalidHeader)?;
+        let (headers, message) = text.split_once("\n\n").ok_or(ObjectError::InvalidHeader)?;
+        let mut tree = None;
+        let mut parents = Vector::new();
+        let mut author = None;
+        for line in headers.lines() {
+            if let Some(value) = line.strip_prefix("tree ") { tree = ObjectId::parse(value); }
+            else if let Some(value) = line.strip_prefix("parent ") { parents.push(ObjectId::parse(value).ok_or(ObjectError::InvalidHeader)?); }
+            else if let Some(value) = line.strip_prefix("author ") { author = Some(Text::from(value)); }
+        }
+        Ok(Self { tree: tree.ok_or(ObjectError::InvalidHeader)?, parents, author: author.ok_or(ObjectError::InvalidHeader)?, message: message.into() })
+    }
+}
+
 fn adler32(bytes: &[u8]) -> u32 {
     const MODULUS: u32 = 65_521;
     let (mut a, mut b) = (1u32, 0u32);
@@ -153,5 +177,16 @@ mod tests {
                 contents: Vector::from(*b"tree deadbeef\n\nmessage\n")
             }
         );
+    }
+
+    #[test]
+    fn parses_commit_graph_metadata() {
+        let tree = "1111111111111111111111111111111111111111";
+        let parent = "2222222222222222222222222222222222222222";
+        let text = mrml_runtime::mrml_format!("tree {tree}\nparent {parent}\nauthor MRML <mrml@example.invalid> 1 +0000\ncommitter MRML <mrml@example.invalid> 1 +0000\n\nmessage\n");
+        let commit = Commit::parse(text.as_bytes()).unwrap();
+        assert_eq!(commit.tree, ObjectId::parse(tree).unwrap());
+        assert_eq!(commit.parents[0], ObjectId::parse(parent).unwrap());
+        assert_eq!(commit.message, "message\n");
     }
 }
