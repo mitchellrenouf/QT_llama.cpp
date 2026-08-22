@@ -3,19 +3,22 @@ use super::{
     PageTableBuilder, PageTableStore, PeMappingError, VirtAddr, map_pe_image,
 };
 use crate::{
-    ArtifactKind, MAX_PE_SECTIONS, PAGE_SIZE, PeAllocatedRegion, PeImage, PhysAddr,
-    VerifiedExecutable,
+    ArtifactKind, MAX_PE_SECTIONS, PAGE_SIZE, PeAllocatedRegion, PeAllocationError, PeError,
+    PeImage, PhysAddr, ServiceLaunch, VerifiedExecutable,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceSpaceError {
     WrongArtifact,
+    HandoffMismatch,
     InvalidKernelMapping,
     InvalidStack,
     Overflow,
     Address(AddressSpaceError),
     Image(PeMappingError),
     Tables(PageTableBuildError),
+    Pe(PeError),
+    Allocation(PeAllocationError),
 }
 
 /// Final mapping policy for one authenticated user service. Each instance can
@@ -29,6 +32,64 @@ pub struct ServiceAddressSpace<const MAPPINGS: usize> {
 }
 
 impl<const MAPPINGS: usize> ServiceAddressSpace<MAPPINGS> {
+    /// Reconstructs the W^X mapping plan for a service authenticated and
+    /// materialized by the boot loader. The descriptor fixes the complete
+    /// allocation, preferred virtual base, entry, stack, and table arena.
+    pub fn from_handoff(
+        service: ServiceLaunch,
+        materialized_image: &[u8],
+        kernel_mappings: &[Mapping],
+    ) -> Result<Self, ServiceSpaceError> {
+        let image = PeImage::parse(materialized_image).map_err(ServiceSpaceError::Pe)?;
+        let expected_bytes = service
+            .image_pages()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(ServiceSpaceError::Overflow)?;
+        if materialized_image.len() as u64 != expected_bytes
+            || u64::from(image.image_size()) > expected_bytes
+            || image.image_base() != service.image_virtual()
+            || service.entry()
+                != service
+                    .image_virtual()
+                    .checked_add(u64::from(image.entry_rva()))
+                    .ok_or(ServiceSpaceError::Overflow)?
+        {
+            return Err(ServiceSpaceError::HandoffMismatch);
+        }
+        let mut allocations: [Option<PeAllocatedRegion>; MAX_PE_SECTIONS + 1] =
+            [None; MAX_PE_SECTIONS + 1];
+        let allocation_count = image.load_region_count();
+        for (index, slot) in allocations[..allocation_count].iter_mut().enumerate() {
+            let load = image.load_region(index).map_err(ServiceSpaceError::Pe)?;
+            *slot = Some(
+                PeAllocatedRegion::from_contiguous_image(
+                    load,
+                    service.image_physical(),
+                    service.image_pages(),
+                )
+                .map_err(ServiceSpaceError::Allocation)?,
+            );
+        }
+        let stack_bytes = service
+            .stack_pages()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(ServiceSpaceError::Overflow)?;
+        let stack_base = service
+            .stack_top()
+            .checked_sub(stack_bytes)
+            .ok_or(ServiceSpaceError::InvalidStack)?;
+        Self::build(
+            &image,
+            service.image_virtual(),
+            &allocations,
+            allocation_count,
+            kernel_mappings,
+            stack_base,
+            service.stack_physical(),
+            service.stack_pages(),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         executable: &VerifiedExecutable<'_>,
@@ -248,6 +309,55 @@ mod tests {
             )
             .err(),
             Some(ServiceSpaceError::InvalidKernelMapping)
+        );
+    }
+
+    #[test]
+    fn handoff_reconstructs_contiguous_image_with_section_permissions() {
+        let encoded = minimal_pe();
+        let image = PeImage::parse(&encoded).unwrap();
+        let mut materialized = [0u8; 8192];
+        let entry = image.materialize(&mut materialized).unwrap();
+        let service = ServiceLaunch::new(
+            PhysAddr::new(0x20_0000).unwrap(),
+            2,
+            image.image_base(),
+            entry,
+            PhysAddr::new(0x30_0000).unwrap(),
+            2,
+            0x7000_2000,
+            PhysAddr::new(0x40_0000).unwrap(),
+            8,
+            1,
+            [1; 64],
+        )
+        .unwrap();
+        let plan = ServiceAddressSpace::<8>::from_handoff(service, &materialized, &[]).unwrap();
+        assert_eq!(plan.entry(), entry);
+        assert_eq!(plan.stack_top(), 0x7000_2000);
+        assert!(plan.mappings().any(|mapping| {
+            mapping.virtual_start().get() == image.image_base() + 0x1000
+                && mapping.physical_start().get() == 0x20_1000
+                && mapping.permissions() == PagePermissions::USER_READ_EXECUTE
+        }));
+
+        let wrong_entry = ServiceLaunch::new(
+            service.image_physical(),
+            service.image_pages(),
+            service.image_virtual(),
+            service.entry() + 1,
+            service.stack_physical(),
+            service.stack_pages(),
+            service.stack_top(),
+            service.table_physical(),
+            service.table_pages(),
+            service.version(),
+            service.measurement(),
+        )
+        .unwrap();
+        assert_eq!(
+            ServiceAddressSpace::<8>::from_handoff(wrong_entry, &materialized, &[]).err(),
+            Some(ServiceSpaceError::HandoffMismatch)
         );
     }
 }

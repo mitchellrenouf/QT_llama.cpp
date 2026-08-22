@@ -1,4 +1,4 @@
-use crate::{FrameAllocator, MemoryError, PhysAddr};
+use crate::{FrameAllocator, MemoryError, PAGE_SIZE, PhysAddr};
 
 const DOS_MAGIC: u16 = 0x5a4d;
 const PE_SIGNATURE: u32 = 0x0000_4550;
@@ -56,6 +56,38 @@ impl PeAllocatedRegion {
     }
     pub const fn physical_start(self) -> PhysAddr {
         self.physical_start
+    }
+    /// Binds one validated load region to its position in a contiguous
+    /// materialized PE allocation.
+    pub fn from_contiguous_image(
+        load: PeLoadRegion,
+        image_physical: PhysAddr,
+        image_pages: u64,
+    ) -> Result<Self, PeAllocationError> {
+        let image_bytes = image_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(PeAllocationError::InvalidPlan(PeError::InvalidImageSize))?;
+        let offset = u64::from(load.virtual_address);
+        let region_bytes = u64::from(load.pages)
+            .checked_mul(PAGE_SIZE)
+            .ok_or(PeAllocationError::InvalidPlan(PeError::InvalidImageSize))?;
+        if offset
+            .checked_add(region_bytes)
+            .is_none_or(|end| end > image_bytes)
+        {
+            return Err(PeAllocationError::InvalidPlan(PeError::InvalidImageSize));
+        }
+        let physical_start = PhysAddr::new(
+            image_physical
+                .get()
+                .checked_add(offset)
+                .ok_or(PeAllocationError::InvalidPlan(PeError::InvalidImageSize))?,
+        )
+        .map_err(PeAllocationError::Memory)?;
+        Ok(Self {
+            load,
+            physical_start,
+        })
     }
     #[cfg(test)]
     pub(crate) const fn test_value(load: PeLoadRegion, physical_start: PhysAddr) -> Self {
