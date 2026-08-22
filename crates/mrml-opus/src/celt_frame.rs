@@ -478,6 +478,7 @@ pub fn decode_shapes(
             let mask = celt_partition::decode(
                 decoder,
                 PartitionConfig {
+                    band,
                     bits,
                     // TF changes reshape B/N_B but do not change the cache LM.
                     lm: config.lm as i8,
@@ -497,6 +498,7 @@ pub fn decode_shapes(
             let left_mask = celt_partition::decode(
                 decoder,
                 PartitionConfig {
+                    band,
                     bits: dual_channel_bits(bits),
                     lm: config.lm as i8,
                     blocks: partition_blocks,
@@ -511,6 +513,7 @@ pub fn decode_shapes(
             let right_mask = celt_partition::decode(
                 decoder,
                 PartitionConfig {
+                    band,
                     bits: dual_channel_bits(bits),
                     lm: config.lm as i8,
                     blocks: partition_blocks,
@@ -529,6 +532,7 @@ pub fn decode_shapes(
             let mask = celt_partition::decode_stereo(
                 decoder,
                 PartitionConfig {
+                    band,
                     bits,
                     lm: config.lm as i8,
                     blocks: partition_blocks,
@@ -701,6 +705,7 @@ pub fn encode_shapes_mono(
             let partition_mask = celt_partition::encode(
                 encoder,
                 PartitionConfig {
+                    band,
                     bits,
                     lm: config.lm as i8,
                     blocks: layout.partition_blocks,
@@ -836,6 +841,7 @@ pub fn encode_shapes_stereo(
             let mask = celt_partition::encode_stereo(
                 encoder,
                 PartitionConfig {
+                    band,
                     bits,
                     lm: config.lm as i8,
                     blocks: layout.partition_blocks,
@@ -892,6 +898,7 @@ pub fn encode_shapes_stereo(
                 let partition_mask = celt_partition::encode(
                     encoder,
                     PartitionConfig {
+                        band,
                         bits: dual_channel_bits(bits),
                         lm: config.lm as i8,
                         blocks: layout.partition_blocks,

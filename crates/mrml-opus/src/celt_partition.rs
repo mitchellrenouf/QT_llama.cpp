@@ -20,6 +20,8 @@ pub struct PartitionState {
 /// Parameters for one recursively decodable mono band.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PartitionConfig {
+    /// CELT critical-band index used by the normative pulse-cost cache.
+    pub band: usize,
     /// Budget assigned to this partition, in eighth-bit units.
     pub bits: i32,
     /// Maximum remaining split depth. CELT starts this at the frame LM.
@@ -106,7 +108,7 @@ fn encode_inner(
     pulse_workspace: &mut [i32],
     recurrence_scratch: &mut [u32],
 ) -> Result<u16, Error> {
-    let maximum = maximum_leaf_cost(input.len(), recurrence_scratch)?;
+    let maximum = maximum_leaf_cost(config.band, config.lm, recurrence_scratch)?;
     if config.lm >= 0 && input.len() > 2 && config.bits > i32::from(maximum) + 12 {
         let half = input.len() / 2;
         if half * 2 != input.len() {
@@ -253,8 +255,9 @@ fn encode_leaf(
 ) -> Result<u16, Error> {
     let target = config.bits.max(0);
     let available = state.remaining_bits.max(0);
-    let pulses = pvq::pulses_for_target(
-        input.len(),
+    let pulses = pvq::pulses_for_band_target(
+        config.band,
+        config.lm,
         u16::try_from(target.min(i32::from(u16::MAX))).unwrap_or(u16::MAX),
         u16::try_from(available.min(i32::from(u16::MAX))).unwrap_or(u16::MAX),
         recurrence_scratch,
@@ -263,12 +266,12 @@ fn encode_leaf(
     if pulses == 0 {
         return Ok(0);
     }
-    let used = i32::from(pvq::packed_pulse_cache_cost(pvq::codebook_size(
-        input.len(),
+    let used = i32::from(pvq::band_pulse_cost(
+        config.band,
+        config.lm,
         pulses,
         recurrence_scratch,
-    )?)?)
-        + 1;
+    )?);
     state.remaining_bits = state
         .remaining_bits
         .checked_sub(used)
@@ -826,7 +829,7 @@ fn decode_inner(
     pulse_workspace: &mut [i32],
     recurrence_scratch: &mut [u32],
 ) -> Result<u16, Error> {
-    let maximum = maximum_leaf_cost(output.len(), recurrence_scratch)?;
+    let maximum = maximum_leaf_cost(config.band, config.lm, recurrence_scratch)?;
     if config.lm >= 0 && output.len() > 2 && config.bits > i32::from(maximum) + 12 {
         let half = output.len() / 2;
         if half * 2 != output.len() {
@@ -977,8 +980,9 @@ fn decode_leaf(
 ) -> Result<u16, Error> {
     let target = config.bits.max(0);
     let available = state.remaining_bits.max(0);
-    let pulses = pvq::pulses_for_target(
-        output.len(),
+    let pulses = pvq::pulses_for_band_target(
+        config.band,
+        config.lm,
         u16::try_from(target.min(i32::from(u16::MAX))).unwrap_or(u16::MAX),
         u16::try_from(available.min(i32::from(u16::MAX))).unwrap_or(u16::MAX),
         recurrence_scratch,
@@ -988,12 +992,12 @@ fn decode_leaf(
         output.fill(0.0);
         return Ok(0);
     }
-    let used = i32::from(pvq::packed_pulse_cache_cost(pvq::codebook_size(
-        output.len(),
+    let used = i32::from(pvq::band_pulse_cost(
+        config.band,
+        config.lm,
         pulses,
         recurrence_scratch,
-    )?)?)
-        + 1;
+    )?);
     state.remaining_bits = state
         .remaining_bits
         .checked_sub(used)
@@ -1012,23 +1016,8 @@ fn decode_leaf(
     collapse_mask(pulse_workspace, config.blocks)
 }
 
-pub(crate) fn maximum_leaf_cost(dimensions: usize, scratch: &mut [u32]) -> Result<u16, Error> {
-    let mut maximum = 0;
-    let limit = pvq::pulse_cache_run_len(dimensions).unwrap_or(pvq::MAX_PULSE_INDEX);
-    for index in 1..=limit {
-        let Some(pulses) = pvq::pulses_for_index(index) else {
-            break;
-        };
-        if dimensions > 4 && (pulses > pvq::MAX_PULSES || pulses >= scratch.len()) {
-            break;
-        }
-        let size = pvq::codebook_size(dimensions, pulses, scratch)?;
-        if size == u32::MAX {
-            break;
-        }
-        maximum = u16::from(pvq::packed_pulse_cache_cost(size)?);
-    }
-    Ok(maximum)
+pub(crate) fn maximum_leaf_cost(band: usize, lm: i8, scratch: &mut [u32]) -> Result<u16, Error> {
+    pvq::maximum_band_cost(band, lm, scratch)
 }
 
 fn collapse_mask(pulses: &[i32], blocks: usize) -> Result<u16, Error> {
@@ -1059,6 +1048,7 @@ fn validate(
         || pulse_workspace.len() != output.len()
         || recurrence_scratch.len() < 2
         || config.bits < 0
+        || config.band >= 21
         || state.remaining_bits < 0
         || !(-1..=3).contains(&config.lm)
         || config.blocks == 0
@@ -1101,6 +1091,7 @@ mod tests {
             *value = (index as f32 - 12.0) / 20.0;
         }
         let config = PartitionConfig {
+            band: 16,
             bits: 520,
             lm: 2,
             blocks: 4,
@@ -1161,6 +1152,7 @@ mod tests {
         normalize_or_zero(&mut left, left_energy);
         normalize_or_zero(&mut right, right_energy);
         let config = PartitionConfig {
+            band: 12,
             bits: 360,
             lm: 2,
             blocks: 4,
@@ -1228,7 +1220,7 @@ mod tests {
     fn leaf_pvq_decodes_and_reports_each_live_block() {
         let pulses = [1, 0, 0, 0, 0, 0, -1, 0];
         let mut bytes = [0u8; 64];
-        let mut recurrence = [0u32; 64];
+        let mut recurrence = [0u32; pvq::MAX_PULSES + 1];
         let mut encoder = RangeEncoder::new(&mut bytes);
         pvq::encode_range(&mut encoder, 2, &pulses, &mut recurrence).unwrap();
         encoder.finish().unwrap();
@@ -1241,10 +1233,8 @@ mod tests {
         let mask = decode(
             &mut RangeDecoder::new(&bytes),
             PartitionConfig {
-                bits: i32::from(
-                    pvq::fractional_log2(pvq::codebook_size(8, 2, &mut recurrence).unwrap())
-                        .unwrap(),
-                ),
+                band: 16,
+                bits: i32::from(pvq::band_pulse_cost(16, 0, 2, &mut recurrence).unwrap()),
                 lm: 0,
                 blocks: 2,
                 spread: 0,
@@ -1276,7 +1266,7 @@ mod tests {
     #[test]
     fn oversized_codebook_recursively_splits_before_pvq() {
         let mut recurrence = [0u32; 256];
-        let bits = i32::from(maximum_leaf_cost(16, &mut recurrence).unwrap()) + 13;
+        let bits = i32::from(maximum_leaf_cost(12, 2, &mut recurrence).unwrap()) + 13;
         let pulse_cap = i32::from(pvq::fractional_log2(8).unwrap());
         let theta_config = ThetaConfig {
             dimensions: 8,
@@ -1310,8 +1300,9 @@ mod tests {
         let mask = decode(
             &mut RangeDecoder::new(&bytes),
             PartitionConfig {
+                band: 12,
                 bits,
-                lm: 0,
+                lm: 2,
                 blocks: 1,
                 spread: 0,
                 gain: 1.0,
@@ -1331,12 +1322,10 @@ mod tests {
 
     #[test]
     fn intensity_stereo_decodes_one_shape_into_both_channels() {
-        let mut recurrence = [0u32; 64];
+        let mut recurrence = [0u32; pvq::MAX_PULSES + 1];
         let pulses = 2;
         let vector = [1, 0, 0, -1, 0, 0, 0, 0];
-        let bits = i32::from(
-            pvq::fractional_log2(pvq::codebook_size(8, pulses, &mut recurrence).unwrap()).unwrap(),
-        );
+        let bits = i32::from(pvq::band_pulse_cost(16, 0, pulses, &mut recurrence).unwrap());
         let mut bytes = [0u8; 64];
         let mut encoder = RangeEncoder::new(&mut bytes);
         pvq::encode_range(&mut encoder, pulses, &vector, &mut recurrence).unwrap();
@@ -1352,6 +1341,7 @@ mod tests {
         let mask = decode_stereo(
             &mut RangeDecoder::new(&bytes),
             PartitionConfig {
+                band: 16,
                 bits,
                 lm: 0,
                 blocks: 1,

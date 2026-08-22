@@ -24,6 +24,60 @@ pub const MAX_PULSES: usize = 128;
 /// cache's one-byte entries.
 pub const MAX_PULSE_INDEX: u8 = 40;
 
+// RFC 6716's standard 48 kHz CELT mode uses an LM-major lookup from
+// `(LM + 1, band)` to one of 23 packed pulse-cost profiles.  The offsets are
+// standards data; costs themselves remain generated from V(N,K) below.
+const CACHE_INDEX: [i16; 105] = [
+    -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 41, 41, 41, 82, 82, 123, 164, 200, 222, 0, 0, 0, 0,
+    0, 0, 0, 0, 41, 41, 41, 41, 123, 123, 123, 164, 164, 240, 266, 283, 295, 41, 41, 41, 41, 41,
+    41, 41, 41, 123, 123, 123, 123, 240, 240, 240, 266, 266, 305, 318, 328, 336, 123, 123, 123,
+    123, 123, 123, 123, 123, 240, 240, 240, 240, 305, 305, 305, 318, 318, 343, 351, 358, 364, 240,
+    240, 240, 240, 240, 240, 240, 240, 305, 305, 305, 305, 343, 343, 343, 351, 351, 370, 376, 382,
+    387,
+];
+
+const CACHE_PROFILES: [(i16, usize, u8); 23] = [
+    (0, 1, 40),
+    (41, 2, 40),
+    (82, 3, 40),
+    (123, 4, 40),
+    (164, 6, 35),
+    (200, 9, 21),
+    (222, 11, 17),
+    (240, 8, 25),
+    (266, 12, 16),
+    (283, 18, 11),
+    (295, 22, 9),
+    (305, 16, 12),
+    (318, 24, 9),
+    (328, 36, 7),
+    (336, 44, 6),
+    (343, 32, 7),
+    (351, 48, 6),
+    (358, 72, 5),
+    (364, 88, 5),
+    (370, 64, 5),
+    (376, 96, 5),
+    (382, 144, 4),
+    (387, 176, 4),
+];
+
+fn cache_profile(band: usize, lm: i8) -> Result<Option<(usize, u8)>, Error> {
+    if band >= 21 || !(-1..=3).contains(&lm) {
+        return Err(Error::InvalidFrameSize);
+    }
+    let row = usize::try_from(lm + 1).map_err(|_| Error::InvalidFrameSize)?;
+    let offset = CACHE_INDEX[row * 21 + band];
+    if offset < 0 {
+        return Ok(None);
+    }
+    CACHE_PROFILES
+        .iter()
+        .find(|profile| profile.0 == offset)
+        .map(|profile| Some((profile.1, profile.2)))
+        .ok_or(Error::InvalidPacket)
+}
+
 /// Number of permitted pulse-sequence entries in each standard CELT cache
 /// run. These limits follow directly from the largest restricted pulse count
 /// whose `V(N, K)` codebook remains below the 32-bit split threshold.
@@ -160,7 +214,42 @@ pub fn pulses_for_target(
     available_eighth_bits: u16,
     scratch: &mut [u32],
 ) -> Result<usize, Error> {
-    if dimensions == 0 || scratch.is_empty() {
+    pulses_for_profile_target(
+        dimensions,
+        pulse_index_limit(dimensions),
+        target_eighth_bits,
+        available_eighth_bits,
+        scratch,
+    )
+}
+
+/// Selects pulses using the normative cache profile for one CELT band while
+/// leaving the actual PVQ codebook dimension independent.
+pub fn pulses_for_band_target(
+    band: usize,
+    lm: i8,
+    target_eighth_bits: u16,
+    available_eighth_bits: u16,
+    scratch: &mut [u32],
+) -> Result<usize, Error> {
+    let (profile_dimensions, limit) = cache_profile(band, lm)?.ok_or(Error::InvalidFrameSize)?;
+    pulses_for_profile_target(
+        profile_dimensions,
+        limit,
+        target_eighth_bits,
+        available_eighth_bits,
+        scratch,
+    )
+}
+
+fn pulses_for_profile_target(
+    profile_dimensions: usize,
+    limit: u8,
+    target_eighth_bits: u16,
+    available_eighth_bits: u16,
+    scratch: &mut [u32],
+) -> Result<usize, Error> {
+    if profile_dimensions == 0 || scratch.is_empty() {
         return Err(Error::InvalidFrameSize);
     }
     // CELT compares `bits - 1` against the packed Q3 cache. Entry zero is an
@@ -169,16 +258,16 @@ pub fn pulses_for_target(
     let mut lower_index = 0u8;
     let mut lower_cost = -1i32;
     let mut upper = None;
-    for index in 1..=pulse_index_limit(dimensions) {
+    for index in 1..=limit {
         let Some(pulses) = pulses_for_index(index) else {
             break;
         };
-        if needs_recurrence_workspace(dimensions)
+        if needs_recurrence_workspace(profile_dimensions)
             && (pulses > MAX_PULSES || pulses >= scratch.len())
         {
             break;
         }
-        let size = codebook_size(dimensions, pulses, scratch)?;
+        let size = codebook_size(profile_dimensions, pulses, scratch)?;
         if size == u32::MAX {
             break;
         }
@@ -201,7 +290,7 @@ pub fn pulses_for_target(
     };
     while selected_index != 0 {
         let pulses = pulses_for_index(selected_index).ok_or(Error::InvalidPacket)?;
-        let size = codebook_size(dimensions, pulses, scratch)?;
+        let size = codebook_size(profile_dimensions, pulses, scratch)?;
         let cost = u16::from(packed_pulse_cache_cost(size)?) + 1;
         if cost <= available_eighth_bits {
             break;
@@ -209,6 +298,32 @@ pub fn pulses_for_target(
         selected_index -= 1;
     }
     Ok(pulses_for_index(selected_index).unwrap_or(0))
+}
+
+/// Returns the normative cached cost for a pulse sequence in one band.
+pub fn band_pulse_cost(
+    band: usize,
+    lm: i8,
+    pulses: usize,
+    scratch: &mut [u32],
+) -> Result<u16, Error> {
+    let (profile_dimensions, limit) = cache_profile(band, lm)?.ok_or(Error::InvalidFrameSize)?;
+    let index = (0..=limit)
+        .find(|&index| pulses_for_index(index) == Some(pulses))
+        .ok_or(Error::InvalidPacket)?;
+    if index == 0 {
+        return Ok(0);
+    }
+    let size = codebook_size(profile_dimensions, pulses, scratch)?;
+    Ok(u16::from(packed_pulse_cache_cost(size)?) + 1)
+}
+
+/// Highest packed Q3 cost in one normative band/LM cache run.
+pub fn maximum_band_cost(band: usize, lm: i8, scratch: &mut [u32]) -> Result<u16, Error> {
+    let (profile_dimensions, limit) = cache_profile(band, lm)?.ok_or(Error::InvalidFrameSize)?;
+    let pulses = pulses_for_index(limit).ok_or(Error::InvalidPacket)?;
+    let size = codebook_size(profile_dimensions, pulses, scratch)?;
+    packed_pulse_cache_cost(size).map(u16::from)
 }
 
 /// Decodes one CELT PVQ codebook using the shared range coder.
@@ -744,6 +859,29 @@ mod tests {
         }
         assert_eq!(length, 392);
         assert_eq!(hash, 0x302c_ab98_a404_f495);
+    }
+
+    #[test]
+    fn band_lm_lookup_uses_normative_proxy_profiles() {
+        let mut scratch = [0; MAX_PULSES + 1];
+        // Band 16 has eight actual coefficients at LM=0, but the normative
+        // cache prices it with the six-dimensional run.
+        assert_eq!(band_pulse_cost(16, 0, 1, &mut scratch), Ok(29));
+        assert_eq!(maximum_band_cost(16, 0, &mut scratch), Ok(251));
+        assert_eq!(
+            u16::from(packed_pulse_cache_cost(codebook_size(8, 1, &mut scratch).unwrap()).unwrap())
+                + 1,
+            32
+        );
+
+        // Recursive LM=-1 profiles and the upper LM boundary are present;
+        // tuples that cannot contain a partition remain sentinels.
+        assert_eq!(band_pulse_cost(16, -1, 1, &mut scratch), Ok(21));
+        assert!(maximum_band_cost(20, 3, &mut scratch).is_ok());
+        assert_eq!(
+            maximum_band_cost(0, -1, &mut scratch),
+            Err(Error::InvalidFrameSize)
+        );
     }
 
     #[test]
