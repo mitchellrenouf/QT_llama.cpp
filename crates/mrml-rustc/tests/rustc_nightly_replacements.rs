@@ -451,6 +451,26 @@ fn rustc_scalar_while_mutation_reaches_native_objects() {
 }
 
 #[test]
+fn rustc_long_while_loop_local_has_an_executable_replacement() {
+    // Original scalar replacement for the per-iteration local declaration in
+    // tests/ui/for-loop-while/long-while.rs at the pinned nightly commit. The
+    // upstream print-free unused binding is strengthened here by using the
+    // scoped value before each backedge.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, stop: u32) -> u32 { let mut i: u32 = 0; let mut total: u32 = 0; while i < limit { let current: u32 = i + 1; current + 10; i = current; if i % 2 == 0 { continue; } total += current; if i == stop { break; } } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<2048, 1024, 4, 4, 4, 64>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

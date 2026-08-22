@@ -1381,11 +1381,24 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
         iterations = iterations
             .checked_add(1)
             .ok_or(SemanticErrorKind::ConstLoopLimitExceeded)?;
+        let binding_checkpoint = resolver.count;
         let mut break_loop = false;
         for operation in loop_statement.operations().iter().flatten() {
             match operation {
+                crate::LoopOperation::Local(local) => {
+                    evaluate_const_local(context, symbol_count, local, resolver, depth)?;
+                }
                 crate::LoopOperation::Assignment(assignment) => {
                     evaluate_const_assignment(context, symbol_count, assignment, resolver, depth)?;
+                }
+                crate::LoopOperation::Expression(statement) => {
+                    evaluate_const_expression_statement(
+                        context,
+                        symbol_count,
+                        statement,
+                        resolver,
+                        depth,
+                    )?;
                 }
                 crate::LoopOperation::Break => {
                     break_loop = true;
@@ -1473,6 +1486,7 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                 }
             }
         }
+        resolver.truncate(binding_checkpoint)?;
         if break_loop {
             break;
         }
@@ -2907,6 +2921,18 @@ mod tests {
         let values = analyze_constants::<4, 64, 6, 4>(&module, TargetLayout::X86_64).unwrap();
         assert_eq!(values.resolve("SELECTED"), Some(42));
         assert_eq!(values.resolve("FALLBACK"), Some(42));
+    }
+
+    #[test]
+    fn evaluates_scoped_loop_locals_and_expressions_in_const_functions() {
+        let module = Parser::new(
+            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 2 == 0 { continue; } total += current; if i == stop { break; } } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99);",
+        )
+        .parse_module::<6, 4>()
+        .unwrap();
+        let values = analyze_constants::<4, 64, 6, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("STOPPED"), Some(4));
+        assert_eq!(values.resolve("COMPLETE"), Some(4));
     }
 
     #[test]

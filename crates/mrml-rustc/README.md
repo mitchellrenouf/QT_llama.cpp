@@ -234,16 +234,21 @@ returning conditions. If every condition is false, native execution and const
 evaluation continue with subsequent statements and the function tail. A
 single conditional return retains the smaller pre-existing record.
 Bounded scalar `while condition { ... }` and `loop { ... }` statements retain
-up to eight source-ordered operations, including up to four mutations of
-existing locals plus unconditional or conditional `break` and `continue`.
+up to eight source-ordered operations, including typed or inferred local
+declarations, discarded scalar expressions, up to four mutations, and
+unconditional or conditional `break`, `continue`, and typed function returns.
 While and control conditions must be Boolean, each assignment target must be
 mutable, and assignment types are checked exactly as for straight-line
-statements. Native emission uses checked forward exits, signed 32-bit backedges,
-and inverted conditional edges for `continue`, preserving operations before and
-after each control statement. Capacity overflow is diagnosed before code
-generation. To keep bootstrap probes bounded, an unconditional `loop` must
-contain a supported exit form. Loop-local bindings, labels, nested statement
-loops, and break values in statement-loop operations remain unsupported.
+statements. Each iteration receives a lexical local scope: declarations may
+shadow enclosing names, remain visible to later operations, and are removed
+before every backedge, taken break, or taken continue. A return includes the
+live iteration slots in its complete frame cleanup. Const evaluation restores
+the same scope after every iteration while retaining mutations to enclosing
+locals. Native emission uses checked forward exits and signed 32-bit backedges.
+Capacity overflow is diagnosed before object emission. To keep bootstrap probes
+bounded, an unconditional `loop` must contain a supported exit form. Labels,
+nested statement loops, and break values in statement-loop operations remain
+unsupported.
 An unconditional loop with no break edge is a diverging body tail, so a
 non-unit function ending in a loop return needs no synthetic fallback value.
 Const qualification is retained on both Rust-ABI and `extern "C"` function
@@ -432,8 +437,8 @@ and ran unchanged under the pinned nightly before its explicit tail-return
 replacement was added.
 The complete upstream `tests/ui/for-loop-while/while.rs` and `long-while.rs`
 also compiled and ran unchanged. MRML replacements cover their scalar counter
-mutation and million-iteration termination behavior; printing and a loop-local
-unused binding are outside this slice.
+mutation, million-iteration termination behavior, and bounded per-iteration
+scalar local scope. Printing remains outside this slice.
 The complete upstream `tests/ui/consts/const-fn-const-eval.rs` and
 `tests/ui/consts/const-extern-fn/const-extern-fn.rs` also compiled and ran
 unchanged. MRML replacements cover const-qualified scalar declarations and
@@ -580,7 +585,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 203 Windows library, conformance, rustc-nightly-replacement, and driver
+The 206 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -747,6 +752,14 @@ A consecutive-loop replacement maps the two-`while` shape in the unchanged
 pinned `tests/ui/for-loop-while/while.rs` oracle. It emitted a 296-byte COFF
 object; an independent caller observed 42 with increasing bounds, 42 when the
 second loop began past its bound, and zero when both loops had zero iterations.
+The loop-local replacement maps the per-iteration binding in unchanged pinned
+`tests/ui/for-loop-while/long-while.rs`. That oracle compiled and ran with the
+exact dated nightly on both hosts. MRML's 425-byte COFF object passed an
+independent nightly-built caller across zero and one iteration, conditional
+continue, conditional break, ordinary termination, and 60,000 iterations. Its
+discarded expression consumes the scoped binding before each control edge;
+post-loop lookup of that binding is rejected, and runtime-local capacity
+exhaustion fails before emission.
 A post-loop local-binding replacement emitted a 291-byte COFF object. Its
 independent caller observed 4 on the zero-iteration path and 42 after 19
 iterations, proving the initializer reads the loop's final value instead of a
@@ -1094,7 +1107,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 203 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 206 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
@@ -1211,6 +1224,9 @@ The conditional-return probe emitted a 584-byte ELF64 object and passed both
 native branch assertions with the System V frame layout.
 The scalar counter loop emitted a 576-byte ELF64 object and passed the identical
 zero, one, and million-iteration assertions.
+The loop-local action probe emitted an 816-byte ELF64 object and passed the same
+zero-, one-, break-, continue-, completion-, and 60,000-iteration assertions as
+its Windows counterpart through an independent nightly-built System V caller.
 The ordered summation loop emitted a 608-byte ELF64 object and passed the same
 three summation assertions.
 The const-qualified addition function emitted a 512-byte ELF64 object and

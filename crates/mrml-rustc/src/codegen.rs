@@ -664,8 +664,27 @@ pub fn compile_x86_64_function_with_options<
             exit_patches[exit_count] = Some(emitter.emit_forward_branch(0x84)?);
             exit_count += 1;
         }
+        let local_checkpoint = emitter.saved_locals;
         let mut ends_with_unconditional_control = false;
         for operation in loop_statement.operations().iter().flatten() {
+            if let LoopOperation::Local(local) = operation {
+                emitter.emit_local::<MAX_EXPRESSION_NODES>(
+                    local,
+                    operand_type,
+                    function.body_expression_span.start,
+                    true,
+                )?;
+                ends_with_unconditional_control = false;
+                continue;
+            }
+            if let LoopOperation::Expression(statement) = operation {
+                emitter.emit_expression_statement::<MAX_EXPRESSION_NODES>(
+                    statement,
+                    function.body_expression_span.start,
+                )?;
+                ends_with_unconditional_control = false;
+                continue;
+            }
             if let LoopOperation::Return(loop_return) = operation {
                 let value_tree =
                     loop_return
@@ -789,6 +808,8 @@ pub fn compile_x86_64_function_with_options<
                     LoopOperation::Continue => (None, false),
                     LoopOperation::ConditionalReturn(_) => continue,
                     LoopOperation::Return(_) => continue,
+                    LoopOperation::Local(_) => continue,
+                    LoopOperation::Expression(_) => continue,
                     LoopOperation::Assignment(_) => continue,
                 };
                 if let Some(control) = conditional {
@@ -829,16 +850,19 @@ pub fn compile_x86_64_function_with_options<
                     }
                     emitter.emit_expression(&tree, tree.root(), 0)?;
                     emitter.emit(&[0x48, 0x85, 0xc0])?;
+                    let skip_control = emitter.emit_forward_branch(0x84)?;
+                    emitter.emit_stack_cleanup_to(local_checkpoint)?;
                     if is_break {
-                        exit_patches[exit_count] = Some(emitter.emit_forward_branch(0x85)?);
+                        exit_patches[exit_count] =
+                            Some(emitter.emit_unconditional_forward_branch()?);
                         exit_count += 1;
                     } else {
-                        let skip_continue = emitter.emit_forward_branch(0x84)?;
                         emitter.emit_backward_branch(loop_start)?;
-                        emitter.patch_forward_branch(skip_continue)?;
                     }
+                    emitter.patch_forward_branch(skip_control)?;
                     ends_with_unconditional_control = false;
                 } else {
+                    emitter.emit_stack_cleanup_to(local_checkpoint)?;
                     if is_break {
                         exit_patches[exit_count] =
                             Some(emitter.emit_unconditional_forward_branch()?);
@@ -851,93 +875,16 @@ pub fn compile_x86_64_function_with_options<
                 continue;
             };
             ends_with_unconditional_control = false;
-            let index = emitter.locals[..emitter.saved_locals]
-                .iter()
-                .position(|local| local.is_some_and(|local| local.name == assignment.name))
-                .ok_or(CodegenError {
-                    kind: CodegenErrorKind::UnknownRuntimeName,
-                    span: translate_span(function.body_expression_span.start, assignment.name_span),
-                })?;
-            let target = emitter.locals[index].ok_or(CodegenError {
-                kind: CodegenErrorKind::UnknownRuntimeName,
-                span: translate_span(function.body_expression_span.start, assignment.name_span),
-            })?;
-            if !target.mutable {
-                return Err(CodegenError {
-                    kind: CodegenErrorKind::ImmutableAssignment,
-                    span: translate_span(function.body_expression_span.start, assignment.name_span),
-                });
-            }
-            let value_tree = assignment
-                .parse_value::<MAX_EXPRESSION_NODES>()
-                .map_err(|error| CodegenError {
-                    kind: CodegenErrorKind::Expression(error.kind),
-                    span: translate_span(
-                        function.body_expression_span.start + assignment.value_span.start,
-                        error.span,
-                    ),
-                })?;
-            let value_type = runtime_expression_type_with_locals(
-                function,
-                emitter.resolver,
-                &emitter.locals[..emitter.saved_locals],
-                &value_tree,
-                value_tree.root(),
-                0,
-            )
-            .map_err(|kind| CodegenError {
-                kind,
-                span: translate_span(function.body_expression_span.start, assignment.value_span),
-            })?;
-            if !runtime_types_compatible(value_type, target.ty) {
-                return Err(CodegenError {
-                    kind: CodegenErrorKind::RuntimeTypeMismatch,
-                    span: translate_span(
-                        function.body_expression_span.start,
-                        assignment.value_span,
-                    ),
-                });
-            }
-            if assignment.operator == crate::AssignmentOperator::Assign {
-                emitter.emit_expression(&value_tree, value_tree.root(), 0)?;
-            } else {
-                if target.ty == RuntimeExpressionType::Bool
-                    && !matches!(
-                        assignment.operator,
-                        crate::AssignmentOperator::BitAnd
-                            | crate::AssignmentOperator::BitOr
-                            | crate::AssignmentOperator::BitXor
-                    )
-                {
-                    return Err(CodegenError {
-                        kind: CodegenErrorKind::RuntimeTypeMismatch,
-                        span: translate_span(
-                            function.body_expression_span.start,
-                            assignment.name_span,
-                        ),
-                    });
-                }
-                emitter.emit_identifier(assignment.name)?;
-                emitter.emit(&[0x50])?;
-                emitter.evaluation_depth += 1;
-                emitter.emit_expression(&value_tree, value_tree.root(), 0)?;
-                emitter.evaluation_depth -= 1;
-                emitter.emit(&[0x59])?;
-                emitter.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
-                    CodegenError {
-                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
-                        span: translate_span(
-                            function.body_expression_span.start,
-                            assignment.name_span,
-                        ),
-                    },
-                )?)?;
-            }
-            emitter.emit_store_stack_slot(emitter.saved_locals - 1 - index)?;
+            emitter.emit_assignment::<MAX_EXPRESSION_NODES>(
+                assignment,
+                function.body_expression_span.start,
+            )?;
         }
         if !ends_with_unconditional_control {
+            emitter.emit_stack_cleanup_to(local_checkpoint)?;
             emitter.emit_backward_branch(loop_start)?;
         }
+        emitter.truncate_scoped_locals(local_checkpoint)?;
         for patch in exit_patches[..exit_count].iter().flatten().copied() {
             emitter.patch_forward_branch(patch)?;
         }
@@ -2255,6 +2202,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     }
 
     fn emit_scoped_local_cleanup(&mut self, checkpoint: usize) -> Result<(), CodegenError> {
+        self.emit_stack_cleanup_to(checkpoint)?;
+        self.truncate_scoped_locals(checkpoint)
+    }
+
+    fn emit_stack_cleanup_to(&mut self, checkpoint: usize) -> Result<(), CodegenError> {
         let local_count = self
             .saved_locals
             .checked_sub(checkpoint)
@@ -2271,6 +2223,13 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 self.emit(&[0x48, 0x81, 0xc4])?;
                 self.emit(&bytes.to_le_bytes())?;
             }
+        }
+        Ok(())
+    }
+
+    fn truncate_scoped_locals(&mut self, checkpoint: usize) -> Result<(), CodegenError> {
+        if checkpoint > self.saved_locals {
+            return Err(self.error(CodegenErrorKind::OutputTooSmall));
         }
         for local in &mut self.locals[checkpoint..self.saved_locals] {
             *local = None;
@@ -3781,6 +3740,66 @@ mod tests {
                 .unwrap_err()
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch
+        );
+    }
+
+    #[test]
+    fn emits_scoped_loop_locals_across_control_edges() {
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 2 == 0 { continue; } total += current; if i == stop { break; } } total }";
+        let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+            assert!(
+                compile_x86_64_function::<_, 1536, 4, 64>(&function, &NoConstants, abi).is_ok()
+            );
+        }
+        for source in [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { let current: u64 = i + 1; i = current; continue; } i }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn once() -> u64 { loop { let selected: u64 = 42; selected + 1; break; } 42 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn return_local() -> u64 { loop { let selected: u64 = 42; return selected; } }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                assert!(
+                    compile_x86_64_function::<_, 1024, 4, 48>(&function, &NoConstants, abi,)
+                        .is_ok()
+                );
+            }
+        }
+
+        let leaking = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn bad(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { let scoped: u64 = i; i += 1; } scoped }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = leaking.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 1024, 4, 48>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::UnknownRuntimeName
+        );
+
+        let crowded = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn crowded(limit: u64) -> u64 { let mut i: u64 = 0; let one: u64 = 1; let two: u64 = 2; let three: u64 = 3; while i < limit { let fifth: u64 = i; i += fifth; } one + two + three }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = crowded.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 1024, 4, 48>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::TooManyRuntimeLocals
         );
     }
 

@@ -255,7 +255,9 @@ impl<'source> ConditionalLoopControl<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoopOperation<'source> {
+    Local(LocalBinding<'source>),
     Assignment(Assignment<'source>),
+    Expression(ExpressionStatement<'source>),
     Break,
     Continue,
     ConditionalBreak(ConditionalLoopControl<'source>),
@@ -1321,30 +1323,30 @@ impl<'source> BodyParser<'source> {
                     operation_count += 1;
                     continue;
                 }
-                let name = probe.take()?;
-                let Some(name) = name.filter(|token| token.kind == TokenKind::Identifier) else {
-                    return Err(probe.error(ParseErrorKind::ExpectedIdentifier, name));
-                };
-                if assignment_count == MAX_LOOP_ASSIGNMENTS {
-                    return Err(probe.error(ParseErrorKind::TooManyLoopAssignments, Some(name)));
+                if let Some(local) = probe.local_record()? {
+                    operations[operation_count] = Some(LoopOperation::Local(local));
+                    operation_count += 1;
+                    continue;
                 }
-                let operator_token = probe.take()?;
-                let Some(operator) =
-                    operator_token.and_then(|token| AssignmentOperator::from_text(token.text))
-                else {
-                    return Err(probe.error(ParseErrorKind::ExpectedEquals, operator_token));
-                };
-                let (value_span, _) =
-                    probe.delimited_until(";", ParseErrorKind::ExpectedSemicolon)?;
-                operations[operation_count] = Some(LoopOperation::Assignment(Assignment {
-                    name: name.text,
-                    name_span: name.span,
-                    operator,
-                    value: &self.source[value_span.start..value_span.end],
-                    value_span,
-                }));
-                operation_count += 1;
-                assignment_count += 1;
+                let assignment_name = probe.peek()?;
+                if let Some(assignment) = probe.assignment_record()? {
+                    if assignment_count == MAX_LOOP_ASSIGNMENTS {
+                        return Err(
+                            probe.error(ParseErrorKind::TooManyLoopAssignments, assignment_name)
+                        );
+                    }
+                    operations[operation_count] = Some(LoopOperation::Assignment(assignment));
+                    operation_count += 1;
+                    assignment_count += 1;
+                    continue;
+                }
+                if let Some(expression) = probe.expression_statement_record()? {
+                    operations[operation_count] = Some(LoopOperation::Expression(expression));
+                    operation_count += 1;
+                    continue;
+                }
+                let name = probe.peek()?;
+                return Err(probe.error(ParseErrorKind::ExpectedIdentifier, name));
             }
             if operation_count == 0 {
                 return Err(probe.error(ParseErrorKind::ExpectedBody, Some(loop_token)));
@@ -2344,7 +2346,7 @@ mod tests {
     #[test]
     fn parses_bounded_scalar_while_loops() {
         let module = Parser::new(
-            "fn count(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { total += i; i += 1; if i == 10 { break; } } total }",
+            "fn count(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; total += current; i = current; if i == 10 { break; } } total }",
         )
         .parse_module::<2, 2>()
         .unwrap();
@@ -2361,18 +2363,27 @@ mod tests {
         let loop_statement = body.while_loops()[0].unwrap();
         assert_eq!(loop_statement.condition, Some("i < limit"));
         assert_eq!(loop_statement.assignment_count(), 2);
-        assert_eq!(loop_statement.operation_count(), 3);
-        let Some(LoopOperation::Assignment(total)) = loop_statement.operations()[0] else {
+        assert_eq!(loop_statement.operation_count(), 5);
+        let Some(LoopOperation::Local(current)) = loop_statement.operations()[0] else {
+            panic!("expected loop local")
+        };
+        assert_eq!(current.name, "current");
+        assert_eq!(current.initializer, "i + 1");
+        let Some(LoopOperation::Expression(expression)) = loop_statement.operations()[1] else {
+            panic!("expected loop expression")
+        };
+        assert_eq!(expression.expression, "current + 10");
+        let Some(LoopOperation::Assignment(total)) = loop_statement.operations()[2] else {
             panic!("expected total assignment")
         };
-        let Some(LoopOperation::Assignment(increment)) = loop_statement.operations()[1] else {
+        let Some(LoopOperation::Assignment(increment)) = loop_statement.operations()[3] else {
             panic!("expected increment assignment")
         };
         assert_eq!(total.name, "total");
         assert_eq!(increment.name, "i");
-        assert_eq!(increment.operator, AssignmentOperator::Add);
-        assert_eq!(increment.value, "1");
-        let Some(LoopOperation::ConditionalBreak(control)) = loop_statement.operations()[2] else {
+        assert_eq!(increment.operator, AssignmentOperator::Assign);
+        assert_eq!(increment.value, "current");
+        let Some(LoopOperation::ConditionalBreak(control)) = loop_statement.operations()[4] else {
             panic!("expected conditional break")
         };
         assert_eq!(control.condition, "i == 10");
