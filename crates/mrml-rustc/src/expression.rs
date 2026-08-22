@@ -2432,8 +2432,32 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 if !control.is_some_and(|token| token.text == "break") {
                     return Err(self.error(ExpressionErrorKind::ExpectedExpression, control));
                 }
+                let break_token = control.ok_or(ExpressionError {
+                    kind: ExpressionErrorKind::InvalidExpressionTree,
+                    span: Span {
+                        start: loop_token.span.start,
+                        end: loop_token.span.end,
+                    },
+                })?;
                 self.loop_break_label(label)?;
                 let operand = self.loop_break_operand(depth + 1)?;
+                if self.peek()?.is_some_and(|token| token.text == "break") {
+                    if branch_count == MAX_LOOP_BREAK_BRANCHES {
+                        return Err(self.error(
+                            ExpressionErrorKind::TooManyLoopBreakBranches,
+                            Some(break_token),
+                        ));
+                    }
+                    let condition = self.push(Expr {
+                        kind: ExprKind::Bool(true),
+                        span: break_token.span,
+                    })?;
+                    conditions[branch_count] = Some(condition);
+                    branches[branch_count] = Some(operand);
+                    branch_count += 1;
+                    control = self.take()?;
+                    continue;
+                }
                 let close = self.take()?;
                 let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
                     return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
@@ -3260,6 +3284,18 @@ mod tests {
             ExpressionErrorKind::InvalidLoopBreakTarget
         );
         assert_eq!(evaluate("'value: loop { break 'value 13; }"), Ok(13));
+        assert_eq!(evaluate("loop { break (); break; }"), Ok(0));
+        assert_eq!(evaluate("loop { break; break (); }"), Ok(0));
+        assert_eq!(evaluate("loop { break 42; break 1 / 0; }"), Ok(42));
+        assert_eq!(
+            ExpressionParser::<24>::new(
+                "loop { break 1; break 2; break 3; break 4; break 5; break 6; }"
+            )
+            .parse()
+            .unwrap_err()
+            .kind,
+            ExpressionErrorKind::TooManyLoopBreakBranches
+        );
         let boolean = ExpressionParser::<8>::new("loop { break true; }")
             .parse()
             .unwrap();

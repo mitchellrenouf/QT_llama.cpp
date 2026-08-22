@@ -4502,6 +4502,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> bool { let result: bool = loop { break input; }; result }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let result: u64 = loop { break 13; }; result }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(choose_first: bool, input: u64) -> u64 { let result: u64 = loop { if choose_first { break input + 1; } break 84 / input; }; result }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let first: () = loop { break (); break; }; first; let second: () = loop { break; break (); }; second; 42 }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
@@ -4536,6 +4537,21 @@ mod tests {
         .parse_module::<2, 4>()
         .unwrap();
         let Some(Item::Function(function)) = branch_mismatch.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 512, 4, 32>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch
+        );
+
+        let unreachable_mismatch = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn bad() -> u64 { let result = loop { break 1; break false; }; result }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = unreachable_mismatch.items()[0] else {
             panic!("expected function")
         };
         assert_eq!(

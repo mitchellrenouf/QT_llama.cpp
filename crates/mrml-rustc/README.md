@@ -227,8 +227,16 @@ inner `while` is rejected with `InvalidLoopBreakTarget`. Their combined probe
 emitted 93-byte COFF and 488-byte ELF64 objects and returned 690 through
 independent nightly-built callers on Windows gnullvm and Arch Linux WSL. Both
 bodies contain division by zero, so executing either unreachable edge would
-trap. An original labeled
-four-guard probe and its structured-alternative counterpart each emitted
+trap. Up to five source-ordered immediate breaks may also occupy the same value
+loop. A constant-true internal edge preserves the first unconditional result
+while retaining later unreachable operands for ordinary branch type checking;
+the sixth break fails with `TooManyLoopBreakBranches`. This covers the pinned
+unit pairs `break (); break;` and `break; break ();` without discarding their
+second operands. Their combined probe emitted 169-byte COFF and 560-byte ELF64
+objects and returned 42 through independent Windows gnullvm and Arch Linux WSL
+callers. A separate regression rejects an unreachable Boolean value after an
+integer break, and a trapping later integer operand remains unevaluated. An
+original labeled four-guard probe and its structured-alternative counterpart each emitted
 deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
 a selected zero input that would trap if fallback division were evaluated.
@@ -589,8 +597,9 @@ control-flow graphs are not claimed by this slice. Replacements cover bounded
 cross-nested value exits, terminating nested value-loop operands, up to five
 compatible competing scalar values, both sequential and structured alternative
 syntax, lazy selection of the taken break edge, and the oracle's labeled
-`break`-as-`while`-condition cases. General `while` condition expressions and
-arbitrary nested value-loop graphs remain outside this bounded slice.
+`break`-as-`while`-condition cases plus its two source orders for unreachable
+unit sibling breaks. General `while` condition expressions and arbitrary nested
+value-loop graphs remain outside this bounded slice.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate
