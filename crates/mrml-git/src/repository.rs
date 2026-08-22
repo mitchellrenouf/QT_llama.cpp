@@ -34,6 +34,14 @@ pub struct NativeChange {
     pub kind: NativeChangeKind,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlameLine {
+    pub commit: ObjectId,
+    pub author: Text,
+    pub line_number: usize,
+    pub text: Text,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RepositoryError {
     File(FileError),
@@ -383,6 +391,39 @@ impl Repository {
             if result.len() >= limit { break; }
         }
         Ok(result)
+    }
+
+    pub fn blame(&self, path: &str) -> Result<Vector<BlameLine>, RepositoryError> {
+        validate_worktree_path(path)?;
+        let head = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let mut child_commit = self.read_commit(head)?;
+        let child_index = self.tree_index(child_commit.tree)?;
+        let child_blob = child_index.entry(path).ok_or(RepositoryError::ReferenceMissing)?.id;
+        let mut child_text = Text::try_from_utf8(self.read_blob(child_blob)?).map_err(|_| RepositoryError::UnsupportedFileType)?;
+        let final_lines: Vector<Text> = split_lines(&child_text).iter().map(|line| Text::from(*line)).collect();
+        let mut origins: Vector<(Option<usize>, ObjectId, Text)> = final_lines.iter().enumerate().map(|(index, _)| (Some(index), head, child_commit.author.clone())).collect();
+        loop {
+            let Some(parent_id) = child_commit.parents.first().copied() else { break };
+            let parent_commit = self.read_commit(parent_id)?;
+            let parent_index = self.tree_index(parent_commit.tree)?;
+            let Some(parent_entry) = parent_index.entry(path) else { break };
+            let parent_text = Text::try_from_utf8(self.read_blob(parent_entry.id)?).map_err(|_| RepositoryError::UnsupportedFileType)?;
+            let mapping = line_mapping(&split_lines(&child_text), &split_lines(&parent_text));
+            for (position, commit, author) in &mut origins {
+                if let Some(child_position) = *position {
+                    if let Some(parent_position) = mapping.get(child_position).copied().flatten() {
+                        *position = Some(parent_position); *commit = parent_id; *author = parent_commit.author.clone();
+                    } else { *position = None; }
+                }
+            }
+            child_commit = parent_commit; child_text = parent_text;
+        }
+        let mut output = Vector::new();
+        for (index, line) in final_lines.into_iter().enumerate() {
+            let (_, commit, author) = origins[index].clone();
+            output.push(BlameLine { commit, author, line_number: index + 1, text: line });
+        }
+        Ok(output)
     }
 
     fn read_blob(&self, id: ObjectId) -> Result<Vector<u8>, RepositoryError> {
@@ -854,6 +895,28 @@ fn remote_section(line: &str) -> Option<&str> {
     line.strip_prefix("[remote \"")?.strip_suffix("\"]").filter(|name| validate_config_name(name).is_ok())
 }
 
+fn split_lines(text: &str) -> Vector<&str> {
+    if text.is_empty() { Vector::new() } else { text.split_inclusive('\n').collect() }
+}
+
+fn line_mapping(child: &[&str], parent: &[&str]) -> Vector<Option<usize>> {
+    const MAX_CELLS: usize = 4_000_000;
+    let mut mapping = Vector::new(); mapping.resize(child.len(), None);
+    if child.len().checked_mul(parent.len()).is_none_or(|cells| cells > MAX_CELLS) { return mapping; }
+    let width = parent.len() + 1;
+    let mut table = Vector::new(); table.resize((child.len() + 1) * width, 0u32);
+    for i in (0..child.len()).rev() { for j in (0..parent.len()).rev() {
+        table[i * width + j] = if child[i] == parent[j] { table[(i + 1) * width + j + 1] + 1 } else { table[(i + 1) * width + j].max(table[i * width + j + 1]) };
+    }}
+    let (mut i, mut j) = (0, 0);
+    while i < child.len() && j < parent.len() {
+        if child[i] == parent[j] { mapping[i] = Some(j); i += 1; j += 1; }
+        else if table[(i + 1) * width + j] >= table[i * width + j + 1] { i += 1; }
+        else { j += 1; }
+    }
+    mapping
+}
+
 impl From<FileError> for RepositoryError {
     fn from(value: FileError) -> Self {
         Self::File(value)
@@ -1097,6 +1160,18 @@ mod tests {
         write_file(&file, b"three\n").unwrap();
         assert_eq!(repository.file_history("tracked", 10).unwrap().len(), 2);
         assert_eq!(repository.diff_revision("HEAD", &paths).unwrap()[0].new.as_deref(), Some(&b"three\n"[..]));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn attributes_lines_to_their_introducing_commits() {
+        let path = root("blame"); let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked"); let paths = Vector::from([Text::from("tracked")]);
+        write_file(&file, b"old\n").unwrap(); repository.stage(&paths).unwrap(); let old = repository.commit("old", "Old", "old@example.invalid", 1).unwrap();
+        write_file(&file, b"old\nnew\n").unwrap(); repository.stage(&paths).unwrap(); let new = repository.commit("new", "New", "new@example.invalid", 2).unwrap();
+        let blame = repository.blame("tracked").unwrap();
+        assert_eq!(blame[0].commit, old); assert_eq!(blame[1].commit, new);
+        assert!(blame[0].author.starts_with("Old ")); assert!(blame[1].author.starts_with("New "));
         remove_dir_all(&path).unwrap();
     }
 }

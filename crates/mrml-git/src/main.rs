@@ -394,7 +394,10 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "blame" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &["blame", "--color-lines", "--", &tail[0]])
+            for line in native_repository(repository)?.blame(&tail[0]).map_err(|error| anyhow!("{}", error))? {
+                println!("{} {:4} ({}) {}", &line.commit.to_hex()[..12], line.line_number, line.author, line.text.trim_end_matches('\n'));
+            }
+            Ok(())
         }
         "conflicts" if tail.is_empty() => {
             let paths = native_repository(repository)?.conflicted_paths().map_err(|error| anyhow!("{}", error))?;
