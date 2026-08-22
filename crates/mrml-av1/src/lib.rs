@@ -2641,7 +2641,10 @@ impl Decoder {
                             let tx_type_selection = (plane == 0 && !lossless).then_some(
                                 coeff::TxTypeSelection::Intra {
                                     reduced_tx_set: header.reduced_tx_set,
-                                    direction: intra.y_mode as u8,
+                                    direction: mode::intra_tx_type_direction(
+                                        intra.y_mode,
+                                        intra.filter_intra_mode,
+                                    )?,
                                 },
                             );
                             let destination = match plane {

@@ -1693,6 +1693,24 @@ pub struct IntraBlockMode {
     pub filter_intra_mode: Option<u8>,
 }
 
+/// Returns the intra direction used to select the transform-type CDF.
+///
+/// Filter-intra predictions use their normative directional equivalents for
+/// transform signaling instead of the block's base luma mode.
+pub const fn intra_tx_type_direction(
+    mode: IntraMode,
+    filter_intra_mode: Option<u8>,
+) -> Result<u8, Error> {
+    match filter_intra_mode {
+        None => Ok(mode as u8),
+        Some(0 | 4) => Ok(IntraMode::Dc as u8),
+        Some(1) => Ok(IntraMode::Vertical as u8),
+        Some(2) => Ok(IntraMode::Horizontal as u8),
+        Some(3) => Ok(IntraMode::D157 as u8),
+        Some(_) => Err(Error::InvalidObu),
+    }
+}
+
 pub fn read_intra_block_mode(
     decoder: &mut SymbolDecoder<'_>,
     cdfs: &mut TileCdfs,
@@ -2951,6 +2969,20 @@ mod tests {
                 0,
             ),
             Ok(None)
+        );
+    }
+
+    #[test]
+    fn filter_intra_remaps_transform_type_direction() {
+        assert_eq!(intra_tx_type_direction(IntraMode::Dc, None), Ok(0));
+        assert_eq!(intra_tx_type_direction(IntraMode::Dc, Some(0)), Ok(0));
+        assert_eq!(intra_tx_type_direction(IntraMode::Dc, Some(1)), Ok(1));
+        assert_eq!(intra_tx_type_direction(IntraMode::Dc, Some(2)), Ok(2));
+        assert_eq!(intra_tx_type_direction(IntraMode::Dc, Some(3)), Ok(6));
+        assert_eq!(intra_tx_type_direction(IntraMode::Dc, Some(4)), Ok(0));
+        assert_eq!(
+            intra_tx_type_direction(IntraMode::Dc, Some(5)),
+            Err(Error::InvalidObu)
         );
     }
 }

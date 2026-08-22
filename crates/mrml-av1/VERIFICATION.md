@@ -55,10 +55,10 @@ into the crate.
   reconstruction discrepancy was an intra-DC availability error: a lower
   chroma transform averaged a synthesized left edge even though only its above
   edge was available.
-- `av1-1-b8-00-quantizer-07.ivf` (`7f8113cd...`): its first frame now traverses
-  114 decoded blocks, 584 transform blocks, 319 nonzero transform blocks, and
-  16,883 coefficient positions before encountering the next invalid tile
-  syntax. It remains a failing conformance target.
+- `av1-1-b8-00-quantizer-07.ivf` (`7f8113cd...`): its complete first frame now
+  decodes after using the filter-intra directional equivalent to select the
+  intra transform-type CDF. The second frame currently fails at an invalid
+  `BLOCK_8X8` position, so this remains a failing conformance target.
 
 The remaining q7 failure is explicit evidence that decoder conformance is not
 complete.
