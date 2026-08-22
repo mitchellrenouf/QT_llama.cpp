@@ -24,8 +24,8 @@ pub use repository::{
     RepositoryError,
 };
 pub use sha1::{ObjectId, Sha1};
-pub use transport::{Advertisement, RemoteRef, TransportError, decode_packets, encode_flush, encode_packet, extract_pack_response, fetch_request, parse_advertisement};
-pub use remote::{FetchError, FetchResult, fetch_ssh};
+pub use transport::{Advertisement, RemoteRef, TransportError, decode_packets, encode_flush, encode_packet, extract_pack_response, fetch_request, parse_advertisement,parse_push_response,push_request};
+pub use remote::{FetchError, FetchResult, PushError,PushResult,fetch_ssh,push_ssh};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cli {
