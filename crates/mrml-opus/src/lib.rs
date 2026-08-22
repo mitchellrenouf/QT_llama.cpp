@@ -1886,6 +1886,173 @@ fn encode_silk_stereo_transition(
     Ok(total)
 }
 
+/// Allocation-free one-frame-lookahead encoder for normative transitions
+/// whose redundancy belongs in the packet before a CELT mode switch.
+///
+/// The first call to push buffers a 20 ms frame and subsequent calls return
+/// the completed previous packet. Call flush to retrieve the final packet.
+pub struct LookaheadEncoder {
+    encoder: Encoder,
+    channels: u8,
+    pending: [i16; 1_920],
+    pending_len: usize,
+    pending_sample_rate: u32,
+    pending_mode: EncoderMode,
+    pending_bitrate: u32,
+    has_pending: bool,
+    packet: [u8; MAX_FRAME_BYTES + 1],
+    packet_len: usize,
+}
+
+impl LookaheadEncoder {
+    pub fn new(channels: u8) -> Result<Self, Error> {
+        Ok(Self {
+            encoder: Encoder::new(channels)?,
+            channels,
+            pending: [0; 1_920],
+            pending_len: 0,
+            pending_sample_rate: 48_000,
+            pending_mode: EncoderMode::Auto,
+            pending_bitrate: 6_000,
+            has_pending: false,
+            packet: [0; MAX_FRAME_BYTES + 1],
+            packet_len: 0,
+        })
+    }
+
+    /// Buffers a 20 ms frame and returns the previously buffered packet.
+    pub fn push(
+        &mut self,
+        mode: EncoderMode,
+        bitrate: u32,
+        input: &[i16],
+        sample_rate: u32,
+    ) -> Result<Option<&[u8]>, Error> {
+        validate_encoder_frame(self.channels, bitrate, input, sample_rate)?;
+        let next_mode = selected_mode(mode, bitrate, self.channels)?;
+        if self.has_pending {
+            self.packet_len = self.encode_pending(Some(next_mode))?;
+        }
+        self.pending[..input.len()].copy_from_slice(input);
+        self.pending_len = input.len();
+        self.pending_sample_rate = sample_rate;
+        self.pending_mode = mode;
+        self.pending_bitrate = bitrate;
+        let had_packet = self.has_pending;
+        self.has_pending = true;
+        Ok(had_packet.then_some(&self.packet[..self.packet_len]))
+    }
+
+    /// Encodes and removes the final buffered frame.
+    pub fn flush(&mut self) -> Result<Option<&[u8]>, Error> {
+        if !self.has_pending {
+            return Ok(None);
+        }
+        self.packet_len = self.encode_pending(None)?;
+        self.has_pending = false;
+        Ok(Some(&self.packet[..self.packet_len]))
+    }
+
+    fn encode_pending(&mut self, next_mode: Option<Mode>) -> Result<usize, Error> {
+        let pending_mode = selected_mode(self.pending_mode, self.pending_bitrate, self.channels)?;
+        if next_mode == Some(Mode::Celt) && matches!(pending_mode, Mode::Silk | Mode::Hybrid) {
+            let transition_frames = self.pending_sample_rate as usize / 200;
+            let transition_samples = transition_frames * usize::from(self.channels);
+            let start = self.pending_len - transition_samples;
+            let redundancy_bytes = if self.channels == 2 { 32 } else { 16 };
+            let mut redundant_packet = [0u8; 65];
+            if let Ok(redundant_size) = Encoder::new(self.channels)?.encode_celt_with_payload(
+                &self.pending[start..self.pending_len],
+                self.pending_sample_rate,
+                &mut redundant_packet,
+                redundancy_bytes,
+                1,
+                Bandwidth::Full,
+            ) {
+                let redundant = &redundant_packet[1..redundant_size];
+                let result = match pending_mode {
+                    Mode::Silk => self.encoder.encode_silk_with_redundancy(
+                        &self.pending[..self.pending_len],
+                        self.pending_sample_rate,
+                        Bandwidth::Narrow,
+                        20_000,
+                        redundant,
+                        false,
+                        &mut self.packet,
+                    ),
+                    Mode::Hybrid => {
+                        let payload = payload_bytes_for_bitrate(self.pending_bitrate)?;
+                        self.encoder.encode_hybrid_with_payload(
+                            &self.pending[..self.pending_len],
+                            self.pending_sample_rate,
+                            &mut self.packet,
+                            payload,
+                            Some((redundant, transition::RedundancyPosition::End)),
+                            Bandwidth::Full,
+                            20_000,
+                        )
+                    }
+                    Mode::Celt => unreachable!(),
+                };
+                if let Ok(size) = result {
+                    self.encoder.last_encoded_mode = Some(pending_mode);
+                    return Ok(size);
+                }
+            }
+        }
+        self.encoder.encode_mode(
+            self.pending_mode,
+            self.pending_bitrate,
+            &self.pending[..self.pending_len],
+            self.pending_sample_rate,
+            &mut self.packet,
+        )
+    }
+}
+
+fn validate_encoder_frame(
+    channels: u8,
+    bitrate: u32,
+    input: &[i16],
+    sample_rate: u32,
+) -> Result<(), Error> {
+    if !(6_000..=510_000).contains(&bitrate) {
+        return Err(Error::InvalidPacket);
+    }
+    if !matches!(sample_rate, 8_000 | 12_000 | 16_000 | 24_000 | 48_000) {
+        return Err(Error::InvalidFrameSize);
+    }
+    let required = sample_rate as usize / 50 * usize::from(channels);
+    if input.len() != required {
+        return Err(Error::InvalidFrameSize);
+    }
+    Ok(())
+}
+
+fn selected_mode(mode: EncoderMode, bitrate: u32, channels: u8) -> Result<Mode, Error> {
+    if !(6_000..=510_000).contains(&bitrate) {
+        return Err(Error::InvalidPacket);
+    }
+    let selected = if mode == EncoderMode::Auto {
+        let per_channel = bitrate / u32::from(channels);
+        if per_channel < 20_000 {
+            EncoderMode::Silk
+        } else if per_channel < 64_000 {
+            EncoderMode::Hybrid
+        } else {
+            EncoderMode::Celt
+        }
+    } else {
+        mode
+    };
+    Ok(match selected {
+        EncoderMode::Silk => Mode::Silk,
+        EncoderMode::Hybrid => Mode::Hybrid,
+        EncoderMode::Celt => Mode::Celt,
+        EncoderMode::Auto => unreachable!(),
+    })
+}
+
 pub struct Decoder {
     channels: u8,
     silk_mono: silk_packet::MonoPayloadDecoder,
@@ -3766,6 +3933,75 @@ mod tests {
             decoder.decode(&silk_packet[..silk_size], &mut decoded, 48_000),
             Ok(960)
         );
+    }
+
+    #[test]
+    fn lookahead_encoder_inserts_end_redundancy_before_celt_switches() {
+        for (first_bitrate, first_mode) in [(19_000u32, Mode::Silk), (32_000u32, Mode::Hybrid)] {
+            let mut first_input = [0i16; 960];
+            let mut second_input = [0i16; 960];
+            first_input[840] = 11_000;
+            second_input[80] = -13_000;
+            let mut encoder = LookaheadEncoder::new(1).unwrap();
+            assert_eq!(
+                encoder
+                    .push(EncoderMode::Auto, first_bitrate, &first_input, 48_000,)
+                    .unwrap(),
+                None
+            );
+            let first = encoder
+                .push(EncoderMode::Auto, 64_000, &second_input, 48_000)
+                .unwrap()
+                .unwrap();
+            let mut first_packet = [0u8; MAX_FRAME_BYTES + 1];
+            first_packet[..first.len()].copy_from_slice(first);
+            let first_size = first.len();
+            let second = encoder.flush().unwrap().unwrap();
+            let mut second_packet = [0u8; MAX_FRAME_BYTES + 1];
+            second_packet[..second.len()].copy_from_slice(second);
+            let second_size = second.len();
+            assert!(encoder.flush().unwrap().is_none());
+
+            let parsed = Packet::parse(&first_packet[..first_size]).unwrap();
+            assert_eq!(parsed.mode, first_mode);
+            let frame = parsed.frames[0];
+            let start = usize::from(frame.offset);
+            let end = start + usize::from(frame.len);
+            let mut range = RangeDecoder::new(&first_packet[start..end]);
+            if first_mode == Mode::Silk {
+                let mut silk = [0.0f32; 160];
+                let mut fec = [0.0f32; 160];
+                silk_packet::MonoPayloadDecoder::new()
+                    .decode_range(&mut range, Bandwidth::Narrow, 20, &mut silk, &mut fec)
+                    .unwrap();
+            } else {
+                let mut silk = [0.0f32; 320];
+                let mut fec = [0.0f32; 320];
+                silk_packet::MonoPayloadDecoder::new()
+                    .decode_range(&mut range, Bandwidth::Wide, 20, &mut silk, &mut fec)
+                    .unwrap();
+            }
+            let info = transition::decode_header(&mut range, first_mode, usize::from(frame.len))
+                .unwrap()
+                .unwrap();
+            assert_eq!(info.position, transition::RedundancyPosition::End);
+            assert_eq!(info.len, 16);
+            assert_eq!(
+                Packet::parse(&second_packet[..second_size]).unwrap().mode,
+                Mode::Celt
+            );
+
+            let mut decoder = Decoder::new(1).unwrap();
+            let mut decoded = [0i16; 960];
+            assert_eq!(
+                decoder.decode(&first_packet[..first_size], &mut decoded, 48_000),
+                Ok(960)
+            );
+            assert_eq!(
+                decoder.decode(&second_packet[..second_size], &mut decoded, 48_000),
+                Ok(960)
+            );
+        }
     }
 
     #[test]
