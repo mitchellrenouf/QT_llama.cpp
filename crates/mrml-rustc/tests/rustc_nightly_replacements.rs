@@ -2032,6 +2032,21 @@ fn rustc_scalar_raw_pointer_casts_reach_native_objects() {
 }
 
 #[test]
+fn rustc_scalar_raw_pointer_offsets_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u16, offset: usize) -> *const u16 { input.add(offset) }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *mut i32, offset: usize) -> *mut i32 { input.sub(offset) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u8, offset: usize) -> *const u8 { input.wrapping_add(offset) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const char, offset: usize) -> *const char { input.wrapping_sub(offset) }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u64, forward: usize, back: usize) -> *const u64 { input.add(forward).sub(back) }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",

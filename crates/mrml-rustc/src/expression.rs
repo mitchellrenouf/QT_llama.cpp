@@ -284,6 +284,12 @@ pub enum ExprKind<'source> {
         base: ExprId,
         mutable: bool,
     },
+    RawPointerOffset {
+        base: ExprId,
+        offset: ExprId,
+        subtract: bool,
+        wrapping: bool,
+    },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -439,6 +445,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::StrAsBytes { .. }
             | ExprKind::StrIsCharBoundary { .. }
             | ExprKind::ReferenceAsPointer { .. }
+            | ExprKind::RawPointerOffset { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
             | ExprKind::Identifier(_)
@@ -651,6 +658,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             ExprKind::StrAsBytes { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::StrIsCharBoundary { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::ReferenceAsPointer { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::RawPointerOffset { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -1860,6 +1868,10 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             | ExprKind::StrAsBytes { base }
             | ExprKind::ReferenceAsPointer { base, .. } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
+            }
+            ExprKind::RawPointerOffset { base, offset, .. } => {
+                self.substitute_identifier(base, name, replacement, depth + 1)?;
+                self.substitute_identifier(offset, name, replacement, depth + 1)?;
             }
             ExprKind::StrIsCharBoundary { base, index } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
@@ -3387,7 +3399,16 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             let Some(method) = method.filter(|method| {
                 matches!(
                     method.text,
-                    "len" | "is_empty" | "as_bytes" | "is_char_boundary" | "as_ptr" | "as_mut_ptr"
+                    "len"
+                        | "is_empty"
+                        | "as_bytes"
+                        | "is_char_boundary"
+                        | "as_ptr"
+                        | "as_mut_ptr"
+                        | "add"
+                        | "sub"
+                        | "wrapping_add"
+                        | "wrapping_sub"
                 )
             }) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
@@ -3396,7 +3417,10 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             if !open.is_some_and(|open| open.kind == TokenKind::OpenParen) {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, open));
             }
-            let index = if method.text == "is_char_boundary" {
+            let argument = if matches!(
+                method.text,
+                "is_char_boundary" | "add" | "sub" | "wrapping_add" | "wrapping_sub"
+            ) {
                 Some(self.expression(0, depth + 1)?)
             } else {
                 None
@@ -3418,11 +3442,19 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     base,
                     mutable: true,
                 },
-                _ => ExprKind::StrIsCharBoundary {
+                "is_char_boundary" => ExprKind::StrIsCharBoundary {
                     base,
-                    index: index.ok_or_else(|| {
+                    index: argument.ok_or_else(|| {
                         self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
                     })?,
+                },
+                method => ExprKind::RawPointerOffset {
+                    base,
+                    offset: argument.ok_or_else(|| {
+                        self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
+                    })?,
+                    subtract: matches!(method, "sub" | "wrapping_sub"),
+                    wrapping: matches!(method, "wrapping_add" | "wrapping_sub"),
                 },
             };
             base = self.push(Expr {
