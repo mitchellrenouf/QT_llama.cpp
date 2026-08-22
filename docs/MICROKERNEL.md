@@ -1473,6 +1473,11 @@ ticket inside the controller; every later call retries it before considering a
 new tick. Windows and Linux tests force that pressure path, drain the competing
 ticket, and prove the exact saved context and capability reach the destination
 without duplication, loss, or reordering. The
+timer-facing entry accounts the scheduler tick first and requires the caller's
+published local load to equal the runtime snapshot before cadence or detachment.
+Windows and Linux tests prove a pre-deadline tick remains local, the exact
+deadline publishes one domain, and a stale snapshot fails without advancing
+time or ownership. The
 task runtime now extends migration from scheduler metadata to a complete linear
 user-domain ticket containing the saved CPL3 context and page-table root,
 capability space, and bounded IPC inbox. Admission consumes the ticket only

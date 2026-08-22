@@ -67,6 +67,22 @@ pub enum DomainBalanceOutcome {
     RetryPending(BalanceTarget),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TimerDomainBalanceOutcome {
+    scheduling: ScheduleOutcome,
+    balancing: DomainBalanceOutcome,
+}
+
+impl TimerDomainBalanceOutcome {
+    pub const fn scheduling(self) -> ScheduleOutcome {
+        self.scheduling
+    }
+
+    pub const fn balancing(self) -> DomainBalanceOutcome {
+        self.balancing
+    }
+}
+
 /// Couples periodic peer selection to linear complete-domain ownership. A full
 /// destination mailbox retains the detached domain inside this controller and
 /// retries it before considering another tick, so cadence cannot duplicate,
@@ -130,6 +146,30 @@ impl<const CPUS: usize, const CAPS: usize> PeriodicDomainBalancer<CPUS, CAPS> {
                 Ok(DomainBalanceOutcome::RetryPending(target))
             }
         }
+    }
+
+    /// Accounts the hardware timer event before applying periodic migration
+    /// policy. The caller's published local load must still match the runtime;
+    /// a stale or forged snapshot fails before any domain is detached.
+    pub fn timer_tick_and_publish<const TASKS: usize>(
+        &mut self,
+        local_cpu: usize,
+        loads: &[SchedulerLoad; CPUS],
+        runtime: &mut TaskRuntime<TASKS, CAPS>,
+        mailboxes: &[&OwnershipMailbox<DetachedTaskDomain<CAPS>>; CPUS],
+    ) -> Result<TimerDomainBalanceOutcome, DomainBalanceError> {
+        if local_cpu >= CPUS || loads[local_cpu] != runtime.load() {
+            return Err(DomainBalanceError::Runtime(
+                TaskRuntimeError::IntegrityFailure,
+            ));
+        }
+        let scheduling = runtime.timer_tick().map_err(DomainBalanceError::Runtime)?;
+        let balancing =
+            self.poll_and_publish(runtime.ticks(), local_cpu, loads, runtime, mailboxes)?;
+        Ok(TimerDomainBalanceOutcome {
+            scheduling,
+            balancing,
+        })
     }
 }
 
@@ -1092,5 +1132,51 @@ mod tests {
                 BalancePolicyError::InvalidInterval
             ))
         ));
+    }
+
+    #[test]
+    fn hardware_ticks_drive_domain_balancing_only_at_cadence() {
+        let mut source = TaskRuntime::<3, 0>::new(1_000, 10).unwrap();
+        let current = source
+            .create(Priority::NORMAL, context(0x20_0000, 0x40_0000))
+            .unwrap();
+        source
+            .create(Priority::RESPONSIVE, context(0x30_0000, 0x50_0000))
+            .unwrap();
+        source
+            .create(Priority::BACKGROUND, context(0x40_0000, 0x60_0000))
+            .unwrap();
+        source.start();
+        let local_mailbox = OwnershipMailbox::new();
+        let remote_mailbox = OwnershipMailbox::new();
+        let mailboxes = [&local_mailbox, &remote_mailbox];
+        let loads = [source.load(), SchedulerLoad::new(0, 0, 3).unwrap()];
+        let mut balancer = PeriodicDomainBalancer::<2, 0>::new(0, 2).unwrap();
+
+        let first = balancer
+            .timer_tick_and_publish(0, &loads, &mut source, &mailboxes)
+            .unwrap();
+        assert_eq!(first.scheduling(), ScheduleOutcome::Continue(current));
+        assert_eq!(first.balancing(), DomainBalanceOutcome::Idle);
+        assert!(remote_mailbox.take().is_none());
+
+        let second = balancer
+            .timer_tick_and_publish(0, &loads, &mut source, &mailboxes)
+            .unwrap();
+        assert_eq!(second.scheduling(), ScheduleOutcome::Continue(current));
+        assert!(matches!(
+            second.balancing(),
+            DomainBalanceOutcome::Published(target) if target.cpu() == 1
+        ));
+        assert!(remote_mailbox.take().is_some());
+
+        let stale_loads = [loads[0], SchedulerLoad::new(0, 0, 3).unwrap()];
+        assert_eq!(
+            balancer.timer_tick_and_publish(0, &stale_loads, &mut source, &mailboxes),
+            Err(DomainBalanceError::Runtime(
+                TaskRuntimeError::IntegrityFailure
+            ))
+        );
+        assert_eq!(source.ticks(), 2);
     }
 }

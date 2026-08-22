@@ -76,6 +76,7 @@ pub use syscall::{
 pub use task_runtime::{
     DetachedTaskDomain, DomainBalanceError, DomainBalanceOutcome, FaultRetirement,
     PeriodicDomainBalancer, TASK_INBOX_MESSAGES, TaskRuntime, TaskRuntimeError, TaskTermination,
+    TimerDomainBalanceOutcome,
 };
 pub use virtual_gpu::{
     BatchedDispatch, BufferAccess, BufferId, BufferMode, ControlBufferId, ControlBufferTable,

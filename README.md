@@ -399,6 +399,11 @@ mailbox is full. Later calls retry that exact ticket before polling a new tick,
 so pressure cannot lose, duplicate, or reorder migrated context and authority.
 Windows and Linux tests force the occupied-mailbox path and then prove the
 original context and capability arrive intact after retry.
+Its `timer_tick_and_publish` entry accounts the scheduler tick first, requires
+the published local load to match the runtime exactly, and only then applies
+cadence and detachment. Tests prove the first hardware tick remains local, the
+configured deadline publishes one domain, and a stale load fails before another
+tick or ownership change.
 The task runtime also has a non-copyable complete-domain migration ticket. It
 retires a non-current scheduler identity together with its saved CPL3 context,
 page-table root, capability space, and bounded IPC inbox; destination admission
