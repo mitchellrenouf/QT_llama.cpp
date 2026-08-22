@@ -299,9 +299,12 @@ with an architectural CPUID frequency; it provides the 10 ms post-INIT and
 trampoline image now performs the real-mode, PAE, long-mode, CPU-index, private
 stack, and kernel-entry transition. It accepts only a 4 KiB-aligned SIPI page
 below 1 MiB, a 32-bit identity-mapped CR3, and canonical aligned destinations,
-and the lifecycle binds the exact image page to its SIPI vector. Platform
-installation with a write-then-read/execute permission transition, per-CPU
-interrupt routing, and a live
+and the lifecycle binds the exact image page to its SIPI vector. Installation
+requires an initially read/write and NX page, copies the image, changes it to
+read/execute and non-writable, verifies those permissions, and revokes and
+zeroes the page on every failed write, protection, or verification step. Only
+the opaque installed-page result can advance the lifecycle to SIPI. Concrete
+UEFI/KVM/WHP page backends, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of

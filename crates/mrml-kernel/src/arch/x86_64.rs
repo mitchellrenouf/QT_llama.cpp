@@ -14,7 +14,10 @@ mod topology;
 mod trap;
 pub use acpi::{AcpiError, AcpiMemory, copy_madt};
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
-pub use ap_trampoline::{ApTrampolineError, ApTrampolineImage};
+pub use ap_trampoline::{
+    ApTrampolineError, ApTrampolineImage, ApTrampolinePage, InstalledApTrampoline,
+    TrampolinePermissions,
+};
 pub use context::{
     ContextError, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_INITIAL_RFLAGS, UserContext,
     UserContextTable, enter_user_context, enter_user_context_on_stack,

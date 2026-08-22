@@ -1,6 +1,6 @@
 use core::array;
 
-use super::ApTrampolineImage;
+use super::InstalledApTrampoline;
 
 use super::MAX_X86_64_CPUS;
 
@@ -306,7 +306,7 @@ impl<const CPUS: usize> ApStartupTable<CPUS> {
     pub fn startup_sent_with_image(
         &mut self,
         token: ApStartupToken,
-        image: &ApTrampolineImage,
+        image: InstalledApTrampoline,
     ) -> Result<u64, TopologyError> {
         let physical = self.startup_sent(token, image.startup_vector())?;
         if physical != image.physical() {
@@ -519,7 +519,33 @@ mod tests {
         let topology = X86CpuTopology::parse_madt(&table[..60]).unwrap();
         let mut startup = ApStartupTable::<2>::new(&topology, 1).unwrap();
         let token = startup.begin(1).unwrap();
-        let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x4000, 1).unwrap();
-        assert_eq!(startup.startup_sent_with_image(token, &image), Ok(0x8000));
+        struct Page(bool);
+        impl super::super::ApTrampolinePage for Page {
+            fn permissions(&self, _: u64) -> Option<super::super::TrampolinePermissions> {
+                Some(super::super::TrampolinePermissions {
+                    readable: true,
+                    writable: !self.0,
+                    executable: self.0,
+                })
+            }
+            fn write_page(&mut self, _: u64, _: &[u8; 4096]) -> bool {
+                true
+            }
+            fn protect_read_execute(&mut self, _: u64) -> bool {
+                self.0 = true;
+                true
+            }
+            fn revoke_and_zero(&mut self, _: u64) -> bool {
+                true
+            }
+        }
+        let image =
+            super::super::ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x4000, 1).unwrap();
+        let mut page = Page(false);
+        let installed = image.install(&mut page).unwrap();
+        assert_eq!(
+            startup.startup_sent_with_image(token, installed),
+            Ok(0x8000)
+        );
     }
 }

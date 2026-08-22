@@ -1428,9 +1428,11 @@ architectural 10 ms INIT and 200 microsecond SIPI waits without a guessed
 frequency. A generated, page-sized trampoline installs its own GDT, enables
 PAE and long mode using an identity-mapped 32-bit CR3, selects a CPU-private
 aligned stack, passes the bounded CPU index, and jumps to a canonical kernel
-entry. Its low-memory page is bound to the lifecycle's SIPI vector. Installing
-that page with an enforced writable-to-executable transition, live AP execution,
-and SMP scheduling are still required. Platform-backed service page
+entry. Its low-memory page is bound to the lifecycle's SIPI vector. A common
+installer enforces read/write+NX to read/execute+non-writable, verifies the
+final permissions, and revokes and zeroes every failed installation; only its
+opaque installed result may publish SIPI. Platform-specific page backends,
+live AP execution, and SMP scheduling are still required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 

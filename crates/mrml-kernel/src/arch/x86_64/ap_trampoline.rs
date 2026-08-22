@@ -14,6 +14,40 @@ pub enum ApTrampolineError {
     InvalidEntry,
     InvalidStack,
     InvalidCpu,
+    UnsafePermissions,
+    WriteFailed,
+    ProtectionFailed,
+    RevocationFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrampolinePermissions {
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+}
+
+pub trait ApTrampolinePage {
+    fn permissions(&self, physical: u64) -> Option<TrampolinePermissions>;
+    fn write_page(&mut self, physical: u64, bytes: &[u8; PAGE_BYTES]) -> bool;
+    fn protect_read_execute(&mut self, physical: u64) -> bool;
+    fn revoke_and_zero(&mut self, physical: u64) -> bool;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstalledApTrampoline {
+    physical: u64,
+    startup_vector: u8,
+}
+
+impl InstalledApTrampoline {
+    pub const fn physical(self) -> u64 {
+        self.physical
+    }
+
+    pub const fn startup_vector(self) -> u8 {
+        self.startup_vector
+    }
 }
 
 /// One sealed 4 KiB INIT/SIPI target. Firmware or the BSP writes this page
@@ -143,6 +177,49 @@ impl ApTrampolineImage {
     pub fn bytes(&self) -> &[u8; PAGE_BYTES] {
         &self.bytes
     }
+
+    pub fn install<P: ApTrampolinePage>(
+        &self,
+        page: &mut P,
+    ) -> Result<InstalledApTrampoline, ApTrampolineError> {
+        let initial = page
+            .permissions(self.physical)
+            .ok_or(ApTrampolineError::UnsafePermissions)?;
+        if !initial.readable || !initial.writable || initial.executable {
+            return Err(ApTrampolineError::UnsafePermissions);
+        }
+        if !page.write_page(self.physical, &self.bytes) {
+            return revoke_after(page, self.physical, ApTrampolineError::WriteFailed);
+        }
+        if !page.protect_read_execute(self.physical) {
+            return revoke_after(page, self.physical, ApTrampolineError::ProtectionFailed);
+        }
+        if page.permissions(self.physical)
+            != Some(TrampolinePermissions {
+                readable: true,
+                writable: false,
+                executable: true,
+            })
+        {
+            return revoke_after(page, self.physical, ApTrampolineError::UnsafePermissions);
+        }
+        Ok(InstalledApTrampoline {
+            physical: self.physical,
+            startup_vector: self.startup_vector(),
+        })
+    }
+}
+
+fn revoke_after<P: ApTrampolinePage>(
+    page: &mut P,
+    physical: u64,
+    error: ApTrampolineError,
+) -> Result<InstalledApTrampoline, ApTrampolineError> {
+    if page.revoke_and_zero(physical) {
+        Err(error)
+    } else {
+        Err(ApTrampolineError::RevocationFailed)
+    }
 }
 
 fn emit(output: &mut [u8; PAGE_BYTES], cursor: &mut usize, bytes: &[u8]) {
@@ -210,5 +287,80 @@ mod tests {
             ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x2000, 256).err(),
             Some(ApTrampolineError::InvalidCpu)
         );
+    }
+
+    struct Page {
+        permissions: TrampolinePermissions,
+        bytes: [u8; PAGE_BYTES],
+        fail_protection: bool,
+        revoked: bool,
+    }
+
+    impl Page {
+        fn writable() -> Self {
+            Self {
+                permissions: TrampolinePermissions {
+                    readable: true,
+                    writable: true,
+                    executable: false,
+                },
+                bytes: [0; PAGE_BYTES],
+                fail_protection: false,
+                revoked: false,
+            }
+        }
+    }
+
+    impl ApTrampolinePage for Page {
+        fn permissions(&self, _: u64) -> Option<TrampolinePermissions> {
+            Some(self.permissions)
+        }
+
+        fn write_page(&mut self, _: u64, bytes: &[u8; PAGE_BYTES]) -> bool {
+            self.bytes.copy_from_slice(bytes);
+            true
+        }
+
+        fn protect_read_execute(&mut self, _: u64) -> bool {
+            if self.fail_protection {
+                return false;
+            }
+            self.permissions = TrampolinePermissions {
+                readable: true,
+                writable: false,
+                executable: true,
+            };
+            true
+        }
+
+        fn revoke_and_zero(&mut self, _: u64) -> bool {
+            self.bytes.fill(0);
+            self.permissions = TrampolinePermissions {
+                readable: false,
+                writable: false,
+                executable: false,
+            };
+            self.revoked = true;
+            true
+        }
+    }
+
+    #[test]
+    fn installation_is_write_xor_execute_and_failure_revokes() {
+        let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x4000, 1).unwrap();
+        let mut page = Page::writable();
+        let installed = image.install(&mut page).unwrap();
+        assert_eq!(installed.physical(), 0x8000);
+        assert_eq!(installed.startup_vector(), 8);
+        assert_eq!(page.bytes, *image.bytes());
+
+        let mut failed = Page::writable();
+        failed.fail_protection = true;
+        assert_eq!(
+            image.install(&mut failed),
+            Err(ApTrampolineError::ProtectionFailed)
+        );
+        assert!(failed.revoked);
+        assert_eq!(failed.bytes, [0; PAGE_BYTES]);
     }
 }
