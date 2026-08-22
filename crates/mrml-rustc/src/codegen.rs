@@ -2586,7 +2586,12 @@ fn runtime_expression_type_with_locals<
             }
             Ok(RuntimeExpressionType::RawPointer { pointee, mutable })
         }
-        ExprKind::RawPointerOffset { base, offset, .. } => {
+        ExprKind::RawPointerOffset {
+            base,
+            offset,
+            signed,
+            ..
+        } => {
             let base_type = runtime_expression_type_with_locals(
                 function,
                 resolver,
@@ -2598,18 +2603,28 @@ fn runtime_expression_type_with_locals<
             if !matches!(base_type, RuntimeExpressionType::RawPointer { .. }) {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
-            if !matches!(
-                runtime_expression_type_with_locals(
-                    function,
-                    resolver,
-                    locals,
-                    tree,
-                    offset,
-                    depth + 1,
-                )?,
-                RuntimeExpressionType::Integer(None)
-                    | RuntimeExpressionType::Integer(Some(crate::IntegerType::Usize))
-            ) {
+            let offset_type = runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                offset,
+                depth + 1,
+            )?;
+            let offset_matches = if signed {
+                matches!(
+                    offset_type,
+                    RuntimeExpressionType::Integer(None)
+                        | RuntimeExpressionType::Integer(Some(crate::IntegerType::Isize))
+                )
+            } else {
+                matches!(
+                    offset_type,
+                    RuntimeExpressionType::Integer(None)
+                        | RuntimeExpressionType::Integer(Some(crate::IntegerType::Usize))
+                )
+            };
+            if !offset_matches {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
             Ok(base_type)
@@ -3866,6 +3881,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 offset,
                 subtract,
                 wrapping: _,
+                signed: _,
             } => {
                 let RuntimeExpressionType::RawPointer { pointee, .. } =
                     runtime_expression_type_with_locals(
@@ -8950,6 +8966,8 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u8, offset: usize) -> *const u8 { input.wrapping_add(offset) }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const char, offset: usize) -> *const char { input.wrapping_sub(offset) }",
             "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u64, forward: usize, back: usize) -> *const u64 { input.add(forward).sub(back) }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u32, offset: isize) -> *const u32 { input.offset(offset) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u64, offset: isize) -> *mut u64 { input.wrapping_offset(offset) }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
@@ -8966,6 +8984,7 @@ mod tests {
         for source in [
             "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16, offset: u16) -> *const u16 { input.add(offset) }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize) -> usize { input.wrapping_add(1) }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16, offset: usize) -> *const u16 { input.offset(offset) }",
         ] {
             let module = Parser::new(source).parse_module::<2, 2>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {

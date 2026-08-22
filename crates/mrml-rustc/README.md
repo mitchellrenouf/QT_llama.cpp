@@ -489,10 +489,13 @@ type errors. An independent caller preserved an address through `usize`, `u8`,
 and differently typed raw-pointer views through a 206-byte COFF and 592-byte
 ELF64 object. Constant evaluation continues to reject address casts. Raw
 pointers support element-scaled `add`, `sub`, `wrapping_add`, and
-`wrapping_sub` with `usize` offsets while preserving pointee and mutability.
-Non-pointer receivers and other offset widths are rejected. Independent native
-callers advanced and rewound 4- and 8-byte array pointers to the expected
-elements through 142- and 143-byte COFF objects plus 536- and 528-byte ELF64
+`wrapping_sub` with `usize` offsets plus `offset` and `wrapping_offset` with
+`isize` offsets while preserving pointee and mutability. The signed forms
+preserve negative two's-complement offsets after element scaling; unsigned and
+signed method arguments are not interchangeable. Non-pointer receivers and
+other offset widths are rejected. Independent native callers advanced and
+rewound 4- and 8-byte array pointers to the expected elements through 142-,
+143-, 130-, and 128-byte COFF objects plus 536-, 528-, 520-, and 520-byte ELF64
 objects. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support

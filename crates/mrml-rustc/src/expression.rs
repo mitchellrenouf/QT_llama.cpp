@@ -289,6 +289,7 @@ pub enum ExprKind<'source> {
         offset: ExprId,
         subtract: bool,
         wrapping: bool,
+        signed: bool,
     },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
@@ -3409,6 +3410,8 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         | "sub"
                         | "wrapping_add"
                         | "wrapping_sub"
+                        | "offset"
+                        | "wrapping_offset"
                 )
             }) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
@@ -3419,7 +3422,13 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             }
             let argument = if matches!(
                 method.text,
-                "is_char_boundary" | "add" | "sub" | "wrapping_add" | "wrapping_sub"
+                "is_char_boundary"
+                    | "add"
+                    | "sub"
+                    | "wrapping_add"
+                    | "wrapping_sub"
+                    | "offset"
+                    | "wrapping_offset"
             ) {
                 Some(self.expression(0, depth + 1)?)
             } else {
@@ -3454,7 +3463,8 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
                     })?,
                     subtract: matches!(method, "sub" | "wrapping_sub"),
-                    wrapping: matches!(method, "wrapping_add" | "wrapping_sub"),
+                    wrapping: matches!(method, "wrapping_add" | "wrapping_sub" | "wrapping_offset"),
+                    signed: matches!(method, "offset" | "wrapping_offset"),
                 },
             };
             base = self.push(Expr {

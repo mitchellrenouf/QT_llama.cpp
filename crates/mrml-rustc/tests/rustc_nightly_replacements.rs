@@ -2039,6 +2039,8 @@ fn rustc_scalar_raw_pointer_offsets_reach_native_objects() {
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u8, offset: usize) -> *const u8 { input.wrapping_add(offset) }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const char, offset: usize) -> *const char { input.wrapping_sub(offset) }",
         "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u64, forward: usize, back: usize) -> *const u64 { input.add(forward).sub(back) }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u32, offset: isize) -> *const u32 { input.offset(offset) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *mut u64, offset: isize) -> *mut u64 { input.wrapping_offset(offset) }",
     ];
     for source in sources {
         assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
