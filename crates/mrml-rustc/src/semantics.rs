@@ -1496,7 +1496,7 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 depth,
                             )?
                         } else {
-                            block.entry_condition.is_none()
+                            block.unconditional_break || block.entry_condition.is_none()
                         };
                         resolver.truncate(nested_checkpoint)?;
                         if should_break {
@@ -3224,6 +3224,18 @@ mod tests {
         assert_eq!(values.resolve("NATURAL"), Some(4));
         assert_eq!(values.resolve("BREAK"), Some(9));
         assert_eq!(values.resolve("FIVE"), Some(45));
+    }
+
+    #[test]
+    fn distinguishes_unconditional_inner_break_from_while_fallthrough() {
+        let module = Parser::new(
+            "const fn count(limit: u8, enter: bool) -> u8 { let mut i: u8 = 0; while i < limit { while enter { break; } i += 1; } i } const FALSE_HEAD: u8 = count(5, false); const TRUE_BREAK: u8 = count(5, true);",
+        )
+        .parse_module::<4, 2>()
+        .unwrap();
+        let values = analyze_constants::<2, 48, 4, 2>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("FALSE_HEAD"), Some(5));
+        assert_eq!(values.resolve("TRUE_BREAK"), Some(5));
     }
 
     #[test]

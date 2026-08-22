@@ -282,6 +282,7 @@ pub struct NestedLoopBlock<'source> {
     actions: [Option<ConditionalLoopAction<'source>>; MAX_NESTED_LOOP_ACTIONS],
     action_count: usize,
     pub break_condition: Option<ConditionalLoopControl<'source>>,
+    pub unconditional_break: bool,
     pub continue_condition: Option<ConditionalLoopControl<'source>>,
     pub continue_action_index: usize,
 }
@@ -1474,6 +1475,7 @@ impl<'source> BodyParser<'source> {
                     let mut continue_condition = None;
                     let mut continue_action_index = 0usize;
                     let mut body_closed = false;
+                    let mut unconditional_break = false;
                     let break_condition;
                     loop {
                         let next = probe.peek()?;
@@ -1494,6 +1496,7 @@ impl<'source> BodyParser<'source> {
                                 );
                             }
                             break_condition = None;
+                            unconditional_break = true;
                             break;
                         }
                         if next.is_some_and(|token| token.text == "if") {
@@ -1591,6 +1594,7 @@ impl<'source> BodyParser<'source> {
                                 actions,
                                 action_count,
                                 break_condition,
+                                unconditional_break,
                                 continue_condition,
                                 continue_action_index,
                             });

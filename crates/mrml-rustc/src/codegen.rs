@@ -859,7 +859,7 @@ pub fn compile_x86_64_function_with_options<
                     let exit = emitter.emit_forward_branch(0x85)?;
                     emitter.emit_backward_branch(nested_start)?;
                     emitter.patch_forward_branch(exit)?;
-                } else if block.entry_condition.is_some() {
+                } else if block.entry_condition.is_some() && !block.unconditional_break {
                     emitter.emit_backward_branch(nested_start)?;
                 }
                 if let Some(entry_exit) = entry_exit {

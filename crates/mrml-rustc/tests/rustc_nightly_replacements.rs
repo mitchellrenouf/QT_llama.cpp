@@ -681,6 +681,24 @@ fn rustc_nested_while_controls_have_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_unconditional_break_in_nested_while_has_an_executable_replacement() {
+    // Original scalar replacement for the nested unconditional exit targeting
+    // in pinned tests/ui/for-loop-while/break.rs and nested-loop-break-unit.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, enter: bool) -> u32 { let mut i: u32 = 0; while i < limit { while enter { break; } i += 1; } i }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<1536, 1024, 4, 4, 4, 48>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",
