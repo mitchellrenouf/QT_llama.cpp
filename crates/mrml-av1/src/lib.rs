@@ -430,6 +430,10 @@ pub enum Error {
         transform_blocks: u32,
         nonzero_transform_blocks: u32,
         coefficient_count: u32,
+        block_flags: [u8; 4],
+        reference_frames: [[i8; 2]; 4],
+        inter_modes: [u8; 4],
+        motion_vectors: [[i32; 2]; 4],
         luma_modes: [u8; 4],
         chroma_modes: [u8; 4],
         transform_types: [u8; 8],
@@ -1366,6 +1370,10 @@ impl Decoder {
         // Leaf, skipped-leaf, transform, and nonzero-transform counts retained
         // for strict conformance diagnostics when tile termination fails.
         let mut decode_counts = [0u32; 5];
+        let mut block_flags = [u8::MAX; 4];
+        let mut reference_frames = [[-1i8; 2]; 4];
+        let mut inter_modes = [u8::MAX; 4];
+        let mut motion_vectors = [[i32::MIN; 2]; 4];
         let mut luma_modes = [u8::MAX; 4];
         let mut chroma_modes = [u8::MAX; 4];
         let mut transform_types = [u8::MAX; 8];
@@ -1525,6 +1533,13 @@ impl Decoder {
                 if prefix.skip {
                     decode_counts[1] = decode_counts[1].saturating_add(1);
                 }
+                let block_trace_index =
+                    usize::try_from(decode_counts[0] - 1).map_err(|_| Error::LimitExceeded)?;
+                if block_trace_index < block_flags.len() {
+                    block_flags[block_trace_index] = u8::from(prefix.is_inter)
+                        | (u8::from(prefix.skip) << 1)
+                        | (u8::from(prefix.skip_mode) << 2);
+                }
                 let availability = partition::block_availability(
                     block,
                     bounds,
@@ -1557,6 +1572,9 @@ impl Decoder {
                 } else {
                     [0, -1]
                 };
+                if block_trace_index < reference_frames.len() {
+                    reference_frames[block_trace_index] = references;
+                }
                 let intra = if prefix.is_inter {
                     None
                 } else {
@@ -1583,8 +1601,8 @@ impl Decoder {
                     )
                 };
                 if let Some(intra) = intra {
-                    let trace_index = usize::try_from(decode_counts[0] - 1)
-                        .map_err(|_| Error::LimitExceeded)?;
+                    let trace_index =
+                        usize::try_from(decode_counts[0] - 1).map_err(|_| Error::LimitExceeded)?;
                     if trace_index < luma_modes.len() {
                         luma_modes[trace_index] = intra.y_mode as u8;
                         chroma_modes[trace_index] = intra.chroma.mode as u8;
@@ -1729,6 +1747,13 @@ impl Decoder {
                     (None, [motion::GlobalMotionType::Identity; 2])
                 };
                 let inter_post = if let Some(inter_motion) = inter_motion {
+                    if block_trace_index < inter_modes.len() {
+                        inter_modes[block_trace_index] = inter_motion.y_mode;
+                        motion_vectors[block_trace_index] = [
+                            inter_motion.motion_vectors[0].row,
+                            inter_motion.motion_vectors[0].column,
+                        ];
+                    }
                     let first_slot = usize::from(
                         header.ref_frame_idx
                             [usize::try_from(references[0] - 1).map_err(|_| Error::InvalidObu)?],
@@ -2786,8 +2811,7 @@ impl Decoder {
                         transform_types[traced_transform_count] = result.tx_type as u8;
                     }
                     traced_transform_count = traced_transform_count.saturating_add(1);
-                    decode_counts[4] =
-                        decode_counts[4].saturating_add(u32::from(result.eob));
+                    decode_counts[4] = decode_counts[4].saturating_add(u32::from(result.eob));
                     if plane == 0 {
                         grid.fill_tx_type(y4, x4, residual.size, result.tx_type)?;
                     }
@@ -2811,6 +2835,10 @@ impl Decoder {
                 transform_blocks: decode_counts[2],
                 nonzero_transform_blocks: decode_counts[3],
                 coefficient_count: decode_counts[4],
+                block_flags,
+                reference_frames,
+                inter_modes,
+                motion_vectors,
                 luma_modes,
                 chroma_modes,
                 transform_types,

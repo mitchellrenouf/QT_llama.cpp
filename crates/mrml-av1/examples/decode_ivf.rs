@@ -118,10 +118,13 @@ fn print_frame_header_diagnostics(decoder: &mrml_av1::Decoder, payload: &[u8]) {
         return;
     };
     eprintln!(
-        "header: {} bits, q={}, tx={:?}, delta-q={}, tiles={}x{} sb columns={:?} rows={:?}",
+        "header: {} bits, q={}, tx={:?}, primary-ref={}, refresh={:#04x}, refs={:?}, delta-q={}, tiles={}x{} sb columns={:?} rows={:?}",
         frame_header.bits_consumed,
         frame_header.quantization.base_q_idx,
         frame_header.tx_mode,
+        frame_header.primary_ref_frame,
+        frame_header.refresh_frame_flags,
+        frame_header.ref_frame_idx,
         frame_header.delta_params.delta_q_present,
         layout.columns(),
         layout.rows(),
