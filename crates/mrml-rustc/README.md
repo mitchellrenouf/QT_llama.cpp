@@ -271,9 +271,17 @@ Constant indexing preserves lazy selection, including an unselected trapping
 element, and materializes the selected default element as zero. A combined
 probe covering both branch orders and a semicolonless tail `break` emitted
 93-byte COFF and 488-byte ELF64 objects; independent pinned-nightly callers on
-both hosts observed 43. Runtime-variable indexes, array-valued locals and
-returns, unconstrained array defaults, references, slices, and general
-aggregate storage remain separate work.
+both hosts observed 43. Immutable fixed-array locals now retain each of their
+up to eight scalar elements in a distinct stack slot. Both explicit
+`[scalar; N]` annotations and inferred literal types are accepted, including a
+typed contextual default or loop-break array initializer. Constant indexes load
+the selected slot while preserving parameter offsets, surrounding scalar
+locals, scoped cleanup, and both native ABIs. A contextual loop-array probe
+emitted 208-byte COFF and 600-byte ELF64 objects; independent pinned-nightly
+callers observed 14 for its default path and 41 for its selected path on both
+hosts. Runtime-variable indexes, mutable arrays and aggregate assignment, array
+parameters and returns, unconstrained array defaults, references, slices, and
+general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -629,16 +637,17 @@ break-value forms, including matching labels. The oracle file's array-valued
 breaks, references, trait coercions, never type, matches, and more general
 nested control-flow graphs are not claimed by this slice. Its fixed scalar
 array literals now have bounded direct-index coverage, including contextual
-array defaults selected through conditional loop-break branches. Replacements
-cover bounded cross-nested value exits, terminating nested value-loop operands,
+array defaults selected through conditional loop-break branches and retained in
+immutable fixed-array locals. Replacements cover bounded cross-nested value
+exits, terminating nested value-loop operands,
 up to five compatible competing scalar values, both sequential and structured
-alternative syntax, lazy selection of the taken break edge, and the oracle's labeled
-`break`-as-`while`-condition cases plus its two source orders for unreachable
+alternative syntax, lazy selection of the taken break edge, and the oracle's
+labeled `break`-as-`while`-condition cases plus its two source orders for unreachable
 unit sibling breaks, its three scalar `Default::default()`/nested-break forms,
 and the three directly indexed array/default branch shapes. General `while`
-condition expressions, stored or returned aggregates, unconstrained aggregate
-defaults, and arbitrary nested value-loop graphs remain outside this bounded
-slice.
+condition expressions, mutable or assigned aggregates, aggregate parameters or
+returns, unconstrained aggregate defaults, and arbitrary nested value-loop
+graphs remain outside this bounded slice.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate
@@ -761,7 +770,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 259 Windows library, conformance, rustc-nightly-replacement, and driver
+The 261 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1435,7 +1444,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 259 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 261 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
