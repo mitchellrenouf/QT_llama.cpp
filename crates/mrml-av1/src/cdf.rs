@@ -4610,10 +4610,10 @@ impl TileCdfs {
             .and_then(|planes| planes.get_mut(usize::from(chroma)))
             .and_then(|contexts| contexts.get_mut(usize::from(context)))
             .ok_or(Error::InvalidObu)?;
-        u8::try_from(decoder.read_symbol(cdf)?)
-            .map_err(|_| Error::InvalidObu)?
-            .checked_add(1)
-            .ok_or(Error::LimitExceeded)
+        // Section 5.11.39 applies the mandatory `+ 1` after reading this
+        // syntax element. Keep this layer faithful to the raw CDF symbol so
+        // the coefficient loop performs that conversion exactly once.
+        u8::try_from(decoder.read_symbol(cdf)?).map_err(|_| Error::InvalidObu)
     }
 
     pub fn read_dc_sign(
@@ -5927,6 +5927,11 @@ mod tests {
         assert_eq!(cdfs.coeff_base_eob[0][0][0][0][..2], [17837, 29055]);
         assert_eq!(cdfs.coeff_base_eob[3][4][1][3][..2], [10923, 21845]);
         let mut cdfs = cdfs;
+        let mut decoder = SymbolDecoder::new(&[0; 2], false).unwrap();
+        assert_eq!(
+            cdfs.read_coefficient_base_eob(&mut decoder, 0, TxSize::Tx4x4, false, 0),
+            Ok(0)
+        );
         let mut decoder = SymbolDecoder::new(&[0; 2], false).unwrap();
         assert_eq!(
             cdfs.read_coefficient_base_eob(&mut decoder, 0, TxSize::Tx4x4, false, 4),
