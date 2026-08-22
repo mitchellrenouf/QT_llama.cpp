@@ -1977,6 +1977,20 @@ fn rustc_string_character_boundary_checks_reach_native_objects() {
 }
 
 #[test]
+fn rustc_reference_data_pointers_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &[u16]) -> *const u16 { input.as_ptr() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut [u16]) -> *mut u16 { input.as_mut_ptr() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str) -> *const u8 { input.as_ptr() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *mut u16) -> *const u16 { let copied: *const u16 = input; copied }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",

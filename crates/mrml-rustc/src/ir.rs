@@ -278,7 +278,8 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             | ExprKind::SliceLen { .. }
             | ExprKind::SliceIsEmpty { .. }
             | ExprKind::StrAsBytes { .. }
-            | ExprKind::StrIsCharBoundary { .. } => {
+            | ExprKind::StrIsCharBoundary { .. }
+            | ExprKind::ReferenceAsPointer { .. } => {
                 return Err(IrError {
                     kind: IrErrorKind::InvalidExpressionTree,
                     span: expression.span,

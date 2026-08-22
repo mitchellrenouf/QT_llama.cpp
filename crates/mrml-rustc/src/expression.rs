@@ -264,6 +264,10 @@ pub enum ExprKind<'source> {
         base: ExprId,
         index: ExprId,
     },
+    ReferenceAsPointer {
+        base: ExprId,
+        mutable: bool,
+    },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -418,6 +422,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::SliceLen { .. }
             | ExprKind::StrAsBytes { .. }
             | ExprKind::StrIsCharBoundary { .. }
+            | ExprKind::ReferenceAsPointer { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
             | ExprKind::Identifier(_)
@@ -629,6 +634,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             ExprKind::SliceIsEmpty { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::StrAsBytes { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::StrIsCharBoundary { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::ReferenceAsPointer { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -1832,7 +1838,8 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             }
             ExprKind::SliceLen { base }
             | ExprKind::SliceIsEmpty { base }
-            | ExprKind::StrAsBytes { base } => {
+            | ExprKind::StrAsBytes { base }
+            | ExprKind::ReferenceAsPointer { base, .. } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
             }
             ExprKind::StrIsCharBoundary { base, index } => {
@@ -3361,7 +3368,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             let Some(method) = method.filter(|method| {
                 matches!(
                     method.text,
-                    "len" | "is_empty" | "as_bytes" | "is_char_boundary"
+                    "len" | "is_empty" | "as_bytes" | "is_char_boundary" | "as_ptr" | "as_mut_ptr"
                 )
             }) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
@@ -3384,6 +3391,14 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 "len" => ExprKind::SliceLen { base },
                 "is_empty" => ExprKind::SliceIsEmpty { base },
                 "as_bytes" => ExprKind::StrAsBytes { base },
+                "as_ptr" => ExprKind::ReferenceAsPointer {
+                    base,
+                    mutable: false,
+                },
+                "as_mut_ptr" => ExprKind::ReferenceAsPointer {
+                    base,
+                    mutable: true,
+                },
                 _ => ExprKind::StrIsCharBoundary {
                     base,
                     index: index.ok_or_else(|| {
