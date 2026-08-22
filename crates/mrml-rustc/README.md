@@ -562,8 +562,10 @@ arm selection. General pattern forms and reference constants are not claimed.
 Windows used the supported native GNU/LLVM host:
 
 ```powershell
+$env:RUSTFLAGS = '-C link-arg=/stack:16777216'
 cargo +nightly-x86_64-pc-windows-gnullvm test `
-  -p mrml-rustc -p mrml-rustc-driver --offline
+  -p mrml-rustc -p mrml-rustc-driver `
+  --target x86_64-pc-windows-gnullvm --offline
 cargo +nightly-x86_64-pc-windows-gnullvm clippy `
   -p mrml-rustc -p mrml-rustc-driver --all-targets --no-deps --offline -- `
   -D warnings
@@ -573,7 +575,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 196 Windows library, conformance, rustc-nightly-replacement, and driver
+The 197 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1016,6 +1018,16 @@ COFF object and 656-byte ELF object. Independent `no_std` callers selected the
 true assignment, false assignment, and a later conditional compound mutation.
 The zero-valued true path would divide by zero if the false assignment executed;
 all three paths returned the expected values on both native hosts.
+A bounded mutation-chain replacement maps the ordered assignment behavior in
+pinned `tests/ui/binding/if-let.rs` to original scalar Boolean conditions; it
+does not claim `if let` or pattern support. Up to four guarded assignments and
+an optional final `else` are represented without allocation. The unchanged
+pinned test compiled on Windows and compiled and ran on Arch Linux WSL. MRML's
+554-byte COFF and 944-byte ELF objects passed independent `no_std` callers on
+the first, two middle, fallback, and two later fallthrough-mutation paths. The
+zero-valued first path proves later division expressions remain unevaluated,
+and a fifth guarded assignment is rejected with
+`TooManyConditionalAssignmentBranches`.
 
 Linux used native Arch Linux WSL2 `x86_64-unknown-linux-gnu` with the identical
 nightly commit:
@@ -1031,7 +1043,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 196 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 197 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
