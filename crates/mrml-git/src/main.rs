@@ -369,12 +369,9 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "diff-ref" if !tail.is_empty() => {
             checked_positionals(tail)?;
-            let mut args = Vector::from(["diff", "--color=always", tail[0].as_str()]);
-            if tail.len() > 1 {
-                args.push("--");
-                args.extend(tail[1..].iter().map(Text::as_str));
-            }
-            run_visible(repository, &args)
+            let diffs = native_repository(repository)?.diff_revision(&tail[0], &tail[1..]).map_err(|error| anyhow!("{}", error))?;
+            for diff in diffs { println!("{}", diff.unified()); }
+            Ok(())
         }
         "show" if tail.len() <= 1 => {
             checked_positionals(tail)?;
@@ -390,24 +387,21 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "history" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(
-                repository,
-                &[
-                    "log",
-                    "--follow",
-                    "--decorate",
-                    "--color=always",
-                    "--oneline",
-                    "--",
-                    &tail[0],
-                ],
-            )
+            for (id, commit) in native_repository(repository)?.file_history(&tail[0], 256).map_err(|error| anyhow!("{}", error))? {
+                println!("{} {}", &id.to_hex()[..12], commit.message.lines().next().unwrap_or(""));
+            }
+            Ok(())
         }
         "blame" if tail.len() == 1 => {
             checked_positionals(tail)?;
             run_visible(repository, &["blame", "--color-lines", "--", &tail[0]])
         }
-        "conflicts" if tail.is_empty() => conflicts(repository),
+        "conflicts" if tail.is_empty() => {
+            let paths = native_repository(repository)?.conflicted_paths().map_err(|error| anyhow!("{}", error))?;
+            if paths.is_empty() { println!("{}", "no unresolved conflicts".green()); }
+            else { for path in paths { println!("{} {}", "conflict".red().bold(), path); } }
+            Ok(())
+        }
         "branch" if tail.is_empty() => {
             let repository = native_repository(repository)?;
             let current = repository

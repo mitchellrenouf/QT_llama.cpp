@@ -341,6 +341,50 @@ impl Repository {
         Ok(output)
     }
 
+    pub fn diff_revision(&self, revision: &str, paths: &[Text]) -> Result<Vector<FileDiff>, RepositoryError> {
+        for path in paths { validate_worktree_path(path)?; }
+        let id = self.resolve_revision(revision)?;
+        let base = self.tree_index(self.read_commit(id)?.tree)?;
+        let mut names: Vector<Text> = base.entries.iter().map(|entry| entry.path.clone()).collect();
+        let index = self.index()?;
+        for entry in &index.entries { if entry.stage == 0 && !names.iter().any(|name| name == &entry.path) { names.push(entry.path.clone()); } }
+        names.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        let mut output = Vector::new();
+        for name in names {
+            if !paths.is_empty() && !paths.iter().any(|path| name.as_str() == path.as_str() || name.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('/'))) { continue; }
+            let old = match base.entry(&name) { Some(entry) => Some(self.read_blob(entry.id)?), None => None };
+            let disk = join_path(&self.worktree, &name);
+            let new = if path_is_file(&disk) { Some(read_file_bounded(&disk, MAX_WORKTREE_FILE)?) } else { None };
+            if old != new { output.push(FileDiff { path: name, old, new }); }
+        }
+        Ok(output)
+    }
+
+    pub fn conflicted_paths(&self) -> Result<Vector<Text>, RepositoryError> {
+        let index = self.index()?;
+        let mut paths = Vector::new();
+        for entry in &index.entries {
+            if entry.stage != 0 && !paths.iter().any(|path| path == &entry.path) { paths.push(entry.path.clone()); }
+        }
+        Ok(paths)
+    }
+
+    pub fn file_history(&self, path: &str, limit: usize) -> Result<Vector<(ObjectId, Commit)>, RepositoryError> {
+        validate_worktree_path(path)?;
+        let mut result = Vector::new();
+        let mut next = self.head()?;
+        let mut previous_blob = None;
+        while let Some(id) = next {
+            let commit = self.read_commit(id)?;
+            let tree = self.tree_index(commit.tree)?;
+            let blob = tree.entry(path).map(|entry| entry.id);
+            if blob != previous_blob { result.push((id, commit.clone())); previous_blob = blob; }
+            next = commit.parents.first().copied();
+            if result.len() >= limit { break; }
+        }
+        Ok(result)
+    }
+
     fn read_blob(&self, id: ObjectId) -> Result<Vector<u8>, RepositoryError> {
         let object = self.read_object(id)?;
         if object.kind != ObjectKind::Blob { return Err(RepositoryError::InvalidReference); }
@@ -1040,6 +1084,19 @@ mod tests {
         assert_eq!(repository.diff(true, &[]).unwrap()[0].new.as_deref(), Some(&b"staged\n"[..]));
         write_file(&file, b"worktree\n").unwrap();
         assert_eq!(repository.diff(false, &[]).unwrap()[0].new.as_deref(), Some(&b"worktree\n"[..]));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn filters_file_history_and_diffs_against_revision() {
+        let path = root("file-history");
+        let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked"); let paths = Vector::from([Text::from("tracked")]);
+        write_file(&file, b"one\n").unwrap(); repository.stage(&paths).unwrap(); repository.commit("one", "MRML", "mrml@example.invalid", 1).unwrap();
+        write_file(&file, b"two\n").unwrap(); repository.stage(&paths).unwrap(); repository.commit("two", "MRML", "mrml@example.invalid", 2).unwrap();
+        write_file(&file, b"three\n").unwrap();
+        assert_eq!(repository.file_history("tracked", 10).unwrap().len(), 2);
+        assert_eq!(repository.diff_revision("HEAD", &paths).unwrap()[0].new.as_deref(), Some(&b"three\n"[..]));
         remove_dir_all(&path).unwrap();
     }
 }
