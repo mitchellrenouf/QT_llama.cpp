@@ -82,6 +82,44 @@ mod linux {
         (reference != mrml).then_some((reference, mrml))
     }
 
+    fn minimize(mut packet: Vec<u8>, verbose: bool) -> Option<(Vec<u8>, u32, u32)> {
+        let (reference, mrml) = mismatch(&packet)?;
+        print_packet(&packet, reference, mrml);
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for index in 1..packet.len() {
+                let original = packet[index];
+                if original == 0 {
+                    continue;
+                }
+                packet[index] = 0;
+                if mismatch(&packet).is_some() {
+                    changed = true;
+                    if verbose {
+                        println!("keep_zero index={index}");
+                    }
+                } else {
+                    packet[index] = original;
+                }
+            }
+        }
+        for length in 2..packet.len() {
+            if mismatch(&packet[..length]).is_some_and(|(reference, mrml)| {
+                reference != 0 && mrml != 0
+            }) {
+                if verbose {
+                    println!("truncate length={length}");
+                }
+                packet.truncate(length);
+                break;
+            }
+        }
+        let (reference, mrml) = mismatch(&packet)?;
+        Some((packet, reference, mrml))
+    }
+
     fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
         if !text.len().is_multiple_of(2) {
             return Err("hex input must contain complete bytes".to_owned());
@@ -110,41 +148,14 @@ mod linux {
     pub fn main() -> Result<(), String> {
         let input = std::env::args()
             .nth(1)
-            .ok_or_else(|| "usage: opus_range_diff <packet-hex>".to_owned())?;
+            .ok_or_else(|| {
+                "usage: opus_range_diff <packet-hex> [--verbose]".to_owned()
+            })?;
+        let verbose = std::env::args().any(|argument| argument == "--verbose");
         let mut packet = parse_hex(&input)?;
-        let (reference, mrml) = mismatch(&packet)
+        let (minimal, reference, mrml) = minimize(packet, verbose)
             .ok_or_else(|| "packet is rejected by a decoder or final ranges already match".to_owned())?;
-        print_packet(&packet, reference, mrml);
-
-        // Preserve the TOC byte, then greedily erase payload bytes. This keeps
-        // framing stable while stripping entropy decisions irrelevant to the
-        // observed disagreement.
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for index in 1..packet.len() {
-                let original = packet[index];
-                if original == 0 {
-                    continue;
-                }
-                packet[index] = 0;
-                if mismatch(&packet).is_some() {
-                    changed = true;
-                } else {
-                    packet[index] = original;
-                }
-            }
-        }
-        for length in 2..packet.len() {
-            if mismatch(&packet[..length]).is_some_and(|(reference, mrml)| {
-                reference != 0 && mrml != 0
-            }) {
-                packet.truncate(length);
-                break;
-            }
-        }
-        let (reference, mrml) = mismatch(&packet).ok_or_else(|| "mismatch vanished".to_owned())?;
-        print_packet(&packet, reference, mrml);
+        print_packet(&minimal, reference, mrml);
         Ok(())
     }
 }
