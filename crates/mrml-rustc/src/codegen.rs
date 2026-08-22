@@ -214,7 +214,7 @@ pub fn compile_x86_64_constant_function<
                 RuntimeExpressionType::Unit
                 | RuntimeExpressionType::Default
                 | RuntimeExpressionType::Array { .. }
-                | RuntimeExpressionType::Reference(_) => {
+                | RuntimeExpressionType::Reference { .. } => {
                     return Err(CodegenError {
                         kind: CodegenErrorKind::RuntimeTypeMismatch,
                         span: translate_span(
@@ -580,7 +580,7 @@ pub fn compile_x86_64_function_with_options<
     };
     let mut integer_operand_type = None;
     for parameter in function.parameters().iter().flatten() {
-        if let Some(RuntimeExpressionType::Reference(pointee)) =
+        if let Some(RuntimeExpressionType::Reference { pointee, .. }) =
             runtime_reference_type(parameter.ty.text)
         {
             match pointee {
@@ -1661,7 +1661,10 @@ enum RuntimeExpressionType {
     Integer(Option<crate::IntegerType>),
     Bool,
     Char,
-    Reference(RuntimeArrayElementType),
+    Reference {
+        pointee: RuntimeArrayElementType,
+        mutable: bool,
+    },
     Array {
         element: RuntimeArrayElementType,
         count: usize,
@@ -1686,7 +1689,7 @@ fn runtime_array_element_type(
         RuntimeExpressionType::Integer(ty) => Ok(RuntimeArrayElementType::Integer(ty)),
         RuntimeExpressionType::Bool => Ok(RuntimeArrayElementType::Bool),
         RuntimeExpressionType::Char => Ok(RuntimeArrayElementType::Char),
-        RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference(_) => {
+        RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference { .. } => {
             Err(CodegenErrorKind::RuntimeTypeMismatch)
         }
     }
@@ -1728,13 +1731,15 @@ fn runtime_array_type(text: &str) -> Option<RuntimeExpressionType> {
 
 fn runtime_reference_type(text: &str) -> Option<RuntimeExpressionType> {
     let pointee = text.trim().strip_prefix('&')?.trim();
-    let pointee = pointee.strip_prefix("mut ").unwrap_or(pointee).trim();
+    let (pointee, mutable) = pointee
+        .strip_prefix("mut ")
+        .map_or((pointee, false), |pointee| (pointee.trim(), true));
     let pointee = match pointee {
         "bool" => RuntimeArrayElementType::Bool,
         "char" => RuntimeArrayElementType::Char,
         name => RuntimeArrayElementType::Integer(Some(crate::IntegerType::from_name(name)?)),
     };
-    Some(RuntimeExpressionType::Reference(pointee))
+    Some(RuntimeExpressionType::Reference { pointee, mutable })
 }
 
 fn runtime_type_stack_slots(ty: RuntimeExpressionType) -> usize {
@@ -1782,9 +1787,16 @@ fn runtime_types_compatible(left: RuntimeExpressionType, right: RuntimeExpressio
         (RuntimeExpressionType::Unit, RuntimeExpressionType::Unit) => true,
         (RuntimeExpressionType::Bool, RuntimeExpressionType::Bool) => true,
         (RuntimeExpressionType::Char, RuntimeExpressionType::Char) => true,
-        (RuntimeExpressionType::Reference(left), RuntimeExpressionType::Reference(right)) => {
-            left == right
-        }
+        (
+            RuntimeExpressionType::Reference {
+                pointee: left,
+                mutable: left_mutable,
+            },
+            RuntimeExpressionType::Reference {
+                pointee: right,
+                mutable: right_mutable,
+            },
+        ) => left == right && left_mutable == right_mutable,
         (RuntimeExpressionType::Integer(left), RuntimeExpressionType::Integer(right)) => {
             left.is_none() || right.is_none() || left == right
         }
@@ -1996,7 +2008,7 @@ fn validate_runtime_range_endpoints<
             RuntimeExpressionType::Unit | RuntimeExpressionType::Default => {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
-            RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference(_) => {
+            RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference { .. } => {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
         };
@@ -2362,7 +2374,7 @@ fn runtime_expression_type_with_locals<
                 operand,
                 depth + 1,
             )?;
-            let RuntimeExpressionType::Reference(pointee) = operand_type else {
+            let RuntimeExpressionType::Reference { pointee, .. } = operand_type else {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             };
             Ok(runtime_type_from_array_element(pointee))
@@ -2452,7 +2464,7 @@ fn runtime_expression_type_with_locals<
                     RuntimeExpressionType::Unit
                     | RuntimeExpressionType::Default
                     | RuntimeExpressionType::Array { .. }
-                    | RuntimeExpressionType::Reference(_)
+                    | RuntimeExpressionType::Reference { .. }
                     | RuntimeExpressionType::Bool
                     | RuntimeExpressionType::Char => Err(CodegenErrorKind::RuntimeTypeMismatch),
                 };
@@ -3083,7 +3095,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     0,
                 )
                 .map_err(|kind| self.error(kind))?;
-                let RuntimeExpressionType::Reference(pointee) = operand_type else {
+                let RuntimeExpressionType::Reference { pointee, .. } = operand_type else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
                 };
                 self.emit_expression(tree, operand, depth + 1)?;
@@ -3219,7 +3231,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     RuntimeExpressionType::Array { .. } => {
                         return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
                     }
-                    RuntimeExpressionType::Reference(_) => {
+                    RuntimeExpressionType::Reference { .. } => {
                         return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
                     }
                 }
@@ -3472,7 +3484,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit_stack_slot(slots)?;
             if local.ty == RuntimeExpressionType::Bool {
                 self.emit(&[0x0f, 0xb6, 0xc0])
-            } else if matches!(local.ty, RuntimeExpressionType::Reference(_)) {
+            } else if matches!(local.ty, RuntimeExpressionType::Reference { .. }) {
                 Ok(())
             } else {
                 self.emit_normalize()
@@ -3559,6 +3571,33 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     (32, false) => self.emit(&[0x8b, 0x00]),
                     (32, true) => self.emit(&[0x48, 0x63, 0x00]),
                     (64, _) => self.emit(&[0x48, 0x8b, 0x00]),
+                    _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
+                }
+            }
+            RuntimeArrayElementType::Unit
+            | RuntimeArrayElementType::Default
+            | RuntimeArrayElementType::Integer(None) => {
+                Err(self.error(CodegenErrorKind::UnsupportedRuntimeType))
+            }
+        }
+    }
+
+    fn emit_reference_store(
+        &mut self,
+        pointee: RuntimeArrayElementType,
+    ) -> Result<(), CodegenError> {
+        match pointee {
+            RuntimeArrayElementType::Bool => self.emit(&[0x88, 0x02]),
+            RuntimeArrayElementType::Char => self.emit(&[0x89, 0x02]),
+            RuntimeArrayElementType::Integer(Some(ty)) => {
+                match ty
+                    .bits(64)
+                    .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?
+                {
+                    8 => self.emit(&[0x88, 0x02]),
+                    16 => self.emit(&[0x66, 0x89, 0x02]),
+                    32 => self.emit(&[0x89, 0x02]),
+                    64 => self.emit(&[0x48, 0x89, 0x02]),
                     _ => Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
                 }
             }
@@ -3708,7 +3747,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 RuntimeExpressionType::Integer(None) => {
                     RuntimeExpressionType::Integer(crate::IntegerType::from_name(operand_type))
                 }
-                RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference(_) => {
+                RuntimeExpressionType::Array { .. } | RuntimeExpressionType::Reference { .. } => {
                     initializer_type
                 }
             }
@@ -3808,6 +3847,10 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         assignment: &crate::Assignment<'_>,
         body_start: usize,
     ) -> Result<(), CodegenError> {
+        if assignment.dereference {
+            return self
+                .emit_dereference_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start);
+        }
         let index = self.locals[..self.saved_locals]
             .iter()
             .enumerate()
@@ -3900,6 +3943,122 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             )?)?;
         }
         self.emit_store_stack_slot(self.local_stack_slots_from(index + 1)?)
+    }
+
+    fn emit_dereference_assignment<const MAX_EXPRESSION_NODES: usize>(
+        &mut self,
+        assignment: &crate::Assignment<'_>,
+        body_start: usize,
+    ) -> Result<(), CodegenError> {
+        if assignment.index().is_some() {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeExpressionUnsupported,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        let name = assignment.binding_name();
+        let target_type = self.locals[..self.saved_locals]
+            .iter()
+            .rev()
+            .flatten()
+            .find(|local| local.name == name)
+            .map(|local| local.ty)
+            .or_else(|| {
+                self.function
+                    .parameters()
+                    .iter()
+                    .flatten()
+                    .find(|parameter| parameter.name == name)
+                    .and_then(|parameter| runtime_reference_type(parameter.ty.text))
+            })
+            .ok_or(CodegenError {
+                kind: CodegenErrorKind::UnknownRuntimeName,
+                span: translate_span(body_start, assignment.name_span),
+            })?;
+        let RuntimeExpressionType::Reference { pointee, mutable } = target_type else {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        };
+        if !mutable {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::ImmutableAssignment,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        let value_type = runtime_type_from_array_element(pointee);
+        if value_type == RuntimeExpressionType::Bool
+            && !matches!(
+                assignment.operator,
+                crate::AssignmentOperator::Assign
+                    | crate::AssignmentOperator::BitAnd
+                    | crate::AssignmentOperator::BitOr
+                    | crate::AssignmentOperator::BitXor
+            )
+        {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        if value_type == RuntimeExpressionType::Char
+            && assignment.operator != crate::AssignmentOperator::Assign
+        {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+
+        self.emit_identifier(name)?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        if assignment.operator != crate::AssignmentOperator::Assign {
+            self.emit_reference_load(pointee)?;
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+        }
+        let tree = assignment
+            .parse_value::<MAX_EXPRESSION_NODES>()
+            .map_err(|error| CodegenError {
+                kind: CodegenErrorKind::Expression(error.kind),
+                span: translate_span(body_start + assignment.value_span.start, error.span),
+            })?;
+        let actual_type = runtime_expression_type_with_locals(
+            self.function,
+            self.resolver,
+            &self.locals[..self.saved_locals],
+            &tree,
+            tree.root(),
+            0,
+        )
+        .map_err(|kind| CodegenError {
+            kind,
+            span: translate_span(body_start, assignment.value_span),
+        })?;
+        if !runtime_types_compatible(actual_type, value_type) {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.value_span),
+            });
+        }
+        self.emit_expression(&tree, tree.root(), 0)?;
+        if assignment.operator != crate::AssignmentOperator::Assign {
+            self.evaluation_depth -= 1;
+            self.emit(&[0x59])?;
+            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                CodegenError {
+                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                    span: translate_span(body_start, assignment.name_span),
+                },
+            )?)?;
+        }
+        self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
+        self.emit_reference_store(pointee)?;
+        self.emit(&[0x48, 0x83, 0xc4, 0x08])?;
+        self.evaluation_depth -= 1;
+        Ok(())
     }
 
     fn emit_indexed_assignment<const MAX_NODES: usize>(
@@ -6282,6 +6441,41 @@ mod tests {
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
+    }
+
+    #[test]
+    fn mutates_scalar_reference_pointees() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut u64) -> u64 { *input = 40; *input += 2; *input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut i16) -> i16 { let copied: &mut i16 = input; *copied += 2; *copied }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut bool) -> bool { *input ^= true; *input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut char) -> char { *input = 'z'; *input }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result = compile_x86_64_function::<_, 512, 4, 48>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let module = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u64) -> u64 { *input = 42; *input }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 256, 2, 32>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::ImmutableAssignment,
+        );
     }
 
     #[test]

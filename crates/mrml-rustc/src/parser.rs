@@ -126,6 +126,7 @@ impl AssignmentOperator {
 pub struct Assignment<'source> {
     pub name: &'source str,
     pub name_span: Span,
+    pub dereference: bool,
     pub operator: AssignmentOperator,
     pub value: &'source str,
     pub value_span: Span,
@@ -537,8 +538,13 @@ impl<'source> WhileLoop<'source> {
 impl<'source> Assignment<'source> {
     pub fn binding_name(&self) -> &'source str {
         self.name
+            .trim_start_matches('*')
+            .trim_start()
             .split_once('[')
-            .map_or(self.name, |(name, _)| name.trim())
+            .map_or_else(
+                || self.name.trim_start_matches('*').trim(),
+                |(name, _)| name.trim(),
+            )
     }
 
     pub fn index(&self) -> Option<&'source str> {
@@ -967,16 +973,28 @@ impl<'source> BodyParser<'source> {
         &mut self,
         body: &mut FunctionBody<'source, MAX_LOCALS>,
     ) -> Result<bool, ParseError> {
-        let Some(name) = self.peek()? else {
+        let Some(first) = self.peek()? else {
             return Ok(false);
         };
-        if name.kind != TokenKind::Identifier
-            || matches!(name.text, "if" | "while" | "loop" | "let")
-        {
+        if first.kind != TokenKind::Identifier && first.text != "*" {
             return Ok(false);
         }
         let mut probe = self.clone();
         probe.take()?;
+        let (name, dereference) = if first.text == "*" {
+            let Some(name) = probe.take()? else {
+                return Ok(false);
+            };
+            if name.kind != TokenKind::Identifier {
+                return Ok(false);
+            }
+            (name, true)
+        } else {
+            if matches!(first.text, "if" | "while" | "loop" | "let") {
+                return Ok(false);
+            }
+            (first, false)
+        };
         let target_end = probe.assignment_target_end(name.span.end)?;
         let Some(operator_token) = probe.peek()? else {
             return Ok(false);
@@ -994,11 +1012,12 @@ impl<'source> BodyParser<'source> {
             Err(error) => return Err(error),
         };
         let assignment = Assignment {
-            name: &self.source[name.span.start..target_end],
+            name: &self.source[first.span.start..target_end],
             name_span: Span {
-                start: name.span.start,
+                start: first.span.start,
                 end: target_end,
             },
+            dereference,
             operator,
             value: &self.source[value_span.start..value_span.end],
             value_span,
@@ -1013,14 +1032,25 @@ impl<'source> BodyParser<'source> {
     }
 
     fn assignment_record(&mut self) -> Result<Option<Assignment<'source>>, ParseError> {
-        let Some(name) = self.peek()? else {
+        let Some(first) = self.peek()? else {
             return Ok(None);
         };
-        if name.kind != TokenKind::Identifier {
+        if first.kind != TokenKind::Identifier && first.text != "*" {
             return Ok(None);
         }
         let mut probe = self.clone();
         probe.take()?;
+        let (name, dereference) = if first.text == "*" {
+            let Some(name) = probe.take()? else {
+                return Ok(None);
+            };
+            if name.kind != TokenKind::Identifier {
+                return Ok(None);
+            }
+            (name, true)
+        } else {
+            (first, false)
+        };
         let target_end = probe.assignment_target_end(name.span.end)?;
         let Some(operator_token) = probe.take()? else {
             return Ok(None);
@@ -1031,11 +1061,12 @@ impl<'source> BodyParser<'source> {
         let (value_span, _) = probe.delimited_until(";", ParseErrorKind::ExpectedSemicolon)?;
         *self = probe;
         Ok(Some(Assignment {
-            name: &self.source[name.span.start..target_end],
+            name: &self.source[first.span.start..target_end],
             name_span: Span {
-                start: name.span.start,
+                start: first.span.start,
                 end: target_end,
             },
+            dereference,
             operator,
             value: &self.source[value_span.start..value_span.end],
             value_span,
@@ -3083,6 +3114,29 @@ mod tests {
         assert_eq!(assignment.index(), Some("index + 1"));
         assert_eq!(assignment.operator, AssignmentOperator::Add);
         assert_eq!(assignment.value, "3");
+    }
+
+    #[test]
+    fn parses_dereference_assignment_targets() {
+        let module = Parser::new(
+            "fn mutate(value: &mut u64) -> u64 { *value += 2; *value = *value + 1; *value }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<2>().unwrap();
+        let compound = body.assignments()[0].unwrap();
+        assert!(compound.dereference);
+        assert_eq!(compound.binding_name(), "value");
+        assert_eq!(compound.operator, AssignmentOperator::Add);
+        assert_eq!(compound.value, "2");
+        let plain = body.assignments()[1].unwrap();
+        assert!(plain.dereference);
+        assert_eq!(plain.binding_name(), "value");
+        assert_eq!(plain.operator, AssignmentOperator::Assign);
+        assert_eq!(plain.value, "*value + 1");
     }
 
     #[test]
