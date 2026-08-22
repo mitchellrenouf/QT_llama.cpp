@@ -239,8 +239,13 @@ fn checked_positionals(values: &[Text]) -> Result<&[Text]> {
 }
 
 fn ssh_remote(repository: Option<&str>, name: &str) -> Result<(Text, SshRemote)> {
-    let url = native_repository(repository)?.remotes().map_err(|error| anyhow!("{}", error))?
-        .into_iter().find(|(remote, _)| remote == name).map(|(_, url)| url).ok_or_else(|| anyhow!("remote '{}' does not exist", name))?;
+    let url = native_repository(repository)?
+        .remotes()
+        .map_err(|error| anyhow!("{}", error))?
+        .into_iter()
+        .find(|(remote, _)| remote == name)
+        .map(|(_, url)| url)
+        .ok_or_else(|| anyhow!("remote '{}' does not exist", name))?;
     let parsed =
         SshRemote::parse(&url).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
     Ok((url, parsed))
@@ -263,7 +268,11 @@ fn print_ssh_remote(name: &str, url: &str, remote: &SshRemote) {
 
 fn config_value(repository: Option<&str>, key: &str) -> Option<Text> {
     let (section, name) = key.rsplit_once('.')?;
-    native_repository(repository).ok()?.config_value(section, name).ok().flatten()
+    native_repository(repository)
+        .ok()?
+        .config_value(section, name)
+        .ok()
+        .flatten()
 }
 
 fn print_signing_status(repository: Option<&str>) -> Result<()> {
@@ -350,11 +359,23 @@ fn dispatch(cli: &Cli) -> Result<()> {
             if tail.len() > 1 || count.parse::<usize>().is_err() {
                 return Err(anyhow!("log accepts one numeric count"));
             }
-            let limit = count.parse::<usize>().map_err(|_| anyhow!("invalid log count"))?;
+            let limit = count
+                .parse::<usize>()
+                .map_err(|_| anyhow!("invalid log count"))?;
             let repository = native_repository(repository)?;
-            let head = repository.head().map_err(|error| anyhow!("{}", error))?.ok_or_else(|| anyhow!("no commits yet"))?;
-            for (id, commit) in repository.history(head, limit).map_err(|error| anyhow!("{}", error))? {
-                println!("{} {}", (&id.to_hex()[..12]).bright_yellow(), commit.message.lines().next().unwrap_or(""));
+            let head = repository
+                .head()
+                .map_err(|error| anyhow!("{}", error))?
+                .ok_or_else(|| anyhow!("no commits yet"))?;
+            for (id, commit) in repository
+                .history(head, limit)
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                println!(
+                    "{} {}",
+                    (&id.to_hex()[..12]).bright_yellow(),
+                    commit.message.lines().next().unwrap_or("")
+                );
                 println!("  {}", commit.author.dimmed());
             }
             Ok(())
@@ -363,46 +384,83 @@ fn dispatch(cli: &Cli) -> Result<()> {
             let staged = tail.first().is_some_and(|argument| argument == "--staged");
             let paths = if staged { &tail[1..] } else { tail };
             checked_positionals(paths)?;
-            let diffs = native_repository(repository)?.diff(staged, paths).map_err(|error| anyhow!("{}", error))?;
-            for diff in diffs { println!("{}", diff.unified()); }
+            let diffs = native_repository(repository)?
+                .diff(staged, paths)
+                .map_err(|error| anyhow!("{}", error))?;
+            for diff in diffs {
+                println!("{}", diff.unified());
+            }
             Ok(())
         }
         "diff-ref" if !tail.is_empty() => {
             checked_positionals(tail)?;
-            let diffs = native_repository(repository)?.diff_revision(&tail[0], &tail[1..]).map_err(|error| anyhow!("{}", error))?;
-            for diff in diffs { println!("{}", diff.unified()); }
+            let diffs = native_repository(repository)?
+                .diff_revision(&tail[0], &tail[1..])
+                .map_err(|error| anyhow!("{}", error))?;
+            for diff in diffs {
+                println!("{}", diff.unified());
+            }
             Ok(())
         }
         "show" if tail.len() <= 1 => {
             checked_positionals(tail)?;
             let repository = native_repository(repository)?;
-            let id = repository.resolve_revision(tail.first().map(Text::as_str).unwrap_or("HEAD")).map_err(|error| anyhow!("{}", error))?;
-            let commit = repository.read_commit(id).map_err(|error| anyhow!("{}", error))?;
+            let id = repository
+                .resolve_revision(tail.first().map(Text::as_str).unwrap_or("HEAD"))
+                .map_err(|error| anyhow!("{}", error))?;
+            let commit = repository
+                .read_commit(id)
+                .map_err(|error| anyhow!("{}", error))?;
             println!("{} {}", "commit".yellow(), id);
             println!("{} {}", "Author:".dimmed(), commit.author);
             println!("{} {}", "Tree:".dimmed(), commit.tree);
-            for parent in commit.parents { println!("{} {}", "Parent:".dimmed(), parent); }
+            for parent in commit.parents {
+                println!("{} {}", "Parent:".dimmed(), parent);
+            }
             println!("\n{}", commit.message);
             Ok(())
         }
         "history" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            for (id, commit) in native_repository(repository)?.file_history(&tail[0], 256).map_err(|error| anyhow!("{}", error))? {
-                println!("{} {}", &id.to_hex()[..12], commit.message.lines().next().unwrap_or(""));
+            for (id, commit) in native_repository(repository)?
+                .file_history(&tail[0], 256)
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                println!(
+                    "{} {}",
+                    &id.to_hex()[..12],
+                    commit.message.lines().next().unwrap_or("")
+                );
             }
             Ok(())
         }
         "blame" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            for line in native_repository(repository)?.blame(&tail[0]).map_err(|error| anyhow!("{}", error))? {
-                println!("{} {:4} ({}) {}", &line.commit.to_hex()[..12], line.line_number, line.author, line.text.trim_end_matches('\n'));
+            for line in native_repository(repository)?
+                .blame(&tail[0])
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                println!(
+                    "{} {:4} ({}) {}",
+                    &line.commit.to_hex()[..12],
+                    line.line_number,
+                    line.author,
+                    line.text.trim_end_matches('\n')
+                );
             }
             Ok(())
         }
         "conflicts" if tail.is_empty() => {
-            let paths = native_repository(repository)?.conflicted_paths().map_err(|error| anyhow!("{}", error))?;
-            if paths.is_empty() { println!("{}", "no unresolved conflicts".green()); }
-            else { for path in paths { println!("{} {}", "conflict".red().bold(), path); } }
+            let paths = native_repository(repository)?
+                .conflicted_paths()
+                .map_err(|error| anyhow!("{}", error))?;
+            if paths.is_empty() {
+                println!("{}", "no unresolved conflicts".green());
+            } else {
+                for path in paths {
+                    println!("{} {}", "conflict".red().bold(), path);
+                }
+            }
             Ok(())
         }
         "branch" if tail.is_empty() => {
@@ -444,7 +502,9 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "switch" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            let id = native_repository(repository)?.switch_branch(&tail[0]).map_err(|error| anyhow!("{}", error))?;
+            let id = native_repository(repository)?
+                .switch_branch(&tail[0])
+                .map_err(|error| anyhow!("{}", error))?;
             println!("Switched to branch '{}' at {}", tail[0], &id.to_hex()[..12]);
             Ok(())
         }
@@ -459,14 +519,24 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "merge" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(|| "MRML User".into());
-            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(|| "mrml@localhost".into());
-            let timestamp = mrml_runtime::unix_time_seconds().ok_or_else(|| anyhow!("system time is unavailable"))?;
-            match native_repository(repository)?.merge(&tail[0], &name, &email, timestamp).map_err(|error| anyhow!("{}", error))? {
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
+                .unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
+                .unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds()
+                .ok_or_else(|| anyhow!("system time is unavailable"))?;
+            match native_repository(repository)?
+                .merge(&tail[0], &name, &email, timestamp)
+                .map_err(|error| anyhow!("{}", error))?
+            {
                 MergeOutcome::UpToDate => println!("Already up to date."),
                 MergeOutcome::FastForward(id) => println!("Fast-forward to {}", &id.to_hex()[..12]),
                 MergeOutcome::Merged(id) => println!("Merge made commit {}", &id.to_hex()[..12]),
-                MergeOutcome::Conflicts(count) => println!("Merge has {} conflict(s); resolve and commit", count),
+                MergeOutcome::Conflicts(count) => {
+                    println!("Merge has {} conflict(s); resolve and commit", count)
+                }
             }
             Ok(())
         }
@@ -476,10 +546,20 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "cherry-pick" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            run_visible(repository, &["cherry-pick", "--", &tail[0]])
+            let name=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(||"MRML User".into());
+            let email=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(||"mrml@localhost".into());
+            let timestamp=mrml_runtime::unix_time_seconds().ok_or_else(||anyhow!("system time is unavailable"))?;
+            match native_repository(repository)?.cherry_pick(&tail[0],&name,&email,timestamp).map_err(|error|anyhow!("{}",error))? {
+                MergeOutcome::Merged(id)=>println!("Cherry-picked {} as {}",tail[0],&id.to_hex()[..12]),
+                MergeOutcome::Conflicts(count)=>println!("Cherry-pick has {} conflict(s); resolve and commit",count),
+                _=>return Err(anyhow!("unexpected cherry-pick outcome")),
+            }
+            Ok(())
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "merge" => {
-            let id = native_repository(repository)?.abort_merge().map_err(|error| anyhow!("{}", error))?;
+            let id = native_repository(repository)?
+                .abort_merge()
+                .map_err(|error| anyhow!("{}", error))?;
             println!("Aborted merge; restored {}", &id.to_hex()[..12]);
             Ok(())
         }
@@ -487,7 +567,8 @@ fn dispatch(cli: &Cli) -> Result<()> {
             run_visible(repository, &["rebase", "--abort"])
         }
         "operation-abort" if tail.len() == 1 && tail[0] == "cherry-pick" => {
-            run_visible(repository, &["cherry-pick", "--abort"])
+            let id=native_repository(repository)?.abort_cherry_pick().map_err(|error|anyhow!("{}",error))?;
+            println!("Aborted cherry-pick; restored {}",&id.to_hex()[..12]);Ok(())
         }
         "stage" => {
             checked_positionals(require_arguments("stage", tail)?)?;
@@ -498,12 +579,16 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "unstage" => {
             checked_positionals(require_arguments("unstage", tail)?)?;
-            native_repository(repository)?.unstage(tail).map_err(|error| anyhow!("{}", error))?;
+            native_repository(repository)?
+                .unstage(tail)
+                .map_err(|error| anyhow!("{}", error))?;
             native_dashboard(repository)
         }
         "restore" => {
             checked_positionals(require_arguments("restore", tail)?)?;
-            native_repository(repository)?.restore(tail).map_err(|error| anyhow!("{}", error))?;
+            native_repository(repository)?
+                .restore(tail)
+                .map_err(|error| anyhow!("{}", error))?;
             native_dashboard(repository)
         }
         "commit" => {
@@ -544,19 +629,28 @@ fn dispatch(cli: &Cli) -> Result<()> {
             run_visible(repository, &collect("push", &[], tail))
         }
         "remote" if tail.is_empty() => {
-            for (name, url) in native_repository(repository)?.remotes().map_err(|error| anyhow!("{}", error))? { println!("{}\t{}", name, url); }
+            for (name, url) in native_repository(repository)?
+                .remotes()
+                .map_err(|error| anyhow!("{}", error))?
+            {
+                println!("{}\t{}", name, url);
+            }
             Ok(())
         }
         "ssh" if tail.len() == 3 && tail[0] == "add" => {
             checked_positionals(&tail[1..2])?;
             SshRemote::parse(&tail[2]).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
-            native_repository(repository)?.set_remote(&tail[1], &tail[2], false).map_err(|error| anyhow!("{}", error))?;
+            native_repository(repository)?
+                .set_remote(&tail[1], &tail[2], false)
+                .map_err(|error| anyhow!("{}", error))?;
             Ok(())
         }
         "ssh" if tail.len() == 3 && tail[0] == "set" => {
             checked_positionals(&tail[1..2])?;
             SshRemote::parse(&tail[2]).map_err(|error| anyhow!("invalid SSH remote: {}", error))?;
-            native_repository(repository)?.set_remote(&tail[1], &tail[2], true).map_err(|error| anyhow!("{}", error))?;
+            native_repository(repository)?
+                .set_remote(&tail[1], &tail[2], true)
+                .map_err(|error| anyhow!("{}", error))?;
             Ok(())
         }
         "ssh" if matches!(tail.len(), 1 | 2) && tail[0] == "info" => {
@@ -654,22 +748,41 @@ fn dispatch(cli: &Cli) -> Result<()> {
             )
         }
         "stash" if tail.is_empty() || (tail.len() == 1 && tail[0] == "list") => {
-            for (index, (id, commit)) in native_repository(repository)?.stash_list(256).map_err(|error| anyhow!("{}", error))?.into_iter().enumerate() {
-                println!("stash@{{{}}}: {} {}", index, &id.to_hex()[..12], commit.message.trim());
+            for (index, (id, commit)) in native_repository(repository)?
+                .stash_list(256)
+                .map_err(|error| anyhow!("{}", error))?
+                .into_iter()
+                .enumerate()
+            {
+                println!(
+                    "stash@{{{}}}: {} {}",
+                    index,
+                    &id.to_hex()[..12],
+                    commit.message.trim()
+                );
             }
             Ok(())
         }
         "stash" if tail.len() == 1 && tail[0] == "pop" => {
-            let id = native_repository(repository)?.stash_pop().map_err(|error| anyhow!("{}", error))?;
+            let id = native_repository(repository)?
+                .stash_pop()
+                .map_err(|error| anyhow!("{}", error))?;
             println!("Applied stash {}", &id.to_hex()[..12]);
             Ok(())
         }
         "stash" if !tail.is_empty() && tail[0] == "push" => {
             let message = join_words(&tail[1..]);
-            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(|| "MRML User".into());
-            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(|| "mrml@localhost".into());
-            let timestamp = mrml_runtime::unix_time_seconds().ok_or_else(|| anyhow!("system time is unavailable"))?;
-            let id = native_repository(repository)?.stash_push(&message, &name, &email, timestamp).map_err(|error| anyhow!("{}", error))?;
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
+                .unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
+                .unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds()
+                .ok_or_else(|| anyhow!("system time is unavailable"))?;
+            let id = native_repository(repository)?
+                .stash_push(&message, &name, &email, timestamp)
+                .map_err(|error| anyhow!("{}", error))?;
             println!("Saved stash {}", &id.to_hex()[..12]);
             Ok(())
         }
