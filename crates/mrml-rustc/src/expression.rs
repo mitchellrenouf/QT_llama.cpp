@@ -2416,11 +2416,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     return Err(self.error(ExpressionErrorKind::ExpectedExpression, control));
                 }
                 self.loop_break_label(label)?;
-                let operand = self.expression(0, depth + 1)?;
-                let semicolon = self.take()?;
-                if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
-                    return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
-                }
+                let operand = self.loop_break_operand(depth + 1)?;
                 let close = self.take()?;
                 let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
                     return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
@@ -2440,11 +2436,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, break_token));
             }
             self.loop_break_label(label)?;
-            let then_branch = self.expression(0, depth + 1)?;
-            let semicolon = self.take()?;
-            if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
-                return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
-            }
+            let then_branch = self.loop_break_operand(depth + 1)?;
             let close = self.take()?;
             if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
                 return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
@@ -2469,11 +2461,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, fallback_break));
             }
             self.loop_break_label(label)?;
-            let operand = self.expression(0, depth + 1)?;
-            let semicolon = self.take()?;
-            if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
-                return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
-            }
+            let operand = self.loop_break_operand(depth + 1)?;
             let alternative_close = self.take()?;
             if !alternative_close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
                 return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, alternative_close));
@@ -2512,6 +2500,28 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             })?;
         }
         Ok(result)
+    }
+
+    fn loop_break_operand(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
+        if let Some(semicolon) = self
+            .peek()?
+            .filter(|token| token.kind == TokenKind::Semicolon)
+        {
+            self.take()?;
+            return self.push(Expr {
+                kind: ExprKind::Unit,
+                span: Span {
+                    start: semicolon.span.start,
+                    end: semicolon.span.start,
+                },
+            });
+        }
+        let operand = self.expression(0, depth + 1)?;
+        let semicolon = self.take()?;
+        if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
+            return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
+        }
+        Ok(operand)
     }
 
     fn loop_break_label(
@@ -2922,6 +2932,11 @@ mod tests {
     #[test]
     fn parses_immediate_break_loop_values() {
         assert_eq!(evaluate("loop { break 13; }"), Ok(13));
+        assert_eq!(evaluate("loop { break; }"), Ok(0));
+        let unit = ExpressionParser::<8>::new("'value: loop { break 'value; }")
+            .parse()
+            .unwrap();
+        assert_eq!(unit.evaluate(&NoConstants), Ok(0));
         assert_eq!(evaluate("'value: loop { break 'value 13; }"), Ok(13));
         let boolean = ExpressionParser::<8>::new("loop { break true; }")
             .parse()
@@ -2972,6 +2987,12 @@ mod tests {
             evaluate("loop { if true { break 13; } else { break 1 / 0; } }"),
             Ok(13)
         );
+        let mixed_unit = ExpressionParser::<24>::new(
+            "'value: loop { if false { break 'value 1 / 0; } else if true { break 'value; } else { break 'value (); } }",
+        )
+        .parse()
+        .unwrap();
+        assert_eq!(mixed_unit.evaluate(&NoConstants), Ok(0));
         assert_eq!(
             ExpressionParser::<32>::new(
                 "loop { if false { break 1; } if false { break 2; } if false { break 3; } if false { break 4; } if true { break 5; } break 6; }"
@@ -2997,6 +3018,7 @@ mod tests {
         );
         for source in [
             "loop { break 'value 13; }",
+            "loop { break 'value; }",
             "'value: loop { break 'other 13; }",
             "'value: loop { if true { break 'other 13; } break 42; }",
         ] {

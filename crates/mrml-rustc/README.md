@@ -212,11 +212,16 @@ deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
 a selected zero input that would trap if fallback division were evaluated.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
-through condition branches, locals, immediate loop breaks, IR, and native code;
-both explicit `-> ()` and an omitted function return type select a C-ABI void
-result. Empty, declaration-only, and supported statement-ending bodies receive
-an implicit unit tail with a zero-width source span at the body boundary. Unit
-is not silently compatible with integers or Booleans.
+through condition branches, locals, immediate loop breaks, IR, and native code.
+Value-producing loops treat a valueless `break;` as the same unit type as
+`break ();`, including mixed guarded and structured alternative exits with
+labels. This covers the pinned oracle's scalar `regular_break` forms. A
+132-byte COFF and 528-byte ELF64 probe passed both alternatives through
+independent native callers. Both explicit `-> ()` and an omitted function
+return type select a C-ABI void result. Empty, declaration-only, and supported
+statement-ending bodies receive an implicit unit tail with a zero-width source
+span at the body boundary. Unit is not silently compatible with integers or
+Booleans.
 Boolean and unit operands support Rust's equality and ordering comparisons.
 Boolean operands additionally support eager `&`, `|`, and `^`; unlike `&&` and
 `||`, IR evaluates both operands. Results remain Boolean through direct
@@ -556,8 +561,9 @@ conditional-continue, and post-continue mutation shape now has an original MRML
 replacement; printing and assertions remain oracle-side behavior.
 The complete upstream `tests/ui/for-loop-while/loop-break-value.rs` also compiled
 and ran unchanged under the pinned nightly. Original MRML replacements cover
-its immediate scalar integer and Boolean break-value forms, including matching
-labels. The oracle file's arrays, references, trait coercions, never type,
+its immediate scalar integer, Boolean, and valueless or explicit-unit
+break-value forms, including matching labels. The oracle file's arrays,
+references, trait coercions, never type,
 nested loops, matches, and break-value control-flow graphs beyond four guarded
 exits plus a fallback are not claimed by this slice. Replacements cover up to
 five compatible competing scalar values, both sequential and structured
