@@ -1799,6 +1799,20 @@ fn rustc_mutable_scalar_reference_pointees_reach_native_objects() {
 }
 
 #[test]
+fn rustc_scalar_reference_creation_and_reborrows_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize) -> usize { let reference: &usize = &input; *reference }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: i16) -> i16 { let mut local = input; let reference: &mut i16 = &mut local; *reference += 2; local }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut usize) -> usize { let reference: &mut usize = &mut *input; *reference += 2; *input }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let reference: &usize = &*input; *reference }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",

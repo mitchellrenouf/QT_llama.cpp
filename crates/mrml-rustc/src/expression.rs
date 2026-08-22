@@ -109,6 +109,8 @@ pub enum UnaryOperator {
     Negate,
     Not,
     Dereference,
+    AddressOf,
+    AddressOfMut,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -429,7 +431,11 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 operand,
             } => self.is_boolean_expression(operand, depth + 1),
             ExprKind::Unary {
-                operator: UnaryOperator::Negate | UnaryOperator::Dereference,
+                operator:
+                    UnaryOperator::Negate
+                    | UnaryOperator::Dereference
+                    | UnaryOperator::AddressOf
+                    | UnaryOperator::AddressOfMut,
                 ..
             } => false,
             ExprKind::Binary { operator, .. } => matches!(
@@ -654,7 +660,9 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                         Ok(u128::from(value == 0))
                     }
                     UnaryOperator::Not => Ok(!value),
-                    UnaryOperator::Dereference => Err(ConstEvalError::InvalidExpressionTree),
+                    UnaryOperator::Dereference
+                    | UnaryOperator::AddressOf
+                    | UnaryOperator::AddressOfMut => Err(ConstEvalError::InvalidExpressionTree),
                 }
             }
             ExprKind::Binary {
@@ -3180,13 +3188,21 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             return Err(self.error(ExpressionErrorKind::NestingLimitExceeded, self.lookahead));
         }
         if let Some(token) = self.peek()?
-            && matches!(token.text, "-" | "!" | "*")
+            && matches!(token.text, "-" | "!" | "*" | "&")
         {
             self.take()?;
             let operator = match token.text {
                 "-" => UnaryOperator::Negate,
                 "!" => UnaryOperator::Not,
                 "*" => UnaryOperator::Dereference,
+                "&" => {
+                    if self.peek()?.is_some_and(|token| token.text == "mut") {
+                        self.take()?;
+                        UnaryOperator::AddressOfMut
+                    } else {
+                        UnaryOperator::AddressOf
+                    }
+                }
                 _ => unreachable!(),
             };
             let operand = self.unary(depth + 1)?;
@@ -3489,6 +3505,21 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn parses_shared_and_mutable_address_operations() {
+        for (source, expected) in [
+            ("&value", UnaryOperator::AddressOf),
+            ("&mut value", UnaryOperator::AddressOfMut),
+            ("&mut *value", UnaryOperator::AddressOfMut),
+        ] {
+            let tree = ExpressionParser::<4>::new(source).parse().unwrap();
+            assert!(matches!(
+                tree.expression(tree.root()).map(|expr| expr.kind),
+                Some(ExprKind::Unary { operator, .. }) if operator == expected
+            ));
+        }
     }
 
     #[test]

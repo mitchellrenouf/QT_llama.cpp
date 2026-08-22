@@ -109,7 +109,9 @@ impl<'source, const MAX_INSTRUCTIONS: usize> IrProgram<'source, MAX_INSTRUCTIONS
                             .checked_sub(value)
                             .ok_or(ExecutionError::Arithmetic(ConstEvalError::Overflow))?,
                         UnaryOperator::Not => !value,
-                        UnaryOperator::Dereference => {
+                        UnaryOperator::Dereference
+                        | UnaryOperator::AddressOf
+                        | UnaryOperator::AddressOfMut => {
                             return Err(ExecutionError::Arithmetic(
                                 ConstEvalError::InvalidExpressionTree,
                             ));

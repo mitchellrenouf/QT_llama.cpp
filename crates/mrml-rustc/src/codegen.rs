@@ -2379,6 +2379,77 @@ fn runtime_expression_type_with_locals<
             };
             Ok(runtime_type_from_array_element(pointee))
         }
+        ExprKind::Unary {
+            operator:
+                operator @ (crate::UnaryOperator::AddressOf | crate::UnaryOperator::AddressOfMut),
+            operand,
+        } => {
+            let operand_kind = tree
+                .expression(operand)
+                .map(|expression| expression.kind)
+                .ok_or(CodegenErrorKind::RuntimeExpressionUnsupported)?;
+            let pointee = match operand_kind {
+                ExprKind::Identifier(name) => {
+                    let local = locals
+                        .iter()
+                        .flatten()
+                        .rev()
+                        .find(|local| local.name == name);
+                    let operand_type = if let Some(local) = local {
+                        if operator == crate::UnaryOperator::AddressOfMut && !local.mutable {
+                            return Err(CodegenErrorKind::ImmutableAssignment);
+                        }
+                        local.ty
+                    } else {
+                        let parameter = function
+                            .parameters()
+                            .iter()
+                            .flatten()
+                            .find(|parameter| parameter.name == name)
+                            .ok_or(CodegenErrorKind::UnknownRuntimeName)?;
+                        if operator == crate::UnaryOperator::AddressOfMut {
+                            return Err(CodegenErrorKind::ImmutableAssignment);
+                        }
+                        if parameter.ty.text == "bool" {
+                            RuntimeExpressionType::Bool
+                        } else if parameter.ty.text == "char" {
+                            RuntimeExpressionType::Char
+                        } else {
+                            RuntimeExpressionType::Integer(crate::IntegerType::from_name(
+                                parameter.ty.text,
+                            ))
+                        }
+                    };
+                    runtime_array_element_type(operand_type)?
+                }
+                ExprKind::Unary {
+                    operator: crate::UnaryOperator::Dereference,
+                    operand: reference,
+                } => {
+                    let reference_type = runtime_expression_type_with_locals(
+                        function,
+                        resolver,
+                        locals,
+                        tree,
+                        reference,
+                        depth + 1,
+                    )?;
+                    let RuntimeExpressionType::Reference { pointee, mutable } = reference_type
+                    else {
+                        return Err(CodegenErrorKind::RuntimeTypeMismatch);
+                    };
+                    if operator == crate::UnaryOperator::AddressOfMut && !mutable {
+                        return Err(CodegenErrorKind::ImmutableAssignment);
+                    }
+                    pointee
+                }
+                _ => return Err(CodegenErrorKind::RuntimeExpressionUnsupported),
+            };
+            Ok(RuntimeExpressionType::Reference {
+                pointee,
+                mutable: operator == crate::UnaryOperator::AddressOfMut,
+            })
+        }
         ExprKind::Binary {
             operator,
             left,
@@ -3101,6 +3172,19 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 self.emit_expression(tree, operand, depth + 1)?;
                 self.emit_reference_load(pointee)?;
             }
+            ExprKind::Unary {
+                operator: crate::UnaryOperator::AddressOf | crate::UnaryOperator::AddressOfMut,
+                operand,
+            } => match tree.expression(operand).map(|expression| expression.kind) {
+                Some(ExprKind::Identifier(name)) => self.emit_identifier_address(name)?,
+                Some(ExprKind::Unary {
+                    operator: crate::UnaryOperator::Dereference,
+                    operand: reference,
+                }) => self.emit_expression(tree, reference, depth + 1)?,
+                _ => {
+                    return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
+                }
+            },
             ExprKind::Binary {
                 operator,
                 left,
@@ -3606,6 +3690,48 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             | RuntimeArrayElementType::Integer(None) => {
                 Err(self.error(CodegenErrorKind::UnsupportedRuntimeType))
             }
+        }
+    }
+
+    fn emit_identifier_address(&mut self, name: &str) -> Result<(), CodegenError> {
+        let slots = if let Some(index) = self.locals[..self.saved_locals]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, local)| local.filter(|local| local.name == name).map(|_| index))
+        {
+            self.local_stack_slots_from(index + 1)?
+                .checked_add(self.evaluation_depth)
+        } else if let Some(index) = self
+            .function
+            .parameters()
+            .iter()
+            .flatten()
+            .position(|parameter| parameter.name == name)
+        {
+            self.local_stack_slots()?
+                .checked_add(self.parameter_stack_slots_from(index + 1)?)
+                .and_then(|slots| slots.checked_add(self.evaluation_depth))
+        } else {
+            None
+        }
+        .ok_or(self.error(CodegenErrorKind::UnknownRuntimeName))?;
+        self.emit_stack_slot_address(slots)
+    }
+
+    fn emit_stack_slot_address(&mut self, slots: usize) -> Result<(), CodegenError> {
+        let displacement = slots
+            .checked_mul(8)
+            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+        if displacement <= i8::MAX as usize {
+            self.emit(&[0x48, 0x8d, 0x44, 0x24, displacement as u8])
+        } else {
+            self.emit(&[0x48, 0x8d, 0x84, 0x24])?;
+            self.emit(
+                &u32::try_from(displacement)
+                    .map_err(|_| self.error(CodegenErrorKind::OutputTooSmall))?
+                    .to_le_bytes(),
+            )
         }
     }
 
@@ -6464,6 +6590,41 @@ mod tests {
 
         let module = Parser::new(
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u64) -> u64 { *input = 42; *input }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 256, 2, 32>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::ImmutableAssignment,
+        );
+    }
+
+    #[test]
+    fn creates_and_reborrows_scalar_references() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let reference: &u64 = &input; *reference }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: i16) -> i16 { let mut local = input; let reference: &mut i16 = &mut local; *reference += 2; local }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut u64) -> u64 { let reference: &mut u64 = &mut *input; *reference += 2; *input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u64) -> u64 { let reference: &u64 = &*input; *reference }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result = compile_x86_64_function::<_, 512, 4, 48>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let module = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let reference: &mut u64 = &mut input; *reference }",
         )
         .parse_module::<2, 2>()
         .unwrap();
