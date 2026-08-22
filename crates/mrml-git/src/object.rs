@@ -1,6 +1,7 @@
 use core::fmt;
 use mrml_runtime::Vector;
 
+use crate::inflate::inflate_zlib;
 use crate::{ObjectId, Sha1};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,62 +72,7 @@ pub fn encode_loose_object(kind: ObjectKind, contents: &[u8]) -> (ObjectId, Vect
 }
 
 pub fn decode_loose_object(source: &[u8]) -> Result<Object, ObjectError> {
-    if source.len() < 6 {
-        return Err(ObjectError::Truncated);
-    }
-    let header = u16::from_be_bytes([source[0], source[1]]);
-    if header % 31 != 0 || source[0] & 15 != 8 || source[1] & 0x20 != 0 {
-        return Err(ObjectError::UnsupportedCompression);
-    }
-    let data_end = source.len() - 4;
-    let mut cursor = 2;
-    let mut plain = Vector::new();
-    loop {
-        let marker = *source.get(cursor).ok_or(ObjectError::Truncated)?;
-        cursor += 1;
-        if marker & 0xfe != 0 {
-            return Err(ObjectError::UnsupportedCompression);
-        }
-        let length = u16::from_le_bytes(
-            source
-                .get(cursor..cursor + 2)
-                .ok_or(ObjectError::Truncated)?
-                .try_into()
-                .map_err(|_| ObjectError::Truncated)?,
-        ) as usize;
-        let inverse = u16::from_le_bytes(
-            source
-                .get(cursor + 2..cursor + 4)
-                .ok_or(ObjectError::Truncated)?
-                .try_into()
-                .map_err(|_| ObjectError::Truncated)?,
-        );
-        cursor += 4;
-        if inverse != !(length as u16) {
-            return Err(ObjectError::InvalidBlock);
-        }
-        let block = source
-            .get(cursor..cursor + length)
-            .ok_or(ObjectError::Truncated)?;
-        if cursor + length > data_end {
-            return Err(ObjectError::Truncated);
-        }
-        plain.extend(block.iter().copied());
-        cursor += length;
-        if marker & 1 != 0 {
-            break;
-        }
-    }
-    if cursor != data_end
-        || adler32(&plain)
-            != u32::from_be_bytes(
-                source[data_end..]
-                    .try_into()
-                    .map_err(|_| ObjectError::Truncated)?,
-            )
-    {
-        return Err(ObjectError::InvalidChecksum);
-    }
+    let plain = inflate_zlib(source).map_err(|_| ObjectError::InvalidBlock)?;
     let nul = plain
         .iter()
         .position(|byte| *byte == 0)

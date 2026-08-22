@@ -3,6 +3,7 @@
 use mrml_runtime::{Text, Vector};
 
 mod index;
+mod inflate;
 mod object;
 mod repository;
 mod sha1;
