@@ -61,6 +61,7 @@ pub enum ContextError {
     InvalidStack,
     InvalidSelectors,
     InvalidFlags,
+    InvalidVector,
     DuplicateTask,
     MissingTask,
     TableFull,
@@ -154,6 +155,22 @@ impl UserContext {
             rflags: frame.rflags,
             page_table,
         })
+    }
+
+    /// Saves a user context interrupted by one exact external vector. RF is a
+    /// CPU-managed one-instruction debug suppression flag and is deliberately
+    /// cleared before the task can be scheduled again.
+    pub fn from_external_interrupt(
+        page_table: PhysAddr,
+        frame: &TrapFrame,
+        vector: u8,
+    ) -> Result<Self, ContextError> {
+        if !(32..=254).contains(&vector) || frame.vector != u64::from(vector) {
+            return Err(ContextError::InvalidVector);
+        }
+        let mut normalized = *frame;
+        normalized.rflags &= !(1 << 16);
+        Self::from_trap(page_table, &normalized)
     }
 
     pub fn from_user_call(
@@ -434,6 +451,29 @@ mod tests {
         assert_eq!(
             UserContext::from_trap(root, &forged),
             Err(ContextError::InvalidFlags)
+        );
+    }
+
+    #[test]
+    fn external_interrupt_requires_exact_vector_and_clears_resume_flag() {
+        let root = PhysAddr::new(0x20_0000).unwrap();
+        let mut frame = user_frame();
+        frame.vector = 32;
+        frame.error = 0;
+        frame.rflags |= 1 << 16;
+        assert_eq!(
+            UserContext::from_trap(root, &frame),
+            Err(ContextError::InvalidFlags)
+        );
+        let context = UserContext::from_external_interrupt(root, &frame, 32).unwrap();
+        assert_eq!(context.flags(), USER_INITIAL_RFLAGS);
+        assert_eq!(
+            UserContext::from_external_interrupt(root, &frame, 33),
+            Err(ContextError::InvalidVector)
+        );
+        assert_eq!(
+            UserContext::from_external_interrupt(root, &frame, 255),
+            Err(ContextError::InvalidVector)
         );
     }
 

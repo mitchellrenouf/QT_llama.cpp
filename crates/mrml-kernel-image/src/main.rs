@@ -922,11 +922,36 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 1u32, options(nomem, nostack));
         let page_table: u64;
         asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags));
-        let interrupted = UserContext::from_trap(
-            PhysAddr::new(page_table).unwrap_or_else(|_| halt()),
-            &normalized,
-        )
-        .unwrap_or_else(|_| halt());
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        uefi_service_trace(0x95);
+        let page_table = PhysAddr::new(page_table).unwrap_or_else(|_| halt());
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        {
+            uefi_service_trace(0x96);
+            uefi_service_trace(normalized.rflags as u8);
+            uefi_service_trace((normalized.rflags >> 8) as u8);
+            uefi_service_trace((normalized.rflags >> 16) as u8);
+            uefi_service_trace((normalized.rflags >> 24) as u8);
+        }
+        let interrupted =
+            match UserContext::from_external_interrupt(page_table, &normalized, TIMER_VECTOR) {
+                Ok(context) => context,
+                #[cfg(feature = "uefi-service-preemption-probe")]
+                Err(error) => {
+                    let stage = match error {
+                        mrml_kernel::arch::x86_64::ContextError::KernelPageTable => 0xd0,
+                        mrml_kernel::arch::x86_64::ContextError::InvalidEntry => 0xd1,
+                        mrml_kernel::arch::x86_64::ContextError::InvalidStack => 0xd2,
+                        mrml_kernel::arch::x86_64::ContextError::InvalidSelectors => 0xd3,
+                        mrml_kernel::arch::x86_64::ContextError::InvalidFlags => 0xd4,
+                        _ => 0xdf,
+                    };
+                    uefi_service_trace(stage);
+                    halt()
+                }
+                #[cfg(not(feature = "uefi-service-preemption-probe"))]
+                Err(_) => halt(),
+            };
         #[cfg(feature = "uefi-service-preemption-probe")]
         uefi_service_trace(0x92);
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 2u32, options(nomem, nostack));

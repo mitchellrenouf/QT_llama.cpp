@@ -754,13 +754,19 @@ the bounded service table arena; adds only the service's user leaves; and enters
 CPL3 through the per-CPU transition stack. This private clone is necessary
 while the UEFI kernel still uses low identity mappings: sharing the hierarchy
 would let user-leaf insertion mutate the kernel CR3, while copying only the
-upper half would unmap the transition code. A disposable version-15 QEMU TCG
+upper half would unmap the transition code. A disposable version-19 QEMU TCG
 run traversed loader stages `a1..b3`, repeated kernel verification stages
 `c0..c7`, entered the signed spinning service in CPL3, and received a real
-local-APIC timer interrupt there (`90`). The subsequent second-context/fault
-retirement portion of this new UEFI-specific probe is still being completed;
-the established signed KVM and WHP service-preemption probes continue to cover
-that full switch and recovery chain.
+local-APIC timer interrupt there (`90`). QEMU's hardware frame contained
+RFLAGS `0x10202`: the CPU-managed Resume Flag was set. The external-interrupt
+conversion now requires the exact admitted vector and clears RF rather than
+carrying one-instruction debug suppression into a later time slice; ordinary
+trap conversion remains strict and rejects RF. Terminal trace
+`90 95 96 02 02 01 00 92 93 94 91` proves sanitized context capture,
+timer-driven task switch, return through `IRETQ` into the second CPL3 entry,
+and recoverable user breakpoint handling. The established signed KVM and WHP
+service-preemption probes cover the same switch and recovery chain through
+their native backends.
 
 `ServiceSupervisor` now binds each service object to exactly one live
 generational task identity. The signed exit syscall must resolve the current
