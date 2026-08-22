@@ -1,0 +1,10 @@
+[package]
+name = "mrml-ssh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Dependency-free SSH remote and signing support for MRML"
+
+[dependencies]
+mrml-runtime = { path = "../mrml-runtime" }

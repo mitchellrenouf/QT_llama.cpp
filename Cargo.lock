@@ -48,6 +48,7 @@ version = "0.4.0"
 dependencies = [
  "mrml-error",
  "mrml-runtime",
+ "mrml-ssh",
  "mrml-terminal-style",
 ]
 
@@ -176,6 +177,13 @@ dependencies = [
  "mrml-crypto",
  "mrml-error",
  "mrml-kernel",
+ "mrml-runtime",
+]
+
+[[package]]
+name = "mrml-ssh"
+version = "0.4.0"
+dependencies = [
  "mrml-runtime",
 ]
 
