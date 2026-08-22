@@ -444,7 +444,9 @@ so shared and mutable slices preserve aliasing with the original local. Native
 callers dynamically selected elements 1 through 2, mutated 20 to 22 through
 the slice, then observed that value through the array and returned 34 through
 439-byte COFF and 832-byte ELF64 objects. Packed backing for narrower local
-elements and general aggregate ABI transport remain separate work.
+elements and general aggregate ABI transport remain separate work. Array
+elements are still evaluated left to right; completed temporary slots are
+reordered only afterward when positive-stride local backing is required.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as

@@ -94,7 +94,7 @@ fn compile(source: &str, format: ObjectFormat) -> Result<(), CompileErrorKind> {
 }
 
 fn compile_wide(source: &str, format: ObjectFormat) -> Result<(), CompileErrorKind> {
-    compile_source_function::<4096, 2048, 4, 8, 8, 64>(
+    compile_source_function::<4096, 3072, 4, 8, 8, 64>(
         source,
         "probe",
         format,

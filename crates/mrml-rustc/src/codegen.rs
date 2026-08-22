@@ -5589,10 +5589,19 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             }
             return Ok(());
         }
-        for element in (0..count).rev() {
+        for element in 0..count {
             self.emit_array_element(tree, root, element, 0)?;
             self.emit(&[0x50])?;
             self.evaluation_depth += 1;
+        }
+        for left in 0..count / 2 {
+            let right = count - 1 - left;
+            self.emit_stack_slot(left)?;
+            self.emit(&[0x48, 0x89, 0xc2])?;
+            self.emit_stack_slot(right)?;
+            self.emit_store_stack_slot(left)?;
+            self.emit(&[0x48, 0x89, 0xd0])?;
+            self.emit_store_stack_slot(right)?;
         }
         Ok(())
     }
@@ -7644,7 +7653,7 @@ mod tests {
                 panic!("expected function")
             };
             for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
-                let result = compile_x86_64_function::<_, 512, 8, 64>(&function, &NoConstants, abi);
+                let result = compile_x86_64_function::<_, 768, 8, 64>(&function, &NoConstants, abi);
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
