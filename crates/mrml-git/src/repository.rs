@@ -280,6 +280,41 @@ impl Repository {
         Ok(())
     }
 
+    pub fn restore(&self, paths: &[Text]) -> Result<(), RepositoryError> {
+        let index = self.index()?;
+        let mut files: Vector<(Text, Vector<u8>)> = Vector::new();
+        for path in paths {
+            validate_worktree_path(path)?;
+            let entry = index.entry(path).ok_or(RepositoryError::ReferenceMissing)?;
+            let object = self.read_object(entry.id)?;
+            if object.kind != ObjectKind::Blob { return Err(RepositoryError::InvalidReference); }
+            files.push((path.clone(), object.contents));
+        }
+        for (relative, contents) in files {
+            let path = join_path(&self.worktree, &relative);
+            if let Some(parent) = parent_path(&path) { create_dir_all(parent)?; }
+            write_file(&path, &contents)?;
+        }
+        Ok(())
+    }
+
+    pub fn unstage(&self, paths: &[Text]) -> Result<(), RepositoryError> {
+        let mut index = self.index()?;
+        let head = match self.head()? {
+            Some(id) => Some(self.tree_index(self.read_commit(id)?.tree)?),
+            None => None,
+        };
+        for path in paths {
+            validate_worktree_path(path)?;
+            if let Some(entry) = head.as_ref().and_then(|value| value.entry(path)).cloned() {
+                index.upsert(entry);
+            } else {
+                index.remove(path);
+            }
+        }
+        self.write_index(&index)
+    }
+
     pub fn branches(&self) -> Result<Vector<(Text, ObjectId)>, RepositoryError> {
         let mut branches = Vector::new();
         let root = join_path(&self.git_dir, "refs/heads");
@@ -853,6 +888,24 @@ mod tests {
         assert_eq!(repository.switch_branch("main").unwrap(), main);
         assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"main");
         assert_eq!(repository.current_branch().unwrap().as_deref(), Some("main"));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn restores_worktree_and_unstages_to_head() {
+        let path = root("restore");
+        let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked");
+        write_file(&file, b"base").unwrap();
+        let paths = Vector::from([Text::from("tracked")]);
+        repository.stage(&paths).unwrap();
+        repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
+        write_file(&file, b"changed").unwrap();
+        repository.stage(&paths).unwrap();
+        repository.unstage(&paths).unwrap();
+        assert_eq!(repository.index().unwrap().entry("tracked").unwrap().id, ObjectId::blob(b"base"));
+        repository.restore(&paths).unwrap();
+        assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"base");
         remove_dir_all(&path).unwrap();
     }
 }

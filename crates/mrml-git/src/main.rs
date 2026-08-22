@@ -495,22 +495,16 @@ fn dispatch(cli: &Cli) -> Result<()> {
                 .map_err(|error| anyhow!("{}", error))?;
             native_dashboard(repository)
         }
-        "unstage" => run_visible(
-            repository,
-            &collect(
-                "restore",
-                &["--staged", "--"],
-                require_arguments("unstage", tail)?,
-            ),
-        ),
-        "restore" => run_visible(
-            repository,
-            &collect(
-                "restore",
-                &["--worktree", "--"],
-                require_arguments("restore", tail)?,
-            ),
-        ),
+        "unstage" => {
+            checked_positionals(require_arguments("unstage", tail)?)?;
+            native_repository(repository)?.unstage(tail).map_err(|error| anyhow!("{}", error))?;
+            native_dashboard(repository)
+        }
+        "restore" => {
+            checked_positionals(require_arguments("restore", tail)?)?;
+            native_repository(repository)?.restore(tail).map_err(|error| anyhow!("{}", error))?;
+            native_dashboard(repository)
+        }
         "commit" => {
             let (sign, words) = if tail.first().is_some_and(|value| value == "--sign") {
                 (true, &tail[1..])
