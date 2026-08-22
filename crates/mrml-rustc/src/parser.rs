@@ -286,6 +286,8 @@ pub struct NestedLoopBlock<'source> {
     pub return_statement: Option<LoopReturn<'source>>,
     pub continue_condition: Option<ConditionalLoopControl<'source>>,
     pub continue_action_index: usize,
+    pub conditional_return: Option<ConditionalReturn<'source>>,
+    pub conditional_return_action_index: usize,
 }
 
 impl<'source> NestedLoopBlock<'source> {
@@ -1475,6 +1477,8 @@ impl<'source> BodyParser<'source> {
                     let mut action_count = 0usize;
                     let mut continue_condition = None;
                     let mut continue_action_index = 0usize;
+                    let mut conditional_return = None;
+                    let mut conditional_return_action_index = 0usize;
                     let mut body_closed = false;
                     let mut unconditional_break = false;
                     let mut return_statement = None;
@@ -1513,19 +1517,26 @@ impl<'source> BodyParser<'source> {
                             let (condition_span, _) =
                                 probe.delimited_until("{", ParseErrorKind::ExpectedBody)?;
                             let inner_control = probe.take()?;
-                            if !inner_control
-                                .is_some_and(|token| matches!(token.text, "break" | "continue"))
-                            {
+                            if !inner_control.is_some_and(|token| {
+                                matches!(token.text, "break" | "continue" | "return")
+                            }) {
                                 return Err(
                                     probe.error(ParseErrorKind::ExpectedBody, inner_control)
                                 );
                             }
-                            let semicolon = probe.take()?;
-                            if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
-                                return Err(
-                                    probe.error(ParseErrorKind::ExpectedSemicolon, semicolon)
-                                );
-                            }
+                            let return_value =
+                                if inner_control.is_some_and(|token| token.text == "return") {
+                                    Some(probe.return_value()?)
+                                } else {
+                                    let semicolon = probe.take()?;
+                                    if !semicolon
+                                        .is_some_and(|token| token.kind == TokenKind::Semicolon)
+                                    {
+                                        return Err(probe
+                                            .error(ParseErrorKind::ExpectedSemicolon, semicolon));
+                                    }
+                                    None
+                                };
                             let conditional_close = probe.take()?;
                             if !conditional_close
                                 .is_some_and(|token| token.kind == TokenKind::CloseBrace)
@@ -1547,6 +1558,21 @@ impl<'source> BodyParser<'source> {
                                 }
                                 continue_condition = Some(condition);
                                 continue_action_index = action_count;
+                                continue;
+                            }
+                            if let Some((value, value_span)) = return_value {
+                                if conditional_return.is_some() {
+                                    return Err(
+                                        probe.error(ParseErrorKind::ExpectedBody, inner_control)
+                                    );
+                                }
+                                conditional_return = Some(ConditionalReturn {
+                                    condition: condition.condition,
+                                    condition_span,
+                                    value,
+                                    value_span,
+                                });
+                                conditional_return_action_index = action_count;
                                 continue;
                             }
                             break_condition = Some(condition);
@@ -1608,6 +1634,8 @@ impl<'source> BodyParser<'source> {
                                 return_statement,
                                 continue_condition,
                                 continue_action_index,
+                                conditional_return,
+                                conditional_return_action_index,
                             });
                             let index = nested_block_count;
                             nested_block_count += 1;
@@ -2951,6 +2979,29 @@ mod tests {
             "selected % 2 == 0"
         );
         assert_eq!(nested.continue_action_index, 2);
+
+        let nested_return = Parser::new(
+            "fn nested(limit: u64, stop: u64) { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == stop { return; } } outer += 1; inner = 0; } }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = nested_return.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+            panic!("expected nested while block")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert_eq!(
+            inner
+                .conditional_return
+                .expect("expected conditional return")
+                .value,
+            "()"
+        );
+        assert_eq!(inner.conditional_return_action_index, 1);
 
         let nested_while = Parser::new(
             "fn nested(limit: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 3 { inner += 1; total += inner; } outer += 1; inner = 0; } total }",

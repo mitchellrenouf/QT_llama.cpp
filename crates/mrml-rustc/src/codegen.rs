@@ -734,6 +734,19 @@ pub fn compile_x86_64_function_with_options<
                     None
                 };
                 for action_index in 0..=block.action_count() {
+                    if block.conditional_return.is_some()
+                        && action_index == block.conditional_return_action_index
+                    {
+                        let conditional = block.conditional_return.ok_or(CodegenError {
+                            kind: CodegenErrorKind::Body(ParseErrorKind::ExpectedBody),
+                            span: function.body_expression_span,
+                        })?;
+                        emitter.emit_conditional_return::<MAX_EXPRESSION_NODES>(
+                            &conditional,
+                            expected_type,
+                            function.body_expression_span.start,
+                        )?;
+                    }
                     if block.continue_condition.is_some()
                         && action_index == block.continue_action_index
                     {
@@ -4161,6 +4174,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn return_local() -> u64 { loop { let selected: u64 = 42; return selected; } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn conditional_return(value: u64) -> u64 { loop { if value == 0 { let selected: u64 = 42; selected + 1; return selected; } return value; } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn nested_unit_return(limit: u64, enter: bool) { let mut i: u64 = 0; while i < limit { while enter { let selected: u64 = i + 1; selected + 10; return; } i += 1; } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_conditional_unit_return(limit: u64, stop: u64) { let mut outer: u64 = 0; let mut inner: u64 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == stop { return; } } outer += 1; inner = 0; } }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {
