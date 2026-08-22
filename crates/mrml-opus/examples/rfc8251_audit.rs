@@ -9,7 +9,7 @@ struct Totals {
     exact_ranges: usize,
 }
 
-fn audit(path: &Path) -> Result<Totals, String> {
+fn audit(path: &Path, report_first: bool) -> Result<Totals, String> {
     let data = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut offset = 0usize;
     let mut totals = Totals::default();
@@ -51,7 +51,23 @@ fn audit(path: &Path) -> Result<Totals, String> {
                 .is_ok()
             {
                 totals.decoded += 1;
-                totals.exact_ranges += usize::from(decoder.final_range() == expected_range);
+                let actual_range = decoder.final_range();
+                if report_first
+                    && actual_range != expected_range
+                    && totals.exact_ranges + 1 == totals.packets
+                {
+                    let hex = packet.iter().fold(String::new(), |mut text, byte| {
+                        use std::fmt::Write;
+                        let _ = write!(text, "{byte:02X}");
+                        text
+                    });
+                    println!(
+                        "{}: first mismatch packet={} expected={expected_range:#010x} actual={actual_range:#010x} bytes={hex}",
+                        path.display(),
+                        totals.packets
+                    );
+                }
+                totals.exact_ranges += usize::from(actual_range == expected_range);
             }
         }
         offset = packet_end;
@@ -62,9 +78,23 @@ fn audit(path: &Path) -> Result<Totals, String> {
 fn main() -> Result<(), String> {
     let mut arguments = std::env::args_os().skip(1);
     let input = PathBuf::from(arguments.next().ok_or_else(|| {
-        "usage: rfc8251_audit <vector-directory|vector.bit> [--require-exact]".to_owned()
+        "usage: rfc8251_audit <vector-directory|vector.bit> [--require-exact] [--report-first]"
+            .to_owned()
     })?);
-    let require_exact = arguments.any(|argument| argument == "--require-exact");
+    let mut require_exact = false;
+    let mut report_first = false;
+    for argument in arguments {
+        if argument == "--require-exact" {
+            require_exact = true;
+        } else if argument == "--report-first" {
+            report_first = true;
+        } else {
+            return Err(format!(
+                "unrecognized option: {}",
+                argument.to_string_lossy()
+            ));
+        }
+    }
     let mut all = Totals::default();
     let paths: Vec<(String, PathBuf)> = if input.is_file() {
         let label = input
@@ -84,7 +114,7 @@ fn main() -> Result<(), String> {
             .collect()
     };
     for (label, path) in paths {
-        let totals = audit(&path)?;
+        let totals = audit(&path, report_first)?;
         println!(
             "{label}: packets={} decoded={} exact_ranges={}",
             totals.packets, totals.decoded, totals.exact_ranges

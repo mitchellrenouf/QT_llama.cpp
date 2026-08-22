@@ -52,7 +52,9 @@ each record. Run it with:
     cargo run -p mrml-opus --release --example rfc8251_audit -- <vector-directory>
     cargo run -p mrml-opus --release --example rfc8251_audit -- <vector.bit>
 
-Pass --require-exact to make any decode or final-range mismatch fail the
-process. The current baseline decodes all 20,075 packets and matches 17,423
+Pass `--report-first` to print the first mismatching packet, its hexadecimal
+payload, and both final ranges. Pass `--require-exact` to make any decode or
+final-range mismatch fail the process. The current baseline decodes all
+20,075 packets and matches 17,423
 final ranges; full exact-range coverage remains required before this crate is
 considered complete.
