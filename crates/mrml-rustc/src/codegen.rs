@@ -4703,6 +4703,41 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         Ok(true)
     }
 
+    fn emit_slice_value_to_stack<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        id: crate::ExprId,
+        depth: usize,
+    ) -> Result<(), CodegenError> {
+        if let Some(ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        }) = tree.expression(id).map(|expression| expression.kind)
+        {
+            self.emit_expression(tree, condition, depth + 1)?;
+            self.emit(&[0x48, 0x85, 0xc0])?;
+            let else_patch = self.emit_forward_branch(0x84)?;
+            self.emit_slice_value_to_stack(tree, then_branch, depth + 1)?;
+            let end_patch = self.emit_unconditional_forward_branch()?;
+            self.patch_forward_branch(else_patch)?;
+            self.emit_slice_value_to_stack(tree, else_branch, depth + 1)?;
+            self.patch_forward_branch(end_patch)?;
+            return Ok(());
+        }
+        if self.emit_range_slice_to_stack(tree, id, depth)? {
+            return Ok(());
+        }
+        let source = reference_source_name(tree, id)
+            .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
+        self.emit_expression(tree, id, depth + 1)?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        self.emit_slice_length(source)?;
+        self.evaluation_depth -= 1;
+        self.emit(&[0x50])
+    }
+
     fn emit_reference_load(
         &mut self,
         pointee: RuntimeArrayElementType,
@@ -4957,18 +4992,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     ..
                 }
             ) {
-                if !self.emit_range_slice_to_stack(&tree, tree.root(), 0)? {
-                    let source = reference_source_name(&tree, tree.root()).ok_or(CodegenError {
-                        kind: CodegenErrorKind::RuntimeExpressionUnsupported,
-                        span: translate_span(body_start, local.initializer_span),
-                    })?;
-                    self.emit_expression(&tree, tree.root(), 0)?;
-                    self.emit(&[0x50])?;
-                    self.evaluation_depth += 1;
-                    self.emit_slice_length(source)?;
-                    self.evaluation_depth -= 1;
-                    self.emit(&[0x50])?;
-                }
+                self.emit_slice_value_to_stack(&tree, tree.root(), 0)?;
             } else {
                 self.emit_expression(&tree, tree.root(), 0)?;
                 self.emit(&[0x50])?;
@@ -8198,6 +8222,26 @@ mod tests {
             for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
                 let result =
                     compile_x86_64_function::<_, 3072, 4, 192>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn stores_conditional_slice_references_in_locals() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16], select: bool) -> &[u16] { let selected: &[u16] = if select { &input[..1] } else { &input[1..] }; selected }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16], select: bool) -> u16 { let selected: &mut [u16] = if select { &mut input[..1] } else { &mut input[1..] }; selected[0] += 2; selected[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16], select: bool) -> usize { let selected = if select { &input[..1] } else { &input[1..] }; selected.len() }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 4096, 4, 224>(&function, &NoConstants, abi);
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
