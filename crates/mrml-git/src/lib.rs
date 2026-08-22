@@ -168,6 +168,17 @@ pub fn parse_porcelain(source: &[u8]) -> Vector<Change> {
     changes
 }
 
+pub fn validate_positional(values: &[Text]) -> core::result::Result<(), Text> {
+    if let Some(value) = values.iter().find(|value| value.starts_with('-')) {
+        Err(mrml_runtime::mrml_format!(
+            "option-like value '{}' is not allowed here",
+            value
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +228,11 @@ mod tests {
             Cli::parse(["mrml-git", "--repo"]).unwrap_err(),
             "-C/--repo requires a path"
         );
+    }
+
+    #[test]
+    fn positional_validation_blocks_option_injection() {
+        assert!(validate_positional(&Vector::from([Text::from("origin")])).is_ok());
+        assert!(validate_positional(&Vector::from([Text::from("--force")])).is_err());
     }
 }

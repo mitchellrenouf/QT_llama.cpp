@@ -3,7 +3,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use mrml_error::{Context, Result, anyhow};
-use mrml_git::{Change, Cli, parse_porcelain};
+use mrml_git::{Change, Cli, parse_porcelain, validate_positional};
 use mrml_runtime::{
     Command, Output, Text, Vector, mrml_format as format, mrml_print as print,
     mrml_println as println,
@@ -28,10 +28,17 @@ fn run(repository: Option<&str>, args: &[&str]) -> Result<Text> {
 }
 
 fn git_failure(args: &[&str], output: &Output) -> mrml_error::Error {
+    let stderr = Text::from_utf8_lossy(&output.stderr);
+    let stdout = Text::from_utf8_lossy(&output.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
     anyhow!(
         "git {} failed: {}",
         args.first().copied().unwrap_or("command"),
-        Text::from_utf8_lossy(&output.stderr).trim()
+        detail
     )
 }
 
@@ -166,7 +173,7 @@ fn dashboard(repository: Option<&str>) -> Result<()> {
 
 fn help() {
     println!(
-        "{}\n\n  mrml-git [-C PATH] [status]\n  mrml-git [-C PATH] log [count]\n  mrml-git [-C PATH] diff [--staged] [args...]\n  mrml-git [-C PATH] show [revision]\n  mrml-git [-C PATH] branch [new-name]\n  mrml-git [-C PATH] switch <name>\n  mrml-git [-C PATH] stage <path>...\n  mrml-git [-C PATH] unstage <path>...\n  mrml-git [-C PATH] restore <path>...\n  mrml-git [-C PATH] commit <message>\n  mrml-git [-C PATH] fetch [remote]\n  mrml-git [-C PATH] pull [remote] [branch]\n  mrml-git [-C PATH] push [remote] [branch]\n  mrml-git [-C PATH] remote\n  mrml-git [-C PATH] tag [name]\n  mrml-git [-C PATH] stash [list|push [message]|pop]\n\nPulls are fast-forward only. No command shows the workspace pulse.",
+        "{}\n\n  mrml-git [-C PATH] [status]\n  mrml-git [-C PATH] doctor\n  mrml-git [-C PATH] init [path]\n  mrml-git [-C PATH] clone <url> [path]\n  mrml-git [-C PATH] log [count]\n  mrml-git [-C PATH] diff [--staged] [args...]\n  mrml-git [-C PATH] show [revision]\n  mrml-git [-C PATH] branch [new-name]\n  mrml-git [-C PATH] switch <name>\n  mrml-git [-C PATH] stage <path>...\n  mrml-git [-C PATH] unstage <path>...\n  mrml-git [-C PATH] restore <path>...\n  mrml-git [-C PATH] commit <message>\n  mrml-git [-C PATH] fetch [remote]\n  mrml-git [-C PATH] pull [remote] [branch]\n  mrml-git [-C PATH] push [remote] [branch]\n  mrml-git [-C PATH] remote\n  mrml-git [-C PATH] tag [name]\n  mrml-git [-C PATH] stash [list|push [message]|pop]\n\nPulls are fast-forward only. No command shows the workspace pulse.",
         "MRML GIT".bright_cyan().bold()
     );
 }
@@ -197,6 +204,11 @@ fn join_words(words: &[Text]) -> Text {
     output
 }
 
+fn checked_positionals(values: &[Text]) -> Result<&[Text]> {
+    validate_positional(values).map_err(|error| anyhow!("{}", error))?;
+    Ok(values)
+}
+
 fn dispatch(cli: &Cli) -> Result<()> {
     let repository = cli.repository.as_deref();
     let tail: &[Text] = &cli.arguments;
@@ -209,6 +221,23 @@ fn dispatch(cli: &Cli) -> Result<()> {
         "--version" | "-V" if tail.is_empty() => {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())
+        }
+        "doctor" if tail.is_empty() => {
+            let version = run(repository, &["--version"])?;
+            println!("{} {}", "git".green().bold(), version.trim());
+            match run(repository, &["rev-parse", "--show-toplevel"]) {
+                Ok(root) => println!("{} {}", "repository".green().bold(), root.trim()),
+                Err(_) => println!("{} not inside a repository", "repository".yellow().bold()),
+            }
+            Ok(())
+        }
+        "init" if tail.len() <= 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &collect("init", &["--"], tail))
+        }
+        "clone" if matches!(tail.len(), 1 | 2) => {
+            checked_positionals(tail)?;
+            run_visible(repository, &collect("clone", &["--"], tail))
         }
         "log" => {
             let count = tail.first().map(Text::as_str).unwrap_or("12");
@@ -239,18 +268,28 @@ fn dispatch(cli: &Cli) -> Result<()> {
             }));
             run_visible(repository, &args)
         }
-        "show" if tail.len() <= 1 => run_visible(
-            repository,
-            &[
-                "show",
-                "--color=always",
-                "--stat",
-                tail.first().map(Text::as_str).unwrap_or("HEAD"),
-            ],
-        ),
+        "show" if tail.len() <= 1 => {
+            checked_positionals(tail)?;
+            run_visible(
+                repository,
+                &[
+                    "show",
+                    "--color=always",
+                    "--stat",
+                    tail.first().map(Text::as_str).unwrap_or("HEAD"),
+                    "--",
+                ],
+            )
+        }
         "branch" if tail.is_empty() => run_visible(repository, &["branch", "--all", "--verbose"]),
-        "branch" if tail.len() == 1 => run_visible(repository, &["switch", "-c", &tail[0]]),
-        "switch" if tail.len() == 1 => run_visible(repository, &["switch", &tail[0]]),
+        "branch" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["switch", "-c", &tail[0]])
+        }
+        "switch" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &["switch", &tail[0]])
+        }
         "stage" => run_visible(
             repository,
             &collect("add", &["--"], require_arguments("stage", tail)?),
@@ -277,14 +316,23 @@ fn dispatch(cli: &Cli) -> Result<()> {
             run_visible(repository, &["commit", "-m", &message])
         }
         "fetch" if tail.len() <= 1 => {
+            checked_positionals(tail)?;
             run_visible(repository, &collect("fetch", &["--prune"], tail))
         }
         "pull" if tail.len() <= 2 => {
+            checked_positionals(tail)?;
             run_visible(repository, &collect("pull", &["--ff-only"], tail))
         }
-        "push" if tail.len() <= 2 => run_visible(repository, &collect("push", &[], tail)),
+        "push" if tail.len() <= 2 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &collect("push", &[], tail))
+        }
         "remote" if tail.is_empty() => run_visible(repository, &["remote", "--verbose"]),
-        "tag" if tail.len() <= 1 => run_visible(repository, &collect("tag", &[], tail)),
+        "tag" if tail.is_empty() => run_visible(repository, &["tag"]),
+        "tag" if tail.len() == 1 => {
+            checked_positionals(tail)?;
+            run_visible(repository, &collect("tag", &["--"], tail))
+        }
         "stash" if tail.is_empty() || (tail.len() == 1 && tail[0] == "list") => {
             run_visible(repository, &["stash", "list"])
         }
