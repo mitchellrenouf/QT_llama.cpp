@@ -461,6 +461,13 @@ Typed and inferred `usize` locals in a narrow-return function retain their own
 per-expression arithmetic and comparison width. A computed-endpoint probe
 observed `254usize + 2 == 256` without a false `u8` overflow through 196-byte
 COFF and 584-byte ELF64 objects; `usize::MAX + 2` reached `UD2` on both hosts.
+Independent scalar integer parameters and locals now generalize that model to
+all supported signed and unsigned widths. A `u8` result probe combined `u64`
+and `i16` parameters, inferred and typed locals, arithmetic, comparisons, and
+normalization; independent callers observed 42 and 41 through 370-byte COFF and
+760-byte ELF64 objects, while `u64::MAX + 2` trapped on both hosts. A differently
+typed packed `[u16; 3]` local also returned 42 through 377-byte COFF and 768-byte
+ELF64 objects. Cross-width binary operands remain rejected by runtime typing.
 Array elements are still evaluated left to right; completed temporary slots are
 packed or reordered only afterward when positive-stride local backing is
 required.
@@ -963,7 +970,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 308 Windows library, conformance, rustc-nightly-replacement, and driver
+The 310 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1637,7 +1644,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 308 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 310 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

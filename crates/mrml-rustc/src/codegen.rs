@@ -639,23 +639,15 @@ pub fn compile_x86_64_function_with_options<
         if parameter.ty.text == "bool" {
             continue;
         }
-        if parameter.ty.text == "usize"
-            && operand_type != "usize"
-            && !returns_value_free
-            && !returns_boolean_like
-        {
-            continue;
-        }
-        if runtime_width(parameter.ty.text).is_none()
-            || (!returns_value_free && !returns_boolean_like && parameter.ty.text != operand_type)
-            || integer_operand_type.is_some_and(|ty| ty != parameter.ty.text)
-        {
+        if runtime_width(parameter.ty.text).is_none() {
             return Err(CodegenError {
                 kind: CodegenErrorKind::UnsupportedParameterType,
                 span: parameter.ty.span,
             });
         }
-        integer_operand_type = Some(parameter.ty.text);
+        if integer_operand_type.is_none() {
+            integer_operand_type = Some(parameter.ty.text);
+        }
     }
     let operand_type =
         if (returns_boolean_like || returns_value_free) && integer_operand_type.is_some() {
@@ -4692,18 +4684,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         })?;
         let local_type = if let Some(ty) = local.ty {
             if let Some(array) = runtime_array_type(ty.text) {
-                if let RuntimeExpressionType::Array {
-                    element: RuntimeArrayElementType::Integer(Some(element)),
-                    ..
-                } = array
-                    && element.name() != "usize"
-                    && runtime_width(element.name()) != Some(self.width)
-                {
-                    return Err(CodegenError {
-                        kind: CodegenErrorKind::RuntimeTypeMismatch,
-                        span: translate_span(body_start, ty.span),
-                    });
-                }
                 array
             } else if let Some(reference) = runtime_reference_type(ty.text) {
                 reference
@@ -4718,12 +4698,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     kind: CodegenErrorKind::UnsupportedRuntimeType,
                     span: translate_span(body_start, ty.span),
                 })?;
-                if ty.text != "usize" && runtime_width(ty.text) != Some(self.width) {
-                    return Err(CodegenError {
-                        kind: CodegenErrorKind::RuntimeTypeMismatch,
-                        span: translate_span(body_start, ty.span),
-                    });
-                }
                 RuntimeExpressionType::Integer(Some(integer_type))
             }
         } else {
@@ -4738,12 +4712,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 RuntimeExpressionType::Bool => RuntimeExpressionType::Bool,
                 RuntimeExpressionType::Char => RuntimeExpressionType::Char,
                 RuntimeExpressionType::Integer(Some(ty)) => {
-                    if ty.name() != "usize" && ty.bits(64) != Some(self.width.bits) {
-                        return Err(CodegenError {
-                            kind: CodegenErrorKind::RuntimeTypeMismatch,
-                            span: translate_span(body_start, local.initializer_span),
-                        });
-                    }
                     RuntimeExpressionType::Integer(Some(ty))
                 }
                 RuntimeExpressionType::Integer(None) => {
@@ -4772,33 +4740,55 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             local_type
         };
         let stack_slots = runtime_local_stack_slots(local_type);
-        if let RuntimeExpressionType::Array { element, count } = local_type {
-            self.emit_array_to_stack(&tree, tree.root(), count)?;
-            self.pack_temporary_array_for_local(element, count)?;
-            self.evaluation_depth -= stack_slots;
-        } else if matches!(
-            local_type,
-            RuntimeExpressionType::Reference {
-                target: RuntimeReferenceTarget::Slice(_),
-                ..
+        let previous_width = self.width;
+        self.width = match local_type {
+            RuntimeExpressionType::Integer(Some(integer_type)) => {
+                runtime_width(integer_type.name())
             }
-        ) {
-            if !self.emit_range_slice_to_stack(&tree, tree.root(), 0)? {
-                let source = reference_source_name(&tree, tree.root()).ok_or(CodegenError {
-                    kind: CodegenErrorKind::RuntimeExpressionUnsupported,
-                    span: translate_span(body_start, local.initializer_span),
-                })?;
+            RuntimeExpressionType::Char => runtime_width("char"),
+            RuntimeExpressionType::Array {
+                element: RuntimeArrayElementType::Integer(Some(integer_type)),
+                ..
+            } => runtime_width(integer_type.name()),
+            RuntimeExpressionType::Array {
+                element: RuntimeArrayElementType::Char,
+                ..
+            } => runtime_width("char"),
+            _ => None,
+        }
+        .unwrap_or(previous_width);
+        let emission = (|| {
+            if let RuntimeExpressionType::Array { element, count } = local_type {
+                self.emit_array_to_stack(&tree, tree.root(), count)?;
+                self.pack_temporary_array_for_local(element, count)?;
+                self.evaluation_depth -= stack_slots;
+            } else if matches!(
+                local_type,
+                RuntimeExpressionType::Reference {
+                    target: RuntimeReferenceTarget::Slice(_),
+                    ..
+                }
+            ) {
+                if !self.emit_range_slice_to_stack(&tree, tree.root(), 0)? {
+                    let source = reference_source_name(&tree, tree.root()).ok_or(CodegenError {
+                        kind: CodegenErrorKind::RuntimeExpressionUnsupported,
+                        span: translate_span(body_start, local.initializer_span),
+                    })?;
+                    self.emit_expression(&tree, tree.root(), 0)?;
+                    self.emit(&[0x50])?;
+                    self.evaluation_depth += 1;
+                    self.emit_slice_length(source)?;
+                    self.evaluation_depth -= 1;
+                    self.emit(&[0x50])?;
+                }
+            } else {
                 self.emit_expression(&tree, tree.root(), 0)?;
                 self.emit(&[0x50])?;
-                self.evaluation_depth += 1;
-                self.emit_slice_length(source)?;
-                self.evaluation_depth -= 1;
-                self.emit(&[0x50])?;
             }
-        } else {
-            self.emit_expression(&tree, tree.root(), 0)?;
-            self.emit(&[0x50])?;
-        }
+            Ok(())
+        })();
+        self.width = previous_width;
+        emission?;
         self.locals[self.saved_locals] = Some(RuntimeLocal {
             name: local.name,
             ty: local_type,
@@ -8145,6 +8135,26 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch,
         );
+    }
+
+    #[test]
+    fn supports_independent_scalar_integer_widths() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, wide: u64, signed: i16) -> u8 { let adjusted = wide + 2; let negative: i16 = signed + 2; if adjusted == 258 && negative == -1 { input + 1 } else { input } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let wide: u64 = 256; let signed: i16 = -3; if wide + 2 == 258 && signed + 2 == -1 { input + 1 } else { input } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let values: [u16; 3] = [256, 257, 258]; if values[1] == 257 { input + 1 } else { input } }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1536, 4, 128>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
     }
 
     #[test]
