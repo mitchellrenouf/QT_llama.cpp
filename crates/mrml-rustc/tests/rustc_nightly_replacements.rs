@@ -1849,6 +1849,22 @@ fn rustc_thin_reference_returns_reach_native_objects() {
 }
 
 #[test]
+fn rustc_slice_reference_returns_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &[u16]) -> &[u16] { input }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut [i32]) -> &mut [i32] { input }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &[u8]) -> &[u8] { let copied: &[u8] = input; copied }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &[u16], start: usize, end: usize) -> &[u16] { &input[start..end] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut [u16], start: usize, end: usize) -> &mut [u16] { &mut input[start..end] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut [u16]) -> &[u16] { input }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",

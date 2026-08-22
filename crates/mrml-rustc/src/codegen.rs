@@ -571,7 +571,11 @@ pub fn compile_x86_64_function_with_options<
                     | RuntimeArrayElementType::Char
                     | RuntimeArrayElementType::Integer(Some(_)),
                 ..
-            }
+            } | RuntimeReferenceTarget::Slice(
+                RuntimeArrayElementType::Bool
+                    | RuntimeArrayElementType::Char
+                    | RuntimeArrayElementType::Integer(Some(_))
+            )
         )
     {
         return Err(CodegenError {
@@ -684,12 +688,20 @@ pub fn compile_x86_64_function_with_options<
         kind: CodegenErrorKind::UnsupportedRuntimeType,
         span: function.name_span,
     })?;
-    let uses_sret = return_array.and_then(runtime_array_abi_layout).is_some_and(
-        |(_, bytes, words)| match abi {
-            X86_64Abi::Windows => bytes != 0 && !matches!(bytes, 1 | 2 | 4 | 8),
-            X86_64Abi::SystemV => words > 2,
-        },
+    let returns_slice = matches!(
+        return_reference,
+        Some(RuntimeExpressionType::Reference {
+            target: RuntimeReferenceTarget::Slice(_),
+            ..
+        })
     );
+    let uses_sret = (abi == X86_64Abi::Windows && returns_slice)
+        || return_array.and_then(runtime_array_abi_layout).is_some_and(
+            |(_, bytes, words)| match abi {
+                X86_64Abi::Windows => bytes != 0 && !matches!(bytes, 1 | 2 | 4 | 8),
+                X86_64Abi::SystemV => words > 2,
+            },
+        );
     let saved_parameter_slots = function
         .parameters()
         .iter()
@@ -5996,6 +6008,15 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         root: crate::ExprId,
         expected_type: RuntimeExpressionType,
     ) -> Result<(), CodegenError> {
+        if matches!(
+            expected_type,
+            RuntimeExpressionType::Reference {
+                target: RuntimeReferenceTarget::Slice(_),
+                ..
+            }
+        ) {
+            return self.emit_slice_return(tree, root);
+        }
         let RuntimeExpressionType::Array { element, count } = expected_type else {
             self.emit_expression(tree, root, 0)?;
             return self.emit_epilogue();
@@ -6044,6 +6065,46 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
         self.emit_stack_cleanup_bytes(bytes)?;
+        self.emit_epilogue()
+    }
+
+    fn emit_slice_return<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        root: crate::ExprId,
+    ) -> Result<(), CodegenError> {
+        let stacked = self.emit_range_slice_to_stack(tree, root, 0)?;
+        if stacked {
+            self.emit_stack_slot(1)?;
+            self.emit(&[0x48, 0x89, 0xc1])?;
+            self.emit_stack_slot(0)?;
+        } else {
+            let source = reference_source_name(tree, root)
+                .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
+            self.emit_expression(tree, root, 0)?;
+            self.emit(&[0x48, 0x89, 0xc1])?;
+            self.emit_slice_length(source)?;
+        }
+        match self.abi {
+            X86_64Abi::SystemV => {
+                self.emit(&[0x48, 0x89, 0xc2, 0x48, 0x89, 0xc8])?;
+            }
+            X86_64Abi::Windows => {
+                self.emit(&[0x49, 0x89, 0xc0])?;
+                let local_slots = self.local_stack_slots()?;
+                let pointer_slot = usize::from(stacked)
+                    .checked_mul(2)
+                    .and_then(|slots| slots.checked_add(self.evaluation_depth))
+                    .and_then(|slots| slots.checked_add(local_slots))
+                    .and_then(|slots| slots.checked_add(self.saved_parameter_slots - 1))
+                    .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+                self.emit_stack_slot(pointer_slot)?;
+                self.emit(&[0x48, 0x89, 0x08, 0x4c, 0x89, 0x40, 0x08])?;
+            }
+        }
+        if stacked {
+            self.emit_stack_cleanup_bytes(16)?;
+        }
         self.emit_epilogue()
     }
 
@@ -7905,6 +7966,30 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch,
         );
+    }
+
+    #[test]
+    fn returns_slice_references() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16]) -> &[u16] { input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [i32]) -> &mut [i32] { input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u8]) -> &[u8] { let copied: &[u8] = input; copied }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16]) -> &[u16] { &input[..] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16], start: usize, end: usize) -> &[u16] { &input[start..end] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16], start: usize, end: usize) -> &mut [u16] { &mut input[start..end] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16]) -> &[u16] { input }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 2048, 4, 160>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
     }
 
     #[test]
