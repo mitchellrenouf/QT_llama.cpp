@@ -11,15 +11,19 @@ use mrml_kernel::{
     ArtifactKind, GPU_DOORBELL_PORT, GPU_QUEUE_MESSAGE_BYTES, GpuCommandRing, GpuQueueIdentity,
     GpuQueueReceiver, GpuResourceResponse, GpuResourceResponseSender, GpuSharedQueueLayout,
     GpuVmmQueueBridge, ResourceCommand, SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
-    VerifiedGpuKernelBundle, VmBackend, VmExit, verify_gpu_kernel_bundle,
+    VerifiedGpuKernelBundle, VmBackend, VmExit,
 };
+#[cfg(all(target_os = "windows", feature = "cuda"))]
+use mrml_kernel::verify_gpu_kernel_bundle;
 #[cfg(any(test, target_os = "windows"))]
 use mrml_kernel::{
     FramebufferInfo, MemoryKind, MemoryRegion, PhysAddr, PixelFormat, encode_handoff,
     encode_handoff_with_smp,
 };
 #[cfg(target_os = "windows")]
-use mrml_runtime::{Instant, Vector, mrml_println as println};
+use mrml_runtime::{Instant, mrml_println as println};
+#[cfg(all(target_os = "windows", feature = "cuda"))]
+use mrml_runtime::Vector;
 #[cfg(target_os = "windows")]
 use mrml_whp::{PreparedWhpGuest, WhpLaunchLayout, WhpSystem};
 
@@ -67,9 +71,16 @@ fn application_main() -> Result<()> {
     let total_started = Instant::now();
     let arguments = mrml_runtime::command_arguments();
     if arguments.len() == 3 && arguments[1] == "--export-cuda-bundle" {
-        mrml_runtime::write_file(&arguments[2], mrml_tensor::cuda::embedded_cuda_bundle())?;
-        println!("wrote exact embedded CUDA PTX bundle to {}", arguments[2]);
-        return Ok(());
+        #[cfg(feature = "cuda")]
+        {
+            mrml_runtime::write_file(&arguments[2], mrml_tensor::cuda::embedded_cuda_bundle())?;
+            println!("wrote exact embedded CUDA PTX bundle to {}", arguments[2]);
+            return Ok(());
+        }
+        #[cfg(not(feature = "cuda"))]
+        return Err(anyhow!(
+            "CUDA support was excluded from this launcher build"
+        ));
     }
     let service_mode = arguments.len() == 8 && arguments[4] == "service-probe";
     let service_preemption_mode =
@@ -83,6 +94,8 @@ fn application_main() -> Result<()> {
     let smp_mode = arguments.len() == 5 && arguments[4] == "smp-probe";
     let smp_scheduler_mode = arguments.len() == 5 && arguments[4] == "smp-scheduler-probe";
     let smp_ipi_mode = arguments.len() == 5 && arguments[4] == "smp-ipi-probe";
+    let smp_periodic_balance_mode =
+        arguments.len() == 5 && arguments[4] == "smp-periodic-balance-probe";
     if arguments.len() != 7
         && !service_artifact_mode
         && !timer_mode
@@ -90,9 +103,10 @@ fn application_main() -> Result<()> {
         && !smp_mode
         && !smp_scheduler_mode
         && !smp_ipi_mode
+        && !smp_periodic_balance_mode
     {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-scheduler-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-ipi-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-service-migration-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-scheduler-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-ipi-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-periodic-balance-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-service-migration-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -161,6 +175,7 @@ fn application_main() -> Result<()> {
         || smp_mode
         || smp_scheduler_mode
         || smp_ipi_mode
+        || smp_periodic_balance_mode
     {
         None
     } else {
@@ -174,7 +189,11 @@ fn application_main() -> Result<()> {
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
-    let hosted_smp = smp_mode || smp_scheduler_mode || smp_ipi_mode || smp_service_migration_mode;
+    let hosted_smp = smp_mode
+        || smp_scheduler_mode
+        || smp_ipi_mode
+        || smp_service_migration_mode
+        || smp_periodic_balance_mode;
     let handoff = if hosted_smp {
         smp_boot_handoff(
             executable.artifact().version(),
@@ -199,7 +218,7 @@ fn application_main() -> Result<()> {
             0xffff_8001_6000_0000,
         )
     };
-    let table_pages = if smp_ipi_mode || smp_service_migration_mode {
+    let table_pages = if smp_ipi_mode || smp_service_migration_mode || smp_periodic_balance_mode {
         64
     } else {
         32
@@ -294,7 +313,9 @@ fn application_main() -> Result<()> {
             .run_smp()
             .map_err(|error| anyhow!("WHP SMP execution failed: {:?}", error))?;
         let expected_bootstrap = VmExit::Io {
-            port: if smp_scheduler_mode {
+            port: if smp_periodic_balance_mode {
+                0x4d64
+            } else if smp_scheduler_mode {
                 0x4d5e
             } else if smp_ipi_mode || smp_service_migration_mode {
                 0x4d60
@@ -306,7 +327,9 @@ fn application_main() -> Result<()> {
             value: 2,
         };
         let expected_application = VmExit::Io {
-            port: if smp_scheduler_mode {
+            port: if smp_periodic_balance_mode {
+                0x4d63
+            } else if smp_scheduler_mode {
                 0x4d5f
             } else if smp_ipi_mode {
                 0x4d61
@@ -317,7 +340,11 @@ fn application_main() -> Result<()> {
             },
             size: 4,
             write: true,
-            value: 0x0001_0001,
+            value: if smp_periodic_balance_mode {
+                0x0001_0002
+            } else {
+                0x0001_0001
+            },
         };
         if bootstrap != expected_bootstrap || application != expected_application {
             return Err(anyhow!(
@@ -707,6 +734,7 @@ fn application_main() -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+#[cfg(feature = "cuda")]
 fn verify_cuda_bundle(
     bundle_path: &str,
     public_path: &str,
@@ -726,6 +754,13 @@ fn verify_cuda_bundle(
         mrml_tensor::cuda::embedded_cuda_bundle(),
     )
     .map_err(|_| anyhow!("CUDA bundle signature, kind, version, or embedded PTX rejected"))
+}
+
+#[cfg(all(target_os = "windows", not(feature = "cuda")))]
+fn verify_cuda_bundle(_: &str, _: &str, _: &str) -> Result<VerifiedGpuKernelBundle> {
+    Err(anyhow!(
+        "CUDA support was excluded from this launcher build"
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -794,6 +829,7 @@ fn service_gpu_benchmark(
 }
 
 #[cfg(target_os = "windows")]
+#[cfg(feature = "cuda")]
 fn execute_cuda_add_benchmark(
     _: &VerifiedGpuKernelBundle,
     elements: u32,
@@ -849,6 +885,13 @@ fn execute_cuda_add_benchmark(
         elements as f64 * 12.0 * iterations as f64 / seconds / 1e9
     );
     Ok(elapsed_ns)
+}
+
+#[cfg(all(target_os = "windows", not(feature = "cuda")))]
+fn execute_cuda_add_benchmark(_: &VerifiedGpuKernelBundle, _: u32, _: u32) -> Result<u64> {
+    Err(anyhow!(
+        "CUDA support was excluded from this launcher build"
+    ))
 }
 
 #[cfg(not(target_os = "windows"))]

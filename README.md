@@ -386,12 +386,20 @@ that orchestration. It rejects invalid topology, CPU identity, zero cadence,
 clock regression, and deadline overflow; suppresses catch-up bursts after a
 delayed tick; skips full or insufficiently underloaded peers; and rotates
 equal-load destinations to avoid stable-index starvation. Windows and Linux
-tests exercise the cadence and selection policy. Wiring repeated timer/IPI
-cycles into the live multi-vCPU kernel remains unfinished. The release-mode
+tests exercise the cadence and selection policy. The signed
+`smp-periodic-balance-probe` now wires that policy into the live two-vCPU
+kernel: CPU 1's local-APIC timer supplies two hardware cadence events, CPU 0
+accounts each scheduler tick and publishes one complete responsive domain,
+and directed reschedule IPIs make CPU 1 admit both domains. Both CPUs validate
+the intermediate and final loads; the terminal proof requires CPU 0 to fall
+from five runnable domains to three and CPU 1 to rise from one to three. Fresh
+release-mode signed runs passed under nested KVM in 130,536 microseconds and
+WHP in 224,797 microseconds. The large initialization frame is deliberately
+unwound before the non-returning timer phase so interrupt entry retains its
+bounded early-stack guarantee. The release-mode
 256-CPU selection gate measured 348 ns per poll on Windows and 341 ns on Linux.
 The signed two-vCPU CPL3 migration path now obtains its destination from this
-policy rather than a hard-coded peer and passes under both KVM and WHP; only
-repeated timer-driven invocation remains to close the orchestration gap.
+policy rather than a hard-coded peer and passes under both KVM and WHP.
 `PeriodicDomainBalancer` now couples that cadence to complete-domain ownership:
 it detaches only after selecting a real destination, publishes through the
 typed linear mailbox, and retains an unpublished ticket internally when the
@@ -492,6 +500,14 @@ target\release\mrml-whp-run.exe --export-cuda-bundle target\cuda.ptx
 target\release\mrml-sign.exe keygen target\cuda.private target\cuda.public
 target\release\mrml-sign.exe sign-bundle cuda 1 target\cuda.ptx target\cuda.private target\cuda.signed
 target\release\mrml-whp-run.exe KERNEL.signed RELEASE.public 1 target\cuda.signed target\cuda.public 1
+```
+
+Scheduler-only WHP verification does not require CUDA compilation. Build the
+launcher with `--no-default-features` and run the signed periodic proof as:
+
+```text
+cargo build --release --target x86_64-pc-windows-gnullvm -p mrml-whp-run --no-default-features
+target\x86_64-pc-windows-gnullvm\release\mrml-whp-run.exe KERNEL.signed RELEASE.public 1 smp-periodic-balance-probe
 ```
 
 Both launchers verify the CUDA artifact's kind, signature, minimum version, and

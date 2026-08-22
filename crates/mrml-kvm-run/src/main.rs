@@ -82,6 +82,7 @@ enum LaunchMode {
     SmpSchedulerProbe,
     SmpIpiProbe,
     SmpServiceMigrationProbe,
+    SmpPeriodicBalanceProbe,
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -100,8 +101,9 @@ impl LaunchMode {
             "smp-scheduler-probe" => Ok(Self::SmpSchedulerProbe),
             "smp-ipi-probe" => Ok(Self::SmpIpiProbe),
             "smp-service-migration-probe" => Ok(Self::SmpServiceMigrationProbe),
+            "smp-periodic-balance-probe" => Ok(Self::SmpPeriodicBalanceProbe),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, gpu-benchmark, smp-probe, smp-scheduler-probe, smp-ipi-probe, or smp-service-migration-probe"
+                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, gpu-benchmark, smp-probe, smp-scheduler-probe, smp-ipi-probe, smp-service-migration-probe, or smp-periodic-balance-probe"
             )),
         }
     }
@@ -220,6 +222,7 @@ fn application_main() -> Result<()> {
             | LaunchMode::SmpSchedulerProbe
             | LaunchMode::SmpIpiProbe
             | LaunchMode::SmpServiceMigrationProbe
+            | LaunchMode::SmpPeriodicBalanceProbe
     );
     let handoff = if smp_mode {
         smp_boot_handoff(
@@ -248,7 +251,9 @@ fn application_main() -> Result<()> {
     };
     let table_pages = if matches!(
         mode,
-        LaunchMode::SmpIpiProbe | LaunchMode::SmpServiceMigrationProbe
+        LaunchMode::SmpIpiProbe
+            | LaunchMode::SmpServiceMigrationProbe
+            | LaunchMode::SmpPeriodicBalanceProbe
     ) {
         64
     } else {
@@ -288,7 +293,8 @@ fn application_main() -> Result<()> {
         LaunchMode::SmpProbe
         | LaunchMode::SmpSchedulerProbe
         | LaunchMode::SmpIpiProbe
-        | LaunchMode::SmpServiceMigrationProbe => {
+        | LaunchMode::SmpServiceMigrationProbe
+        | LaunchMode::SmpPeriodicBalanceProbe => {
             system.prepare_smp_kernel_guest::<13>(&executable, handoff.as_slice(), layout)
         }
         _ => system.prepare_kernel_guest::<13>(0, &executable, handoff.as_slice(), layout),
@@ -355,7 +361,9 @@ fn application_main() -> Result<()> {
         let ipi_probe = mode == LaunchMode::SmpIpiProbe;
         let service_migration_probe = mode == LaunchMode::SmpServiceMigrationProbe;
         let expected_bootstrap = VmExit::Io {
-            port: if scheduler_probe {
+            port: if mode == LaunchMode::SmpPeriodicBalanceProbe {
+                0x4d64
+            } else if scheduler_probe {
                 0x4d5e
             } else if ipi_probe || service_migration_probe {
                 0x4d60
@@ -367,7 +375,9 @@ fn application_main() -> Result<()> {
             value: 2,
         };
         let expected_application = VmExit::Io {
-            port: if scheduler_probe {
+            port: if mode == LaunchMode::SmpPeriodicBalanceProbe {
+                0x4d63
+            } else if scheduler_probe {
                 0x4d5f
             } else if ipi_probe {
                 0x4d61
@@ -378,7 +388,11 @@ fn application_main() -> Result<()> {
             },
             size: 4,
             write: true,
-            value: 0x0001_0001,
+            value: if mode == LaunchMode::SmpPeriodicBalanceProbe {
+                0x0001_0002
+            } else {
+                0x0001_0001
+            },
         };
         if bootstrap != expected_bootstrap || application != expected_application {
             return Err(anyhow!(

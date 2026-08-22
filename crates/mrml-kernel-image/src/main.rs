@@ -12,6 +12,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use mrml_kernel::BootPolicy;
 #[cfg(any(feature = "timer-probe", feature = "smp-scheduler-probe"))]
 use mrml_kernel::KernelScheduler;
+#[cfg(all(feature = "smp-ipi-probe", not(feature = "smp-periodic-balance-probe")))]
+use mrml_kernel::PeriodicBalancer;
 #[cfg(any(
     feature = "user-probe",
     feature = "service-probe",
@@ -41,7 +43,8 @@ use mrml_kernel::arch::x86_64::LocalApicTimer;
     feature = "timer-probe",
     feature = "preemption-probe",
     feature = "service-preemption-probe",
-    feature = "smp-scheduler-probe"
+    feature = "smp-scheduler-probe",
+    feature = "smp-periodic-balance-probe"
 ))]
 use mrml_kernel::arch::x86_64::TimerDivide;
 #[cfg(any(
@@ -95,7 +98,9 @@ use mrml_kernel::{
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
 #[cfg(feature = "smp-ipi-probe")]
-use mrml_kernel::{DetachedTaskDomain, OwnershipMailbox, PeriodicBalancer, SchedulerLoad};
+use mrml_kernel::{DetachedTaskDomain, OwnershipMailbox, SchedulerLoad};
+#[cfg(feature = "smp-periodic-balance-probe")]
+use mrml_kernel::{DomainBalanceOutcome, PeriodicDomainBalancer};
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::{Endpoint, ObjectId, Rights};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
@@ -137,7 +142,8 @@ const TIMER_TICK_PORT: u16 = 0x4d55;
     feature = "timer-probe",
     feature = "preemption-probe",
     feature = "service-preemption-probe",
-    feature = "smp-scheduler-probe"
+    feature = "smp-scheduler-probe",
+    feature = "smp-periodic-balance-probe"
 ))]
 const TIMER_VECTOR: u8 = 32;
 #[cfg(feature = "smp-ipi-probe")]
@@ -158,7 +164,8 @@ const SMP_PROBE_PORT: u16 = 0x4d5c;
     feature = "whp-smp-probe",
     feature = "whp-smp-scheduler-probe",
     feature = "whp-smp-ipi-probe",
-    feature = "whp-smp-service-migration-probe"
+    feature = "whp-smp-service-migration-probe",
+    feature = "whp-smp-periodic-balance-probe"
 ))]
 const WHP_SMP_HANDSHAKE_PORT: u16 = 0x4d5d;
 #[cfg(feature = "smp-scheduler-probe")]
@@ -169,11 +176,16 @@ const SMP_SCHEDULER_TICK_PORT: u16 = 0x4d5f;
 const SMP_IPI_READY_PORT: u16 = 0x4d60;
 #[cfg(all(
     feature = "smp-ipi-probe",
-    not(feature = "smp-service-migration-probe")
+    not(feature = "smp-service-migration-probe"),
+    not(feature = "smp-periodic-balance-probe")
 ))]
 const SMP_IPI_PROOF_PORT: u16 = 0x4d61;
 #[cfg(feature = "smp-service-migration-probe")]
 const SMP_SERVICE_MIGRATION_PROOF_PORT: u16 = 0x4d62;
+#[cfg(feature = "smp-periodic-balance-probe")]
+const SMP_PERIODIC_APPLICATION_PORT: u16 = 0x4d63;
+#[cfg(feature = "smp-periodic-balance-probe")]
+const SMP_PERIODIC_BOOTSTRAP_PORT: u16 = 0x4d64;
 #[cfg(any(
     feature = "service-probe",
     feature = "service-preemption-probe",
@@ -244,8 +256,10 @@ static AP_RESCHEDULE_REQUEST: [AtomicBool; MAX_X86_64_CPUS] =
 #[cfg(feature = "smp-ipi-probe")]
 static AP_SCHEDULER_LOAD: [AtomicU32; MAX_X86_64_CPUS] =
     [const { AtomicU32::new(0) }; MAX_X86_64_CPUS];
-#[cfg(feature = "smp-ipi-probe")]
+#[cfg(all(feature = "smp-ipi-probe", not(feature = "smp-periodic-balance-probe")))]
 struct SmpIpiRuntime(UnsafeCell<MaybeUninit<TaskRuntime<2, 1>>>);
+#[cfg(feature = "smp-periodic-balance-probe")]
+struct SmpIpiRuntime(UnsafeCell<MaybeUninit<TaskRuntime<3, 1>>>);
 #[cfg(feature = "smp-ipi-probe")]
 unsafe impl Sync for SmpIpiRuntime {}
 #[cfg(feature = "smp-ipi-probe")]
@@ -253,6 +267,35 @@ unsafe impl Sync for SmpIpiRuntime {}
 static SMP_IPI_RUNTIME: SmpIpiRuntime = SmpIpiRuntime(UnsafeCell::new(MaybeUninit::uninit()));
 #[cfg(feature = "smp-ipi-probe")]
 static SMP_MIGRATION_MAILBOX: OwnershipMailbox<DetachedTaskDomain<1>> = OwnershipMailbox::new();
+#[cfg(feature = "smp-periodic-balance-probe")]
+static SMP_LOCAL_MIGRATION_MAILBOX: OwnershipMailbox<DetachedTaskDomain<1>> =
+    OwnershipMailbox::new();
+#[cfg(feature = "smp-periodic-balance-probe")]
+struct SmpPeriodicSource(UnsafeCell<MaybeUninit<TaskRuntime<5, 1>>>);
+#[cfg(feature = "smp-periodic-balance-probe")]
+unsafe impl Sync for SmpPeriodicSource {}
+#[cfg(feature = "smp-periodic-balance-probe")]
+#[unsafe(link_section = ".data")]
+static SMP_PERIODIC_SOURCE: SmpPeriodicSource =
+    SmpPeriodicSource(UnsafeCell::new(MaybeUninit::uninit()));
+#[cfg(feature = "smp-periodic-balance-probe")]
+struct SmpPeriodicPolicy(UnsafeCell<MaybeUninit<PeriodicDomainBalancer<2, 1>>>);
+#[cfg(feature = "smp-periodic-balance-probe")]
+unsafe impl Sync for SmpPeriodicPolicy {}
+#[cfg(feature = "smp-periodic-balance-probe")]
+#[unsafe(link_section = ".data")]
+static SMP_PERIODIC_POLICY: SmpPeriodicPolicy =
+    SmpPeriodicPolicy(UnsafeCell::new(MaybeUninit::uninit()));
+#[cfg(feature = "smp-periodic-balance-probe")]
+static SMP_PERIODIC_TARGET_CPU: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(feature = "smp-periodic-balance-probe")]
+static SMP_PERIODIC_TARGET_APIC: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(feature = "smp-periodic-balance-probe")]
+#[unsafe(link_section = ".data")]
+static SMP_PERIODIC_ROUND: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "smp-periodic-balance-probe")]
+#[unsafe(link_section = ".data")]
+static SMP_PERIODIC_TIMER_TICK: AtomicU32 = AtomicU32::new(0);
 #[cfg(not(feature = "fault-probe"))]
 struct ApStartupWorkspace(UnsafeCell<MaybeUninit<ApStartupTable<MAX_X86_64_CPUS>>>);
 #[cfg(not(feature = "fault-probe"))]
@@ -498,7 +541,8 @@ unsafe extern "C" {
         feature = "timer-probe",
         feature = "preemption-probe",
         feature = "service-preemption-probe",
-        feature = "smp-scheduler-probe"
+        feature = "smp-scheduler-probe",
+        feature = "smp-periodic-balance-probe"
     ))]
     fn mrml_timer_interrupt() -> !;
     #[cfg(feature = "smp-ipi-probe")]
@@ -719,8 +763,76 @@ unsafe extern "sysv64" fn mrml_user_call_dispatch(frame: *mut UserCallFrame) {
     let _ = frame;
 }
 
+#[cfg(feature = "smp-periodic-balance-probe")]
+unsafe fn publish_periodic_balance_tick(expected_tick: u32) {
+    smp_trace(0x80u8.saturating_add(expected_tick as u8));
+    let target_cpu = SMP_PERIODIC_TARGET_CPU.load(Ordering::Acquire) as usize;
+    let target_apic = SMP_PERIODIC_TARGET_APIC.load(Ordering::Acquire);
+    if target_cpu != 1 || target_apic == u32::MAX {
+        halt();
+    }
+    let remote = AP_SCHEDULER_LOAD[target_cpu].load(Ordering::Acquire);
+    let remote_load = SchedulerLoad::new((remote >> 16) as usize, (remote & 0xffff) as usize, 3)
+        .unwrap_or_else(|| halt());
+    let runtime = unsafe { (&mut *SMP_PERIODIC_SOURCE.0.get()).assume_init_mut() };
+    let loads = [runtime.load(), remote_load];
+    let mailboxes = [&SMP_LOCAL_MIGRATION_MAILBOX, &SMP_MIGRATION_MAILBOX];
+    let policy = unsafe { (&mut *SMP_PERIODIC_POLICY.0.get()).assume_init_mut() };
+    let outcome = policy
+        .timer_tick_and_publish(0, &loads, runtime, &mailboxes)
+        .unwrap_or_else(|_| halt());
+    smp_trace(0x82u8.saturating_add(expected_tick as u8));
+    if runtime.ticks() != u64::from(expected_tick)
+        || !matches!(
+            outcome.balancing(),
+            DomainBalanceOutcome::Published(target) if target.cpu() == target_cpu
+        )
+    {
+        halt();
+    }
+    if AP_RESCHEDULE_REQUEST[target_cpu]
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        halt();
+    }
+    unsafe { ApicIpi::fixed(target_apic, RESCHEDULE_VECTOR).and_then(|ipi| ipi.send()) }
+        .unwrap_or_else(|_| halt());
+    smp_trace(0x84u8.saturating_add(expected_tick as u8));
+    while SMP_PERIODIC_ROUND.load(Ordering::Acquire) < expected_tick {
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    }
+    if SMP_PERIODIC_ROUND.load(Ordering::Acquire) != expected_tick
+        || runtime.load().runnable() != 5 - expected_tick as usize
+    {
+        halt();
+    }
+    smp_trace(0x86u8.saturating_add(expected_tick as u8));
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -> ! {
+    #[cfg(feature = "smp-periodic-balance-probe")]
+    unsafe {
+        let frame = frame.as_ref().unwrap_or_else(|| halt());
+        let normalized = frame.normalize(0, 0);
+        if normalized.vector != u64::from(TIMER_VECTOR) || normalized.cs & 3 != 0 {
+            halt();
+        }
+        let tick = SMP_PERIODIC_TIMER_TICK.fetch_add(1, Ordering::AcqRel) + 1;
+        if tick > 2 {
+            halt();
+        }
+        smp_trace(0x70u8.saturating_add(tick as u8));
+        LocalApicTimer::acknowledge();
+        asm!(
+            "sti",
+            "2:",
+            "hlt",
+            "jmp 2b",
+            options(noreturn, nomem, nostack)
+        );
+    }
     #[cfg(feature = "smp-scheduler-probe")]
     unsafe {
         let _ = frame;
@@ -815,7 +927,8 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
     #[cfg(not(any(
         feature = "preemption-probe",
         feature = "service-preemption-probe",
-        feature = "smp-scheduler-probe"
+        feature = "smp-scheduler-probe",
+        feature = "smp-periodic-balance-probe"
     )))]
     {
         #[cfg(not(feature = "timer-probe"))]
@@ -828,6 +941,8 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
 unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFrame) -> ! {
     #[cfg(feature = "smp-ipi-probe")]
     unsafe {
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        smp_trace(0x76);
         let frame = frame.as_ref().unwrap_or_else(|| halt());
         let normalized = frame.normalize(0, 0);
         if normalized.vector != u64::from(RESCHEDULE_VECTOR) || normalized.cs & 3 != 0 {
@@ -852,6 +967,8 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
         let migration = runtime
             .attach_domain(&mut ticket)
             .unwrap_or_else(|_| halt());
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        smp_trace(0x76u8.saturating_add(SMP_PERIODIC_ROUND.load(Ordering::Acquire) as u8));
         if ticket.is_some() {
             halt();
         }
@@ -859,14 +976,31 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
             halt();
         }
         let load = runtime.load();
+        #[cfg(not(feature = "smp-periodic-balance-probe"))]
         if load.occupied() != 2 || load.runnable() != 2 {
             halt();
         }
-        AP_SCHEDULER_LOAD[cpu].store(0x0002_0002, Ordering::Release);
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        let round = SMP_PERIODIC_ROUND.fetch_add(1, Ordering::AcqRel) + 1;
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        if round > 2
+            || load.occupied() != round as usize + 1
+            || load.runnable() != round as usize + 1
+        {
+            halt();
+        }
+        AP_SCHEDULER_LOAD[cpu].store(
+            ((load.occupied() as u32) << 16) | load.runnable() as u32,
+            Ordering::Release,
+        );
+        #[cfg(not(feature = "smp-periodic-balance-probe"))]
         let next = match runtime.yield_current().unwrap_or_else(|_| halt()) {
             ScheduleOutcome::Switch { to, .. } => to,
             _ => halt(),
         };
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        let next = migration.destination();
+        #[cfg(not(feature = "smp-periodic-balance-probe"))]
         if next != migration.destination() {
             halt();
         }
@@ -876,6 +1010,25 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
             halt();
         }
         LocalApicTimer::acknowledge();
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        {
+            if round == 1 {
+                asm!(
+                    "sti",
+                    "2:",
+                    "hlt",
+                    "jmp 2b",
+                    options(noreturn, nomem, nostack)
+                );
+            }
+            asm!(
+                "out dx, eax",
+                in("dx") SMP_PERIODIC_APPLICATION_PORT,
+                in("eax") ((cpu as u32) << 16) | round,
+                options(nomem, nostack)
+            );
+            halt();
+        }
         #[cfg(feature = "smp-service-migration-probe")]
         {
             if context.instruction_pointer() != SERVICE_ENTRY
@@ -889,14 +1042,20 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
                 CpuDescriptorState::entry_stack_top_from(state).unwrap_or_else(|_| halt());
             enter_user_context_on_stack(context, transition_stack)
         }
-        #[cfg(not(feature = "smp-service-migration-probe"))]
+        #[cfg(all(
+            not(feature = "smp-service-migration-probe"),
+            not(feature = "smp-periodic-balance-probe")
+        ))]
         asm!(
             "out dx, eax",
             in("dx") SMP_IPI_PROOF_PORT,
             in("eax") ((cpu as u32) << 16) | next.token() as u32,
             options(nomem, nostack)
         );
-        #[cfg(not(feature = "smp-service-migration-probe"))]
+        #[cfg(all(
+            not(feature = "smp-service-migration-probe"),
+            not(feature = "smp-periodic-balance-probe")
+        ))]
         halt();
     }
     #[cfg(not(feature = "smp-ipi-probe"))]
@@ -1126,7 +1285,8 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
         feature = "whp-smp-probe",
         feature = "whp-smp-scheduler-probe",
         feature = "whp-smp-ipi-probe",
-        feature = "whp-smp-service-migration-probe"
+        feature = "whp-smp-service-migration-probe",
+        feature = "whp-smp-periodic-balance-probe"
     ))]
     unsafe {
         asm!(
@@ -1186,7 +1346,10 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
             0x0000_7000_0000_0000,
         )
         .unwrap_or_else(|_| halt());
+        #[cfg(not(feature = "smp-periodic-balance-probe"))]
         let mut runtime = TaskRuntime::<2, 1>::new(1_000, 1).unwrap_or_else(|_| halt());
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        let mut runtime = TaskRuntime::<3, 1>::new(1_000, 1).unwrap_or_else(|_| halt());
         let first = runtime
             .create(Priority::NORMAL, context)
             .unwrap_or_else(|_| halt());
@@ -1216,6 +1379,15 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
             in("eax") ((cpu as u32) << 16) | generation,
             options(nomem, nostack)
         );
+        #[cfg(feature = "smp-periodic-balance-probe")]
+        {
+            while SMP_PERIODIC_TARGET_APIC.load(Ordering::Acquire) == u32::MAX {
+                core::sync::atomic::compiler_fence(Ordering::SeqCst);
+            }
+            LocalApicTimer::periodic(TIMER_VECTOR, 1_000_000, TimerDivide::By16)
+                .and_then(|timer| timer.enable())
+                .unwrap_or_else(|_| halt());
+        }
         asm!(
             "sti",
             "2:",
@@ -1352,6 +1524,66 @@ unsafe fn start_application_processors(topology: &X86CpuTopology, handoff: &Boot
 }
 
 #[cfg(all(not(feature = "fault-probe"), feature = "smp-ipi-probe"))]
+#[cfg(feature = "smp-periodic-balance-probe")]
+unsafe fn initialize_periodic_balance_probe(
+    topology_len: usize,
+    cpu: usize,
+    destination: u32,
+    root: PhysAddr,
+) {
+    if topology_len != 2 || cpu != 1 {
+        halt();
+    }
+    let mut source = TaskRuntime::<5, 1>::new(1_000, 10).unwrap_or_else(|_| halt());
+    let first = source
+        .create(
+            Priority::NORMAL,
+            UserContext::new(root, 0x0040_0000, 0x0000_7000_0000_0000).unwrap_or_else(|_| halt()),
+        )
+        .unwrap_or_else(|_| halt());
+    for index in 0..4u64 {
+        source
+            .create(
+                Priority::RESPONSIVE,
+                UserContext::new(root, 0x0050_0000, 0x0000_7000_0000_1000 + index * 0x1000)
+                    .unwrap_or_else(|_| halt()),
+            )
+            .unwrap_or_else(|_| halt());
+    }
+    if !matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == first) {
+        halt();
+    }
+    unsafe { (*SMP_PERIODIC_SOURCE.0.get()).write(source) };
+    unsafe {
+        (*SMP_PERIODIC_POLICY.0.get())
+            .write(PeriodicDomainBalancer::<2, 1>::new(0, 1).unwrap_or_else(|_| halt()))
+    };
+    SMP_PERIODIC_TARGET_CPU.store(cpu as u32, Ordering::Release);
+    SMP_PERIODIC_TARGET_APIC.store(destination, Ordering::Release);
+}
+
+#[cfg(feature = "smp-periodic-balance-probe")]
+unsafe fn run_periodic_balance_probe() -> ! {
+    unsafe { LocalApicController::enable() }.unwrap_or_else(|_| halt());
+    smp_trace(0x70);
+    for expected_tick in 1..=2 {
+        while SMP_PERIODIC_TIMER_TICK.load(Ordering::Acquire) < expected_tick {
+            core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        }
+        unsafe { publish_periodic_balance_tick(expected_tick) };
+    }
+    unsafe {
+        asm!(
+            "out dx, eax",
+            in("dx") SMP_PERIODIC_BOOTSTRAP_PORT,
+            in("eax") 2u32,
+            options(nomem, nostack)
+        )
+    };
+    halt();
+}
+
+#[cfg(all(not(feature = "fault-probe"), feature = "smp-ipi-probe"))]
 unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
     let bsp_apic_id = current_apic_id().unwrap_or_else(|| halt());
     let mut target = None;
@@ -1367,7 +1599,12 @@ unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
         }
     }
     let (cpu, destination) = target.unwrap_or_else(|| halt());
+    #[cfg(not(feature = "smp-periodic-balance-probe"))]
     let bsp_cpu = bsp_cpu.unwrap_or_else(|| halt());
+    #[cfg(feature = "smp-periodic-balance-probe")]
+    if bsp_cpu.is_none() {
+        halt();
+    }
     let timing = ap_startup_timing().unwrap_or_else(|| halt());
     for _ in 0..1_000 {
         if AP_IPI_READY[cpu].load(Ordering::Acquire) {
@@ -1378,79 +1615,94 @@ unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
     if !AP_IPI_READY[cpu].load(Ordering::Acquire) {
         halt();
     }
-    let remote = AP_SCHEDULER_LOAD[cpu].load(Ordering::Acquire);
-    let remote_load = SchedulerLoad::new((remote >> 16) as usize, (remote & 0xffff) as usize, 2)
-        .unwrap_or_else(|| halt());
+    #[cfg(not(feature = "smp-periodic-balance-probe"))]
+    let remote_load = {
+        let remote = AP_SCHEDULER_LOAD[cpu].load(Ordering::Acquire);
+        SchedulerLoad::new((remote >> 16) as usize, (remote & 0xffff) as usize, 2)
+            .unwrap_or_else(|| halt())
+    };
     let page_table: u64;
     unsafe { asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags)) };
     let root = PhysAddr::new(page_table).unwrap_or_else(|_| halt());
-    let mut source = TaskRuntime::<3, 1>::new(1_000, 1).unwrap_or_else(|_| halt());
-    let first = source
-        .create(
-            Priority::NORMAL,
-            UserContext::new(root, 0x0040_0000, 0x0000_7000_0000_0000).unwrap_or_else(|_| halt()),
-        )
-        .unwrap_or_else(|_| halt());
-    #[cfg(feature = "smp-service-migration-probe")]
-    let responsive_context = UserContext::new(
-        PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
-        SERVICE_ENTRY,
-        SERVICE_STACK_TOP,
-    )
-    .unwrap_or_else(|_| halt());
-    #[cfg(not(feature = "smp-service-migration-probe"))]
-    let responsive_context =
-        UserContext::new(root, 0x0050_0000, 0x0000_7000_0000_1000).unwrap_or_else(|_| halt());
-    source
-        .create(Priority::RESPONSIVE, responsive_context)
-        .unwrap_or_else(|_| halt());
-    source
-        .create(
-            Priority::BACKGROUND,
-            UserContext::new(root, 0x0060_0000, 0x0000_7000_0000_2000).unwrap_or_else(|_| halt()),
-        )
-        .unwrap_or_else(|_| halt());
-    if !matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == first) {
-        halt();
-    }
-    if topology.len() != 2 || bsp_cpu >= 2 || cpu >= 2 {
-        halt();
-    }
-    let unavailable = SchedulerLoad::new(0, 0, 0).unwrap_or_else(|| halt());
-    let mut loads = [unavailable; 2];
-    loads[bsp_cpu] = source.load();
-    loads[cpu] = remote_load;
-    let mut policy = PeriodicBalancer::<2>::new(0, 1).unwrap_or_else(|_| halt());
-    let selected = policy
-        .poll(1, bsp_cpu, &loads)
-        .unwrap_or_else(|_| halt())
-        .unwrap_or_else(|| halt());
-    if selected.cpu() != cpu || selected.load() != remote_load {
-        halt();
-    }
-    let detached = source
-        .detach_domain_for_rebalance(selected.load())
-        .unwrap_or_else(|_| halt())
-        .unwrap_or_else(|| halt());
-    if source.load().runnable() != 2 || SMP_MIGRATION_MAILBOX.publish(detached).is_err() {
-        halt();
-    }
-    if AP_RESCHEDULE_REQUEST[cpu]
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
+    #[cfg(feature = "smp-periodic-balance-probe")]
     {
-        halt();
+        unsafe {
+            initialize_periodic_balance_probe(topology.len(), cpu, destination, root);
+            run_periodic_balance_probe();
+        }
     }
-    unsafe { ApicIpi::fixed(destination, RESCHEDULE_VECTOR).and_then(|ipi| ipi.send()) }
-        .unwrap_or_else(|_| halt());
-    unsafe {
-        asm!(
-            "out dx, eax",
-            in("dx") SMP_IPI_READY_PORT,
-            in("eax") topology.len() as u32,
-            options(nomem, nostack)
+    #[cfg(not(feature = "smp-periodic-balance-probe"))]
+    {
+        let mut source = TaskRuntime::<3, 1>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let first = source
+            .create(
+                Priority::NORMAL,
+                UserContext::new(root, 0x0040_0000, 0x0000_7000_0000_0000)
+                    .unwrap_or_else(|_| halt()),
+            )
+            .unwrap_or_else(|_| halt());
+        #[cfg(feature = "smp-service-migration-probe")]
+        let responsive_context = UserContext::new(
+            PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
+            SERVICE_ENTRY,
+            SERVICE_STACK_TOP,
         )
-    };
+        .unwrap_or_else(|_| halt());
+        #[cfg(not(feature = "smp-service-migration-probe"))]
+        let responsive_context =
+            UserContext::new(root, 0x0050_0000, 0x0000_7000_0000_1000).unwrap_or_else(|_| halt());
+        source
+            .create(Priority::RESPONSIVE, responsive_context)
+            .unwrap_or_else(|_| halt());
+        source
+            .create(
+                Priority::BACKGROUND,
+                UserContext::new(root, 0x0060_0000, 0x0000_7000_0000_2000)
+                    .unwrap_or_else(|_| halt()),
+            )
+            .unwrap_or_else(|_| halt());
+        if !matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == first) {
+            halt();
+        }
+        if topology.len() != 2 || bsp_cpu >= 2 || cpu >= 2 {
+            halt();
+        }
+        let unavailable = SchedulerLoad::new(0, 0, 0).unwrap_or_else(|| halt());
+        let mut loads = [unavailable; 2];
+        loads[bsp_cpu] = source.load();
+        loads[cpu] = remote_load;
+        let mut policy = PeriodicBalancer::<2>::new(0, 1).unwrap_or_else(|_| halt());
+        let selected = policy
+            .poll(1, bsp_cpu, &loads)
+            .unwrap_or_else(|_| halt())
+            .unwrap_or_else(|| halt());
+        if selected.cpu() != cpu || selected.load() != remote_load {
+            halt();
+        }
+        let detached = source
+            .detach_domain_for_rebalance(selected.load())
+            .unwrap_or_else(|_| halt())
+            .unwrap_or_else(|| halt());
+        if source.load().runnable() != 2 || SMP_MIGRATION_MAILBOX.publish(detached).is_err() {
+            halt();
+        }
+        if AP_RESCHEDULE_REQUEST[cpu]
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            halt();
+        }
+        unsafe { ApicIpi::fixed(destination, RESCHEDULE_VECTOR).and_then(|ipi| ipi.send()) }
+            .unwrap_or_else(|_| halt());
+        unsafe {
+            asm!(
+                "out dx, eax",
+                in("dx") SMP_IPI_READY_PORT,
+                in("eax") topology.len() as u32,
+                options(nomem, nostack)
+            )
+        };
+    }
 }
 
 #[cfg(not(feature = "fault-probe"))]
@@ -2236,7 +2488,8 @@ unsafe fn install_descriptor_state(
         feature = "timer-probe",
         feature = "preemption-probe",
         feature = "service-preemption-probe",
-        feature = "smp-scheduler-probe"
+        feature = "smp-scheduler-probe",
+        feature = "smp-periodic-balance-probe"
     ))]
     if unsafe {
         state.install_external(

@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "Verified standalone MRML GPU benchmark launcher for WHP"
 
+[features]
+default = ["cuda"]
+cuda = ["dep:mrml-tensor"]
+
 [[bin]]
 name = "mrml-whp-run"
 path = "src/main.rs"
@@ -18,4 +22,4 @@ mrml-runtime = { path = "../mrml-runtime" }
 mrml-whp = { path = "../mrml-whp" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-mrml-tensor = { path = "../mrml-tensor", features = ["cuda"] }
+mrml-tensor = { path = "../mrml-tensor", features = ["cuda"], optional = true }
