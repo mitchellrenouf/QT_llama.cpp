@@ -495,7 +495,13 @@ impl Encoder {
             mode
         };
         let result = match selected {
-            EncoderMode::Silk => self.encode_silk_with_bitrate(input, sample_rate, output, bitrate),
+            EncoderMode::Silk => {
+                if automatic && self.last_encoded_mode == Some(Mode::Celt) {
+                    self.encode_silk_transition_with_bitrate(input, sample_rate, output, bitrate)
+                } else {
+                    self.encode_silk_with_bitrate(input, sample_rate, output, bitrate)
+                }
+            }
             EncoderMode::Hybrid => {
                 let payload = payload_bytes_for_bitrate(bitrate)?;
                 if automatic && self.last_encoded_mode == Some(Mode::Celt) {
@@ -957,6 +963,55 @@ impl Encoder {
             }
         }
         Err(Error::InvalidPacket)
+    }
+
+    fn encode_silk_transition_with_bitrate(
+        &mut self,
+        input: &[i16],
+        sample_rate: u32,
+        output: &mut [u8],
+        bitrate: u32,
+    ) -> Result<usize, Error> {
+        let target = usize::try_from(bitrate.div_ceil(400))
+            .map_err(|_| Error::InvalidPacket)?
+            .clamp(2, MAX_FRAME_BYTES + 1);
+        let transition_frames = sample_rate as usize / 200;
+        let transition_samples = transition_frames * usize::from(self.channels);
+        let mut transition_input = [0i16; 480];
+        transition_input[..transition_samples].copy_from_slice(&input[..transition_samples]);
+        let redundancy_bytes = if self.channels == 2 { 32 } else { 16 };
+        let mut redundant_packet = [0u8; 65];
+        let redundant = Encoder::new(self.channels)?.encode_celt_with_payload(
+            &transition_input[..transition_samples],
+            sample_rate,
+            &mut redundant_packet,
+            redundancy_bytes,
+            1,
+            Bandwidth::Full,
+        );
+        if let Ok(redundant_size) = redundant {
+            let mut transitioned = [0u8; MAX_FRAME_BYTES + 1];
+            let mut trial = Encoder::new(self.channels)?;
+            trial.seed = self.seed;
+            if let Ok(size) = trial.encode_silk_with_redundancy(
+                input,
+                sample_rate,
+                Bandwidth::Narrow,
+                20_000,
+                &redundant_packet[1..redundant_size],
+                true,
+                &mut transitioned,
+            ) && size <= target
+                && output.len() >= size
+            {
+                output[..size].copy_from_slice(&transitioned[..size]);
+                self.silk = trial.silk;
+                self.silk_stereo = trial.silk_stereo;
+                self.seed = trial.seed;
+                return Ok(size);
+            }
+        }
+        self.encode_silk_with_bitrate(input, sample_rate, output, bitrate)
     }
 
     /// Encodes exactly 20 ms as a fullband CELT packet.
@@ -3661,6 +3716,54 @@ mod tests {
             .unwrap();
         assert_eq!(
             decoder.decode(&hybrid_packet[..hybrid_size], &mut decoded, 48_000),
+            Ok(960)
+        );
+    }
+
+    #[test]
+    fn automatic_celt_to_silk_transition_inserts_beginning_redundancy() {
+        let mut input = [0i16; 960];
+        input[100] = 12_000;
+        let mut encoder = Encoder::new(1).unwrap();
+        let mut celt_packet = [0u8; MAX_FRAME_BYTES + 1];
+        let celt_size = encoder
+            .encode_mode(EncoderMode::Auto, 64_000, &input, 48_000, &mut celt_packet)
+            .unwrap();
+        assert_eq!(
+            Packet::parse(&celt_packet[..celt_size]).unwrap().mode,
+            Mode::Celt
+        );
+
+        let mut silk_packet = [0u8; MAX_FRAME_BYTES + 1];
+        let silk_size = encoder
+            .encode_mode(EncoderMode::Auto, 19_000, &input, 48_000, &mut silk_packet)
+            .unwrap();
+        assert!(silk_size <= 19_000u32.div_ceil(400) as usize);
+        let parsed = Packet::parse(&silk_packet[..silk_size]).unwrap();
+        assert_eq!(parsed.mode, Mode::Silk);
+        let frame = parsed.frames[0];
+        let start = usize::from(frame.offset);
+        let end = start + usize::from(frame.len);
+        let mut range = RangeDecoder::new(&silk_packet[start..end]);
+        let mut silk = [0.0f32; 160];
+        let mut fec = [0.0f32; 160];
+        silk_packet::MonoPayloadDecoder::new()
+            .decode_range(&mut range, Bandwidth::Narrow, 20, &mut silk, &mut fec)
+            .unwrap();
+        let info = transition::decode_header(&mut range, Mode::Silk, usize::from(frame.len))
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.position, transition::RedundancyPosition::Beginning);
+        assert_eq!(info.len, 16);
+
+        let mut decoder = Decoder::new(1).unwrap();
+        let mut decoded = [0i16; 960];
+        assert_eq!(
+            decoder.decode(&celt_packet[..celt_size], &mut decoded, 48_000),
+            Ok(960)
+        );
+        assert_eq!(
+            decoder.decode(&silk_packet[..silk_size], &mut decoded, 48_000),
             Ok(960)
         );
     }
