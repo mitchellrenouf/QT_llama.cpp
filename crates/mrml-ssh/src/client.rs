@@ -1,6 +1,6 @@
 use core::fmt;
 use mrml_runtime::{TcpStream,Vector};
-use crate::{EncryptedPacketReader,EncryptedPacketWriter,Identification,ProtocolError,decode_plain_packet,encode_plain_packet,parse_identification};
+use crate::{BinaryReader,BinaryWriter,EncryptedPacketReader,EncryptedPacketWriter,Identification,ProtocolError,RsaPrivateKey,build_kex_init,build_publickey_auth,decode_plain_packet,derive_exchange_keys,encode_plain_packet,negotiate_kex_init,parse_identification,verify_rsa_sha2_256};
 
 const CLIENT_ID:&[u8]=b"SSH-2.0-mrml_0.4\r\n";
 const MAX_BANNER:usize=50*257;
@@ -13,6 +13,32 @@ impl SshWire{
  pub fn send(&mut self,payload:&[u8])->Result<(),WireError>{let packet=match self.writer.as_mut(){Some(writer)=>writer.encode(payload),None=>encode_plain_packet(payload,8)}.map_err(WireError::Protocol)?;self.stream.write_all(&packet).map_err(|_|WireError::Write)}
  pub fn receive(&mut self)->Result<Vector<u8>,WireError>{if let Some(reader)=self.reader.as_mut(){let mut first=[0u8;16];self.stream.read_exact(&mut first).map_err(|_|WireError::Read)?;let total=reader.wire_length(&first).map_err(WireError::Protocol)?;let mut wire=Vector::new();wire.extend(first);wire.try_resize(total,0).map_err(|_|WireError::Protocol(ProtocolError::Length))?;self.stream.read_exact(&mut wire[16..]).map_err(|_|WireError::Read)?;reader.decode(&wire).map(|pair|pair.0).map_err(WireError::Protocol)}else{let mut header=[0u8;4];self.stream.read_exact(&mut header).map_err(|_|WireError::Read)?;let length=u32::from_be_bytes(header)as usize;if length<6||length>1024*1024+256{return Err(WireError::Protocol(ProtocolError::InvalidPacket));}let total=length+4;let mut wire=Vector::new();wire.extend(header);wire.try_resize(total,0).map_err(|_|WireError::Protocol(ProtocolError::Length))?;self.stream.read_exact(&mut wire[4..]).map_err(|_|WireError::Read)?;let(payload,_)=decode_plain_packet(&wire,8).map_err(WireError::Protocol)?;let mut owned=Vector::new();owned.extend(payload.iter().copied());Ok(owned)}}
 }
+
+pub struct AuthenticatedSsh{pub wire:SshWire,pub session_id:[u8;32]}
+impl AuthenticatedSsh{
+ pub fn connect(host:&str,port:u16,user:&str,key:&RsaPrivateKey,expected_host_key:&[u8])->Result<Self,WireError>{
+  let(mut wire,server_id)=SshWire::connect(host,port)?;
+  let client_kex=build_kex_init().map_err(WireError::Protocol)?;wire.send(&client_kex)?;
+  let server_kex=wire.receive()?;negotiate_kex_init(&server_kex).map_err(WireError::Protocol)?;
+  let mut secret=[0u8;32];mrml_runtime::fill_random(&mut secret).map_err(|_|WireError::Protocol(ProtocolError::Entropy))?;
+  let client_public=mrml_crypto::x25519_public(secret);
+  let mut init=BinaryWriter::new();init.byte(30);init.string(&client_public).map_err(WireError::Protocol)?;wire.send(&init.finish())?;
+  let reply=wire.receive()?;let mut reader=BinaryReader::new(&reply);if reader.byte().map_err(WireError::Protocol)?!=31{return Err(WireError::Protocol(ProtocolError::InvalidPacket));}let host_key=reader.string().map_err(WireError::Protocol)?;let server_public_slice=reader.string().map_err(WireError::Protocol)?;let server_public:[u8;32]=server_public_slice.try_into().map_err(|_|WireError::Protocol(ProtocolError::InvalidPublicKey))?;let signature=reader.string().map_err(WireError::Protocol)?;if reader.remaining()!=0||!constant_time_equal(host_key,expected_host_key){return Err(WireError::Protocol(ProtocolError::Authentication));}
+  let client_id=&CLIENT_ID[..CLIENT_ID.len()-2];let server_line=identification_line(&server_id);let transcript=transcript(client_id,&server_line,&client_kex,&server_kex,host_key,&client_public,&server_public).map_err(WireError::Protocol)?;
+  let keys=derive_exchange_keys(secret,server_public,&[&transcript],None).map_err(WireError::Protocol)?;
+  verify_rsa_sha2_256(host_key,&keys.exchange_hash,signature).map_err(WireError::Protocol)?;
+  wire.send(&[21])?;let newkeys=wire.receive()?;if &*newkeys!=[21]{return Err(WireError::Protocol(ProtocolError::InvalidPacket));}
+  let mut client_key=[0u8;16];client_key.copy_from_slice(&keys.client_key[..16]);let mut server_key=[0u8;16];server_key.copy_from_slice(&keys.server_key[..16]);
+  wire.enable_encryption(EncryptedPacketReader::new(server_key,keys.server_iv,keys.server_mac),EncryptedPacketWriter::new(client_key,keys.client_iv,keys.client_mac));
+  let mut service=BinaryWriter::new();service.byte(5);service.string(b"ssh-userauth").map_err(WireError::Protocol)?;wire.send(&service.finish())?;let accepted=wire.receive()?;let mut accepted_reader=BinaryReader::new(&accepted);if accepted_reader.byte().map_err(WireError::Protocol)?!=6||accepted_reader.text().map_err(WireError::Protocol)?!="ssh-userauth"||accepted_reader.remaining()!=0{return Err(WireError::Protocol(ProtocolError::Authentication));}
+  let auth=build_publickey_auth(&keys.exchange_hash,user,key).map_err(WireError::Protocol)?;wire.send(&auth)?;let response=wire.receive()?;if response.first().copied()!=Some(52){return Err(WireError::Protocol(ProtocolError::Authentication));}
+  Ok(Self{wire,session_id:keys.exchange_hash})
+ }
+}
+
+fn identification_line(id:&Identification)->Vector<u8>{let mut line=mrml_runtime::mrml_format!("SSH-{}-{}",id.protocol,id.software);if let Some(comments)=&id.comments{line.push(' ');line.push_str(comments);}let mut bytes=Vector::new();bytes.extend(line.bytes());bytes}
+fn transcript(client_id:&[u8],server_id:&[u8],client_kex:&[u8],server_kex:&[u8],host_key:&[u8],client_public:&[u8],server_public:&[u8])->Result<Vector<u8>,ProtocolError>{let mut w=BinaryWriter::new();for value in [client_id,server_id,client_kex,server_kex,host_key,client_public,server_public]{w.string(value)?;}Ok(w.finish())}
+fn constant_time_equal(left:&[u8],right:&[u8])->bool{let same_length=left.len()==right.len();let mut difference=0u8;let length=left.len().max(right.len());for index in 0..length{difference|=left.get(index).copied().unwrap_or(0)^right.get(index).copied().unwrap_or(0);}same_length&&difference==0}
 
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub enum WireError{Connect,Timeout,Read,Write,Protocol(ProtocolError)}
 impl fmt::Display for WireError{fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result{match self{Self::Protocol(error)=>write!(f,"{error}"),Self::Connect=>f.write_str("failed to connect SSH TCP stream"),Self::Timeout=>f.write_str("failed to configure SSH timeout"),Self::Read=>f.write_str("failed to read SSH stream"),Self::Write=>f.write_str("failed to write SSH stream")}}}
