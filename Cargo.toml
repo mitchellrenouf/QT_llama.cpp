@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mrml-rustc",
+    "crates/mrml-rustc-driver",
     "crates/mrml-kernel-image",
     "crates/mrml-service-image",
     "crates/mrml-uefi",

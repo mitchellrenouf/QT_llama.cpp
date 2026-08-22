@@ -833,6 +833,7 @@ space, network use, and VRAM before accepting a download.
 | --- | --- | --- |
 | `mrml-cli` | `mrml-cli` | Interactive and one-shot terminal frontend |
 | `mrml-git` | `mrml-git` | Dependency-free Git workspace client |
+| `mrml-rustc-driver` | `mrml-rustc` | Experimental dependency-free Rust source-to-object compiler |
 | `mrml-machine` | `mrml-machine` | Stable JSONL automation and benchmark frontend |
 | `mrml-server` | `mrml-server` | OpenAI-compatible HTTPS/SSE server |
 | `mrml-uefi` | `mrml-loader.efi` | Minimal original x86_64 UEFI boot stage |
@@ -849,6 +850,15 @@ cargo run --release -p mrml-cli --features cuda -- --model C:\path\to\model.gguf
 
 # Show the current branch, HEAD, and staged/unstaged workspace pulse
 cargo run --release -p mrml-git
+
+# Compile a supported `#[unsafe(no_mangle)] pub extern "C"` expression-bodied
+# Rust function to an object
+cargo run --release -p mrml-rustc-driver --bin mrml-rustc -- `
+  --emit coff --function answer input.rs -o answer.obj
+
+# Select rustc-compatible wrapping arithmetic and unchecked shift-distance mode
+cargo run --release -p mrml-rustc-driver --bin mrml-rustc -- `
+  --emit coff --function answer -C overflow-checks=no input.rs -o answer.obj
 
 # OpenAI-compatible HTTPS server. The PEM certificate must contain the full
 # chain and the unencrypted key must be PKCS #8 or PKCS #1 RSA.

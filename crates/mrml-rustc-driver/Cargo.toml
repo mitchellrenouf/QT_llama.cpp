@@ -1,0 +1,16 @@
+[package]
+name = "mrml-rustc-driver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Dependency-free command-line compiler driver for MRML Rust"
+
+[[bin]]
+name = "mrml-rustc"
+path = "src/main.rs"
+
+[dependencies]
+mrml-error = { path = "../mrml-error" }
+mrml-runtime = { path = "../mrml-runtime" }
+mrml-rustc = { path = "../mrml-rustc" }

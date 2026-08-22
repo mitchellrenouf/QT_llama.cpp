@@ -154,6 +154,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrml-rustc"
+version = "0.4.0"
+
+[[package]]
+name = "mrml-rustc-driver"
+version = "0.4.0"
+dependencies = [
+ "mrml-error",
+ "mrml-runtime",
+ "mrml-rustc",
+]
+
+[[package]]
 name = "mrml-server"
 version = "0.4.0"
 dependencies = [

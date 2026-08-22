@@ -1,0 +1,9 @@
+[package]
+name = "mrml-rustc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Original dependency-free Rust compiler implementation for MRML"
+
+[dependencies]
