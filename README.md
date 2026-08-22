@@ -333,11 +333,17 @@ the mapping is absent. After an acknowledged AP has left the page, the opaque
 installed token can also transition that exact RX mapping back to RW/NX and
 zero it before binding the same scarce low page to the next AP. WHP exercises
 the complete seal, denied-write, zeroed-rearm, and restored-staging sequence
-against the live hypervisor. Wiring that adapter to a relocated AP entry with
-firmware-provisioned AP-private stacks, the KVM page backend, per-CPU interrupt
-routing, and a live
-multi-vCPU scheduling proof remain unfinished; the repository does not claim
-SMP execution yet. Platform-backed
+against the live hypervisor. The PE kernel's BSP now launches each discovered
+AP through directed INIT/SIPI, a sealed low trampoline, and a generational
+acknowledgement. Each AP receives its CPU index, startup generation, and private
+stack base, enables NX before adopting the shared CR3, installs a CPU-private
+GDT/IDT/TSS with guarded entry and double-fault stacks, and only then publishes
+online. The BSP zeroes and unmaps the trampoline after the final
+acknowledgement. A freshly signed two-vCPU QEMU 11.1 TCG/UEFI image completed
+this sequence on Windows; both CPUs halted in kernel-owned code with distinct
+descriptor tables and the same CR3. KVM/WHP multi-vCPU execution, per-CPU
+interrupt routing, and live SMP scheduling proofs remain unfinished.
+Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested
 service exit, generational ownership, and domain revocation are now

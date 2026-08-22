@@ -1,6 +1,8 @@
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use super::{ActivePageTables, Mapping, PAGE_SIZE, PagePermissions, PhysAddr, VirtAddr};
+use super::{
+    ActivePageTables, EARLY_STACK_PAGES, Mapping, PAGE_SIZE, PagePermissions, PhysAddr, VirtAddr,
+};
 
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
 const LONG_MODE_OFFSET: usize = 80;
@@ -8,7 +10,7 @@ const GDTR_OFFSET: usize = 160;
 const GDT_OFFSET: usize = 168;
 const GDT_CODE_SELECTOR: u16 = 8;
 const GDT_DATA_SELECTOR: u16 = 16;
-const EARLY_STACK_BYTES: u64 = 6 * PAGE_SIZE;
+const EARLY_STACK_BYTES: u64 = EARLY_STACK_PAGES * PAGE_SIZE;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApTrampolineError {
@@ -309,8 +311,8 @@ impl ApTrampolineImage {
         emit(
             &mut bytes,
             &mut cursor,
-            &[0x66, 0x0d, 0x00, 0x01, 0x00, 0x00],
-        ); // LME
+            &[0x66, 0x0d, 0x00, 0x09, 0x00, 0x00],
+        ); // LME | NXE
         emit(&mut bytes, &mut cursor, &[0x0f, 0x30]); // wrmsr
         emit(&mut bytes, &mut cursor, &[0x0f, 0x20, 0xc0]); // mov eax, cr0
         emit(
@@ -451,6 +453,10 @@ mod tests {
         assert_eq!(image.startup_vector(), 8);
         assert_eq!(&image.bytes()[33..37], &0x20_0000u32.to_le_bytes());
         assert_eq!(
+            &image.bytes()[48..54],
+            &[0x66, 0x0d, 0x00, 0x09, 0x00, 0x00]
+        );
+        assert_eq!(
             &image.bytes()[92..100],
             &0xffff_8000_0020_fff8u64.to_le_bytes()
         );
@@ -458,7 +464,7 @@ mod tests {
         assert_eq!(&image.bytes()[112..120], &9u64.to_le_bytes());
         assert_eq!(
             &image.bytes()[122..130],
-            &0xffff_8000_0020_a000u64.to_le_bytes()
+            &0xffff_8000_0020_0000u64.to_le_bytes()
         );
         assert_eq!(
             &image.bytes()[132..140],
@@ -477,11 +483,11 @@ mod tests {
             Some(ApTrampolineError::InvalidPhysicalPage)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2001, 0x1000, 0x9ff8, 0, 1).err(),
+            ApTrampolineImage::new(0x8000, 0x2001, 0x1000, 0x10ff8, 0, 1).err(),
             Some(ApTrampolineError::InvalidPageTable)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2000, 0x0000_8000_0000_0000, 0x9ff8, 0, 1).err(),
+            ApTrampolineImage::new(0x8000, 0x2000, 0x0000_8000_0000_0000, 0x10ff8, 0, 1).err(),
             Some(ApTrampolineError::InvalidEntry)
         );
         assert_eq!(
@@ -489,11 +495,11 @@ mod tests {
             Some(ApTrampolineError::InvalidStack)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x9ff8, 256, 1).err(),
+            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x10ff8, 256, 1).err(),
             Some(ApTrampolineError::InvalidCpu)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x9ff8, 1, 0).err(),
+            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x10ff8, 1, 0).err(),
             Some(ApTrampolineError::InvalidGeneration)
         );
     }
@@ -566,7 +572,7 @@ mod tests {
 
     #[test]
     fn installation_is_write_xor_execute_and_failure_revokes() {
-        let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x9ff8, 1, 1).unwrap();
+        let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x10ff8, 1, 1).unwrap();
         let mut page = Page::writable();
         let installed = image.install(&mut page).unwrap();
         assert_eq!(installed.physical(), 0x8000);

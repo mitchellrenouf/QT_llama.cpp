@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+#[cfg(not(feature = "fault-probe"))]
+use core::arch::x86_64::{__cpuid, __cpuid_count};
 use core::arch::{asm, global_asm};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -36,9 +38,14 @@ use mrml_kernel::arch::x86_64::UserContext;
 use mrml_kernel::arch::x86_64::enter_user_context;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
+#[cfg(not(feature = "fault-probe"))]
+use mrml_kernel::arch::x86_64::{
+    ActiveApTrampolinePage, ActivePageTables, ApStartupTable, ApStartupTiming, ApTrampolineImage,
+    ApTrampolinePage, ApicIpi, PerCpuPrivilegeStacks, X86CpuTopology,
+};
 use mrml_kernel::arch::x86_64::{
     ApOnlineTable, CpuDescriptorState, HardwareTrapFrame, MAX_X86_64_CPUS,
-    PRIVILEGE_STACK_ARENA_PAGES, PerCpuPrivilegeStacks, PrivilegeStackLayout, X86CpuTopology,
+    PRIVILEGE_STACK_ARENA_PAGES, PrivilegeStackLayout,
 };
 #[cfg(any(
     feature = "timer-probe",
@@ -132,6 +139,13 @@ unsafe impl Sync for ApDescriptorSlots {}
 static AP_DESCRIPTORS: ApDescriptorSlots =
     ApDescriptorSlots([const { UnsafeCell::new(MaybeUninit::uninit()) }; MAX_X86_64_CPUS]);
 static AP_ONLINE: ApOnlineTable<MAX_X86_64_CPUS> = ApOnlineTable::empty();
+#[cfg(not(feature = "fault-probe"))]
+struct ApStartupWorkspace(UnsafeCell<MaybeUninit<ApStartupTable<MAX_X86_64_CPUS>>>);
+#[cfg(not(feature = "fault-probe"))]
+unsafe impl Sync for ApStartupWorkspace {}
+#[cfg(not(feature = "fault-probe"))]
+static AP_STARTUP_WORKSPACE: ApStartupWorkspace =
+    ApStartupWorkspace(UnsafeCell::new(MaybeUninit::uninit()));
 #[cfg(feature = "timer-probe")]
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 #[cfg(any(feature = "preemption-probe", feature = "service-preemption-probe"))]
@@ -822,8 +836,164 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
 }
 
 #[cfg(not(feature = "fault-probe"))]
+unsafe fn start_application_processors(topology: &X86CpuTopology, handoff: &BootHandoff) {
+    smp_trace(0x10);
+    let bsp_apic_id = current_apic_id().unwrap_or_else(|| halt());
+    // The BSP is the sole writer during one-way early boot. Keeping the full
+    // 256-CPU state table out of its guarded early stack leaves enough space
+    // for the sealed trampoline image and nested topology parsing frame.
+    let startup_storage = unsafe { &mut *AP_STARTUP_WORKSPACE.0.get() };
+    let startup =
+        ApStartupTable::<MAX_X86_64_CPUS>::initialize(startup_storage, topology, bsp_apic_id)
+            .unwrap_or_else(|_| halt());
+    smp_trace(0x11);
+    let timing = ap_startup_timing().unwrap_or_else(|| halt());
+    smp_trace(0x12);
+    let root = unsafe { ActivePageTables::current() }
+        .map(|tables| tables.root().get())
+        .unwrap_or_else(|_| halt());
+    let trampoline = handoff.ap_trampoline().unwrap_or_else(|| halt());
+    let stack_base = handoff.ap_stack_arena().unwrap_or_else(|| halt());
+    let stacks = PerCpuPrivilegeStacks::<MAX_X86_64_CPUS>::new(
+        stack_base,
+        stack_base,
+        PRIVILEGE_STACK_ARENA_PAGES,
+    )
+    .unwrap_or_else(|_| halt());
+    let mut page =
+        unsafe { ActiveApTrampolinePage::current(trampoline) }.unwrap_or_else(|_| halt());
+    smp_trace(0x13);
+
+    for cpu in 0..topology.len() {
+        let target = topology.cpu(cpu).unwrap_or_else(|_| halt());
+        if target.apic_id() == bsp_apic_id {
+            continue;
+        }
+        let token = startup.begin(cpu).unwrap_or_else(|_| halt());
+        AP_ONLINE.arm(token).unwrap_or_else(|_| halt());
+        smp_trace(0x20);
+        let layout = stacks
+            .cpu(cpu)
+            .map(|slot| slot.virtual_layout())
+            .unwrap_or_else(|_| halt());
+        let image = ApTrampolineImage::new(
+            trampoline,
+            root,
+            ap_kernel_entry as *const () as usize as u64,
+            layout.early_top().unwrap_or_else(|_| halt()),
+            cpu,
+            token.generation(),
+        )
+        .unwrap_or_else(|_| halt());
+        let installed = image.install(&mut page).unwrap_or_else(|_| halt());
+        smp_trace(0x21);
+        let destination = startup.destination(token).unwrap_or_else(|_| halt());
+        unsafe { ApicIpi::init(destination).and_then(|ipi| ipi.send()) }.unwrap_or_else(|_| halt());
+        smp_trace(0x22);
+        timing.wait_after_init().unwrap_or_else(|_| halt());
+        smp_trace(0x23);
+        startup
+            .startup_sent_with_image(token, installed)
+            .unwrap_or_else(|_| halt());
+        unsafe {
+            ApicIpi::startup(destination, installed.startup_vector()).and_then(|ipi| ipi.send())
+        }
+        .unwrap_or_else(|_| halt());
+        smp_trace(0x24);
+        timing.wait_after_startup().unwrap_or_else(|_| halt());
+        smp_trace(0x25);
+        if !AP_ONLINE.is_online(token).unwrap_or_else(|_| halt()) {
+            smp_trace(0x28);
+            unsafe {
+                ApicIpi::startup(destination, installed.startup_vector()).and_then(|ipi| ipi.send())
+            }
+            .unwrap_or_else(|_| halt());
+            timing
+                .wait_micros(ap_retry_timeout_micros())
+                .unwrap_or_else(|_| halt());
+            smp_trace(0x29);
+        }
+        if !AP_ONLINE.is_online(token).unwrap_or_else(|_| halt()) {
+            startup.fail(token).unwrap_or_else(|_| halt());
+            AP_ONLINE.fail(token).unwrap_or_else(|_| halt());
+            halt();
+        }
+        startup
+            .acknowledge(token, destination)
+            .unwrap_or_else(|_| halt());
+        smp_trace(0x26);
+        installed.rearm(&mut page).unwrap_or_else(|_| halt());
+        smp_trace(0x27);
+    }
+    if !page.revoke_and_zero(trampoline) {
+        halt();
+    }
+    smp_trace(0x30);
+}
+
+#[cfg(not(feature = "fault-probe"))]
+fn current_apic_id() -> Option<u32> {
+    let maximum = __cpuid(0).eax;
+    if maximum >= 0x0b {
+        for level in 0..2 {
+            let topology = __cpuid_count(0x0b, level);
+            if topology.ebx & 0xffff != 0 {
+                return Some(topology.edx);
+            }
+        }
+    }
+    (maximum >= 1).then(|| __cpuid(1).ebx >> 24)
+}
+
+#[cfg(not(feature = "fault-probe"))]
+fn ap_startup_timing() -> Option<ApStartupTiming> {
+    if let Ok(timing) = ApStartupTiming::detect() {
+        return Some(timing);
+    }
+    #[cfg(feature = "emulated-ap-timing")]
+    {
+        let bytes = option_env!("MRML_EMULATED_TSC_HZ")?.as_bytes();
+        if bytes.is_empty() || bytes.len() > 20 {
+            return None;
+        }
+        let mut value = 0u64;
+        for byte in bytes {
+            if !byte.is_ascii_digit() {
+                return None;
+            }
+            value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
+        }
+        ApStartupTiming::from_tsc_hz(value).ok()
+    }
+    #[cfg(not(feature = "emulated-ap-timing"))]
+    None
+}
+
+#[cfg(all(not(feature = "fault-probe"), feature = "emulated-ap-timing"))]
+const fn ap_retry_timeout_micros() -> u32 {
+    // TCG vCPUs are host threads and can be descheduled well beyond the
+    // architectural SIPI delay. This explicitly selected test profile keeps
+    // production's hardware timeout unchanged.
+    100_000
+}
+
+#[cfg(all(not(feature = "fault-probe"), not(feature = "emulated-ap-timing")))]
+const fn ap_retry_timeout_micros() -> u32 {
+    1_000
+}
+
+#[cfg(all(not(feature = "fault-probe"), feature = "emulated-ap-timing"))]
+fn smp_trace(stage: u8) {
+    unsafe { asm!("out dx, al", in("dx") 0xe9u16, in("al") stage, options(nomem, nostack)) };
+}
+
+#[cfg(all(not(feature = "fault-probe"), not(feature = "emulated-ap-timing")))]
+const fn smp_trace(_: u8) {}
+
+#[cfg(not(feature = "fault-probe"))]
 #[allow(unreachable_code)]
 unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
+    smp_trace(0x01);
     if bytes.is_null() || !(HANDOFF_HEADER_BYTES..=MAX_HANDOFF_BYTES).contains(&length) {
         halt();
     }
@@ -850,11 +1020,14 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         Ok(value) => value,
         Err(_) => halt(),
     };
+    smp_trace(0x02);
     if region_count != handoff.region_count() {
         halt();
     }
     if let Some(madt) = handoff.madt(encoded) {
+        smp_trace(0x03);
         let topology = X86CpuTopology::parse_madt(madt).unwrap_or_else(|_| halt());
+        smp_trace(0x40u8.saturating_add(topology.len() as u8));
         match (handoff.ap_trampoline(), handoff.ap_stack_arena()) {
             (Some(_), Some(base)) => {
                 let stacks = PerCpuPrivilegeStacks::<MAX_X86_64_CPUS>::new(
@@ -867,6 +1040,11 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
                     if stacks.cpu(cpu).is_err() {
                         halt();
                     }
+                }
+                if topology.len() > 1 {
+                    smp_trace(0x04);
+                    unsafe { start_application_processors(&topology, &handoff) };
+                    smp_trace(0x05);
                 }
             }
             (None, None) if topology.len() == 1 => {}

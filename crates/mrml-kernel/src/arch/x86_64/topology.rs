@@ -1,4 +1,4 @@
-use core::array;
+use core::{array, mem::MaybeUninit};
 
 use super::InstalledApTrampoline;
 
@@ -268,6 +268,44 @@ pub struct ApStartupTable<const CPUS: usize> {
 }
 
 impl<const CPUS: usize> ApStartupTable<CPUS> {
+    /// Initializes the complete startup table directly in caller-provided
+    /// storage. Early boot uses this form so large maximum-CPU tables never
+    /// become transient stack values.
+    pub fn initialize<'a>(
+        storage: &'a mut MaybeUninit<Self>,
+        topology: &X86CpuTopology,
+        bsp_apic_id: u32,
+    ) -> Result<&'a mut Self, TopologyError> {
+        if CPUS == 0 || CPUS > MAX_X86_64_CPUS || topology.len() > CPUS {
+            return Err(TopologyError::TooManyCpus);
+        }
+        topology.index_of_apic(bsp_apic_id)?;
+        let table = storage.as_mut_ptr();
+        // SAFETY: every array element and `count` is initialized before a
+        // reference to the table is created. Option<ApSlot> has no drop glue,
+        // and the exclusive storage reference prevents aliases.
+        unsafe {
+            let slots = core::ptr::addr_of_mut!((*table).slots).cast::<Option<ApSlot>>();
+            for index in 0..CPUS {
+                slots.add(index).write(None);
+            }
+            core::ptr::addr_of_mut!((*table).count).write(topology.len());
+            for index in 0..topology.len() {
+                let cpu = topology.cpu(index)?;
+                slots.add(index).write(Some(ApSlot {
+                    apic_id: cpu.apic_id,
+                    generation: 1,
+                    state: if cpu.apic_id == bsp_apic_id {
+                        ApState::Online
+                    } else {
+                        ApState::Offline
+                    },
+                }));
+            }
+            Ok(&mut *table)
+        }
+    }
+
     pub fn new(topology: &X86CpuTopology, bsp_apic_id: u32) -> Result<Self, TopologyError> {
         if CPUS == 0 || CPUS > MAX_X86_64_CPUS || topology.len() > CPUS {
             return Err(TopologyError::TooManyCpus);
@@ -534,6 +572,19 @@ mod tests {
     }
 
     #[test]
+    fn ap_startup_can_initialize_directly_in_bounded_storage() {
+        let entries = [0, 8, 0, 1, 1, 0, 0, 0, 0, 8, 1, 2, 1, 0, 0, 0];
+        let table = madt(&entries);
+        let topology = X86CpuTopology::parse_madt(&table[..60]).unwrap();
+        let mut storage = MaybeUninit::<ApStartupTable<2>>::uninit();
+        let startup = ApStartupTable::initialize(&mut storage, &topology, 1).unwrap();
+        assert_eq!(startup.state(0), Ok(ApState::Online));
+        assert_eq!(startup.state(1), Ok(ApState::Offline));
+        let token = startup.begin(1).unwrap();
+        assert_eq!(startup.destination(token), Ok(2));
+    }
+
+    #[test]
     fn startup_image_is_bound_to_the_sipi_vector() {
         let entries = [0, 8, 0, 1, 1, 0, 0, 0, 0, 8, 1, 2, 1, 0, 0, 0];
         let table = madt(&entries);
@@ -565,7 +616,7 @@ mod tests {
             }
         }
         let image =
-            super::super::ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x9ff8, 1, 1).unwrap();
+            super::super::ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x10ff8, 1, 1).unwrap();
         let mut page = Page(false);
         let installed = image.install(&mut page).unwrap();
         assert_eq!(

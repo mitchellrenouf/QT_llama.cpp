@@ -36,8 +36,8 @@ pub use page_table::{
 };
 pub use pe_mapping::{PeMappingError, map_pe_image};
 pub use privilege_stack::{
-    CpuPrivilegeStacks, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES, PerCpuPrivilegeStacks,
-    PrivilegeStackError, PrivilegeStackLayout,
+    CpuPrivilegeStacks, EARLY_STACK_PAGES, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES,
+    PerCpuPrivilegeStacks, PrivilegeStackError, PrivilegeStackLayout,
 };
 pub use service_space::{ServiceAddressSpace, ServiceSpaceError};
 pub use topology::{

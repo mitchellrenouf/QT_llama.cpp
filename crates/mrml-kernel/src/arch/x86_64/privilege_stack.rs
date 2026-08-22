@@ -1,8 +1,8 @@
 use crate::PAGE_SIZE;
 
-pub const PRIVILEGE_STACK_ARENA_PAGES: u64 = 32;
+pub const PRIVILEGE_STACK_ARENA_PAGES: u64 = 48;
 pub const MAX_X86_64_CPUS: usize = 256;
-const EARLY_STACK_PAGES: u64 = 6;
+pub const EARLY_STACK_PAGES: u64 = 16;
 const ENTRY_STACK_PAGES: u64 = 16;
 const DOUBLE_FAULT_STACK_PAGES: u64 = 8;
 const ENTRY_GUARD_PAGE: u64 = EARLY_STACK_PAGES;
@@ -202,28 +202,28 @@ mod tests {
 
     #[test]
     fn layout_has_two_absent_guards_and_disjoint_stacks() {
-        let layout = PrivilegeStackLayout::new(0x40_0000, 32).unwrap();
-        assert_eq!(layout.early_top(), Ok(0x40_5ff8));
-        assert_eq!(layout.entry_guard(), Ok(0x40_6000));
-        assert_eq!(layout.entry_base(), Ok(0x40_7000));
-        assert_eq!(layout.entry_top(), Ok(0x41_7000));
-        assert_eq!(layout.double_fault_guard(), Ok(0x41_7000));
-        assert_eq!(layout.double_fault_base(), Ok(0x41_8000));
-        assert_eq!(layout.double_fault_top(), Ok(0x42_0000));
+        let layout = PrivilegeStackLayout::new(0x40_0000, PRIVILEGE_STACK_ARENA_PAGES).unwrap();
+        assert_eq!(layout.early_top(), Ok(0x40_fff8));
+        assert_eq!(layout.entry_guard(), Ok(0x41_0000));
+        assert_eq!(layout.entry_base(), Ok(0x41_1000));
+        assert_eq!(layout.entry_top(), Ok(0x42_1000));
+        assert_eq!(layout.double_fault_guard(), Ok(0x42_1000));
+        assert_eq!(layout.double_fault_base(), Ok(0x42_2000));
+        assert_eq!(layout.double_fault_top(), Ok(0x42_a000));
     }
 
     #[test]
     fn layout_rejects_ambiguous_or_wrapping_arenas() {
         assert_eq!(
-            PrivilegeStackLayout::new(0x40_0001, 32),
+            PrivilegeStackLayout::new(0x40_0001, PRIVILEGE_STACK_ARENA_PAGES),
             Err(PrivilegeStackError::InvalidBase)
         );
         assert_eq!(
-            PrivilegeStackLayout::new(0x40_0000, 31),
+            PrivilegeStackLayout::new(0x40_0000, PRIVILEGE_STACK_ARENA_PAGES - 1),
             Err(PrivilegeStackError::InvalidSize)
         );
         assert_eq!(
-            PrivilegeStackLayout::new(!(PAGE_SIZE - 1), 32),
+            PrivilegeStackLayout::new(!(PAGE_SIZE - 1), PRIVILEGE_STACK_ARENA_PAGES),
             Err(PrivilegeStackError::Overflow)
         );
     }
@@ -277,11 +277,19 @@ mod tests {
             Err(PrivilegeStackError::Overflow)
         );
         assert_eq!(
-            PerCpuPrivilegeStacks::<1>::new(0x40_0000, 0x0000_8000_0000_0000, 32),
+            PerCpuPrivilegeStacks::<1>::new(
+                0x40_0000,
+                0x0000_8000_0000_0000,
+                PRIVILEGE_STACK_ARENA_PAGES,
+            ),
             Err(PrivilegeStackError::NonCanonicalVirtualRange)
         );
         assert_eq!(
-            PerCpuPrivilegeStacks::<1>::new(1u64 << 52, 0xffff_8001_6000_0000, 32),
+            PerCpuPrivilegeStacks::<1>::new(
+                1u64 << 52,
+                0xffff_8001_6000_0000,
+                PRIVILEGE_STACK_ARENA_PAGES,
+            ),
             Err(PrivilegeStackError::InvalidPhysicalRange)
         );
     }

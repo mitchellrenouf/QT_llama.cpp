@@ -1390,8 +1390,9 @@ revocation, and stale-generation rejection. GDT user descriptors, TSS/RSP0,
 assembly restore, CR3 switching, live ring-three entry, cross-root timer
 preemption, and guarded privilege stacks are exercised by signed KVM and WHP
 probes. Privilege-stack planning is now CPU-indexed for 1--256 CPUs. Its checked
-stride reserves disjoint physical and virtual 128 KiB arenas, including both
-internal guard pages, and rejects invalid counts, undersized strides, range
+stride reserves disjoint physical and virtual 192 KiB arenas, including a
+measured 64 KiB early stack and both internal guard pages, and rejects invalid
+counts, undersized strides, range
 wrap, addresses beyond the 52-bit physical limit, noncanonical virtual
 coverage, and invalid indices before page-table
 construction. CPU 0 now uses that allocator in UEFI, KVM, and WHP launches.
@@ -1401,10 +1402,10 @@ installation refuses an out-of-range owner and repeat initialization. The
 signed service lifecycle still completes under WHP and nested KVM after this
 privileged-path refactor. A QEMU 11.1 TCG/UEFI boot of the plain kernel produced
 1,022,848 background pixels at `RGB(11,59,90)` plus the exact 1,152-pixel gold
-kernel marker at `RGB(255,200,87)`. Application-processor discovery/startup,
-per-CPU interrupt routing, and live multi-vCPU scheduling remain pending, so
-MRML does not yet claim SMP execution. The bounded discovery foundation is
-implemented: a parser accepts only a complete loader-copied ACPI MADT with a
+kernel marker at `RGB(255,200,87)`. Application-processor discovery and
+sequential startup now execute in the PE kernel; per-CPU interrupt routing and
+live multi-vCPU scheduling remain pending. The bounded discovery foundation
+uses a parser that accepts only a complete loader-copied ACPI MADT with a
 valid signature, exact encoded length, checksum, entry geometry, reserved
 fields, unique APIC/firmware identities, at least one enabled CPU, and at most
 256 CPUs. It supports legacy local-APIC entries, x2APIC entries, and one aligned
@@ -1426,7 +1427,8 @@ publication path are implemented with destination/vector checks and bounded
 delivery-status polling. An invariant-TSC-only timing source implements the
 architectural 10 ms INIT and 200 microsecond SIPI waits without a guessed
 frequency. A generated, page-sized trampoline installs its own GDT, enables
-PAE and long mode using an identity-mapped 32-bit CR3, selects a CPU-private
+PAE, EFER.LME, and EFER.NXE before paging and long mode using an identity-mapped
+32-bit CR3, selects a CPU-private
 aligned stack, passes the bounded CPU index, and jumps to a canonical kernel
 entry. Its low-memory page is bound to the lifecycle's SIPI vector. A common
 installer enforces read/write+NX to read/execute+non-writable, verifies the
@@ -1434,8 +1436,9 @@ final permissions, and revokes and zeroes every failed installation; only its
 opaque installed result may publish SIPI. The WHP implementation allocates a
 dedicated low guest-physical page, stages it RW/NX, replaces the GPA mapping
 with RX, and verifies the copied bytes and denied guest write against the live
-Windows hypervisor. UEFI/KVM page backends, live AP execution, and SMP
-scheduling are still required. The common page-table builder now supports an
+Windows hypervisor. UEFI live AP execution is now verified; the KVM page
+backend and SMP scheduling are still required. The common page-table builder
+now supports an
 exact-match protection transition: it preflights every 4 KiB leaf, physical
 frame, and old permission before changing any logical mapping. This supplies a
 supervisor-only low-page RW/NX-to-RX path for a BSP-built relocated trampoline
@@ -1468,7 +1471,15 @@ duplicate arrivals fail closed, and failed slots require an explicit rearm.
 The PE kernel's explicit SysV AP entry validates those three arguments,
 constructs its CPU-private descriptor state in a disjoint static slot, installs
 its GDT/IDT/TSS using the guarded entry and double-fault stacks, and only then
-publishes online. The BSP does not invoke the INIT/SIPI loop yet.
+publishes online. The BSP performs sequential INIT/SIPI startup, retries once,
+rejects a missing acknowledgement, rearms the shared page only after the AP has
+left it, then zeroes and unmaps it after the final AP. QEMU TCG uses an explicit
+compile-time TSC frequency and longer host-thread scheduling allowance without
+changing production's invariant-TSC-only hardware timing. A freshly generated
+one-use Lamport key signed the exact two-vCPU test kernel; its byte trace reached
+AP acknowledgement, trampoline rearm, final revocation, and normal BSP return.
+QEMU register inspection showed both CPUs halted in kernel code with a shared
+CR3 and distinct GDT, IDT, and TSS addresses.
 Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.

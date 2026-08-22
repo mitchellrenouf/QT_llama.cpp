@@ -4,7 +4,7 @@
 use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use mrml_kernel::{
-    ArtifactKind, FramebufferInfo, MAX_HANDOFF_BYTES, MAX_HANDOFF_MADT_BYTES, MAX_HANDOFF_REGIONS,
+    ArtifactKind, FramebufferInfo, MAX_HANDOFF_BYTES, MAX_HANDOFF_MADT_BYTES,
     MAX_KERNEL_IMAGE_BYTES, MemoryKind, MemoryRegion, PeImage, PhysAddr, PixelFormat,
     SIGNED_ARTIFACT_OVERHEAD_BYTES, SignedArtifact, TrustRoot,
     arch::x86_64::{
@@ -199,6 +199,14 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 }
 
 #[unsafe(export_name = "efi_main")]
+/// UEFI entry invoked by firmware with the loaded-image handle and live system
+/// table.
+///
+/// # Safety
+///
+/// `table` must be the valid system table supplied for `image`; its boot
+/// services and protocols must remain live until the successful one-way
+/// `ExitBootServices` transition.
 pub unsafe extern "efiapi" fn efi_main(image: Handle, table: *mut SystemTable) -> Status {
     // SAFETY: UEFI invokes this entry point with a live system table. Every
     // pointer obtained below is checked for null before it is dereferenced and
@@ -305,7 +313,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     let image_allocation_bytes = image_pages.checked_mul(4096).ok_or(LOAD_ERROR)?;
     let mut image_address = 0u64;
     check(unsafe { (services.allocate_pages)(0, 1, image_pages, &mut image_address) })?;
-    if image_address == 0 || image_address % 4096 != 0 {
+    if image_address == 0 || !image_address.is_multiple_of(4096) {
         return Err(LOAD_ERROR);
     }
     let image_allocation = unsafe {
@@ -317,7 +325,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         .image()
         .materialize_at(image_destination, image_address)
         .map_err(|_| LOAD_ERROR)?;
-    let transition = prepare_transition(services, &verified.image(), image_address, framebuffer)?;
+    let transition = prepare_transition(services, verified.image(), image_address, framebuffer)?;
     let kernel_version = verified.artifact().version();
     let kernel_measurement = *verified.artifact().digest();
     paint(framebuffer, [0x00, 0x60, 0x20]);
@@ -672,7 +680,7 @@ unsafe fn read_file_pages(
         .ok_or(LOAD_ERROR)?;
     let mut address = 0u64;
     check(unsafe { (services.allocate_pages)(0, 2, pages, &mut address) })?;
-    if address == 0 || address % 4096 != 0 {
+    if address == 0 || !address.is_multiple_of(4096) {
         return Err(LOAD_ERROR);
     }
     let mut total = 0usize;
@@ -696,6 +704,7 @@ unsafe fn read_file_pages(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn enter_kernel(
     transition: Transition,
     kernel_entry: u64,
@@ -791,7 +800,7 @@ fn prepare_transition(
     image_address: u64,
     framebuffer: Framebuffer,
 ) -> Result<Transition, Status> {
-    let stack_allocation_pages = (MAX_X86_64_CPUS as usize)
+    let stack_allocation_pages = MAX_X86_64_CPUS
         .checked_mul(PRIVILEGE_STACK_ARENA_PAGES as usize)
         .and_then(|pages| pages.checked_add(KERNEL_STACK_GUARD_PAGES))
         .ok_or(LOAD_ERROR)?;
@@ -886,6 +895,12 @@ fn prepare_transition(
         framebuffer.size as u64,
         PagePermissions::KERNEL_READ_WRITE,
     )?;
+    map_identity(
+        &mut tables,
+        0xfee0_0000,
+        1,
+        PagePermissions::KERNEL_MMIO_READ_WRITE,
+    )?;
     let trampoline_start = mrml_activate_address_space as *const () as usize as u64;
     let trampoline_end = core::ptr::addr_of!(mrml_activate_address_space_end) as u64;
     if !trampoline_start.is_multiple_of(PAGE_BYTES as u64)
@@ -951,7 +966,7 @@ fn map_identity(
     pages: u64,
     permissions: PagePermissions,
 ) -> Result<(), Status> {
-    if start % 4096 != 0 || pages == 0 {
+    if !start.is_multiple_of(4096) || pages == 0 {
         return Err(LOAD_ERROR);
     }
     for page in 0..pages {
@@ -992,7 +1007,7 @@ unsafe fn exit_boot_services(
         if descriptor_size < core::mem::size_of::<MemoryDescriptor>()
             || map_size == 0
             || map_size > MAP_BYTES
-            || map_size % descriptor_size != 0
+            || !map_size.is_multiple_of(descriptor_size)
         {
             return Err(LOAD_ERROR);
         }
@@ -1031,7 +1046,7 @@ fn paint(framebuffer: Framebuffer, rgb: [u8; 3]) {
     // firmware-reported allocation.
     let framebuffer =
         unsafe { core::slice::from_raw_parts_mut(framebuffer.base as *mut u8, bytes) };
-    for pixel in framebuffer.chunks_exact_mut(4) {
+    for pixel in framebuffer.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&encoded);
     }
 }
