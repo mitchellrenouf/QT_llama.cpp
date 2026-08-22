@@ -9,10 +9,11 @@ struct Totals {
     exact_ranges: usize,
 }
 
-fn audit(path: &Path, report_first: bool) -> Result<Totals, String> {
+fn audit(path: &Path, report_first: bool, report_configs: bool) -> Result<Totals, String> {
     let data = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut offset = 0usize;
     let mut totals = Totals::default();
+    let mut configurations = [Totals::default(); 32];
     let mut decoder = Decoder::new(2).map_err(|error| format!("decoder: {error}"))?;
     let mut pcm = [0i16; 11_520];
     while offset < data.len() {
@@ -40,6 +41,13 @@ fn audit(path: &Path, report_first: bool) -> Result<Totals, String> {
             .get(packet_start..packet_end)
             .ok_or_else(|| format!("{}: truncated packet", path.display()))?;
         totals.packets += 1;
+        let configuration = usize::from(
+            packet
+                .first()
+                .ok_or_else(|| format!("{}: empty packet", path.display()))?
+                >> 3,
+        );
+        configurations[configuration].packets += 1;
         if let Ok(parsed) = Packet::parse(packet) {
             let frames = 48_000usize
                 .checked_mul(parsed.frame_duration_us as usize)
@@ -51,6 +59,7 @@ fn audit(path: &Path, report_first: bool) -> Result<Totals, String> {
                 .is_ok()
             {
                 totals.decoded += 1;
+                configurations[configuration].decoded += 1;
                 let actual_range = decoder.final_range();
                 if report_first
                     && actual_range != expected_range
@@ -68,9 +77,24 @@ fn audit(path: &Path, report_first: bool) -> Result<Totals, String> {
                     );
                 }
                 totals.exact_ranges += usize::from(actual_range == expected_range);
+                configurations[configuration].exact_ranges +=
+                    usize::from(actual_range == expected_range);
             }
         }
         offset = packet_end;
+    }
+    if report_configs {
+        for (configuration, totals) in configurations.iter().enumerate() {
+            if totals.packets != 0 {
+                println!(
+                    "{}: config={configuration:02} packets={} decoded={} exact_ranges={}",
+                    path.display(),
+                    totals.packets,
+                    totals.decoded,
+                    totals.exact_ranges
+                );
+            }
+        }
     }
     Ok(totals)
 }
@@ -78,16 +102,19 @@ fn audit(path: &Path, report_first: bool) -> Result<Totals, String> {
 fn main() -> Result<(), String> {
     let mut arguments = std::env::args_os().skip(1);
     let input = PathBuf::from(arguments.next().ok_or_else(|| {
-        "usage: rfc8251_audit <vector-directory|vector.bit> [--require-exact] [--report-first]"
+        "usage: rfc8251_audit <vector-directory|vector.bit> [--require-exact] [--report-first] [--report-configs]"
             .to_owned()
     })?);
     let mut require_exact = false;
     let mut report_first = false;
+    let mut report_configs = false;
     for argument in arguments {
         if argument == "--require-exact" {
             require_exact = true;
         } else if argument == "--report-first" {
             report_first = true;
+        } else if argument == "--report-configs" {
+            report_configs = true;
         } else {
             return Err(format!(
                 "unrecognized option: {}",
@@ -114,7 +141,7 @@ fn main() -> Result<(), String> {
             .collect()
     };
     for (label, path) in paths {
-        let totals = audit(&path, report_first)?;
+        let totals = audit(&path, report_first, report_configs)?;
         println!(
             "{label}: packets={} decoded={} exact_ranges={}",
             totals.packets, totals.decoded, totals.exact_ranges
