@@ -5,6 +5,7 @@ use crate::{
 const MAX_DELIMITER_DEPTH: usize = 64;
 const MAX_LOOP_ASSIGNMENTS: usize = 4;
 const MAX_LOOP_OPERATIONS: usize = 8;
+pub const MAX_CONDITIONAL_LOOP_ACTIONS: usize = 4;
 pub const MAX_BODY_STATEMENTS: usize = 32;
 pub const MAX_BODY_EXPRESSION_STATEMENTS: usize = 8;
 pub const MAX_BODY_RETURNS: usize = 8;
@@ -232,6 +233,45 @@ pub struct ConditionalLoopControl<'source> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConditionalLoopAction<'source> {
+    Local(LocalBinding<'source>),
+    Assignment(Assignment<'source>),
+    Expression(ExpressionStatement<'source>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConditionalLoopTerminal<'source> {
+    Break,
+    Continue,
+    Return(LoopReturn<'source>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConditionalLoopBlock<'source> {
+    pub condition: &'source str,
+    pub condition_span: Span,
+    actions: [Option<ConditionalLoopAction<'source>>; MAX_CONDITIONAL_LOOP_ACTIONS],
+    action_count: usize,
+    pub terminal: ConditionalLoopTerminal<'source>,
+}
+
+impl<'source> ConditionalLoopBlock<'source> {
+    pub fn actions(&self) -> &[Option<ConditionalLoopAction<'source>>] {
+        &self.actions[..self.action_count]
+    }
+
+    pub const fn action_count(&self) -> usize {
+        self.action_count
+    }
+
+    pub fn parse_condition<const MAX_NODES: usize>(
+        &self,
+    ) -> Result<ExpressionTree<'source, MAX_NODES>, ExpressionError> {
+        ExpressionParser::new(self.condition).parse()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LoopReturn<'source> {
     pub value: &'source str,
     pub value_span: Span,
@@ -263,6 +303,7 @@ pub enum LoopOperation<'source> {
     ConditionalBreak(ConditionalLoopControl<'source>),
     ConditionalContinue(ConditionalLoopControl<'source>),
     ConditionalReturn(ConditionalReturn<'source>),
+    ConditionalBlock(usize),
     Return(LoopReturn<'source>),
 }
 
@@ -299,6 +340,8 @@ pub struct WhileLoop<'source> {
     operations: [Option<LoopOperation<'source>>; MAX_LOOP_OPERATIONS],
     operation_count: usize,
     assignment_count: usize,
+    conditional_blocks: [Option<ConditionalLoopBlock<'source>>; MAX_LOOP_OPERATIONS],
+    conditional_block_count: usize,
 }
 
 impl<'source> WhileLoop<'source> {
@@ -320,6 +363,14 @@ impl<'source> WhileLoop<'source> {
 
     pub const fn operation_count(&self) -> usize {
         self.operation_count
+    }
+
+    pub fn conditional_blocks(&self) -> &[Option<ConditionalLoopBlock<'source>>] {
+        &self.conditional_blocks[..self.conditional_block_count]
+    }
+
+    pub const fn conditional_block_count(&self) -> usize {
+        self.conditional_block_count
     }
 }
 
@@ -520,6 +571,7 @@ pub enum ParseErrorKind {
     TooManyLocals,
     TooManyLoopAssignments,
     TooManyLoopOperations,
+    TooManyConditionalLoopActions,
     TooManyExpressionStatements,
     TooManyReturns,
     TooManyConditionalReturnBranches,
@@ -1241,6 +1293,8 @@ impl<'source> BodyParser<'source> {
             let mut operations = [None; MAX_LOOP_OPERATIONS];
             let mut operation_count = 0usize;
             let mut assignment_count = 0usize;
+            let mut conditional_blocks = [None; MAX_LOOP_OPERATIONS];
+            let mut conditional_block_count = 0usize;
             let mut has_break = false;
             loop {
                 let next = probe.peek()?;
@@ -1255,20 +1309,62 @@ impl<'source> BodyParser<'source> {
                     probe.take()?;
                     let (condition_span, _) =
                         probe.delimited_until("{", ParseErrorKind::ExpectedBody)?;
-                    let control = probe.take()?;
-                    if !control
-                        .is_some_and(|token| matches!(token.text, "break" | "continue" | "return"))
-                    {
-                        return Err(probe.error(ParseErrorKind::ExpectedBody, control));
-                    }
-                    let return_value = if control.is_some_and(|token| token.text == "return") {
-                        Some(probe.return_value()?)
-                    } else {
-                        let semicolon = probe.take()?;
-                        if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
-                            return Err(probe.error(ParseErrorKind::ExpectedSemicolon, semicolon));
+                    let mut actions = [None; MAX_CONDITIONAL_LOOP_ACTIONS];
+                    let mut action_count = 0usize;
+                    let (control, terminal) = loop {
+                        let next = probe.peek()?;
+                        if next.is_some_and(|token| {
+                            matches!(token.text, "break" | "continue" | "return")
+                        }) {
+                            let control = probe.take()?.ok_or_else(|| {
+                                probe.error(ParseErrorKind::ExpectedBody, probe.lookahead)
+                            })?;
+                            let terminal = if control.text == "return" {
+                                let (value, value_span) = probe.return_value()?;
+                                ConditionalLoopTerminal::Return(LoopReturn { value, value_span })
+                            } else {
+                                let semicolon = probe.take()?;
+                                if !semicolon
+                                    .is_some_and(|token| token.kind == TokenKind::Semicolon)
+                                {
+                                    return Err(
+                                        probe.error(ParseErrorKind::ExpectedSemicolon, semicolon)
+                                    );
+                                }
+                                if control.text == "break" {
+                                    ConditionalLoopTerminal::Break
+                                } else {
+                                    ConditionalLoopTerminal::Continue
+                                }
+                            };
+                            break (control, terminal);
                         }
-                        None
+                        if action_count == MAX_CONDITIONAL_LOOP_ACTIONS {
+                            return Err(
+                                probe.error(ParseErrorKind::TooManyConditionalLoopActions, next)
+                            );
+                        }
+                        let action = if let Some(local) = probe.local_record()? {
+                            ConditionalLoopAction::Local(local)
+                        } else {
+                            let assignment_name = probe.peek()?;
+                            if let Some(assignment) = probe.assignment_record()? {
+                                if assignment_count == MAX_LOOP_ASSIGNMENTS {
+                                    return Err(probe.error(
+                                        ParseErrorKind::TooManyLoopAssignments,
+                                        assignment_name,
+                                    ));
+                                }
+                                assignment_count += 1;
+                                ConditionalLoopAction::Assignment(assignment)
+                            } else if let Some(expression) = probe.expression_statement_record()? {
+                                ConditionalLoopAction::Expression(expression)
+                            } else {
+                                return Err(probe.error(ParseErrorKind::ExpectedBody, next));
+                            }
+                        };
+                        actions[action_count] = Some(action);
+                        action_count += 1;
                     };
                     let close = probe.take()?;
                     if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
@@ -1278,24 +1374,37 @@ impl<'source> BodyParser<'source> {
                         condition: &self.source[condition_span.start..condition_span.end],
                         condition_span,
                     };
-                    has_break |=
-                        control.is_some_and(|token| matches!(token.text, "break" | "return"));
-                    operations[operation_count] =
-                        Some(if control.is_some_and(|token| token.text == "break") {
-                            LoopOperation::ConditionalBreak(conditional)
-                        } else if control.is_some_and(|token| token.text == "continue") {
-                            LoopOperation::ConditionalContinue(conditional)
-                        } else {
-                            let (value, value_span) = return_value.ok_or_else(|| {
-                                probe.error(ParseErrorKind::ExpectedInitializer, control)
-                            })?;
-                            LoopOperation::ConditionalReturn(ConditionalReturn {
-                                condition: conditional.condition,
-                                condition_span: conditional.condition_span,
-                                value,
-                                value_span,
-                            })
+                    has_break |= matches!(control.text, "break" | "return");
+                    operations[operation_count] = Some(if action_count != 0 {
+                        conditional_blocks[conditional_block_count] = Some(ConditionalLoopBlock {
+                            condition: conditional.condition,
+                            condition_span: conditional.condition_span,
+                            actions,
+                            action_count,
+                            terminal,
                         });
+                        let index = conditional_block_count;
+                        conditional_block_count += 1;
+                        LoopOperation::ConditionalBlock(index)
+                    } else if control.text == "break" {
+                        LoopOperation::ConditionalBreak(conditional)
+                    } else if control.text == "continue" {
+                        LoopOperation::ConditionalContinue(conditional)
+                    } else {
+                        let ConditionalLoopTerminal::Return(LoopReturn { value, value_span }) =
+                            terminal
+                        else {
+                            return Err(
+                                probe.error(ParseErrorKind::ExpectedInitializer, Some(control))
+                            );
+                        };
+                        LoopOperation::ConditionalReturn(ConditionalReturn {
+                            condition: conditional.condition,
+                            condition_span: conditional.condition_span,
+                            value,
+                            value_span,
+                        })
+                    });
                     operation_count += 1;
                     continue;
                 }
@@ -1364,6 +1473,8 @@ impl<'source> BodyParser<'source> {
                 operations,
                 operation_count,
                 assignment_count,
+                conditional_blocks,
+                conditional_block_count,
             };
             if !body.push_statement(BodyStatement::Loop(body.while_loop_count)) {
                 return Err(probe.error(ParseErrorKind::TooManyLocals, Some(loop_token)));
@@ -1414,6 +1525,13 @@ impl<'source> BodyParser<'source> {
                                 matches!(
                                     operation,
                                     LoopOperation::Break | LoopOperation::ConditionalBreak(_)
+                                ) || matches!(
+                                    operation,
+                                    LoopOperation::ConditionalBlock(index)
+                                        if loop_statement.conditional_blocks()[*index]
+                                            .is_some_and(|block| {
+                                                block.terminal == ConditionalLoopTerminal::Break
+                                            })
                                 )
                             })
                 });
@@ -2346,7 +2464,7 @@ mod tests {
     #[test]
     fn parses_bounded_scalar_while_loops() {
         let module = Parser::new(
-            "fn count(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; total += current; i = current; if i == 10 { break; } } total }",
+            "fn count(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; total += current; i = current; if i == 10 { let marker: u64 = i; marker + 1; total += marker; break; } } total }",
         )
         .parse_module::<2, 2>()
         .unwrap();
@@ -2362,7 +2480,7 @@ mod tests {
         assert_eq!(body.while_loop_count(), 1);
         let loop_statement = body.while_loops()[0].unwrap();
         assert_eq!(loop_statement.condition, Some("i < limit"));
-        assert_eq!(loop_statement.assignment_count(), 2);
+        assert_eq!(loop_statement.assignment_count(), 3);
         assert_eq!(loop_statement.operation_count(), 5);
         let Some(LoopOperation::Local(current)) = loop_statement.operations()[0] else {
             panic!("expected loop local")
@@ -2383,11 +2501,42 @@ mod tests {
         assert_eq!(increment.name, "i");
         assert_eq!(increment.operator, AssignmentOperator::Assign);
         assert_eq!(increment.value, "current");
-        let Some(LoopOperation::ConditionalBreak(control)) = loop_statement.operations()[4] else {
-            panic!("expected conditional break")
+        let Some(LoopOperation::ConditionalBlock(control_index)) = loop_statement.operations()[4]
+        else {
+            panic!("expected conditional block")
         };
+        let control = loop_statement.conditional_blocks()[control_index].unwrap();
         assert_eq!(control.condition, "i == 10");
+        assert_eq!(control.action_count(), 3);
+        assert!(matches!(
+            control.actions()[0],
+            Some(ConditionalLoopAction::Local(local)) if local.name == "marker"
+        ));
+        assert!(matches!(
+            control.actions()[1],
+            Some(ConditionalLoopAction::Expression(expression))
+                if expression.expression == "marker + 1"
+        ));
+        assert!(matches!(
+            control.actions()[2],
+            Some(ConditionalLoopAction::Assignment(assignment))
+                if assignment.name == "total"
+        ));
+        assert_eq!(control.terminal, ConditionalLoopTerminal::Break);
         assert_eq!(body.tail_expression, "total");
+
+        let too_many_conditional_actions = Parser::new(
+            "fn crowded(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { i += 1; if i == limit { i + 1; i + 2; i + 3; i + 4; i + 5; break; } } i }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = too_many_conditional_actions.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            function.parse_body::<2>().unwrap_err().kind,
+            ParseErrorKind::TooManyConditionalLoopActions
+        );
 
         let post_loop = Parser::new(
             "fn staged(limit: u64) -> u64 { let mut value: u64 = 0; while value < limit { value += 1; } value *= 2; value }",

@@ -471,6 +471,26 @@ fn rustc_long_while_loop_local_has_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_while_with_break_conditional_block_has_an_executable_replacement() {
+    // Original scalar replacement for the local/action/break ordering in
+    // tests/ui/for-loop-while/while-with-break.rs at the pinned nightly commit.
+    // Allocation, vectors, destructors, printing, and drop elaboration are not
+    // claimed by this scalar control-flow slice.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, stop: u32) -> u32 { let mut i: u32 = 0; let mut total: u32 = 0; while i < limit { let current: u32 = i + 1; i = current; if i % 2 == 0 { let skipped: u32 = current; skipped + 10; continue; } if i == stop { let selected: u32 = current; selected + 20; total += selected; break; } total += current; } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<2048, 1536, 4, 4, 4, 64>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

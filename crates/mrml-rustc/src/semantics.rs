@@ -1400,6 +1400,71 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                         depth,
                     )?;
                 }
+                crate::LoopOperation::ConditionalBlock(index) => {
+                    let block = loop_statement.conditional_blocks()[*index]
+                        .as_ref()
+                        .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
+                    let condition = block
+                        .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
+                        .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
+                    if evaluate_boolean_const_expression(
+                        context,
+                        symbol_count,
+                        &condition,
+                        condition.root(),
+                        resolver,
+                        depth,
+                    )? {
+                        let block_checkpoint = resolver.count;
+                        for action in block.actions().iter().flatten() {
+                            match action {
+                                crate::ConditionalLoopAction::Local(local) => {
+                                    evaluate_const_local(
+                                        context,
+                                        symbol_count,
+                                        local,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
+                                crate::ConditionalLoopAction::Assignment(assignment) => {
+                                    evaluate_const_assignment(
+                                        context,
+                                        symbol_count,
+                                        assignment,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
+                                crate::ConditionalLoopAction::Expression(statement) => {
+                                    evaluate_const_expression_statement(
+                                        context,
+                                        symbol_count,
+                                        statement,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
+                            }
+                        }
+                        match block.terminal {
+                            crate::ConditionalLoopTerminal::Break => break_loop = true,
+                            crate::ConditionalLoopTerminal::Continue => {}
+                            crate::ConditionalLoopTerminal::Return(return_statement) => {
+                                return Ok(Some(evaluate_const_return_statement(
+                                    context,
+                                    symbol_count,
+                                    &return_statement,
+                                    return_type,
+                                    resolver,
+                                    depth,
+                                )?));
+                            }
+                        }
+                        resolver.truncate(block_checkpoint)?;
+                        break;
+                    }
+                }
                 crate::LoopOperation::Break => {
                     break_loop = true;
                     break;
@@ -2926,13 +2991,14 @@ mod tests {
     #[test]
     fn evaluates_scoped_loop_locals_and_expressions_in_const_functions() {
         let module = Parser::new(
-            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 2 == 0 { continue; } total += current; if i == stop { break; } } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99);",
+            "const fn count(limit: u8, stop: u8) -> u8 { let mut i: u8 = 0; let mut total: u8 = 0; while i < limit { let current: u8 = i + 1; current + 10; i = current; if i % 2 == 0 { let skipped: u8 = current; skipped + 10; continue; } if i == stop { let selected: u8 = current; selected + 20; total += selected; break; } total += current; } total } const STOPPED: u8 = count(5, 3); const COMPLETE: u8 = count(4, 99); const fn choose(value: u8) -> u8 { loop { if value == 0 { let selected: u8 = 42; selected + 1; return selected; } return value; } } const RETURNED: u8 = choose(0);",
         )
         .parse_module::<6, 4>()
         .unwrap();
         let values = analyze_constants::<4, 64, 6, 4>(&module, TargetLayout::X86_64).unwrap();
         assert_eq!(values.resolve("STOPPED"), Some(4));
         assert_eq!(values.resolve("COMPLETE"), Some(4));
+        assert_eq!(values.resolve("RETURNED"), Some(42));
     }
 
     #[test]
