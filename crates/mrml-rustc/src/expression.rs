@@ -291,6 +291,10 @@ pub enum ExprKind<'source> {
         wrapping: bool,
         signed: bool,
     },
+    RawPointerDifference {
+        pointer: ExprId,
+        origin: ExprId,
+    },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -447,6 +451,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::StrIsCharBoundary { .. }
             | ExprKind::ReferenceAsPointer { .. }
             | ExprKind::RawPointerOffset { .. }
+            | ExprKind::RawPointerDifference { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
             | ExprKind::Identifier(_)
@@ -660,6 +665,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             ExprKind::StrIsCharBoundary { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::ReferenceAsPointer { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::RawPointerOffset { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::RawPointerDifference { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -1873,6 +1879,10 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             ExprKind::RawPointerOffset { base, offset, .. } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
                 self.substitute_identifier(offset, name, replacement, depth + 1)?;
+            }
+            ExprKind::RawPointerDifference { pointer, origin } => {
+                self.substitute_identifier(pointer, name, replacement, depth + 1)?;
+                self.substitute_identifier(origin, name, replacement, depth + 1)?;
             }
             ExprKind::StrIsCharBoundary { base, index } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
@@ -3412,6 +3422,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         | "wrapping_sub"
                         | "offset"
                         | "wrapping_offset"
+                        | "offset_from"
                 )
             }) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
@@ -3429,6 +3440,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     | "wrapping_sub"
                     | "offset"
                     | "wrapping_offset"
+                    | "offset_from"
             ) {
                 Some(self.expression(0, depth + 1)?)
             } else {
@@ -3454,6 +3466,12 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 "is_char_boundary" => ExprKind::StrIsCharBoundary {
                     base,
                     index: argument.ok_or_else(|| {
+                        self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
+                    })?,
+                },
+                "offset_from" => ExprKind::RawPointerDifference {
+                    pointer: base,
+                    origin: argument.ok_or_else(|| {
                         self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
                     })?,
                 },

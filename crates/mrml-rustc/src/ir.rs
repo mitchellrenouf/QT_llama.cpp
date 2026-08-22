@@ -280,7 +280,8 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             | ExprKind::StrAsBytes { .. }
             | ExprKind::StrIsCharBoundary { .. }
             | ExprKind::ReferenceAsPointer { .. }
-            | ExprKind::RawPointerOffset { .. } => {
+            | ExprKind::RawPointerOffset { .. }
+            | ExprKind::RawPointerDifference { .. } => {
                 return Err(IrError {
                     kind: IrErrorKind::InvalidExpressionTree,
                     span: expression.span,

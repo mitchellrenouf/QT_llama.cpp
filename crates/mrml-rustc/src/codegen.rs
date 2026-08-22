@@ -2214,6 +2214,10 @@ fn validate_runtime_inline_const<
             recurse(base)?;
             recurse(offset)?;
         }
+        ExprKind::RawPointerDifference { pointer, origin } => {
+            recurse(pointer)?;
+            recurse(origin)?;
+        }
         ExprKind::Cast { operand, .. }
         | ExprKind::Ascribe { operand, .. }
         | ExprKind::Unary { operand, .. }
@@ -2628,6 +2632,34 @@ fn runtime_expression_type_with_locals<
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
             Ok(base_type)
+        }
+        ExprKind::RawPointerDifference { pointer, origin } => {
+            let pointer_type = runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                pointer,
+                depth + 1,
+            )?;
+            let origin_type = runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                origin,
+                depth + 1,
+            )?;
+            if !matches!(pointer_type, RuntimeExpressionType::RawPointer { .. })
+                || !matches!(origin_type, RuntimeExpressionType::RawPointer { .. })
+                || (!runtime_types_compatible(pointer_type, origin_type)
+                    && !runtime_types_compatible(origin_type, pointer_type))
+            {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            }
+            Ok(RuntimeExpressionType::Integer(Some(
+                crate::IntegerType::Isize,
+            )))
         }
         ExprKind::Integer(literal) => Ok(RuntimeExpressionType::Integer(
             literal.suffix.and_then(crate::IntegerType::from_name),
@@ -3915,6 +3947,37 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     self.emit(&[0x48, 0x29, 0xc1, 0x48, 0x89, 0xc8])?;
                 } else {
                     self.emit(&[0x48, 0x01, 0xc8])?;
+                }
+            }
+            ExprKind::RawPointerDifference { pointer, origin } => {
+                let RuntimeExpressionType::RawPointer { pointee, .. } =
+                    runtime_expression_type_with_locals(
+                        self.function,
+                        self.resolver,
+                        &self.locals[..self.saved_locals],
+                        tree,
+                        pointer,
+                        depth + 1,
+                    )
+                    .map_err(|kind| self.error(kind))?
+                else {
+                    return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+                };
+                let element_bytes = runtime_array_element_bytes(pointee)
+                    .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+                self.emit_expression(tree, pointer, depth + 1)?;
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+                self.emit_expression(tree, origin, depth + 1)?;
+                self.evaluation_depth -= 1;
+                self.emit(&[0x59])?;
+                self.emit(&[0x48, 0x29, 0xc1, 0x48, 0x89, 0xc8])?;
+                match element_bytes {
+                    1 => {}
+                    2 => self.emit(&[0x48, 0xd1, 0xf8])?,
+                    4 => self.emit(&[0x48, 0xc1, 0xf8, 2])?,
+                    8 => self.emit(&[0x48, 0xc1, 0xf8, 3])?,
+                    _ => return Err(self.error(CodegenErrorKind::UnsupportedRuntimeType)),
                 }
             }
             ExprKind::Integer(literal) => {
@@ -8985,6 +9048,46 @@ mod tests {
             "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16, offset: u16) -> *const u16 { input.add(offset) }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize) -> usize { input.wrapping_add(1) }",
             "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16, offset: usize) -> *const u16 { input.offset(offset) }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            assert_eq!(
+                compile_x86_64_function::<_, 768, 2, 80>(
+                    &function,
+                    &NoConstants,
+                    X86_64Abi::Windows,
+                )
+                .unwrap_err()
+                .kind,
+                CodegenErrorKind::RuntimeTypeMismatch,
+            );
+        }
+    }
+
+    #[test]
+    fn measures_scalar_raw_pointer_element_distances() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(pointer: *const u16, origin: *const u16) -> isize { pointer.offset_from(origin) }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(pointer: *mut u64, origin: *const u64) -> isize { pointer.offset_from(origin) }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(pointer: *const char, origin: *mut char) -> isize { pointer.offset_from(origin) }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1024, 4, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        for source in [
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(pointer: *const u16, origin: *const u8) -> isize { pointer.offset_from(origin) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(pointer: usize, origin: usize) -> isize { pointer.offset_from(origin) }",
         ] {
             let module = Parser::new(source).parse_module::<2, 2>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {
