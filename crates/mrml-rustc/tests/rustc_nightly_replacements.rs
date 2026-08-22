@@ -1586,6 +1586,7 @@ fn rustc_immediate_break_loop_values_reach_native_objects() {
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u32) -> u32 { let value: u32 = loop { break input + 1; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u32) -> u32 { let value: u32 = 'value: loop { break 'value input + 1; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool) -> u32 { let value: () = 'value: loop { if first { break 'value; } else { break 'value (); } }; value; 42 }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u32) -> u32 { let value: u32 = 'outer: loop { break 'outer 'inner: loop { break 'inner input + 1; }; }; value }",
     ];
     for source in sources {
         assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));

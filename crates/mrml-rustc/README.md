@@ -206,7 +206,13 @@ the selected operand is evaluated. These forms accept one
 lifetime-style loop label and matching labeled breaks; missing colons, unknown
 break labels, and a fifth conditional exit fail with dedicated expression
 diagnostics. General iterating loop expressions, larger break-value graphs,
-coercion, and nested diverging loops remain separate work. An original labeled
+coercion, truly diverging nested loops, and inner breaks targeting an enclosing
+value loop remain separate work. A terminating labeled value loop may itself
+be the operand of an enclosing labeled break, preserving both labels, the inner
+value's type, and lazy inner alternatives through evaluation, IR, and native
+code. Its original probe emitted 139-byte COFF and 536-byte ELF64 objects and
+passed zero, ordinary, and million-valued inputs through independent native
+callers. An original labeled
 four-guard probe and its structured-alternative counterpart each emitted
 deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
@@ -563,11 +569,11 @@ The complete upstream `tests/ui/for-loop-while/loop-break-value.rs` also compile
 and ran unchanged under the pinned nightly. Original MRML replacements cover
 its immediate scalar integer, Boolean, and valueless or explicit-unit
 break-value forms, including matching labels. The oracle file's arrays,
-references, trait coercions, never type,
-nested loops, matches, and break-value control-flow graphs beyond four guarded
-exits plus a fallback are not claimed by this slice. Replacements cover up to
-five compatible competing scalar values, both sequential and structured
-alternative syntax, and lazy selection of the taken break edge.
+references, trait coercions, never type, cross-nested exits, matches, and
+break-value control-flow graphs beyond four guarded exits plus a fallback are
+not claimed by this slice. Replacements cover terminating nested value-loop
+operands, up to five compatible competing scalar values, both sequential and
+structured alternative syntax, and lazy selection of the taken break edge.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate

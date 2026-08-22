@@ -2937,6 +2937,12 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(unit.evaluate(&NoConstants), Ok(0));
+        assert_eq!(
+            evaluate(
+                "'outer: loop { break 'outer 'inner: loop { if false { break 'inner 1 / 0; } else { break 'inner 42; } }; }"
+            ),
+            Ok(42)
+        );
         assert_eq!(evaluate("'value: loop { break 'value 13; }"), Ok(13));
         let boolean = ExpressionParser::<8>::new("loop { break true; }")
             .parse()
