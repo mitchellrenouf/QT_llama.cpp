@@ -276,7 +276,8 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             }
             ExprKind::RangeIndex { .. }
             | ExprKind::SliceLen { .. }
-            | ExprKind::SliceIsEmpty { .. } => {
+            | ExprKind::SliceIsEmpty { .. }
+            | ExprKind::StrAsBytes { .. } => {
                 return Err(IrError {
                     kind: IrErrorKind::InvalidExpressionTree,
                     span: expression.span,

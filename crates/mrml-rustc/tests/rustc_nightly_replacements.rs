@@ -1950,6 +1950,20 @@ fn rustc_utf8_checked_string_ranges_reach_native_objects() {
 }
 
 #[test]
+fn rustc_string_as_bytes_reaches_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str) -> &[u8] { input.as_bytes() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str, index: usize) -> u8 { let bytes: &[u8] = input.as_bytes(); bytes[index] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &str) -> usize { input.as_bytes().len() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &mut str) -> &[u8] { input.as_bytes() }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",

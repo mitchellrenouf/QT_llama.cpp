@@ -1994,6 +1994,7 @@ fn reference_source_name<'source, const MAX_NODES: usize>(
 ) -> Option<&'source str> {
     match tree.expression(id)?.kind {
         ExprKind::Identifier(name) => Some(name),
+        ExprKind::StrAsBytes { base } => reference_source_name(tree, base),
         ExprKind::Unary {
             operator: crate::UnaryOperator::AddressOf | crate::UnaryOperator::AddressOfMut,
             operand,
@@ -2159,6 +2160,7 @@ fn validate_runtime_inline_const<
         }
         ExprKind::SliceLen { base } => recurse(base)?,
         ExprKind::SliceIsEmpty { base } => recurse(base)?,
+        ExprKind::StrAsBytes { base } => recurse(base)?,
         ExprKind::Cast { operand, .. }
         | ExprKind::Ascribe { operand, .. }
         | ExprKind::Unary { operand, .. }
@@ -2443,6 +2445,29 @@ fn runtime_expression_type_with_locals<
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
             Ok(RuntimeExpressionType::Bool)
+        }
+        ExprKind::StrAsBytes { base } => {
+            let base_type = runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                base,
+                depth + 1,
+            )?;
+            let RuntimeExpressionType::Reference {
+                target: RuntimeReferenceTarget::Str,
+                ..
+            } = base_type
+            else {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            };
+            Ok(RuntimeExpressionType::Reference {
+                target: RuntimeReferenceTarget::Slice(RuntimeArrayElementType::Integer(Some(
+                    crate::IntegerType::U8,
+                ))),
+                mutable: false,
+            })
         }
         ExprKind::Integer(literal) => Ok(RuntimeExpressionType::Integer(
             literal.suffix.and_then(crate::IntegerType::from_name),
@@ -3643,6 +3668,9 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
                 self.emit_slice_length(source)?;
                 self.emit(&[0x48, 0x85, 0xc0, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0])?;
+            }
+            ExprKind::StrAsBytes { base } => {
+                self.emit_expression(tree, base, depth + 1)?;
             }
             ExprKind::Integer(literal) => {
                 if literal.value > u128::from(self.width.maximum) {
@@ -8397,6 +8425,39 @@ mod tests {
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
+    }
+
+    #[test]
+    fn converts_string_slices_to_bytes() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> &[u8] { input.as_bytes() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str, index: usize) -> u8 { let bytes: &[u8] = input.as_bytes(); bytes[index] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &str) -> usize { input.as_bytes().len() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut str) -> &[u8] { input.as_bytes() }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 2048, 4, 160>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut str) -> u8 { let bytes: &mut [u8] = input.as_bytes(); bytes[0] }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 512, 2, 64>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch,
+        );
     }
 
     #[test]

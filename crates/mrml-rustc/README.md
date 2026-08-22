@@ -451,7 +451,13 @@ the ordinary range checks and additionally verify both derived endpoints are
 UTF-8 character boundaries before forming the result. An independent caller
 selected the crab from `"a🦀z"` through a 322-byte COFF and 696-byte ELF64
 object. Interior-byte start and end endpoints separately reached Windows
-`0xC000001D` and Linux `SIGILL`. Shared
+`0xC000001D` and Linux `SIGILL`. `str::as_bytes()` performs a zero-cost target
+conversion to a shared `u8` slice, including from a mutable string receiver;
+the resulting fat pointer supports locals, returns, length methods, and
+bounds-checked byte indexing. Independent callers preserved pointer and byte
+length for `"rust🦀"` and read its leading UTF-8 byte `0xF0` through 143-byte
+and 161-byte COFF objects plus 512-byte and 560-byte ELF64 objects. Coercion to
+a mutable byte slice is rejected. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1039,7 +1045,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 330 Windows library, conformance, rustc-nightly-replacement, and driver
+The 332 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1713,7 +1719,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 330 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 332 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
