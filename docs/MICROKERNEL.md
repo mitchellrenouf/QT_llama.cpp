@@ -1421,8 +1421,10 @@ the original handoff remains valid when no snapshot is present. The UEFI loader
 now snapshots through ranges admitted as ACPI by the final memory map after
 `ExitBootServices`, uses the extended encoder, and maps every handoff page
 read-only. Kernel entry performs full bounded topology parsing before normal
-initialization. Hardware ICR delivery, AP trampoline execution, and SMP
-scheduling are still required. Platform-backed service page
+initialization. Directed xAPIC/x2APIC INIT and SIPI encodings and their CPL0
+publication path are implemented with destination/vector checks and bounded
+delivery-status polling. Calibrated INIT/SIPI delays, AP trampoline execution,
+and SMP scheduling are still required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 

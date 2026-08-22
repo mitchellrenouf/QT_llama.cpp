@@ -7,6 +7,7 @@ const X2APIC_SPURIOUS_VECTOR: u32 = 0x80f;
 const X2APIC_LVT_TIMER: u32 = 0x832;
 const X2APIC_INITIAL_COUNT: u32 = 0x838;
 const X2APIC_CURRENT_COUNT: u32 = 0x839;
+const X2APIC_ICR: u32 = 0x830;
 const X2APIC_DIVIDE_CONFIGURATION: u32 = 0x83e;
 const XAPIC_BASE: usize = 0xfee0_0000;
 const XAPIC_EOI: usize = 0x0b0;
@@ -16,6 +17,8 @@ const XAPIC_LVT_TIMER: usize = 0x320;
 const XAPIC_INITIAL_COUNT: usize = 0x380;
 const XAPIC_CURRENT_COUNT: usize = 0x390;
 const XAPIC_DIVIDE_CONFIGURATION: usize = 0x3e0;
+const XAPIC_ICR_LOW: usize = 0x300;
+const XAPIC_ICR_HIGH: usize = 0x310;
 const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
 const X2APIC_ENABLE: u64 = 1 << 10;
 const APIC_BASE_MASK: u64 = 0xffff_f000;
@@ -23,12 +26,114 @@ const LVT_MASKED: u64 = 1 << 16;
 const LVT_PERIODIC: u64 = 1 << 17;
 const APIC_SOFTWARE_ENABLE: u64 = 1 << 8;
 const SPURIOUS_VECTOR: u64 = 0xff;
+const ICR_DELIVERY_PENDING: u64 = 1 << 12;
+const ICR_LEVEL_ASSERT: u64 = 1 << 14;
+const ICR_TRIGGER_LEVEL: u64 = 1 << 15;
+const ICR_DELIVERY_INIT: u64 = 0b101 << 8;
+const ICR_DELIVERY_STARTUP: u64 = 0b110 << 8;
+const ICR_POLL_LIMIT: usize = 1_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalApicError {
     Unsupported,
     InvalidVector,
     InvalidInitialCount,
+    InvalidDestination,
+    DeliveryBusy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApicIpi {
+    destination: u32,
+    command: u32,
+}
+
+impl ApicIpi {
+    pub const fn init(destination: u32) -> Result<Self, LocalApicError> {
+        if destination == u32::MAX {
+            return Err(LocalApicError::InvalidDestination);
+        }
+        Ok(Self {
+            destination,
+            command: (ICR_DELIVERY_INIT | ICR_LEVEL_ASSERT | ICR_TRIGGER_LEVEL) as u32,
+        })
+    }
+
+    pub const fn startup(destination: u32, vector: u8) -> Result<Self, LocalApicError> {
+        if destination == u32::MAX {
+            return Err(LocalApicError::InvalidDestination);
+        }
+        if vector == 0 {
+            return Err(LocalApicError::InvalidVector);
+        }
+        Ok(Self {
+            destination,
+            command: ICR_DELIVERY_STARTUP as u32 | vector as u32,
+        })
+    }
+
+    pub const fn destination(self) -> u32 {
+        self.destination
+    }
+
+    pub const fn command(self) -> u32 {
+        self.command
+    }
+
+    /// Publishes one directed INIT or SIPI command and waits for the local
+    /// controller to consume it. Inter-command architectural delays remain the
+    /// caller's responsibility and must be provided by a separately calibrated
+    /// monotonic timer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must run at CPL0 with interrupts disabled and exclusive
+    /// ownership of this CPU's ICR. The xAPIC mapping requirements documented
+    /// by [`LocalApicTimer::enable`] apply.
+    pub unsafe fn send(self) -> Result<(), LocalApicError> {
+        let base = unsafe { read_msr(IA32_APIC_BASE) };
+        if base & APIC_GLOBAL_ENABLE == 0 {
+            return Err(LocalApicError::Unsupported);
+        }
+        if base & X2APIC_ENABLE != 0 {
+            wait_x2apic_idle()?;
+            unsafe {
+                write_msr(
+                    X2APIC_ICR,
+                    (u64::from(self.destination) << 32) | u64::from(self.command),
+                )
+            };
+            wait_x2apic_idle()
+        } else {
+            if self.destination > u8::MAX as u32 || base & APIC_BASE_MASK != XAPIC_BASE as u64 {
+                return Err(LocalApicError::InvalidDestination);
+            }
+            wait_xapic_idle()?;
+            unsafe { write_xapic(XAPIC_ICR_HIGH, u64::from(self.destination) << 24) };
+            unsafe { write_xapic(XAPIC_ICR_LOW, u64::from(self.command)) };
+            wait_xapic_idle()
+        }
+    }
+}
+
+fn wait_x2apic_idle() -> Result<(), LocalApicError> {
+    for _ in 0..ICR_POLL_LIMIT {
+        if unsafe { read_msr(X2APIC_ICR) } & ICR_DELIVERY_PENDING == 0 {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    Err(LocalApicError::DeliveryBusy)
+}
+
+fn wait_xapic_idle() -> Result<(), LocalApicError> {
+    for _ in 0..ICR_POLL_LIMIT {
+        if u64::from(unsafe { read_xapic(XAPIC_ICR_LOW) }) & ICR_DELIVERY_PENDING == 0 {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    Err(LocalApicError::DeliveryBusy)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,5 +337,20 @@ mod tests {
         assert_eq!(TimerDivide::By32.register(), 8);
         assert_eq!(TimerDivide::By64.register(), 9);
         assert_eq!(TimerDivide::By128.register(), 10);
+    }
+
+    #[test]
+    fn directed_init_and_startup_encodings_are_exact() {
+        let init = ApicIpi::init(0x1234).unwrap();
+        assert_eq!(init.destination(), 0x1234);
+        assert_eq!(init.command(), 0x0000_c500);
+        let startup = ApicIpi::startup(7, 8).unwrap();
+        assert_eq!(startup.destination(), 7);
+        assert_eq!(startup.command(), 0x0000_0608);
+        assert_eq!(
+            ApicIpi::init(u32::MAX),
+            Err(LocalApicError::InvalidDestination)
+        );
+        assert_eq!(ApicIpi::startup(1, 0), Err(LocalApicError::InvalidVector));
     }
 }

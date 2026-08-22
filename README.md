@@ -290,7 +290,11 @@ legacy handoffs remain canonical. The UEFI loader now traverses only ranges
 admitted as ACPI by the final post-`ExitBootServices` memory map, emits the
 snapshot from loader-owned storage, and maps the enlarged handoff read-only.
 Kernel entry parses the snapshot into the bounded topology before continuing.
-Real INIT/SIPI delivery, per-CPU interrupt routing, and a live
+The local-APIC layer now builds exact directed INIT and SIPI ICR commands for
+xAPIC and x2APIC, rejects broadcast/reserved destinations and a zero trampoline
+vector, and uses bounded pre/post publication polling so a stuck controller
+fails rather than hanging forever. Calibrated inter-command delays, trampoline
+installation, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of

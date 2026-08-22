@@ -23,7 +23,7 @@ pub use descriptors::{
     install_fail_stop_tables, install_user_call_gate, load_task_register, task_state_descriptor,
     write_task_state_descriptor,
 };
-pub use local_apic::{LocalApicError, LocalApicTimer, TimerDivide};
+pub use local_apic::{ApicIpi, LocalApicError, LocalApicTimer, TimerDivide};
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
 pub use privilege_stack::{
