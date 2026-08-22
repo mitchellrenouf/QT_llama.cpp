@@ -2,6 +2,7 @@ use crate::{PAGE_SIZE, PhysAddr};
 
 mod acpi;
 mod address_space;
+mod ap_trampoline;
 mod context;
 mod descriptors;
 mod local_apic;
@@ -13,6 +14,7 @@ mod topology;
 mod trap;
 pub use acpi::{AcpiError, AcpiMemory, copy_madt};
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
+pub use ap_trampoline::{ApTrampolineError, ApTrampolineImage};
 pub use context::{
     ContextError, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_INITIAL_RFLAGS, UserContext,
     UserContextTable, enter_user_context, enter_user_context_on_stack,
@@ -23,7 +25,7 @@ pub use descriptors::{
     install_fail_stop_tables, install_user_call_gate, load_task_register, task_state_descriptor,
     write_task_state_descriptor,
 };
-pub use local_apic::{ApicIpi, LocalApicError, LocalApicTimer, TimerDivide};
+pub use local_apic::{ApStartupTiming, ApicIpi, LocalApicError, LocalApicTimer, TimerDivide};
 pub use page_table::{PageTableBuildError, PageTableBuilder, PageTableStore};
 pub use pe_mapping::{PeMappingError, map_pe_image};
 pub use privilege_stack::{

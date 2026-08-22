@@ -1423,7 +1423,13 @@ now snapshots through ranges admitted as ACPI by the final memory map after
 read-only. Kernel entry performs full bounded topology parsing before normal
 initialization. Directed xAPIC/x2APIC INIT and SIPI encodings and their CPL0
 publication path are implemented with destination/vector checks and bounded
-delivery-status polling. Calibrated INIT/SIPI delays, AP trampoline execution,
+delivery-status polling. An invariant-TSC-only timing source implements the
+architectural 10 ms INIT and 200 microsecond SIPI waits without a guessed
+frequency. A generated, page-sized trampoline installs its own GDT, enables
+PAE and long mode using an identity-mapped 32-bit CR3, selects a CPU-private
+aligned stack, passes the bounded CPU index, and jumps to a canonical kernel
+entry. Its low-memory page is bound to the lifecycle's SIPI vector. Installing
+that page with an enforced writable-to-executable transition, live AP execution,
 and SMP scheduling are still required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.

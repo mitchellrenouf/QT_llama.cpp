@@ -1,5 +1,7 @@
 use core::array;
 
+use super::ApTrampolineImage;
+
 use super::MAX_X86_64_CPUS;
 
 const MADT_HEADER_BYTES: usize = 44;
@@ -301,6 +303,26 @@ impl<const CPUS: usize> ApStartupTable<CPUS> {
         Ok(u64::from(vector) << 12)
     }
 
+    pub fn startup_sent_with_image(
+        &mut self,
+        token: ApStartupToken,
+        image: &ApTrampolineImage,
+    ) -> Result<u64, TopologyError> {
+        let physical = self.startup_sent(token, image.startup_vector())?;
+        if physical != image.physical() {
+            return Err(TopologyError::InvalidStartupVector);
+        }
+        Ok(physical)
+    }
+
+    pub fn destination(&mut self, token: ApStartupToken) -> Result<u32, TopologyError> {
+        let slot = self.token_slot_mut(token)?;
+        if !matches!(slot.state, ApState::InitSent | ApState::StartupSent) {
+            return Err(TopologyError::InvalidState);
+        }
+        Ok(slot.apic_id)
+    }
+
     pub fn acknowledge(
         &mut self,
         token: ApStartupToken,
@@ -467,6 +489,7 @@ mod tests {
         assert_eq!(startup.state(0), Ok(ApState::Online));
         assert_eq!(startup.state(1), Ok(ApState::Offline));
         let token = startup.begin(1).unwrap();
+        assert_eq!(startup.destination(token), Ok(2));
         assert_eq!(
             startup.startup_sent(token, 0),
             Err(TopologyError::InvalidStartupVector)
@@ -487,5 +510,16 @@ mod tests {
             Err(TopologyError::StaleStartup)
         );
         assert_eq!(startup.startup_sent(replacement, 8), Ok(0x8000));
+    }
+
+    #[test]
+    fn startup_image_is_bound_to_the_sipi_vector() {
+        let entries = [0, 8, 0, 1, 1, 0, 0, 0, 0, 8, 1, 2, 1, 0, 0, 0];
+        let table = madt(&entries);
+        let topology = X86CpuTopology::parse_madt(&table[..60]).unwrap();
+        let mut startup = ApStartupTable::<2>::new(&topology, 1).unwrap();
+        let token = startup.begin(1).unwrap();
+        let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x4000, 1).unwrap();
+        assert_eq!(startup.startup_sent_with_image(token, &image), Ok(0x8000));
     }
 }

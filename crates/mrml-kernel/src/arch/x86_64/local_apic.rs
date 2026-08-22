@@ -40,6 +40,78 @@ pub enum LocalApicError {
     InvalidInitialCount,
     InvalidDestination,
     DeliveryBusy,
+    UncalibratedClock,
+    InvalidDelay,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApStartupTiming {
+    tsc_hz: u64,
+}
+
+impl ApStartupTiming {
+    pub const fn from_tsc_hz(tsc_hz: u64) -> Result<Self, LocalApicError> {
+        if tsc_hz < 1_000_000 || tsc_hz > 10_000_000_000 {
+            return Err(LocalApicError::UncalibratedClock);
+        }
+        Ok(Self { tsc_hz })
+    }
+
+    /// Detects an invariant TSC and derives its frequency only from enumerated
+    /// architectural CPUID ratios. No guessed fallback is accepted.
+    pub fn detect() -> Result<Self, LocalApicError> {
+        let extended = __cpuid(0x8000_0000).eax;
+        if extended < 0x8000_0007 || __cpuid(0x8000_0007).edx & (1 << 8) == 0 {
+            return Err(LocalApicError::UncalibratedClock);
+        }
+        let maximum = __cpuid(0).eax;
+        let mut hz = 0u64;
+        if maximum >= 0x15 {
+            let ratio = __cpuid(0x15);
+            if ratio.eax != 0 && ratio.ebx != 0 && ratio.ecx != 0 {
+                hz = u64::from(ratio.ecx)
+                    .checked_mul(u64::from(ratio.ebx))
+                    .and_then(|value| value.checked_div(u64::from(ratio.eax)))
+                    .ok_or(LocalApicError::UncalibratedClock)?;
+            }
+        }
+        if hz == 0 && maximum >= 0x16 {
+            hz = u64::from(__cpuid(0x16).eax)
+                .checked_mul(1_000_000)
+                .ok_or(LocalApicError::UncalibratedClock)?;
+        }
+        Self::from_tsc_hz(hz)
+    }
+
+    pub const fn tsc_hz(self) -> u64 {
+        self.tsc_hz
+    }
+
+    pub fn wait_after_init(self) -> Result<(), LocalApicError> {
+        self.wait_micros(10_000)
+    }
+
+    pub fn wait_after_startup(self) -> Result<(), LocalApicError> {
+        self.wait_micros(200)
+    }
+
+    pub fn wait_micros(self, micros: u32) -> Result<(), LocalApicError> {
+        if micros == 0 || micros > 1_000_000 {
+            return Err(LocalApicError::InvalidDelay);
+        }
+        let cycles = self
+            .tsc_hz
+            .checked_mul(u64::from(micros))
+            .and_then(|value| value.checked_add(999_999))
+            .map(|value| value / 1_000_000)
+            .filter(|value| *value != 0)
+            .ok_or(LocalApicError::InvalidDelay)?;
+        let start = read_tsc();
+        while read_tsc().wrapping_sub(start) < cycles {
+            core::hint::spin_loop();
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +353,15 @@ unsafe fn read_msr(register: u32) -> u64 {
     (u64::from(high) << 32) | u64::from(low)
 }
 
+fn read_tsc() -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe {
+        asm!("lfence", "rdtsc", out("eax") low, out("edx") high, options(nomem, nostack));
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
 unsafe fn write_msr(register: u32, value: u64) {
     unsafe {
         asm!(
@@ -352,5 +433,20 @@ mod tests {
             Err(LocalApicError::InvalidDestination)
         );
         assert_eq!(ApicIpi::startup(1, 0), Err(LocalApicError::InvalidVector));
+    }
+
+    #[test]
+    fn startup_timing_is_bounded_and_never_guessed() {
+        assert_eq!(
+            ApStartupTiming::from_tsc_hz(999_999),
+            Err(LocalApicError::UncalibratedClock)
+        );
+        let timing = ApStartupTiming::from_tsc_hz(3_000_000_000).unwrap();
+        assert_eq!(timing.tsc_hz(), 3_000_000_000);
+        assert_eq!(timing.wait_micros(0), Err(LocalApicError::InvalidDelay));
+        assert_eq!(
+            timing.wait_micros(1_000_001),
+            Err(LocalApicError::InvalidDelay)
+        );
     }
 }

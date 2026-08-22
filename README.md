@@ -293,8 +293,15 @@ Kernel entry parses the snapshot into the bounded topology before continuing.
 The local-APIC layer now builds exact directed INIT and SIPI ICR commands for
 xAPIC and x2APIC, rejects broadcast/reserved destinations and a zero trampoline
 vector, and uses bounded pre/post publication polling so a stuck controller
-fails rather than hanging forever. Calibrated inter-command delays, trampoline
-installation, per-CPU interrupt routing, and a live
+fails rather than hanging forever. Startup timing now requires an invariant TSC
+with an architectural CPUID frequency; it provides the 10 ms post-INIT and
+200 microsecond post-SIPI waits and refuses guessed clocks. A bounded 4 KiB
+trampoline image now performs the real-mode, PAE, long-mode, CPU-index, private
+stack, and kernel-entry transition. It accepts only a 4 KiB-aligned SIPI page
+below 1 MiB, a 32-bit identity-mapped CR3, and canonical aligned destinations,
+and the lifecycle binds the exact image page to its SIPI vector. Platform
+installation with a write-then-read/execute permission transition, per-CPU
+interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
