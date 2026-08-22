@@ -234,6 +234,27 @@ pub struct ApStartupToken {
     generation: u32,
 }
 
+impl ApStartupToken {
+    #[cfg(test)]
+    pub(crate) fn from_parts(slot: u16, generation: u32) -> Result<Self, TopologyError> {
+        if usize::from(slot) >= MAX_X86_64_CPUS {
+            return Err(TopologyError::InvalidCpu);
+        }
+        if generation == 0 {
+            return Err(TopologyError::StaleStartup);
+        }
+        Ok(Self { slot, generation })
+    }
+
+    pub const fn slot(self) -> u16 {
+        self.slot
+    }
+
+    pub const fn generation(self) -> u32 {
+        self.generation
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ApSlot {
     apic_id: u32,
@@ -544,7 +565,7 @@ mod tests {
             }
         }
         let image =
-            super::super::ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x4000, 1).unwrap();
+            super::super::ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x9ff8, 1, 1).unwrap();
         let mut page = Page(false);
         let installed = image.install(&mut page).unwrap();
         assert_eq!(

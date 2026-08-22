@@ -1448,10 +1448,12 @@ and double-fault stacks for all 256 bounded CPU indices, leaves both guards in
 every slot absent, and iteratively
 identity-maps only the page-table frames its builder actually allocated, so new
 frames created during that operation are included without mapping unrelated
-loader storage. A no-allocation active-CR3 view applies exact-match changes,
+loader storage. Every table frame is allocated below 4 GiB because the AP's
+real-mode transition must load CR3 through a 32-bit register; allocation fails
+instead of producing an unbootable trampoline. A no-allocation active-CR3 view
+applies exact-match changes,
 accepts and preserves only hardware Accessed/Dirty leaf changes, and issues
-`invlpg` for every transitioned address. The in-kernel adapter still needs to
-apply the final seal. The active adapter is now implemented: it requires the
+`invlpg` for every transitioned address. The active adapter requires the
 exact identity-mapped supervisor RW/NX leaf before copying, seals through the
 checked RX transition, and on a later failure changes RX back to NX, zeroes the
 page, removes only the expected leaf, invalidates it, and verifies absence.
@@ -1459,8 +1461,14 @@ Because the image embeds one AP's CPU index and stack, startup is sequential:
 after that AP acknowledges leaving the trampoline, its opaque installed token
 can return only the exact RX leaf to a zeroed RW/NX staging state for the next
 AP. The WHP backend exercises this full transition against the live hypervisor.
-Kernel entry does not invoke it yet because firmware-provisioned AP-private
-stacks and the relocated AP entry remain unfinished.
+The image also carries the opaque startup generation in RSI. A bounded atomic
+rendezvous publishes that generation before SIPI and accepts the AP's online
+acknowledgement only from the matching CPU slot and generation; stale or
+duplicate arrivals fail closed, and failed slots require an explicit rearm.
+The PE kernel's explicit SysV AP entry validates those three arguments,
+constructs its CPU-private descriptor state in a disjoint static slot, installs
+its GDT/IDT/TSS using the guarded entry and double-fault stacks, and only then
+publishes online. The BSP does not invoke the INIT/SIPI loop yet.
 Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.

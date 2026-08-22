@@ -1013,7 +1013,7 @@ mod tests {
         let system = WhpSystem::open().unwrap();
         if system.hypervisor_present().unwrap() {
             let mut partition = system.prepare_partition().unwrap();
-            let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x40_0000, 1).unwrap();
+            let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x40_5ff8, 1, 1).unwrap();
             let installed = partition.install_ap_trampoline(&image).unwrap();
             assert_eq!(installed.physical(), 0x8000);
             assert_eq!(

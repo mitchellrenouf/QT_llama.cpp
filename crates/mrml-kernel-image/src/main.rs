@@ -2,6 +2,8 @@
 #![no_main]
 
 use core::arch::{asm, global_asm};
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
 #[cfg(feature = "timer-probe")]
@@ -35,8 +37,8 @@ use mrml_kernel::arch::x86_64::enter_user_context;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 use mrml_kernel::arch::x86_64::enter_user_context_on_stack;
 use mrml_kernel::arch::x86_64::{
-    CpuDescriptorState, HardwareTrapFrame, MAX_X86_64_CPUS, PRIVILEGE_STACK_ARENA_PAGES,
-    PerCpuPrivilegeStacks, X86CpuTopology,
+    ApOnlineTable, CpuDescriptorState, HardwareTrapFrame, MAX_X86_64_CPUS,
+    PRIVILEGE_STACK_ARENA_PAGES, PerCpuPrivilegeStacks, PrivilegeStackLayout, X86CpuTopology,
 };
 #[cfg(any(
     feature = "timer-probe",
@@ -125,6 +127,11 @@ const SERVICE_SENDER_ENTRY: u64 = SERVICE_ENTRY + 0x80;
 const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 
 static mut CPU0_DESCRIPTORS: CpuDescriptorState = CpuDescriptorState::empty(0);
+struct ApDescriptorSlots([UnsafeCell<MaybeUninit<CpuDescriptorState>>; MAX_X86_64_CPUS]);
+unsafe impl Sync for ApDescriptorSlots {}
+static AP_DESCRIPTORS: ApDescriptorSlots =
+    ApDescriptorSlots([const { UnsafeCell::new(MaybeUninit::uninit()) }; MAX_X86_64_CPUS]);
+static AP_ONLINE: ApOnlineTable<MAX_X86_64_CPUS> = ApOnlineTable::empty();
 #[cfg(feature = "timer-probe")]
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 #[cfg(any(feature = "preemption-probe", feature = "service-preemption-probe"))]
@@ -775,6 +782,43 @@ pub unsafe extern "efiapi" fn kernel_entry(
     unsafe {
         run_kernel(bytes, length)
     }
+}
+
+/// Relocated long-mode entry reached only by a sealed AP trampoline. The
+/// trampoline uses the SysV register contract explicitly: CPU index in RDI,
+/// startup generation in RSI, and the private stack-layout base in RDX.
+///
+/// # Safety
+///
+/// The BSP must have armed the exact CPU/generation pair, installed the shared
+/// kernel CR3, and supplied the base of that CPU's exclusively owned, mapped
+/// privilege-stack layout. The current RSP must be its early-stack top.
+#[unsafe(export_name = "mrml_ap_entry")]
+pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_base: u64) -> ! {
+    let cpu = usize::try_from(cpu)
+        .ok()
+        .filter(|cpu| *cpu < MAX_X86_64_CPUS)
+        .unwrap_or_else(|| halt());
+    let generation = u32::try_from(generation).unwrap_or_else(|_| halt());
+    if !AP_ONLINE.matches_armed(cpu, generation) {
+        halt();
+    }
+    let stacks = PrivilegeStackLayout::new(stack_base, PRIVILEGE_STACK_ARENA_PAGES)
+        .unwrap_or_else(|_| halt());
+    let slot = AP_DESCRIPTORS.0[cpu].get();
+    unsafe { slot.write(MaybeUninit::new(CpuDescriptorState::empty(cpu as u16))) };
+    let state = unsafe { (&mut *slot).assume_init_mut() };
+    unsafe {
+        install_descriptor_state(
+            state,
+            stacks.entry_top().unwrap_or_else(|_| halt()),
+            stacks.double_fault_top().unwrap_or_else(|_| halt()),
+        )
+    };
+    if AP_ONLINE.acknowledge(cpu, generation).is_err() {
+        halt();
+    }
+    halt()
 }
 
 #[cfg(not(feature = "fault-probe"))]
@@ -1440,13 +1484,21 @@ fn embedded_minimum_version() -> Option<u64> {
 }
 
 unsafe fn install_descriptor_tables(kernel_stack: u64, double_fault_stack: u64) {
-    let fallback = mrml_exception_fail_stop as *const () as usize as u64;
-    let handlers = unsafe { &mrml_exception_table };
     let state = unsafe {
         core::ptr::addr_of_mut!(CPU0_DESCRIPTORS)
             .as_mut()
             .unwrap_or_else(|| halt())
     };
+    unsafe { install_descriptor_state(state, kernel_stack, double_fault_stack) };
+}
+
+unsafe fn install_descriptor_state(
+    state: &mut CpuDescriptorState,
+    kernel_stack: u64,
+    double_fault_stack: u64,
+) {
+    let fallback = mrml_exception_fail_stop as *const () as usize as u64;
+    let handlers = unsafe { &mrml_exception_table };
     if unsafe { state.install(kernel_stack, double_fault_stack, handlers, fallback) }.is_err() {
         halt();
     }

@@ -8,6 +8,7 @@ const GDTR_OFFSET: usize = 160;
 const GDT_OFFSET: usize = 168;
 const GDT_CODE_SELECTOR: u16 = 8;
 const GDT_DATA_SELECTOR: u16 = 16;
+const EARLY_STACK_BYTES: u64 = 6 * PAGE_SIZE;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApTrampolineError {
@@ -16,6 +17,7 @@ pub enum ApTrampolineError {
     InvalidEntry,
     InvalidStack,
     InvalidCpu,
+    InvalidGeneration,
     UnsafePermissions,
     WriteFailed,
     ProtectionFailed,
@@ -245,6 +247,7 @@ impl ApTrampolineImage {
         entry: u64,
         stack_top: u64,
         cpu_index: usize,
+        generation: u32,
     ) -> Result<Self, ApTrampolineError> {
         if !(PAGE_SIZE..0x10_0000).contains(&physical) || !physical.is_multiple_of(PAGE_SIZE) {
             return Err(ApTrampolineError::InvalidPhysicalPage);
@@ -258,13 +261,22 @@ impl ApTrampolineImage {
         if entry == 0 || !canonical(entry) {
             return Err(ApTrampolineError::InvalidEntry);
         }
-        if stack_top < 16 || !canonical(stack_top) || !stack_top.is_multiple_of(16) {
+        if stack_top < 16 || !canonical(stack_top) || !stack_top.wrapping_add(8).is_multiple_of(16)
+        {
             return Err(ApTrampolineError::InvalidStack);
         }
+        let stack_base = stack_top
+            .checked_add(8)
+            .and_then(|end| end.checked_sub(EARLY_STACK_BYTES))
+            .filter(|base| *base != 0 && base.is_multiple_of(PAGE_SIZE))
+            .ok_or(ApTrampolineError::InvalidStack)?;
         let cpu = u64::try_from(cpu_index)
             .ok()
             .filter(|value| *value < 256)
             .ok_or(ApTrampolineError::InvalidCpu)?;
+        if generation == 0 {
+            return Err(ApTrampolineError::InvalidGeneration);
+        }
 
         let mut bytes = [0u8; PAGE_BYTES];
         let mut cursor = 0usize;
@@ -331,6 +343,14 @@ impl ApTrampolineImage {
         emit(&mut bytes, &mut cursor, &stack_top.to_le_bytes());
         emit(&mut bytes, &mut cursor, &[0x48, 0xbf]);
         emit(&mut bytes, &mut cursor, &cpu.to_le_bytes());
+        emit(&mut bytes, &mut cursor, &[0x48, 0xbe]);
+        emit(
+            &mut bytes,
+            &mut cursor,
+            &u64::from(generation).to_le_bytes(),
+        );
+        emit(&mut bytes, &mut cursor, &[0x48, 0xba]);
+        emit(&mut bytes, &mut cursor, &stack_base.to_le_bytes());
         emit(&mut bytes, &mut cursor, &[0x48, 0xb8]);
         emit(&mut bytes, &mut cursor, &entry.to_le_bytes());
         emit(&mut bytes, &mut cursor, &[0xff, 0xe0]);
@@ -423,19 +443,25 @@ mod tests {
             0x8000,
             0x20_0000,
             0xffff_8000_0010_0000,
-            0xffff_8000_0021_0000,
+            0xffff_8000_0020_fff8,
             7,
+            9,
         )
         .unwrap();
         assert_eq!(image.startup_vector(), 8);
         assert_eq!(&image.bytes()[33..37], &0x20_0000u32.to_le_bytes());
         assert_eq!(
             &image.bytes()[92..100],
-            &0xffff_8000_0021_0000u64.to_le_bytes()
+            &0xffff_8000_0020_fff8u64.to_le_bytes()
         );
         assert_eq!(&image.bytes()[102..110], &7u64.to_le_bytes());
+        assert_eq!(&image.bytes()[112..120], &9u64.to_le_bytes());
         assert_eq!(
-            &image.bytes()[112..120],
+            &image.bytes()[122..130],
+            &0xffff_8000_0020_a000u64.to_le_bytes()
+        );
+        assert_eq!(
+            &image.bytes()[132..140],
             &0xffff_8000_0010_0000u64.to_le_bytes()
         );
         assert_eq!(
@@ -447,24 +473,28 @@ mod tests {
     #[test]
     fn rejects_alias_prone_or_unbootable_inputs() {
         assert_eq!(
-            ApTrampolineImage::new(0, 0x2000, 0x1000, 0x2000, 0).err(),
+            ApTrampolineImage::new(0, 0x2000, 0x1000, 0x9ff8, 0, 1).err(),
             Some(ApTrampolineError::InvalidPhysicalPage)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2001, 0x1000, 0x2000, 0).err(),
+            ApTrampolineImage::new(0x8000, 0x2001, 0x1000, 0x9ff8, 0, 1).err(),
             Some(ApTrampolineError::InvalidPageTable)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2000, 0x0000_8000_0000_0000, 0x2000, 0).err(),
+            ApTrampolineImage::new(0x8000, 0x2000, 0x0000_8000_0000_0000, 0x9ff8, 0, 1).err(),
             Some(ApTrampolineError::InvalidEntry)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x2008, 0).err(),
+            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x2000, 0, 1).err(),
             Some(ApTrampolineError::InvalidStack)
         );
         assert_eq!(
-            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x2000, 256).err(),
+            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x9ff8, 256, 1).err(),
             Some(ApTrampolineError::InvalidCpu)
+        );
+        assert_eq!(
+            ApTrampolineImage::new(0x8000, 0x2000, 0x1000, 0x9ff8, 1, 0).err(),
+            Some(ApTrampolineError::InvalidGeneration)
         );
     }
 
@@ -536,7 +566,7 @@ mod tests {
 
     #[test]
     fn installation_is_write_xor_execute_and_failure_revokes() {
-        let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x4000, 1).unwrap();
+        let image = ApTrampolineImage::new(0x8000, 0x20_0000, 0x1000, 0x9ff8, 1, 1).unwrap();
         let mut page = Page::writable();
         let installed = image.install(&mut page).unwrap();
         assert_eq!(installed.physical(), 0x8000);

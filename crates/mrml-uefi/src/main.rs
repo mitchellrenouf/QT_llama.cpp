@@ -115,8 +115,10 @@ impl PageTableStore for FirmwarePageTables {
         if self.count == self.frames.len() {
             return Err(PageTableBuildError::Storage);
         }
-        let mut address = 0u64;
-        check(unsafe { (services.allocate_pages)(0, 2, 1, &mut address) })
+        // AP real-mode startup can load only a 32-bit CR3, so every frame in
+        // the shared hierarchy is deliberately allocated below 4 GiB.
+        let mut address = u64::from(u32::MAX) & !(PAGE_BYTES as u64 - 1);
+        check(unsafe { (services.allocate_pages)(1, 2, 1, &mut address) })
             .map_err(|_| PageTableBuildError::Storage)?;
         let frame = PhysAddr::new(address).map_err(|_| PageTableBuildError::Storage)?;
         unsafe { core::ptr::write_bytes(address as *mut u8, 0, 4096) };

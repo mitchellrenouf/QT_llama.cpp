@@ -2,6 +2,7 @@ use crate::{PAGE_SIZE, PhysAddr};
 
 mod acpi;
 mod address_space;
+mod ap_online;
 mod ap_trampoline;
 mod context;
 mod descriptors;
@@ -14,6 +15,7 @@ mod topology;
 mod trap;
 pub use acpi::{AcpiError, AcpiMemory, copy_madt};
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
+pub use ap_online::{ApOnlineError, ApOnlineTable};
 pub use ap_trampoline::{
     ActiveApTrampolinePage, ApTrampolineError, ApTrampolineImage, ApTrampolinePage,
     InstalledApTrampoline, TrampolinePermissions,
