@@ -255,12 +255,12 @@ its structured-alternative counterpart each emitted
 deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
 a selected zero input that would trap if fallback division were evaluated.
-Fixed-size scalar array literals now retain up to eight homogeneous elements in
+Fixed-size scalar array literals now retain up to sixteen homogeneous elements in
 the fixed expression arena, accept a trailing comma, and support constant or
 runtime `usize` postfix indexes. Array construction evaluates every element in
 source order before indexing, while an enclosing conditional array expression
-still evaluates only its selected arm. Compile-time out-of-bounds indexes and a
-ninth element fail with bounded errors; runtime out-of-bounds indexes reach
+still evaluates only its selected arm. A compile-time out-of-bounds index or a
+seventeenth element fails with a bounded error; runtime out-of-bounds indexes reach
 `UD2`. Runtime typing preserves the element type and length, rejects mixed
 scalar element types, and rejects non-`usize` variable indexes. Index extraction
 lowers through IR and native code without representing the aggregate as a
@@ -270,9 +270,9 @@ objects returned the middle value `3` through independent Windows gnullvm and
 Arch Linux WSL callers. Array-valued conditional loop-break branches now also
 unify a `Default::default()` arm with a same-length fixed scalar array arm.
 Scalar repeat literals `[expression; length]` accept an unsuffixed or `usize`
-literal length up to eight and reuse the same fixed-array typing,
-indexing, local storage, and mutation paths. Other integer suffixes and a ninth
-element are rejected before lowering. An original bounded replacement covers
+literal length up to sixteen and reuse the same fixed-array typing,
+indexing, local storage, and mutation paths. Other integer suffixes and a
+seventeenth element are rejected before lowering. An original bounded replacement covers
 the first repeat-and-mutate shape from pinned nightly
 `tests/ui/array-slice-vec/mutability-inherits-through-fixed-length-vec.rs`;
 iteration over array references remains outside this slice. The exact pinned
@@ -292,7 +292,7 @@ as zero. A combined probe covering both branch orders and a semicolonless tail
 `break` emitted
 93-byte COFF and 488-byte ELF64 objects; independent pinned-nightly callers on
 both hosts observed 43. Immutable fixed-array locals now retain each of their
-up to eight scalar elements in a distinct stack slot. Both explicit
+up to sixteen scalar elements in a distinct stack slot. Both explicit
 `[scalar; N]` annotations and inferred literal types are accepted, including a
 typed contextual default or loop-break array initializer. Constant indexes load
 the selected slot while preserving parameter offsets, surrounding scalar
@@ -327,7 +327,7 @@ both Windows and System V. The exact pinned nightly
 `tests/ui/consts/const_let_eq.rs` compiled and ran unchanged on both hosts. An
 original `const fn` replacement emitted 128-byte COFF and 520-byte ELF64
 objects; independent pinned-nightly callers passed `[0]`, `[13]`, and
-`[1_000_000]` with following scalar arguments. Two-to-eight-element 64-bit
+`[1_000_000]` with following scalar arguments. Two-to-sixteen-element 64-bit
 integer arrays additionally follow their platform ABI classes: Windows copies
 elements from the caller-provided indirect argument, while System V consumes a
 two-eightbyte array from registers when both are available and otherwise rolls
@@ -343,7 +343,7 @@ while retaining the following sixth integer register; its 459-byte COFF and
 840-byte ELF64 objects produced 204 and 120 on both hosts. Fixed-array returns
 use the corresponding result classes: one scalar element returns in `RAX`, a
 two-word System V array returns in `RAX`/`RDX`, and Windows multiword or System V
-three-to-eight-word arrays use a preserved hidden result pointer while shifting
+three-to-sixteen-word arrays use a preserved hidden result pointer while shifting
 ordinary parameters to their ABI-defined locations. Tail values, explicit
 returns, and conditional returns share the same materialization path. The exact
 pinned nightly `tests/ui/parser/block-expr-statement-vs-expr.rs` compiled and ran
@@ -374,7 +374,13 @@ their fixed array type from returns and typed locals, then use the same direct
 or indirect ABI materialization as explicit literals. A conditional `[u16; 5]`
 default-return probe emitted 439-byte COFF and 856-byte ELF64 objects;
 independent callers observed both the all-zero default and the explicitly
-initialized alternative on both hosts. Defaults without a constraining type,
+initialized alternative on both hosts. The fixed-array arena, runtime indexes,
+locals, assignments, parameter classes, and return classes now share a
+sixteen-element bound. Array cleanup switches to a 32-bit stack adjustment at
+the exact 128-byte boundary. An independent `[u8; 16]` caller exercised
+parameter transport, a copied mutable local, last-element assignment, and
+return transport on both ABIs; the resulting objects were 1,602-byte COFF and
+2,184-byte ELF64. Defaults without a constraining type,
 references, slices, and general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
@@ -875,7 +881,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 280 Windows library, conformance, rustc-nightly-replacement, and driver
+The 282 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1549,7 +1555,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 280 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 282 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

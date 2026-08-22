@@ -9,7 +9,7 @@ const MAX_MATCH_PATTERNS: usize = 8;
 const MAX_MATCH_ALTERNATIVES: usize = 4;
 const MAX_RANGE_VALIDATIONS: usize = MAX_MATCH_PATTERNS * MAX_MATCH_ALTERNATIVES;
 const MAX_LOOP_BREAK_BRANCHES: usize = 4;
-pub(crate) const MAX_ARRAY_ELEMENTS: usize = 8;
+pub(crate) const MAX_ARRAY_ELEMENTS: usize = 16;
 
 type InlineConstBinding<'source> = (&'source str, ExprKind<'source>, bool, Option<ScalarType>);
 
@@ -3772,6 +3772,7 @@ mod tests {
         assert_eq!(evaluate("[10, 20, 30,][2]"), Ok(30));
         assert_eq!(evaluate("[42u32; 3][2]"), Ok(42));
         assert_eq!(evaluate("[7; 0b100usize][3]"), Ok(7));
+        assert_eq!(evaluate("[42u32; 16][15]"), Ok(42));
         assert_eq!(
             evaluate("[1 / 0, 42][1]"),
             Err(ConstEvalError::DivisionByZero)
@@ -3788,14 +3789,16 @@ mod tests {
             Err(ConstEvalError::ArrayIndexOutOfBounds)
         );
         assert_eq!(
-            ExpressionParser::<24>::new("[0, 1, 2, 3, 4, 5, 6, 7, 8]")
-                .parse()
-                .unwrap_err()
-                .kind,
+            ExpressionParser::<40>::new(
+                "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]",
+            )
+            .parse()
+            .unwrap_err()
+            .kind,
             ExpressionErrorKind::TooManyArrayElements
         );
         assert_eq!(
-            ExpressionParser::<8>::new("[42; 9]")
+            ExpressionParser::<8>::new("[42; 17]")
                 .parse()
                 .unwrap_err()
                 .kind,

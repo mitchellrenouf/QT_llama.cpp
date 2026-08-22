@@ -1686,7 +1686,7 @@ fn runtime_array_type(text: &str) -> Option<RuntimeExpressionType> {
     let body = text.trim().strip_prefix('[')?.strip_suffix(']')?;
     let (element, count) = body.split_once(';')?;
     let count = count.trim().parse::<usize>().ok()?;
-    if count > 8 {
+    if count > crate::expression::MAX_ARRAY_ELEMENTS {
         return None;
     }
     let element = match element.trim() {
@@ -2771,6 +2771,20 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         self.emit(&[0xc3])
     }
 
+    fn emit_stack_cleanup_bytes(&mut self, bytes: usize) -> Result<(), CodegenError> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        if bytes <= i8::MAX as usize {
+            self.emit(&[0x48, 0x83, 0xc4, bytes as u8])
+        } else {
+            let bytes =
+                u32::try_from(bytes).map_err(|_| self.error(CodegenErrorKind::OutputTooSmall))?;
+            self.emit(&[0x48, 0x81, 0xc4])?;
+            self.emit(&bytes.to_le_bytes())
+        }
+    }
+
     fn emit_trap_branch(&mut self, opcode: u8) -> Result<(), CodegenError> {
         self.emit(&[0x0f, opcode, 0, 0, 0, 0])?;
         let patch = self.length - 4;
@@ -3270,14 +3284,14 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         count: usize,
         depth: usize,
     ) -> Result<(), CodegenError> {
-        if count > 8 {
+        if count > crate::expression::MAX_ARRAY_ELEMENTS {
             return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
         }
         self.emit_array_to_stack(tree, base, count)?;
         self.emit_expression(tree, index, depth + 1)?;
         self.emit(&[0x50])?;
         self.evaluation_depth += 1;
-        let mut end_patches = [0usize; 8];
+        let mut end_patches = [0usize; crate::expression::MAX_ARRAY_ELEMENTS];
         for (candidate, end_patch) in end_patches[..count].iter_mut().enumerate() {
             self.emit_stack_slot(0)?;
             self.emit(&[0x48, 0x83, 0xf8, candidate as u8])?;
@@ -3294,7 +3308,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let bytes = (count + 1)
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
-        self.emit(&[0x48, 0x83, 0xc4, bytes as u8])
+        self.emit_stack_cleanup_bytes(bytes)
     }
 
     fn emit_constant_array_index<const MAX_NODES: usize>(
@@ -3305,7 +3319,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         count: usize,
         _depth: usize,
     ) -> Result<(), CodegenError> {
-        if count > 8 || index >= count {
+        if count > crate::expression::MAX_ARRAY_ELEMENTS || index >= count {
             return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
         }
         self.emit_array_to_stack(tree, base, count)?;
@@ -3314,7 +3328,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let bytes = count
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
-        self.emit(&[0x48, 0x83, 0xc4, bytes as u8])
+        self.emit_stack_cleanup_bytes(bytes)
     }
 
     fn emit_forward_branch(&mut self, opcode: u8) -> Result<usize, CodegenError> {
@@ -3933,7 +3947,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         index_slot: usize,
     ) -> Result<(), CodegenError> {
         let later_slots = self.local_stack_slots_from(local_index + 1)?;
-        let mut end_patches = [0usize; 8];
+        let mut end_patches = [0usize; crate::expression::MAX_ARRAY_ELEMENTS];
         for (candidate, end_patch) in end_patches[..count].iter_mut().enumerate() {
             self.emit_stack_slot(index_slot)?;
             self.emit(&[0x48, 0x83, 0xf8, candidate as u8])?;
@@ -3956,7 +3970,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         index_slot: usize,
     ) -> Result<(), CodegenError> {
         let later_slots = self.local_stack_slots_from(local_index + 1)?;
-        let mut end_patches = [0usize; 8];
+        let mut end_patches = [0usize; crate::expression::MAX_ARRAY_ELEMENTS];
         for (candidate, end_patch) in end_patches[..count].iter_mut().enumerate() {
             self.emit_stack_slot(index_slot)?;
             self.emit(&[0x48, 0x83, 0xf8, candidate as u8])?;
@@ -3982,7 +3996,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         local_index: usize,
         count: usize,
     ) -> Result<(), CodegenError> {
-        if count > 8 {
+        if count > crate::expression::MAX_ARRAY_ELEMENTS {
             return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
         }
         self.emit_array_to_stack(tree, root, count)?;
@@ -3999,9 +4013,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let bytes = count
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
-        if bytes != 0 {
-            self.emit(&[0x48, 0x83, 0xc4, bytes as u8])?;
-        }
+        self.emit_stack_cleanup_bytes(bytes)?;
         Ok(())
     }
 
@@ -4289,9 +4301,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let bytes = count
             .checked_mul(8)
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
-        if bytes != 0 {
-            self.emit(&[0x48, 0x83, 0xc4, bytes as u8])?;
-        }
+        self.emit_stack_cleanup_bytes(bytes)?;
         self.emit_epilogue()
     }
 
@@ -6141,6 +6151,25 @@ mod tests {
             };
             for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
                 let result = compile_x86_64_function::<_, 768, 4, 64>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn supports_sixteen_element_fixed_arrays() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u8; 16]) -> [u8; 16] { let mut copied = values; copied[15] += 1; copied }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let mut values = [input; 16]; values[15] += 1; values[15] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 4096, 4, 96>(&function, &NoConstants, abi);
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }

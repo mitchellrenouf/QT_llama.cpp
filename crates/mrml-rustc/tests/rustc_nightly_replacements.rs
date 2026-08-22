@@ -1747,6 +1747,18 @@ fn rustc_fixed_length_packed_array_abi_reaches_native_objects() {
 }
 
 #[test]
+fn rustc_sixteen_element_fixed_arrays_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: [u8; 16]) -> [u8; 16] { let mut copied = values; copied[15] += 1; copied }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize) -> usize { let mut values = [input; 16]; values[15] += 1; values[15] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_zero_sized_array_abi_reaches_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",
