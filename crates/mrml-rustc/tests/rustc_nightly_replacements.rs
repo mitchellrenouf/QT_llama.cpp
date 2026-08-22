@@ -1601,6 +1601,18 @@ fn rustc_immediate_break_loop_values_reach_native_objects() {
 }
 
 #[test]
+fn rustc_loop_break_value_array_literals_have_a_scalar_index_replacement() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { [1u32, 3, 5][1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { [17u32][0] }",
+    ];
+    for source in sources {
+        assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",

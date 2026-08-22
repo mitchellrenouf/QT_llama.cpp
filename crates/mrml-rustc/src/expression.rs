@@ -9,6 +9,7 @@ const MAX_MATCH_PATTERNS: usize = 8;
 const MAX_MATCH_ALTERNATIVES: usize = 4;
 const MAX_RANGE_VALIDATIONS: usize = MAX_MATCH_PATTERNS * MAX_MATCH_ALTERNATIVES;
 const MAX_LOOP_BREAK_BRANCHES: usize = 4;
+pub(crate) const MAX_ARRAY_ELEMENTS: usize = 8;
 
 type InlineConstBinding<'source> = (&'source str, ExprKind<'source>, bool, Option<ScalarType>);
 
@@ -229,6 +230,14 @@ impl IntegerType {
 pub enum ExprKind<'source> {
     Unit,
     DefaultValue,
+    Array {
+        elements: [Option<ExprId>; MAX_ARRAY_ELEMENTS],
+        element_count: usize,
+    },
+    Index {
+        base: ExprId,
+        index: ExprId,
+    },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -320,6 +329,7 @@ pub enum ExpressionErrorKind {
     IntegerOverflow,
     TooManyNodes,
     TooManyCallArguments,
+    TooManyArrayElements,
     TooManyInlineConstBindings,
     TooManyInlineConstAssignments,
     TooManyInlineConstExpressionStatements,
@@ -375,6 +385,8 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             ExprKind::Bool(_) => true,
             ExprKind::Unit
             | ExprKind::DefaultValue
+            | ExprKind::Array { .. }
+            | ExprKind::Index { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
             | ExprKind::Identifier(_)
@@ -561,6 +573,13 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             .ok_or(ConstEvalError::InvalidExpressionTree)?;
         match expression.kind {
             ExprKind::Unit | ExprKind::DefaultValue => Ok(0),
+            ExprKind::Array { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::Index { base, index } => {
+                let index = self.evaluate_node(index, resolver, depth + 1)?;
+                let index =
+                    usize::try_from(index).map_err(|_| ConstEvalError::ArrayIndexOutOfBounds)?;
+                self.evaluate_array_element(base, index, resolver, depth + 1)
+            }
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -664,6 +683,57 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             }
         }
     }
+
+    fn evaluate_array_element<R: ConstantResolver>(
+        &self,
+        id: ExprId,
+        index: usize,
+        resolver: &R,
+        depth: usize,
+    ) -> Result<u128, ConstEvalError> {
+        if depth == MAX_EXPRESSION_DEPTH {
+            return Err(ConstEvalError::NestingLimitExceeded);
+        }
+        let expression = self
+            .expression(id)
+            .ok_or(ConstEvalError::InvalidExpressionTree)?;
+        match expression.kind {
+            ExprKind::Array {
+                elements,
+                element_count,
+            } => {
+                let element = elements
+                    .get(index)
+                    .filter(|_| index < element_count)
+                    .and_then(|element| *element)
+                    .ok_or(ConstEvalError::ArrayIndexOutOfBounds)?;
+                self.evaluate_node(element, resolver, depth + 1)
+            }
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            }
+            | ExprKind::LoopBreakIf {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let selected = if self.evaluate_node(condition, resolver, depth + 1)? != 0 {
+                    then_branch
+                } else {
+                    else_branch
+                };
+                self.evaluate_array_element(selected, index, resolver, depth + 1)
+            }
+            ExprKind::InlineConst { operand }
+            | ExprKind::LoopBreak { operand }
+            | ExprKind::Return { operand } => {
+                self.evaluate_array_element(operand, index, resolver, depth + 1)
+            }
+            _ => Err(ConstEvalError::InvalidExpressionTree),
+        }
+    }
 }
 
 pub trait ConstantResolver {
@@ -708,6 +778,7 @@ pub enum ConstEvalError {
     InvalidExpressionTree,
     NestingLimitExceeded,
     UnsupportedCall,
+    ArrayIndexOutOfBounds,
     InvalidRangeType,
     InvalidRangeBounds,
 }
@@ -1129,6 +1200,53 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     },
                 })
             }
+            Some(open) if open.kind == TokenKind::OpenBracket => {
+                let mut elements = [None; MAX_ARRAY_ELEMENTS];
+                let mut element_count = 0usize;
+                if !self
+                    .peek()?
+                    .is_some_and(|token| token.kind == TokenKind::CloseBracket)
+                {
+                    loop {
+                        if element_count == MAX_ARRAY_ELEMENTS {
+                            let token = self.peek()?;
+                            return Err(
+                                self.error(ExpressionErrorKind::TooManyArrayElements, token)
+                            );
+                        }
+                        elements[element_count] = Some(self.expression(0, depth + 1)?);
+                        element_count += 1;
+                        if !self
+                            .peek()?
+                            .is_some_and(|token| token.kind == TokenKind::Comma)
+                        {
+                            break;
+                        }
+                        self.take()?;
+                        if self
+                            .peek()?
+                            .is_some_and(|token| token.kind == TokenKind::CloseBracket)
+                        {
+                            break;
+                        }
+                    }
+                }
+                let close = self.take()?;
+                let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBracket)
+                else {
+                    return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
+                };
+                self.push(Expr {
+                    kind: ExprKind::Array {
+                        elements,
+                        element_count,
+                    },
+                    span: Span {
+                        start: open.span.start,
+                        end: close.span.end,
+                    },
+                })
+            }
             Some(token) if token.kind == TokenKind::OpenParen => {
                 if self
                     .peek()?
@@ -1541,6 +1659,18 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 for argument in arguments[..argument_count].iter().flatten() {
                     self.substitute_identifier(*argument, name, replacement, depth + 1)?;
                 }
+            }
+            ExprKind::Array {
+                elements,
+                element_count,
+            } => {
+                for element in elements[..element_count].iter().flatten() {
+                    self.substitute_identifier(*element, name, replacement, depth + 1)?;
+                }
+            }
+            ExprKind::Index { base, index } => {
+                self.substitute_identifier(base, name, replacement, depth + 1)?;
+                self.substitute_identifier(index, name, replacement, depth + 1)?;
             }
             ExprKind::Cast { operand, .. }
             | ExprKind::Ascribe { operand, .. }
@@ -2941,7 +3071,34 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 },
             });
         }
-        self.atom(depth + 1)
+        self.postfix(depth + 1)
+    }
+
+    fn postfix(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
+        if depth == MAX_EXPRESSION_DEPTH {
+            return Err(self.error(ExpressionErrorKind::NestingLimitExceeded, self.lookahead));
+        }
+        let mut base = self.atom(depth + 1)?;
+        while self
+            .peek()?
+            .is_some_and(|token| token.kind == TokenKind::OpenBracket)
+        {
+            self.take()?;
+            let index = self.expression(0, depth + 1)?;
+            let close = self.take()?;
+            let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBracket) else {
+                return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
+            };
+            let start = self.node_span(base)?.start;
+            base = self.push(Expr {
+                kind: ExprKind::Index { base, index },
+                span: Span {
+                    start,
+                    end: close.span.end,
+                },
+            })?;
+        }
+        Ok(base)
     }
 
     fn cast(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
@@ -3485,6 +3642,30 @@ mod tests {
                 .parse()
                 .unwrap();
         assert!(conditional_bool.is_boolean_expression(conditional_bool.root(), 0));
+    }
+
+    #[test]
+    fn parses_bounded_scalar_array_literals_and_indexes() {
+        assert_eq!(evaluate("[1, 3u32, 5][1]"), Ok(3));
+        assert_eq!(evaluate("[10, 20, 30,][2]"), Ok(30));
+        assert_eq!(
+            evaluate("(if true { [1, 42] } else { [1, 1 / 0] })[1]"),
+            Ok(42)
+        );
+        assert_eq!(
+            ExpressionParser::<16>::new("[1, 2][2]")
+                .parse()
+                .unwrap()
+                .evaluate(&NoConstants),
+            Err(ConstEvalError::ArrayIndexOutOfBounds)
+        );
+        assert_eq!(
+            ExpressionParser::<24>::new("[0, 1, 2, 3, 4, 5, 6, 7, 8]")
+                .parse()
+                .unwrap_err()
+                .kind,
+            ExpressionErrorKind::TooManyArrayElements
+        );
     }
 
     #[test]

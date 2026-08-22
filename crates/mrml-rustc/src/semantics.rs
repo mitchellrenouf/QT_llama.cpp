@@ -1935,6 +1935,16 @@ fn inline_const_has_invalid_capture<const MAX_NODES: usize>(
             .iter()
             .flatten()
             .any(|argument| recurse(*argument, inside_inline_const)),
+        ExprKind::Array {
+            elements,
+            element_count,
+        } => elements[..element_count]
+            .iter()
+            .flatten()
+            .any(|element| recurse(*element, inside_inline_const)),
+        ExprKind::Index { base, index } => {
+            recurse(base, inside_inline_const) || recurse(index, inside_inline_const)
+        }
         ExprKind::InlineConst { operand } => recurse(operand, true),
         ExprKind::Cast { operand, .. }
         | ExprKind::Ascribe { operand, .. }
@@ -1984,6 +1994,14 @@ fn expression_contains_call<const MAX_NODES: usize>(
     let recurse = |operand| expression_contains_call(tree, operand, depth + 1);
     match expression.kind {
         ExprKind::Call { .. } => true,
+        ExprKind::Array {
+            elements,
+            element_count,
+        } => elements[..element_count]
+            .iter()
+            .flatten()
+            .any(|element| recurse(*element)),
+        ExprKind::Index { base, index } => recurse(base) || recurse(index),
         ExprKind::Cast { operand, .. }
         | ExprKind::Ascribe { operand, .. }
         | ExprKind::Unary { operand, .. }

@@ -30,6 +30,7 @@ pub enum Instruction<'source> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrErrorKind {
     MissingExpression,
+    InvalidExpressionTree,
     TooManyInstructions,
     NestingLimitExceeded,
     UnsupportedCall,
@@ -259,6 +260,51 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
         match expression.kind {
             ExprKind::Unit | ExprKind::DefaultValue => {
                 self.push(Instruction::PushInteger(0), expression.span)?;
+            }
+            ExprKind::Array { .. } => {
+                return Err(IrError {
+                    kind: IrErrorKind::InvalidExpressionTree,
+                    span: expression.span,
+                });
+            }
+            ExprKind::Index { base, index } => {
+                let index_expression = self.tree.expression(index).ok_or(IrError {
+                    kind: IrErrorKind::MissingExpression,
+                    span: expression.span,
+                })?;
+                let ExprKind::Integer(index_literal) = index_expression.kind else {
+                    return Err(IrError {
+                        kind: IrErrorKind::InvalidExpressionTree,
+                        span: index_expression.span,
+                    });
+                };
+                let index = usize::try_from(index_literal.value).map_err(|_| IrError {
+                    kind: IrErrorKind::InvalidExpressionTree,
+                    span: index_expression.span,
+                })?;
+                let base_expression = self.tree.expression(base).ok_or(IrError {
+                    kind: IrErrorKind::MissingExpression,
+                    span: expression.span,
+                })?;
+                let ExprKind::Array {
+                    elements,
+                    element_count,
+                } = base_expression.kind
+                else {
+                    return Err(IrError {
+                        kind: IrErrorKind::InvalidExpressionTree,
+                        span: base_expression.span,
+                    });
+                };
+                let element = elements
+                    .get(index)
+                    .filter(|_| index < element_count)
+                    .and_then(|element| *element)
+                    .ok_or(IrError {
+                        kind: IrErrorKind::InvalidExpressionTree,
+                        span: index_expression.span,
+                    })?;
+                self.lower(element, depth + 1)?;
             }
             ExprKind::Integer(literal) => {
                 self.push(Instruction::PushInteger(literal.value), expression.span)?;

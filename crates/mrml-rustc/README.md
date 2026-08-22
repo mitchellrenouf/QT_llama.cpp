@@ -247,11 +247,24 @@ cover the oracle's three remaining scalar unit/default shapes, including
 nested valueless break. Their combined probe emitted 207-byte COFF and 600-byte
 ELF64 objects and returned 42 through independent Windows gnullvm and Arch
 Linux WSL callers. Aggregate defaults and general trait method dispatch remain
-outside this scalar implementation. An
-original labeled four-guard probe and its structured-alternative counterpart each emitted
+outside this scalar implementation. An original labeled four-guard probe and
+its structured-alternative counterpart each emitted
 deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
 a selected zero input that would trap if fallback division were evaluated.
+Fixed-size scalar array literals now retain up to eight homogeneous elements in
+the fixed expression arena, accept a trailing comma, and support a constant
+integer postfix index. Direct evaluation selects only the requested element,
+including through a lazy conditional array value; out-of-bounds indexes and a
+ninth element fail with bounded errors. Runtime typing preserves the element
+type and length and rejects mixed scalar element types. Literal index
+extraction lowers through IR and native code without representing the aggregate
+as a packed integer. The pinned `loop-break-value.rs` array literals therefore
+have an original scalar-index replacement: its 93-byte COFF and 488-byte ELF64
+objects returned the middle value `3` through independent Windows gnullvm and
+Arch Linux WSL callers. Runtime-variable indexes, array-valued locals and
+returns, array defaults, references, slices, and aggregate loop-break
+unification remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -603,10 +616,11 @@ replacement; printing and assertions remain oracle-side behavior.
 The complete upstream `tests/ui/for-loop-while/loop-break-value.rs` also compiled
 and ran unchanged under the pinned nightly. Original MRML replacements cover
 its immediate scalar integer, Boolean, and valueless or explicit-unit
-break-value forms, including matching labels. The oracle file's arrays,
-references, trait coercions, never type, matches, and more general nested
-control-flow graphs are not claimed by this slice. Replacements cover bounded
-cross-nested value exits, terminating nested value-loop operands, up to five
+break-value forms, including matching labels. The oracle file's array-valued
+breaks, references, trait coercions, never type, matches, and more general
+nested control-flow graphs are not claimed by this slice. Its fixed scalar
+array literals now have bounded direct-index coverage. Replacements cover
+bounded cross-nested value exits, terminating nested value-loop operands, up to five
 compatible competing scalar values, both sequential and structured alternative
 syntax, lazy selection of the taken break edge, and the oracle's labeled
 `break`-as-`while`-condition cases plus its two source orders for unreachable
@@ -735,7 +749,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 254 Windows library, conformance, rustc-nightly-replacement, and driver
+The 257 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1409,7 +1423,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 254 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 257 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
