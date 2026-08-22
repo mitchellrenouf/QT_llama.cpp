@@ -218,7 +218,16 @@ loop may also be the operand of an enclosing labeled break, preserving both
 labels, the inner value's type, and lazy inner alternatives through evaluation,
 IR, and native code. Its original probe emitted 139-byte COFF and 536-byte ELF64
 objects and passed zero, ordinary, and million-valued inputs through independent
-native callers. An original labeled
+native callers. The two pinned forms whose `while` condition itself is an
+unconditional labeled `break` are also represented: a unit break can terminate
+the current inner `while` before an outer fallback, while a valued break can
+exit the enclosing value loop. The unreachable body is consumed with bounded,
+balanced-brace scanning and is never evaluated; a non-unit value targeting the
+inner `while` is rejected with `InvalidLoopBreakTarget`. Their combined probe
+emitted 93-byte COFF and 488-byte ELF64 objects and returned 690 through
+independent nightly-built callers on Windows gnullvm and Arch Linux WSL. Both
+bodies contain division by zero, so executing either unreachable edge would
+trap. An original labeled
 four-guard probe and its structured-alternative counterpart each emitted
 deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
@@ -579,7 +588,9 @@ references, trait coercions, never type, matches, and more general nested
 control-flow graphs are not claimed by this slice. Replacements cover bounded
 cross-nested value exits, terminating nested value-loop operands, up to five
 compatible competing scalar values, both sequential and structured alternative
-syntax, and lazy selection of the taken break edge.
+syntax, lazy selection of the taken break edge, and the oracle's labeled
+`break`-as-`while`-condition cases. General `while` condition expressions and
+arbitrary nested value-loop graphs remain outside this bounded slice.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate

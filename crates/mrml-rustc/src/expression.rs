@@ -2419,6 +2419,10 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         {
             return self.cross_nested_loop_break_expression(loop_token, label, depth + 1);
         }
+        if self.peek()?.is_some_and(|token| token.text == "while") {
+            self.take()?;
+            return self.while_break_condition_expression(loop_token, label, None, depth + 1);
+        }
         let mut conditions = [None; MAX_LOOP_BREAK_BRANCHES];
         let mut branches = [None; MAX_LOOP_BREAK_BRANCHES];
         let mut branch_count = 0usize;
@@ -2532,6 +2536,14 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             return Err(self.error(ExpressionErrorKind::ExpectedColon, colon));
         }
         let inner_loop = self.take()?;
+        if inner_loop.is_some_and(|token| token.text == "while") {
+            return self.while_break_condition_expression(
+                outer_loop,
+                outer_label,
+                Some(inner_label),
+                depth + 1,
+            );
+        }
         if !inner_loop.is_some_and(|token| token.text == "loop") {
             return Err(self.error(ExpressionErrorKind::ExpectedExpression, inner_loop));
         }
@@ -2663,6 +2675,105 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             })?;
         }
         Ok(result)
+    }
+
+    fn while_break_condition_expression(
+        &mut self,
+        outer_loop: Token<'source>,
+        outer_label: Option<Token<'source>>,
+        inner_label: Option<Token<'source>>,
+        depth: usize,
+    ) -> Result<ExprId, ExpressionError> {
+        if depth == MAX_EXPRESSION_DEPTH {
+            return Err(self.error(ExpressionErrorKind::NestingLimitExceeded, Some(outer_loop)));
+        }
+        let break_token = self.take()?;
+        if !break_token.is_some_and(|token| token.text == "break") {
+            return Err(self.error(ExpressionErrorKind::ExpectedExpression, break_token));
+        }
+        let target = self.value_loop_break_target(inner_label, outer_label)?;
+        let operand = self.loop_break_condition_operand(depth + 1)?;
+        if target == ValueLoopControlTarget::Current && !self.node_is_unit(operand, depth + 1) {
+            return Err(self.error(ExpressionErrorKind::InvalidLoopBreakTarget, break_token));
+        }
+        let open = self.take()?;
+        if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+            return Err(self.error(ExpressionErrorKind::ExpectedOpenBrace, open));
+        }
+        self.skip_unreachable_brace_body()?;
+
+        let span_start = outer_label.map_or(outer_loop.span.start, |label| label.span.start);
+        if target == ValueLoopControlTarget::Enclosing {
+            let close = self.take()?;
+            let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
+                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+            };
+            return self.push(Expr {
+                kind: ExprKind::LoopBreak { operand },
+                span: Span {
+                    start: span_start,
+                    end: close.span.end,
+                },
+            });
+        }
+
+        let outer_break = self.take()?;
+        if !outer_break.is_some_and(|token| token.text == "break") {
+            return Err(self.error(ExpressionErrorKind::ExpectedExpression, outer_break));
+        }
+        if self.value_loop_break_target(outer_label, None)? != ValueLoopControlTarget::Current {
+            return Err(self.error(ExpressionErrorKind::InvalidLoopBreakTarget, outer_break));
+        }
+        let fallback = self.loop_break_operand(depth + 1)?;
+        let close = self.take()?;
+        let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
+            return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+        };
+        self.push(Expr {
+            kind: ExprKind::Sequence {
+                first: operand,
+                then: fallback,
+            },
+            span: Span {
+                start: span_start,
+                end: close.span.end,
+            },
+        })
+    }
+
+    fn loop_break_condition_operand(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
+        if let Some(open) = self
+            .peek()?
+            .filter(|token| token.kind == TokenKind::OpenBrace)
+        {
+            return self.push(Expr {
+                kind: ExprKind::Unit,
+                span: Span {
+                    start: open.span.start,
+                    end: open.span.start,
+                },
+            });
+        }
+        self.expression(0, depth + 1)
+    }
+
+    fn skip_unreachable_brace_body(&mut self) -> Result<(), ExpressionError> {
+        let mut depth = 1usize;
+        while depth != 0 {
+            let token = self.take()?;
+            let Some(token) = token else {
+                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, None));
+            };
+            if token.kind == TokenKind::OpenBrace {
+                if depth == MAX_EXPRESSION_DEPTH {
+                    return Err(self.error(ExpressionErrorKind::NestingLimitExceeded, Some(token)));
+                }
+                depth += 1;
+            } else if token.kind == TokenKind::CloseBrace {
+                depth -= 1;
+            }
+        }
+        Ok(())
     }
 
     fn loop_break_operand(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
@@ -3128,6 +3239,25 @@ mod tests {
                 "'outer: loop { 'inner: loop { if false { break 'outer 1 / 0; } break 'inner 17; }; break 'outer 99; }"
             ),
             Ok(99)
+        );
+        assert_eq!(
+            evaluate(
+                "'outer: loop { 'inner: while break 'inner { 1 / 0; { 2 / 0; } } break 'outer 123; }"
+            ),
+            Ok(123)
+        );
+        assert_eq!(
+            evaluate("'outer: loop { while break 'outer 567 { 1 / 0; } }"),
+            Ok(567)
+        );
+        assert_eq!(
+            ExpressionParser::<16>::new(
+                "'outer: loop { 'inner: while break 'inner 1 { } break 'outer 2; }"
+            )
+            .parse()
+            .unwrap_err()
+            .kind,
+            ExpressionErrorKind::InvalidLoopBreakTarget
         );
         assert_eq!(evaluate("'value: loop { break 'value 13; }"), Ok(13));
         let boolean = ExpressionParser::<8>::new("loop { break true; }")
