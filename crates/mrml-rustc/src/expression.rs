@@ -46,6 +46,12 @@ enum PatternOrderValue {
     Character(u32),
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ValueLoopControlTarget {
+    Current,
+    Enclosing,
+}
+
 impl PatternOrderValue {
     fn compare(self, other: Self) -> Option<core::cmp::Ordering> {
         use core::cmp::Ordering;
@@ -321,6 +327,7 @@ pub enum ExpressionErrorKind {
     UnsupportedInlineConstAssignment,
     NestingLimitExceeded,
     InvalidExpressionTree,
+    InvalidLoopBreakTarget,
     UnknownLoopLabel,
 }
 
@@ -2406,6 +2413,12 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
             return Err(self.error(ExpressionErrorKind::ExpectedOpenBrace, open));
         }
+        if self
+            .peek()?
+            .is_some_and(|token| token.kind == TokenKind::Lifetime)
+        {
+            return self.cross_nested_loop_break_expression(loop_token, label, depth + 1);
+        }
         let mut conditions = [None; MAX_LOOP_BREAK_BRANCHES];
         let mut branches = [None; MAX_LOOP_BREAK_BRANCHES];
         let mut branch_count = 0usize;
@@ -2502,6 +2515,156 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         Ok(result)
     }
 
+    fn cross_nested_loop_break_expression(
+        &mut self,
+        outer_loop: Token<'source>,
+        outer_label: Option<Token<'source>>,
+        depth: usize,
+    ) -> Result<ExprId, ExpressionError> {
+        if depth == MAX_EXPRESSION_DEPTH {
+            return Err(self.error(ExpressionErrorKind::NestingLimitExceeded, Some(outer_loop)));
+        }
+        let inner_label = self
+            .take()?
+            .ok_or_else(|| self.error(ExpressionErrorKind::ExpectedExpression, self.lookahead))?;
+        let colon = self.take()?;
+        if !colon.is_some_and(|token| token.kind == TokenKind::Colon) {
+            return Err(self.error(ExpressionErrorKind::ExpectedColon, colon));
+        }
+        let inner_loop = self.take()?;
+        if !inner_loop.is_some_and(|token| token.text == "loop") {
+            return Err(self.error(ExpressionErrorKind::ExpectedExpression, inner_loop));
+        }
+        let open = self.take()?;
+        if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+            return Err(self.error(ExpressionErrorKind::ExpectedOpenBrace, open));
+        }
+
+        let mut conditions = [None; MAX_LOOP_BREAK_BRANCHES];
+        let mut outer_branches = [None; MAX_LOOP_BREAK_BRANCHES];
+        let mut branch_count = 0usize;
+        let mut control = self.take()?;
+        let inner_operand = loop {
+            if !control.is_some_and(|token| token.text == "if") {
+                if !control.is_some_and(|token| token.text == "break") {
+                    return Err(self.error(ExpressionErrorKind::ExpectedExpression, control));
+                }
+                if self.value_loop_break_target(Some(inner_label), outer_label)?
+                    != ValueLoopControlTarget::Current
+                {
+                    return Err(self.error(ExpressionErrorKind::InvalidLoopBreakTarget, control));
+                }
+                let operand = self.loop_break_operand(depth + 1)?;
+                let close = self.take()?;
+                if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                    return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+                }
+                break operand;
+            }
+            if branch_count == MAX_LOOP_BREAK_BRANCHES {
+                return Err(self.error(ExpressionErrorKind::TooManyLoopBreakBranches, control));
+            }
+            let condition = self.expression(0, depth + 1)?;
+            let open = self.take()?;
+            if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+                return Err(self.error(ExpressionErrorKind::ExpectedOpenBrace, open));
+            }
+            let break_token = self.take()?;
+            if !break_token.is_some_and(|token| token.text == "break") {
+                return Err(self.error(ExpressionErrorKind::ExpectedExpression, break_token));
+            }
+            if self.value_loop_break_target(Some(inner_label), outer_label)?
+                != ValueLoopControlTarget::Enclosing
+            {
+                return Err(self.error(ExpressionErrorKind::InvalidLoopBreakTarget, break_token));
+            }
+            let branch = self.loop_break_operand(depth + 1)?;
+            let close = self.take()?;
+            if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+            }
+            conditions[branch_count] = Some(condition);
+            outer_branches[branch_count] = Some(branch);
+            branch_count += 1;
+            control = self.take()?;
+            if !control.is_some_and(|token| token.text == "else") {
+                continue;
+            }
+            let alternative = self.take()?;
+            if alternative.is_some_and(|token| token.text == "if") {
+                control = alternative;
+                continue;
+            }
+            if !alternative.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
+                return Err(self.error(ExpressionErrorKind::ExpectedOpenBrace, alternative));
+            }
+            let break_token = self.take()?;
+            if !break_token.is_some_and(|token| token.text == "break") {
+                return Err(self.error(ExpressionErrorKind::ExpectedExpression, break_token));
+            }
+            if self.value_loop_break_target(Some(inner_label), outer_label)?
+                != ValueLoopControlTarget::Current
+            {
+                return Err(self.error(ExpressionErrorKind::InvalidLoopBreakTarget, break_token));
+            }
+            let operand = self.loop_break_operand(depth + 1)?;
+            let alternative_close = self.take()?;
+            if !alternative_close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, alternative_close));
+            }
+            let inner_close = self.take()?;
+            if !inner_close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, inner_close));
+            }
+            break operand;
+        };
+
+        let semicolon = self.take()?;
+        if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
+            return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
+        }
+        let outer_break = self.take()?;
+        if !outer_break.is_some_and(|token| token.text == "break") {
+            return Err(self.error(ExpressionErrorKind::ExpectedExpression, outer_break));
+        }
+        if self.value_loop_break_target(outer_label, None)? != ValueLoopControlTarget::Current {
+            return Err(self.error(ExpressionErrorKind::InvalidLoopBreakTarget, outer_break));
+        }
+        let fallback = self.loop_break_operand(depth + 1)?;
+        let close = self.take()?;
+        let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
+            return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
+        };
+        let span = Span {
+            start: outer_label.map_or(outer_loop.span.start, |label| label.span.start),
+            end: close.span.end,
+        };
+        let mut result = self.push(Expr {
+            kind: ExprKind::Sequence {
+                first: inner_operand,
+                then: fallback,
+            },
+            span,
+        })?;
+        for index in (0..branch_count).rev() {
+            result = self.push(Expr {
+                kind: ExprKind::LoopBreakIf {
+                    condition: conditions[index].ok_or(ExpressionError {
+                        kind: ExpressionErrorKind::InvalidExpressionTree,
+                        span,
+                    })?,
+                    then_branch: outer_branches[index].ok_or(ExpressionError {
+                        kind: ExpressionErrorKind::InvalidExpressionTree,
+                        span,
+                    })?,
+                    else_branch: result,
+                },
+                span,
+            })?;
+        }
+        Ok(result)
+    }
+
     fn loop_break_operand(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
         if let Some(semicolon) = self
             .peek()?
@@ -2528,15 +2691,26 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         &mut self,
         expected: Option<Token<'source>>,
     ) -> Result<(), ExpressionError> {
+        let _ = self.value_loop_break_target(expected, None)?;
+        Ok(())
+    }
+
+    fn value_loop_break_target(
+        &mut self,
+        current: Option<Token<'source>>,
+        enclosing: Option<Token<'source>>,
+    ) -> Result<ValueLoopControlTarget, ExpressionError> {
         let Some(actual) = self
             .peek()?
             .filter(|token| token.kind == TokenKind::Lifetime)
         else {
-            return Ok(());
+            return Ok(ValueLoopControlTarget::Current);
         };
         self.take()?;
-        if expected.is_some_and(|expected| expected.text == actual.text) {
-            Ok(())
+        if current.is_some_and(|expected| expected.text == actual.text) {
+            Ok(ValueLoopControlTarget::Current)
+        } else if enclosing.is_some_and(|expected| expected.text == actual.text) {
+            Ok(ValueLoopControlTarget::Enclosing)
         } else {
             Err(self.error(ExpressionErrorKind::UnknownLoopLabel, Some(actual)))
         }
@@ -2943,6 +3117,18 @@ mod tests {
             ),
             Ok(42)
         );
+        assert_eq!(
+            evaluate(
+                "'outer: loop { 'inner: loop { if true { break 'outer 42; } else { break 'inner 17; } }; break 'outer 99; }"
+            ),
+            Ok(42)
+        );
+        assert_eq!(
+            evaluate(
+                "'outer: loop { 'inner: loop { if false { break 'outer 1 / 0; } break 'inner 17; }; break 'outer 99; }"
+            ),
+            Ok(99)
+        );
         assert_eq!(evaluate("'value: loop { break 'value 13; }"), Ok(13));
         let boolean = ExpressionParser::<8>::new("loop { break true; }")
             .parse()
@@ -3036,6 +3222,15 @@ mod tests {
                 ExpressionErrorKind::UnknownLoopLabel
             );
         }
+        assert_eq!(
+            ExpressionParser::<24>::new(
+                "'outer: loop { 'inner: loop { if true { break 'inner 13; } break 'inner 17; }; break 'outer 42; }",
+            )
+            .parse()
+            .unwrap_err()
+            .kind,
+            ExpressionErrorKind::InvalidLoopBreakTarget
+        );
         let conditional_bool =
             ExpressionParser::<16>::new("loop { if true { break false; } break true; }")
                 .parse()
