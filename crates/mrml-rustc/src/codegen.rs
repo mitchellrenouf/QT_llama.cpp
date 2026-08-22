@@ -2444,13 +2444,15 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit_expression(&condition_tree, condition_tree.root(), 0)?;
             self.emit(&[0x48, 0x85, 0xc0])?;
             let false_branch = self.emit_forward_branch(0x84)?;
-            self.emit_assignment::<MAX_EXPRESSION_NODES>(&branch.assignment, body_start)?;
+            for assignment in branch.assignments().iter().flatten() {
+                self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
+            }
             end_patches[end_count] = Some(self.emit_unconditional_forward_branch()?);
             end_count += 1;
             self.patch_forward_branch(false_branch)?;
         }
-        if let Some(else_assignment) = conditional.else_assignment.as_ref() {
-            self.emit_assignment::<MAX_EXPRESSION_NODES>(else_assignment, body_start)?;
+        for assignment in conditional.else_assignments().iter().flatten() {
+            self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
         }
         for patch in end_patches[..end_count].iter().flatten().copied() {
             self.patch_forward_branch(patch)?;
@@ -3564,7 +3566,7 @@ mod tests {
 
     #[test]
     fn emits_lazy_conditional_assignments() {
-        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn choose(value: u64) -> u64 { let mut result = value; if value == 0 { result = 42; } else if value == 1 { result = 42 / value; } else if value == 2 { result = 84 / value; } else { result = 126 / value; } if value == 4 { result += 1; } else if value == 5 { result += 2; } result }";
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn choose(value: u64) -> u64 { let mut result = value; if value == 0 { result = 40; result += 2; } else if value == 1 { result = 40 / value; result += 2; } else if value == 2 { result = 80 / value; result += 2; } else { result = 120 / value; result += 2; } if value == 4 { result += 1; result *= 2; } else if value == 5 { result += 2; result *= 2; } result }";
         let module = Parser::new(source).parse_module::<2, 4>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")

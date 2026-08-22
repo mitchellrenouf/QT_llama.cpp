@@ -11,6 +11,7 @@ pub const MAX_BODY_RETURNS: usize = 8;
 pub const MAX_CONDITIONAL_RETURN_BRANCHES: usize = 4;
 pub const MAX_BODY_CONDITIONAL_ASSIGNMENTS: usize = 8;
 pub const MAX_CONDITIONAL_ASSIGNMENT_BRANCHES: usize = 4;
+pub const MAX_CONDITIONAL_ASSIGNMENTS_PER_BRANCH: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TypeRef<'source> {
@@ -122,11 +123,17 @@ pub struct Assignment<'source> {
     pub value_span: Span,
 }
 
+type ConditionalAssignmentBlock<'source> = (
+    [Option<Assignment<'source>>; MAX_CONDITIONAL_ASSIGNMENTS_PER_BRANCH],
+    usize,
+);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConditionalAssignment<'source> {
     branches: [Option<ConditionalAssignmentBranch<'source>>; MAX_CONDITIONAL_ASSIGNMENT_BRANCHES],
     branch_count: usize,
-    pub else_assignment: Option<Assignment<'source>>,
+    else_assignments: [Option<Assignment<'source>>; MAX_CONDITIONAL_ASSIGNMENTS_PER_BRANCH],
+    else_assignment_count: usize,
 }
 
 impl<'source> ConditionalAssignment<'source> {
@@ -137,16 +144,33 @@ impl<'source> ConditionalAssignment<'source> {
     pub const fn branch_count(&self) -> usize {
         self.branch_count
     }
+
+    pub fn else_assignments(&self) -> &[Option<Assignment<'source>>] {
+        &self.else_assignments[..self.else_assignment_count]
+    }
+
+    pub const fn else_assignment_count(&self) -> usize {
+        self.else_assignment_count
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConditionalAssignmentBranch<'source> {
     pub condition: &'source str,
     pub condition_span: Span,
-    pub assignment: Assignment<'source>,
+    assignments: [Option<Assignment<'source>>; MAX_CONDITIONAL_ASSIGNMENTS_PER_BRANCH],
+    assignment_count: usize,
 }
 
 impl<'source> ConditionalAssignmentBranch<'source> {
+    pub fn assignments(&self) -> &[Option<Assignment<'source>>] {
+        &self.assignments[..self.assignment_count]
+    }
+
+    pub const fn assignment_count(&self) -> usize {
+        self.assignment_count
+    }
+
     pub fn parse_condition<const MAX_NODES: usize>(
         &self,
     ) -> Result<ExpressionTree<'source, MAX_NODES>, ExpressionError> {
@@ -491,6 +515,7 @@ pub enum ParseErrorKind {
     TooManyConditionalReturnBranches,
     TooManyConditionalAssignments,
     TooManyConditionalAssignmentBranches,
+    TooManyConditionalAssignmentsPerBranch,
     ExpectedTailExpression,
 }
 
@@ -736,6 +761,33 @@ impl<'source> BodyParser<'source> {
         }))
     }
 
+    fn conditional_assignment_block(
+        &mut self,
+    ) -> Result<Option<ConditionalAssignmentBlock<'source>>, ParseError> {
+        let mut assignments = [None; MAX_CONDITIONAL_ASSIGNMENTS_PER_BRANCH];
+        let mut assignment_count = 0usize;
+        loop {
+            let next = self.peek()?;
+            if next.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                if assignment_count == 0 {
+                    return Ok(None);
+                }
+                self.take()?;
+                return Ok(Some((assignments, assignment_count)));
+            }
+            if assignment_count == MAX_CONDITIONAL_ASSIGNMENTS_PER_BRANCH {
+                return Err(
+                    self.error(ParseErrorKind::TooManyConditionalAssignmentsPerBranch, next)
+                );
+            }
+            let Some(assignment) = self.assignment_record()? else {
+                return Ok(None);
+            };
+            assignments[assignment_count] = Some(assignment);
+            assignment_count += 1;
+        }
+    }
+
     fn parse_conditional_assignment<const MAX_LOCALS: usize>(
         &mut self,
         body: &mut FunctionBody<'source, MAX_LOCALS>,
@@ -747,7 +799,8 @@ impl<'source> BodyParser<'source> {
         probe.take()?;
         let mut branches = [None; MAX_CONDITIONAL_ASSIGNMENT_BRANCHES];
         let mut branch_count = 0usize;
-        let else_assignment;
+        let else_assignments;
+        let else_assignment_count;
         loop {
             if branch_count == MAX_CONDITIONAL_ASSIGNMENT_BRANCHES {
                 let next = probe.peek()?;
@@ -760,21 +813,20 @@ impl<'source> BodyParser<'source> {
                 return Ok(false);
             }
             let (condition_span, _) = probe.delimited_until("{", ParseErrorKind::ExpectedBody)?;
-            let Some(assignment) = probe.assignment_record()? else {
+            let Some((assignments, assignment_count)) = probe.conditional_assignment_block()?
+            else {
                 return Ok(false);
             };
-            let close = probe.take()?;
-            if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
-                return Err(probe.error(ParseErrorKind::UnexpectedClosingDelimiter, close));
-            }
             branches[branch_count] = Some(ConditionalAssignmentBranch {
                 condition: &self.source[condition_span.start..condition_span.end],
                 condition_span,
-                assignment,
+                assignments,
+                assignment_count,
             });
             branch_count += 1;
             if !probe.peek()?.is_some_and(|token| token.text == "else") {
-                else_assignment = None;
+                else_assignments = [None; MAX_CONDITIONAL_ASSIGNMENTS_PER_BRANCH];
+                else_assignment_count = 0;
                 break;
             }
             probe.take()?;
@@ -786,14 +838,12 @@ impl<'source> BodyParser<'source> {
             if !else_open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
                 return Ok(false);
             }
-            let Some(assignment) = probe.assignment_record()? else {
+            let Some((assignments, assignment_count)) = probe.conditional_assignment_block()?
+            else {
                 return Ok(false);
             };
-            let else_close = probe.take()?;
-            if !else_close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
-                return Err(probe.error(ParseErrorKind::UnexpectedClosingDelimiter, else_close));
-            }
-            else_assignment = Some(assignment);
+            else_assignments = assignments;
+            else_assignment_count = assignment_count;
             break;
         }
         if body.conditional_assignment_count == MAX_BODY_CONDITIONAL_ASSIGNMENTS {
@@ -814,7 +864,8 @@ impl<'source> BodyParser<'source> {
             Some(ConditionalAssignment {
                 branches,
                 branch_count,
-                else_assignment,
+                else_assignments,
+                else_assignment_count,
             });
         body.conditional_assignment_count += 1;
         *self = probe;
@@ -1987,7 +2038,7 @@ mod tests {
     #[test]
     fn parses_bounded_conditional_assignments_in_body_order() {
         let module = Parser::new(
-            "fn choose(value: u8, select: bool) -> u8 { let mut result = value; if select { result += 1; } else if value == 1 { result -= 1; } else if value == 2 { result = 42; } else { result *= 2; } if result == 0 { result = 42; } result }",
+            "fn choose(value: u8, select: bool) -> u8 { let mut result = value; if select { result += 1; result ^= 3; } else if value == 1 { result -= 1; result += 2; } else if value == 2 { result = 42; } else { result *= 2; result += 1; } if result == 0 { result = 42; } result }",
         )
         .parse_module::<2, 2>()
         .unwrap();
@@ -2000,22 +2051,33 @@ mod tests {
         assert_eq!(first.branch_count(), 3);
         let first_branch = first.branches()[0].unwrap();
         assert_eq!(first_branch.condition, "select");
-        assert_eq!(first_branch.assignment.operator, AssignmentOperator::Add);
+        assert_eq!(first_branch.assignment_count(), 2);
+        assert_eq!(
+            first_branch.assignments()[0].unwrap().operator,
+            AssignmentOperator::Add
+        );
+        assert_eq!(
+            first_branch.assignments()[1].unwrap().operator,
+            AssignmentOperator::BitXor
+        );
         assert_eq!(first.branches()[1].unwrap().condition, "value == 1");
         assert_eq!(
-            first.branches()[1].unwrap().assignment.operator,
+            first.branches()[1].unwrap().assignments()[0]
+                .unwrap()
+                .operator,
             AssignmentOperator::Subtract
         );
         assert_eq!(first.branches()[2].unwrap().condition, "value == 2");
+        assert_eq!(first.else_assignment_count(), 2);
         assert_eq!(
-            first.else_assignment.unwrap().operator,
+            first.else_assignments()[0].unwrap().operator,
             AssignmentOperator::Multiply
         );
-        assert!(
+        assert_eq!(
             body.conditional_assignments()[1]
                 .unwrap()
-                .else_assignment
-                .is_none()
+                .else_assignment_count(),
+            0
         );
         assert_eq!(body.statements()[0], Some(BodyStatement::Local(0)));
         assert_eq!(
@@ -2047,6 +2109,19 @@ mod tests {
         assert_eq!(
             function.parse_body::<1>().unwrap_err().kind,
             ParseErrorKind::TooManyConditionalAssignmentBranches
+        );
+
+        let too_many_in_branch = Parser::new(
+            "fn crowded(value: u8) -> u8 { let mut result = value; if true { result = 0; result = 1; result = 2; result = 3; result = 4; } result }",
+        )
+        .parse_module::<2, 1>()
+        .unwrap();
+        let Some(Item::Function(function)) = too_many_in_branch.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            function.parse_body::<1>().unwrap_err().kind,
+            ParseErrorKind::TooManyConditionalAssignmentsPerBranch
         );
     }
 

@@ -575,7 +575,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 197 Windows library, conformance, rustc-nightly-replacement, and driver
+The 198 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1028,6 +1028,18 @@ the first, two middle, fallback, and two later fallthrough-mutation paths. The
 zero-valued first path proves later division expressions remain unevaluated,
 and a fifth guarded assignment is rejected with
 `TooManyConditionalAssignmentBranches`.
+Conditional assignment branches now contain up to four ordered scalar
+assignments rather than exactly one. An original replacement maps this narrow
+sequencing property to pinned `tests/ui/drop/dynamic-drop.rs`; allocation,
+ownership, destructors, deferred initialization, tuples, unwinding, and
+coroutines are explicitly not claimed. The unchanged pinned editions 2015 and
+2018 revisions compiled and ran on Windows, and edition 2015 compiled and ran
+on Arch Linux WSL. MRML's 868-byte COFF and 1,264-byte ELF objects passed
+independent `no_std` callers on six paths, covering ordered noncommutative
+updates in first, middle, fallback, and later fallthrough blocks. The zero path
+would divide by zero if an unselected later block executed. A fifth assignment
+inside any guarded or final branch fails with
+`TooManyConditionalAssignmentsPerBranch`.
 
 Linux used native Arch Linux WSL2 `x86_64-unknown-linux-gnu` with the identical
 nightly commit:
@@ -1043,7 +1055,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 197 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 198 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

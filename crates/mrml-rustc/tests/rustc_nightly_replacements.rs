@@ -41,6 +41,7 @@
 // - tests/ui/expr/if/if-check.rs
 // - tests/ui/consts/const-eval/issue-64970.rs
 // - tests/ui/binding/if-let.rs
+// - tests/ui/drop/dynamic-drop.rs
 // - tests/ui/consts/const-fn-const-eval.rs
 // - tests/ui/consts/const-extern-fn/const-extern-fn.rs
 // - tests/ui/consts/const-negative.rs
@@ -95,6 +96,16 @@ fn rustc_binding_if_let_assignment_order_has_a_scalar_replacement() {
     // This original scalar case maps only the pinned test's ordered assignment
     // behavior. It does not claim support for `if let` or pattern matching.
     let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: usize) -> usize { let mut clause: usize = 0; if value == 1 { clause = 1; } else if value == 2 { clause = 2; } else if value == 3 { clause = 3; } else { clause = 4; } clause }";
+    assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
+    assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
+fn rustc_dynamic_drop_has_an_ordered_scalar_mutation_replacement() {
+    // This original scalar case maps only source-ordered mutations in a
+    // selected branch. It does not claim ownership, drop, allocation,
+    // deferred initialization, tuples, unwinding, or coroutine support.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u32) -> u32 { let mut result = value; if value == 0 { result = 20; result *= 2; result += 2; } else if value == 1 { result = 100; result -= 58; } else { result = 126 / value; result += 0; } result }";
     assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
     assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
 }

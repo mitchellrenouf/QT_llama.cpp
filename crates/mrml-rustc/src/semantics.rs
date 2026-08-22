@@ -969,7 +969,7 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                 let conditional = body.conditional_assignments()[*index]
                     .as_ref()
                     .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
-                let mut selected = None;
+                let mut selected = false;
                 for branch in conditional.branches().iter().flatten() {
                     let condition = branch
                         .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
@@ -982,13 +982,29 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                         resolver,
                         depth,
                     )? {
-                        selected = Some(&branch.assignment);
+                        for assignment in branch.assignments().iter().flatten() {
+                            evaluate_const_assignment(
+                                context,
+                                symbol_count,
+                                assignment,
+                                resolver,
+                                depth,
+                            )?;
+                        }
+                        selected = true;
                         break;
                     }
                 }
-                let selected = selected.or(conditional.else_assignment.as_ref());
-                if let Some(assignment) = selected {
-                    evaluate_const_assignment(context, symbol_count, assignment, resolver, depth)?;
+                if !selected {
+                    for assignment in conditional.else_assignments().iter().flatten() {
+                        evaluate_const_assignment(
+                            context,
+                            symbol_count,
+                            assignment,
+                            resolver,
+                            depth,
+                        )?;
+                    }
                 }
             }
             crate::BodyStatement::Loop(index) => {
@@ -2737,7 +2753,7 @@ mod tests {
     #[test]
     fn evaluates_conditional_const_assignments_lazily() {
         let module = Parser::new(
-            "const fn choose(value: u8) -> u8 { let mut result = value; if value == 0 { result = 42; } else if value == 1 { result = 42 / value; } else if value == 2 { result = 84 / value; } else { result = 126 / value; } result } const FIRST: u8 = choose(0); const MIDDLE: u8 = choose(1); const LATER: u8 = choose(2); const FALLBACK: u8 = choose(3); const fn optional(value: u8) -> u8 { let mut result = 40; if value == 0 { result += 1; } else if value == 1 { result += 2; } result } const UNSELECTED: u8 = optional(2);",
+            "const fn choose(value: u8) -> u8 { let mut result = value; if value == 0 { result = 40; result += 2; } else if value == 1 { result = 40 / value; result += 2; } else if value == 2 { result = 80 / value; result += 2; } else { result = 120 / value; result += 2; } result } const FIRST: u8 = choose(0); const MIDDLE: u8 = choose(1); const LATER: u8 = choose(2); const FALLBACK: u8 = choose(3); const fn optional(value: u8) -> u8 { let mut result = 40; if value == 0 { result += 1; result += 1; } else if value == 1 { result += 3; result -= 1; } result } const UNSELECTED: u8 = optional(2);",
         )
         .parse_module::<8, 2>()
         .unwrap();
