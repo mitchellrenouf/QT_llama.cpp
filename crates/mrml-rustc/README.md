@@ -433,7 +433,12 @@ pointers. Conditional slice values may also initialize typed or inferred
 locals; both words remain available to later returns, `len()`, indexing, and
 mutation. Independent callers exercised both local-selection branches through
 330-byte and 461-byte COFF objects plus 704-byte and 840-byte ELF64 objects,
-preserving returned offsets and mutating the selected backing element. Shared
+preserving returned offsets and mutating the selected backing element. Mutable
+slice-reference bindings may replace both pointer and length through ordinary
+or conditional assignment. Independent callers observed both the original and
+replaced values through a 355-byte COFF and 728-byte ELF64 object. Explicitly
+shared locals initialized from mutable references retain shared mutability
+metadata after the permitted one-way coercion. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1021,7 +1026,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 324 Windows library, conformance, rustc-nightly-replacement, and driver
+The 326 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1695,7 +1700,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 324 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 326 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

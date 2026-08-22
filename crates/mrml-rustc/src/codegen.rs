@@ -4966,17 +4966,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, local.initializer_span),
             });
         }
-        let local_type = if matches!(
-            (initializer_type, local_type),
-            (
-                RuntimeExpressionType::Reference { .. },
-                RuntimeExpressionType::Reference { .. }
-            )
-        ) {
-            initializer_type
-        } else {
-            local_type
-        };
         let stack_slots = runtime_local_stack_slots(local_type);
         let previous_width = self.width;
         self.width = runtime_expression_width(local_type).unwrap_or(previous_width);
@@ -5194,6 +5183,34 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let previous_width = self.width;
         self.width = runtime_expression_width(target.ty).unwrap_or(previous_width);
         let emission = (|| {
+            if matches!(
+                target.ty,
+                RuntimeExpressionType::Reference {
+                    target: RuntimeReferenceTarget::Slice(_),
+                    ..
+                }
+            ) {
+                if assignment.operator != crate::AssignmentOperator::Assign {
+                    return Err(CodegenError {
+                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                        span: translate_span(body_start, assignment.name_span),
+                    });
+                }
+                self.emit_slice_value_to_stack(&tree, tree.root(), 0)?;
+                let target_length_slot = self
+                    .local_stack_slots_from(index + 1)?
+                    .checked_add(2)
+                    .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+                self.emit_stack_slot(0)?;
+                self.emit_store_stack_slot(target_length_slot)?;
+                self.emit_stack_slot(1)?;
+                self.emit_store_stack_slot(
+                    target_length_slot
+                        .checked_add(1)
+                        .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?,
+                )?;
+                return self.emit_stack_cleanup_bytes(16);
+            }
             if let RuntimeExpressionType::Array { element, count } = target.ty {
                 if assignment.operator != crate::AssignmentOperator::Assign {
                     return Err(CodegenError {
@@ -8233,6 +8250,26 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16], select: bool) -> &[u16] { let selected: &[u16] = if select { &input[..1] } else { &input[1..] }; selected }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16], select: bool) -> u16 { let selected: &mut [u16] = if select { &mut input[..1] } else { &mut input[1..] }; selected[0] += 2; selected[0] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16], select: bool) -> usize { let selected = if select { &input[..1] } else { &input[1..] }; selected.len() }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 4096, 4, 224>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn replaces_slice_reference_locals() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u16], select: bool) -> &[u16] { let mut selected: &[u16] = &input[..1]; if select { selected = &input[1..]; } selected }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16], select: bool) -> u16 { let mut selected: &mut [u16] = &mut input[..1]; if select { selected = &mut input[1..]; } selected[0] += 2; selected[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut [u16]) -> usize { let mut selected: &[u16] = input; selected = &input[1..]; selected.len() }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
