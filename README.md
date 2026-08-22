@@ -749,18 +749,27 @@ dual-lane changes and safely parses Git's NUL-delimited porcelain format.
 
 ```powershell
 mrml-git status
+mrml-git -C C:\path\to\another-repo status
 mrml-git log 20
 mrml-git diff --staged
+mrml-git show HEAD~2
 mrml-git stage src/main.rs
 mrml-git unstage src/main.rs
+mrml-git restore src/main.rs
 mrml-git branch feature/name
 mrml-git switch main
 mrml-git commit "Describe the change"
+mrml-git fetch origin
+mrml-git pull origin main
+mrml-git push origin main
+mrml-git stash push "checkpoint"
 ```
 
 Mutating commands deliberately map to narrow Git operations: `stage` inserts
 `--` before paths, `unstage` uses `restore --staged`, `branch <name>` creates
 and switches in one operation, and `commit` requires an explicit message.
+`pull` always uses `--ff-only`, `fetch` prunes deleted remote references, and
+the dashboard reports the repository root, upstream, and ahead/behind counts.
 
 The HTTPS server requires X25519MLKEM768 and rejects clients that do not offer
 the standardized hybrid group. Its certificate handshake uses TLS 1.3

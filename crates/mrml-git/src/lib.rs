@@ -2,6 +2,58 @@
 
 use mrml_runtime::{Text, Vector};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Cli {
+    pub repository: Option<Text>,
+    pub command: Text,
+    pub arguments: Vector<Text>,
+}
+
+impl Cli {
+    pub fn parse<I, S>(arguments: I) -> core::result::Result<Self, Text>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let all = arguments
+            .into_iter()
+            .map(|value| Text::from(value.as_ref()))
+            .collect::<Vector<_>>();
+        let mut repository = None;
+        let mut index = 1;
+        while index < all.len() {
+            match all[index].as_str() {
+                "-C" | "--repo" => {
+                    index += 1;
+                    repository = Some(
+                        all.get(index)
+                            .ok_or_else(|| Text::from("-C/--repo requires a path"))?
+                            .clone(),
+                    );
+                    index += 1;
+                }
+                value if value.starts_with("--repo=") => {
+                    repository = Some(value[7..].into());
+                    index += 1;
+                }
+                _ => break,
+            }
+        }
+        let command = all.get(index).cloned().unwrap_or_else(|| "status".into());
+        let arguments = all
+            .get(index + 1..)
+            .unwrap_or(&[])
+            .iter()
+            .cloned()
+            .collect();
+        Ok(Self {
+            repository,
+            command,
+            arguments,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileState {
     Added,
@@ -40,6 +92,19 @@ pub struct Change {
 }
 
 impl Change {
+    pub fn conflicted(&self) -> bool {
+        matches!(
+            (self.index, self.worktree),
+            ('D', 'D')
+                | ('A', 'U')
+                | ('U', 'D')
+                | ('U', 'A')
+                | ('D', 'U')
+                | ('A', 'A')
+                | ('U', 'U')
+        )
+    }
+
     pub fn staged(&self) -> bool {
         !matches!(self.index, ' ' | '?' | '!')
     }
@@ -49,6 +114,9 @@ impl Change {
     }
 
     pub fn state(&self) -> FileState {
+        if self.conflicted() {
+            return FileState::Unmerged;
+        }
         let code = if self.worktree != ' ' {
             self.worktree
         } else {
@@ -123,5 +191,31 @@ mod tests {
         assert_eq!(parsed[0].path, "new name.rs");
         assert_eq!(parsed[0].original_path.as_deref(), Some("old name.rs"));
         assert_eq!(parsed[1].path, "next.rs");
+    }
+
+    #[test]
+    fn recognizes_every_porcelain_v1_conflict_pair() {
+        for pair in ["DD", "AU", "UD", "UA", "DU", "AA", "UU"] {
+            let record = mrml_runtime::mrml_format!("{} conflict.rs\0", pair);
+            let parsed = parse_porcelain(record.as_bytes());
+            assert_eq!(parsed[0].state(), FileState::Unmerged, "pair {pair}");
+            assert!(parsed[0].conflicted());
+        }
+    }
+
+    #[test]
+    fn cli_parses_repository_before_command() {
+        let cli = Cli::parse(["mrml-git", "-C", "other repo", "diff", "--staged"]).unwrap();
+        assert_eq!(cli.repository.as_deref(), Some("other repo"));
+        assert_eq!(cli.command, "diff");
+        assert_eq!(cli.arguments[0], "--staged");
+    }
+
+    #[test]
+    fn cli_rejects_missing_repository_path() {
+        assert_eq!(
+            Cli::parse(["mrml-git", "--repo"]).unwrap_err(),
+            "-C/--repo requires a path"
+        );
     }
 }
