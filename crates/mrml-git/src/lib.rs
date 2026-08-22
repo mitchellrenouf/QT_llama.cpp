@@ -10,6 +10,7 @@ mod pack;
 mod repository;
 mod sha1;
 mod transport;
+mod remote;
 
 pub use diff::FileDiff;
 pub use index::{Index, IndexEntry, IndexError};
@@ -24,6 +25,7 @@ pub use repository::{
 };
 pub use sha1::{ObjectId, Sha1};
 pub use transport::{Advertisement, RemoteRef, TransportError, decode_packets, encode_flush, encode_packet, extract_pack_response, fetch_request, parse_advertisement};
+pub use remote::{FetchError, FetchResult, fetch_ssh};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cli {

@@ -1269,6 +1269,18 @@ impl Repository {
         Ok(())
     }
 
+    pub fn update_remote_ref(&self, remote: &str, source: &str, id: ObjectId) -> Result<(), RepositoryError> {
+        validate_config_name(remote)?;
+        let branch = source.strip_prefix("refs/heads/").ok_or(RepositoryError::InvalidReference)?;
+        validate_reference(source)?;
+        let reference = mrml_runtime::mrml_format!("refs/remotes/{remote}/{branch}");
+        validate_reference(&reference)?;
+        let path = join_path(&self.git_dir, &reference);
+        if let Some(parent) = parent_path(&path) { create_dir_all(parent)?; }
+        write_file(&path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
+        Ok(())
+    }
+
     pub fn config_value(&self, section: &str, key: &str) -> Result<Option<Text>, RepositoryError> {
         validate_config_name(section)?;
         validate_config_name(key)?;
@@ -2050,6 +2062,12 @@ mod tests {
                 .set_remote("missing", "git@example.invalid:x/y", true)
                 .is_err()
         );
+        let remote_id = ObjectId::blob(b"remote-tip");
+        repository.update_remote_ref("origin", "refs/heads/main", remote_id).unwrap();
+        let remote_hex=remote_id.to_hex();
+        assert_eq!(remote_hex,read_file_text_bounded(&join_path(&repository.git_dir,"refs/remotes/origin/main"),64).unwrap().trim());
+        assert!(repository.update_remote_ref("../escape", "refs/heads/main", remote_id).is_err());
+        assert!(repository.update_remote_ref("origin", "refs/tags/not-a-branch", remote_id).is_err());
         remove_dir_all(&path).unwrap();
     }
 
