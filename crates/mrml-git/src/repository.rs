@@ -7,7 +7,8 @@ use mrml_runtime::{
 
 use crate::{
     Commit, FileDiff, Index, IndexEntry, IndexError, Object, ObjectError, ObjectId, ObjectKind,
-    decode_loose_object, encode_loose_object, parse_pack, parse_tree, PackError,
+    decode_loose_object, encode_loose_object, encode_pack, parse_pack, parse_tree, PackError,
+    PackObject,
 };
 
 const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
@@ -218,6 +219,8 @@ impl Repository {
         }
         Ok(ids)
     }
+
+    pub fn pack_reachable(&self,tip:ObjectId)->Result<Vector<u8>,RepositoryError>{let mut pending=Vector::from([tip]);let mut seen=Vector::new();let mut objects=Vector::new();while let Some(id)=pending.pop(){if seen.contains(&id){continue;}if seen.len()>=1_000_000{return Err(RepositoryError::TooManyFiles);}let object=self.read_object(id)?;match object.kind{ObjectKind::Commit=>{let commit=Commit::parse(&object.contents)?;pending.push(commit.tree);pending.extend(commit.parents.iter().copied());},ObjectKind::Tree=>pending.extend(parse_tree(&object.contents)?.iter().map(|entry|entry.id)),ObjectKind::Tag=>{let text=core::str::from_utf8(&object.contents).map_err(|_|RepositoryError::InvalidReference)?;let target=text.lines().find_map(|line|line.strip_prefix("object ")).and_then(ObjectId::parse).ok_or(RepositoryError::InvalidReference)?;pending.push(target);},ObjectKind::Blob=>{}}seen.push(id);objects.push(PackObject{id,kind:object.kind,contents:object.contents});}encode_pack(&objects).map_err(Into::into)}
 
     pub fn resolve_revision(&self, revision: &str) -> Result<ObjectId, RepositoryError> {
         if revision == "HEAD" {
@@ -1963,6 +1966,10 @@ mod tests {
                 &commit.to_hex()[2..]
             )
         )));
+        let packed=parse_pack(&repository.pack_reachable(commit).unwrap()).unwrap();
+        assert!(packed.iter().any(|object|object.id==commit&&object.kind==ObjectKind::Commit));
+        assert!(packed.iter().any(|object|object.kind==ObjectKind::Tree));
+        assert!(packed.iter().any(|object|object.kind==ObjectKind::Blob));
         remove_dir_all(&path).unwrap();
     }
 

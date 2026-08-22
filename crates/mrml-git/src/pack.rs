@@ -54,6 +54,11 @@ pub fn parse_pack(source: &[u8]) -> Result<Vector<PackObject>, PackError> {
     Ok(decoded.into_iter().map(|entry| entry.object).collect())
 }
 
+pub fn encode_pack(objects:&[PackObject])->Result<Vector<u8>,PackError>{if objects.len()>MAX_OBJECTS{return Err(PackError::TooManyObjects);}let mut pack=Vector::from(*b"PACK");pack.extend(2u32.to_be_bytes());pack.extend((objects.len()as u32).to_be_bytes());for object in objects{if object.contents.len()>MAX_OBJECT{return Err(PackError::TooLarge);}let kind=match object.kind{ObjectKind::Commit=>1,ObjectKind::Tree=>2,ObjectKind::Blob=>3,ObjectKind::Tag=>4};encode_object_header(kind,object.contents.len(),&mut pack);deflate_stored(&object.contents,&mut pack);}let checksum=Sha1::digest(&pack);pack.extend(checksum);Ok(pack)}
+
+fn encode_object_header(kind:u8,mut size:usize,output:&mut Vector<u8>){let mut first=(kind<<4)|(size as u8&15);size>>=4;if size!=0{first|=0x80;}output.push(first);while size!=0{let mut byte=(size&0x7f)as u8;size>>=7;if size!=0{byte|=0x80;}output.push(byte);}}
+fn deflate_stored(source:&[u8],output:&mut Vector<u8>){let mut offset=0usize;loop{let length=(source.len()-offset).min(65_535);let final_block=offset+length==source.len();output.push(final_block as u8);output.extend((length as u16).to_le_bytes());output.extend((!(length as u16)).to_le_bytes());output.extend(source[offset..offset+length].iter().copied());offset+=length;if final_block{break;}}}
+
 fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vector<u8>, PackError> {
     let mut cursor = 0; let base_size = delta_varint(delta, &mut cursor)?; if base_size != base.len() { return Err(PackError::Delta); }
     let result_size = delta_varint(delta, &mut cursor)?; if result_size > MAX_OBJECT { return Err(PackError::TooLarge); }
@@ -89,4 +94,5 @@ impl core::error::Error for PackError{}
  #[test] fn rejects_pack_checksum_tampering(){let mut pack=pack_blob(b"native");pack[12]^=1;assert_eq!(parse_pack(&pack),Err(PackError::Checksum));}
  #[test] fn applies_copy_and_insert_delta(){let delta=[6,7,0x90,3,4,b'X',b'Y',b'Z',b'!'];assert_eq!(&*apply_delta(b"native",&delta).unwrap(),b"natXYZ!");}
  #[test] fn resolves_ofs_delta_in_pack(){let base=b"native";let delta=[6,7,0x90,3,4,b'X',b'Y',b'Z',b'!'];let mut pack=Vector::from(*b"PACK");pack.extend(2u32.to_be_bytes());pack.extend(2u32.to_be_bytes());let base_offset=pack.len();pack.push(0x36);pack.extend(raw_stored(base));let delta_offset=pack.len();pack.push(0x69);pack.push((delta_offset-base_offset)as u8);pack.extend(raw_stored(&delta));let sum=Sha1::digest(&pack);pack.extend(sum);let objects=parse_pack(&pack).unwrap();assert_eq!(&*objects[1].contents,b"natXYZ!");assert_eq!(objects[1].id,ObjectId::blob(b"natXYZ!"));}
+ #[test]fn generated_pack_round_trips_large_and_empty_objects(){let inputs=Vector::from([PackObject{id:ObjectId::blob(b""),kind:ObjectKind::Blob,contents:Vector::new()},PackObject{id:ObjectId::blob(&[7;70_000]),kind:ObjectKind::Blob,contents:Vector::from([7;70_000])}]);let encoded=encode_pack(&inputs).unwrap();let decoded=parse_pack(&encoded).unwrap();assert_eq!(decoded,inputs);}
 }
