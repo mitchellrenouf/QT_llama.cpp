@@ -2444,15 +2444,31 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit_expression(&condition_tree, condition_tree.root(), 0)?;
             self.emit(&[0x48, 0x85, 0xc0])?;
             let false_branch = self.emit_forward_branch(0x84)?;
-            for assignment in branch.assignments().iter().flatten() {
-                self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
+            for action in branch.actions().iter().flatten() {
+                match action {
+                    crate::ConditionalAssignmentAction::Assignment(assignment) => {
+                        self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
+                    }
+                    crate::ConditionalAssignmentAction::Expression(statement) => {
+                        self.emit_expression_statement::<MAX_EXPRESSION_NODES>(
+                            statement, body_start,
+                        )?;
+                    }
+                }
             }
             end_patches[end_count] = Some(self.emit_unconditional_forward_branch()?);
             end_count += 1;
             self.patch_forward_branch(false_branch)?;
         }
-        for assignment in conditional.else_assignments().iter().flatten() {
-            self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
+        for action in conditional.else_actions().iter().flatten() {
+            match action {
+                crate::ConditionalAssignmentAction::Assignment(assignment) => {
+                    self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
+                }
+                crate::ConditionalAssignmentAction::Expression(statement) => {
+                    self.emit_expression_statement::<MAX_EXPRESSION_NODES>(statement, body_start)?;
+                }
+            }
         }
         for patch in end_patches[..end_count].iter().flatten().copied() {
             self.patch_forward_branch(patch)?;
@@ -3566,13 +3582,15 @@ mod tests {
 
     #[test]
     fn emits_lazy_conditional_assignments() {
-        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn choose(value: u64) -> u64 { let mut result = value; if value == 0 { result = 40; result += 2; } else if value == 1 { result = 40 / value; result += 2; } else if value == 2 { result = 80 / value; result += 2; } else { result = 120 / value; result += 2; } if value == 4 { result += 1; result *= 2; } else if value == 5 { result += 2; result *= 2; } result }";
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn choose(value: u64) -> u64 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; } else if value == 1 { result = 40; 84 / value; result += 2; } else if value == 2 { result = 40; 42 / value; result += 2; } else { result = 40; value + 10; result += 2; } if value == 4 { result += 1; value * 3; result *= 2; } else if value == 5 { result += 2; value * 3; result *= 2; } result }";
         let module = Parser::new(source).parse_module::<2, 4>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")
         };
         for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
-            assert!(compile_x86_64_function::<_, 768, 4, 48>(&function, &NoConstants, abi).is_ok());
+            assert!(
+                compile_x86_64_function::<_, 1024, 4, 48>(&function, &NoConstants, abi).is_ok()
+            );
         }
 
         for source in [
@@ -3585,7 +3603,7 @@ mod tests {
                 panic!("expected function")
             };
             assert!(
-                compile_x86_64_function::<_, 768, 4, 48>(
+                compile_x86_64_function::<_, 1024, 4, 48>(
                     &function,
                     &NoConstants,
                     X86_64Abi::Windows,

@@ -105,7 +105,17 @@ fn rustc_dynamic_drop_has_an_ordered_scalar_mutation_replacement() {
     // This original scalar case maps only source-ordered mutations in a
     // selected branch. It does not claim ownership, drop, allocation,
     // deferred initialization, tuples, unwinding, or coroutine support.
-    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u32) -> u32 { let mut result = value; if value == 0 { result = 20; result *= 2; result += 2; } else if value == 1 { result = 100; result -= 58; } else { result = 126 / value; result += 0; } result }";
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u32) -> u32 { let mut result = value; if value == 0 { result = 20; value + 1; result *= 2; result += 2; } else if value == 1 { result = 100; value * 3; result -= 58; } else { result = 126 / value; value + 10; result += 0; } result }";
+    assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
+    assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
+fn rustc_weird_exprs_has_a_guarded_discarded_expression_replacement() {
+    // The pinned test contains discarded expressions in unusual block
+    // contexts. This original scalar replacement covers their ordered,
+    // value-discarding behavior inside selected conditional branches only.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u32) -> u32 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; } else if value == 1 { result = 40; 84 / value; result += 2; } else { result = 40; value == 3; result += 2; } result }";
     assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
     assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
 }

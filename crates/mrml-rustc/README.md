@@ -575,7 +575,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 198 Windows library, conformance, rustc-nightly-replacement, and driver
+The 199 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1037,9 +1037,20 @@ coroutines are explicitly not claimed. The unchanged pinned editions 2015 and
 on Arch Linux WSL. MRML's 868-byte COFF and 1,264-byte ELF objects passed
 independent `no_std` callers on six paths, covering ordered noncommutative
 updates in first, middle, fallback, and later fallthrough blocks. The zero path
-would divide by zero if an unselected later block executed. A fifth assignment
-inside any guarded or final branch fails with
-`TooManyConditionalAssignmentsPerBranch`.
+would divide by zero if an unselected later block executed.
+The same branch storage now preserves a bounded source-ordered mixture of
+assignments and discarded scalar expression statements. At least one assignment
+is required, so ordinary `if` expressions and control-flow forms retain their
+existing parsers. A fifth mixed action fails with
+`TooManyConditionalBranchActions`. An additional original replacement maps
+this narrow behavior to the unusual discarded block expressions in pinned
+`tests/ui/expr/weird-exprs.rs`; the unchanged test compiled and ran with the
+exact dated nightly on both hosts. MRML's 996-byte COFF and 1,392-byte ELF
+objects passed independent `no_std` callers on six paths. The zero path has no
+dangerous assignment, but would divide by zero if a later branch's discarded
+expression leaked across selection. A selected discarded division-by-zero
+expression is separately rejected during const evaluation, proving these
+statements execute rather than disappear.
 
 Linux used native Arch Linux WSL2 `x86_64-unknown-linux-gnu` with the identical
 nightly commit:
@@ -1055,7 +1066,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 198 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 199 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

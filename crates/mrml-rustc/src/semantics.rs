@@ -982,28 +982,54 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                         resolver,
                         depth,
                     )? {
-                        for assignment in branch.assignments().iter().flatten() {
-                            evaluate_const_assignment(
-                                context,
-                                symbol_count,
-                                assignment,
-                                resolver,
-                                depth,
-                            )?;
+                        for action in branch.actions().iter().flatten() {
+                            match action {
+                                crate::ConditionalAssignmentAction::Assignment(assignment) => {
+                                    evaluate_const_assignment(
+                                        context,
+                                        symbol_count,
+                                        assignment,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
+                                crate::ConditionalAssignmentAction::Expression(statement) => {
+                                    evaluate_const_expression_statement(
+                                        context,
+                                        symbol_count,
+                                        statement,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
+                            }
                         }
                         selected = true;
                         break;
                     }
                 }
                 if !selected {
-                    for assignment in conditional.else_assignments().iter().flatten() {
-                        evaluate_const_assignment(
-                            context,
-                            symbol_count,
-                            assignment,
-                            resolver,
-                            depth,
-                        )?;
+                    for action in conditional.else_actions().iter().flatten() {
+                        match action {
+                            crate::ConditionalAssignmentAction::Assignment(assignment) => {
+                                evaluate_const_assignment(
+                                    context,
+                                    symbol_count,
+                                    assignment,
+                                    resolver,
+                                    depth,
+                                )?;
+                            }
+                            crate::ConditionalAssignmentAction::Expression(statement) => {
+                                evaluate_const_expression_statement(
+                                    context,
+                                    symbol_count,
+                                    statement,
+                                    resolver,
+                                    depth,
+                                )?;
+                            }
+                        }
                     }
                 }
             }
@@ -1026,48 +1052,13 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                 let statement = body.expression_statements()[*index]
                     .as_ref()
                     .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
-                if statement.expression.is_empty() {
-                    continue;
-                }
-                let tree = statement
-                    .parse::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
-                    .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
-                if tree.is_boolean_expression(tree.root(), 0) {
-                    evaluate_boolean_const_expression(
-                        context,
-                        symbol_count,
-                        &tree,
-                        tree.root(),
-                        resolver,
-                        depth,
-                    )?;
-                } else if matches!(
-                    tree.expression(tree.root())
-                        .map(|expression| expression.kind),
-                    Some(ExprKind::Unit)
-                ) {
-                    tree.evaluate(resolver).map_err(|error| {
-                        SemanticErrorKind::Execution(ExecutionError::Arithmetic(error))
-                    })?;
-                } else {
-                    let ty = integer_expression_type(
-                        context,
-                        symbol_count,
-                        &tree,
-                        tree.root(),
-                        resolver,
-                    )
-                    .unwrap_or(crate::IntegerType::I32);
-                    evaluate_integer_const_expression(
-                        context,
-                        symbol_count,
-                        &tree,
-                        tree.root(),
-                        ty,
-                        resolver,
-                        depth,
-                    )?;
-                }
+                evaluate_const_expression_statement(
+                    context,
+                    symbol_count,
+                    statement,
+                    resolver,
+                    depth,
+                )?;
             }
             crate::BodyStatement::Return(index) => {
                 let return_statement = body.returns()[*index]
@@ -1099,6 +1090,55 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
         }
     }
     Ok(None)
+}
+
+fn evaluate_const_expression_statement<
+    'source,
+    const MAX_ITEMS: usize,
+    const MAX_PARAMETERS: usize,
+>(
+    context: &ConstCallContext<'_, 'source, MAX_ITEMS, MAX_PARAMETERS>,
+    symbol_count: usize,
+    statement: &crate::ExpressionStatement<'source>,
+    resolver: &mut ConstCallResolver<'source>,
+    depth: ConstEvalDepth,
+) -> Result<(), SemanticErrorKind> {
+    if statement.expression.is_empty() {
+        return Ok(());
+    }
+    let tree = statement
+        .parse::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
+        .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
+    if tree.is_boolean_expression(tree.root(), 0) {
+        evaluate_boolean_const_expression(
+            context,
+            symbol_count,
+            &tree,
+            tree.root(),
+            resolver,
+            depth,
+        )?;
+    } else if matches!(
+        tree.expression(tree.root())
+            .map(|expression| expression.kind),
+        Some(ExprKind::Unit)
+    ) {
+        tree.evaluate(resolver)
+            .map_err(|error| SemanticErrorKind::Execution(ExecutionError::Arithmetic(error)))?;
+    } else {
+        let ty = integer_expression_type(context, symbol_count, &tree, tree.root(), resolver)
+            .unwrap_or(crate::IntegerType::I32);
+        evaluate_integer_const_expression(
+            context,
+            symbol_count,
+            &tree,
+            tree.root(),
+            ty,
+            resolver,
+            depth,
+        )?;
+    }
+    Ok(())
 }
 
 fn evaluate_const_local<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: usize>(
@@ -2753,7 +2793,7 @@ mod tests {
     #[test]
     fn evaluates_conditional_const_assignments_lazily() {
         let module = Parser::new(
-            "const fn choose(value: u8) -> u8 { let mut result = value; if value == 0 { result = 40; result += 2; } else if value == 1 { result = 40 / value; result += 2; } else if value == 2 { result = 80 / value; result += 2; } else { result = 120 / value; result += 2; } result } const FIRST: u8 = choose(0); const MIDDLE: u8 = choose(1); const LATER: u8 = choose(2); const FALLBACK: u8 = choose(3); const fn optional(value: u8) -> u8 { let mut result = 40; if value == 0 { result += 1; result += 1; } else if value == 1 { result += 3; result -= 1; } result } const UNSELECTED: u8 = optional(2);",
+            "const fn choose(value: u8) -> u8 { let mut result = value; if value == 0 { result = 40; value + 1; result += 2; } else if value == 1 { result = 40; 84 / value; result += 2; } else if value == 2 { result = 40; 42 / value; result += 2; } else { result = 40; value + 10; result += 2; } result } const FIRST: u8 = choose(0); const MIDDLE: u8 = choose(1); const LATER: u8 = choose(2); const FALLBACK: u8 = choose(3); const fn optional(value: u8) -> u8 { let mut result = 40; if value == 0 { result += 1; value + 1; result += 1; } else if value == 1 { result += 3; value + 1; result -= 1; } result } const UNSELECTED: u8 = optional(2);",
         )
         .parse_module::<8, 2>()
         .unwrap();
@@ -2763,6 +2803,13 @@ mod tests {
         assert_eq!(values.resolve("LATER"), Some(42));
         assert_eq!(values.resolve("FALLBACK"), Some(42));
         assert_eq!(values.resolve("UNSELECTED"), Some(40));
+
+        let selected_failure = Parser::new(
+            "const fn fail(value: u8) -> u8 { let mut result = value; if value == 0 { result = 1; 1 / value; result += 1; } result } const BAD: u8 = fail(0);",
+        )
+        .parse_module::<4, 2>()
+        .unwrap();
+        assert!(analyze_constants::<2, 48, 4, 2>(&selected_failure, TargetLayout::X86_64).is_err());
     }
 
     #[test]
