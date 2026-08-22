@@ -9283,6 +9283,8 @@ mod tests {
         let sources = [
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> usize { input.addr() }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut char) -> usize { input.addr() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u32) -> usize { input.expose_provenance() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u64) -> usize { input.expose_provenance() }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u32, address: usize) -> *const u32 { input.with_addr(address) }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u64, address: usize) -> *mut u64 { input.with_addr(address) }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u8, address: usize) -> usize { input.with_addr(address).addr() }",
@@ -9301,6 +9303,7 @@ mod tests {
 
         for source in [
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize) -> usize { input.addr() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize) -> usize { input.expose_provenance() }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16, address: u64) -> *const u16 { input.with_addr(address) }",
         ] {
             let module = Parser::new(source).parse_module::<2, 2>().unwrap();

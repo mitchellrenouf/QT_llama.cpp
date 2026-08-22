@@ -508,8 +508,11 @@ COFF objects plus 512-, 512-, and 520-byte ELF64 objects. Shared
 and mutable raw pointers support `is_null()`, including pointers formed by
 integer casts. Native callers distinguished a null pointer from live slice
 backing through a 118-byte COFF and 512-byte ELF64 object; non-pointer receivers
-are rejected. `addr()` extracts a pointer's exposed `usize` address, while
-`with_addr(usize)` replaces its address and retains the original raw-pointer
+are rejected. `addr()` extracts a pointer's `usize` address, and
+`expose_provenance()` exposes that address for later provenance-free
+reconstruction. The latter passed independent native callers through a
+119-byte COFF and 512-byte ELF64 object. `with_addr(usize)` replaces its address
+and retains the original raw-pointer
 pointee and mutability type. Native callers matched a live array address and
 retargeted it to another element through 106- and 122-byte COFF objects plus
 496- and 512-byte ELF64 objects. Non-pointer receivers and non-`usize`

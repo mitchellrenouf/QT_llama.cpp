@@ -2096,6 +2096,8 @@ fn rustc_raw_pointer_addresses_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u16) -> usize { input.addr() }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *mut char) -> usize { input.addr() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u32) -> usize { input.expose_provenance() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *mut u64) -> usize { input.expose_provenance() }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u32, address: usize) -> *const u32 { input.with_addr(address) }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *mut u64, address: usize) -> *mut u64 { input.with_addr(address) }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u8, address: usize) -> usize { input.with_addr(address).addr() }",

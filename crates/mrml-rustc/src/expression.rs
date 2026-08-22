@@ -3468,6 +3468,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         | "byte_offset_from"
                         | "is_null"
                         | "addr"
+                        | "expose_provenance"
                         | "cast_const"
                         | "cast_mut"
                         | "with_addr"
@@ -3520,7 +3521,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     mutable: true,
                 },
                 "is_null" => ExprKind::RawPointerIsNull { base },
-                "addr" => ExprKind::RawPointerAddress { base },
+                "addr" | "expose_provenance" => ExprKind::RawPointerAddress { base },
                 "cast_const" => ExprKind::RawPointerMutability {
                     base,
                     mutable: false,
