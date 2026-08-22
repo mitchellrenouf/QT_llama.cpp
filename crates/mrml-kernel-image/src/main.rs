@@ -79,6 +79,8 @@ use mrml_kernel::arch::x86_64::{
     ApOnlineTable, CpuDescriptorState, HardwareTrapFrame, MAX_X86_64_CPUS,
     PRIVILEGE_STACK_ARENA_PAGES, PrivilegeStackLayout,
 };
+#[cfg(feature = "uefi-service-preemption-probe")]
+use mrml_kernel::arch::x86_64::{PreallocatedPageTableStore, ServiceAddressSpace};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, MAX_HANDOFF_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -188,24 +190,45 @@ const SMP_PERIODIC_APPLICATION_PORT: u16 = 0x4d63;
 const SMP_PERIODIC_BOOTSTRAP_PORT: u16 = 0x4d64;
 #[cfg(any(
     feature = "service-probe",
-    feature = "service-preemption-probe",
-    feature = "smp-service-migration-probe"
+    feature = "smp-service-migration-probe",
+    all(
+        feature = "service-preemption-probe",
+        not(feature = "uefi-service-preemption-probe")
+    )
 ))]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
-#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
+#[cfg(any(
+    feature = "service-probe",
+    all(
+        feature = "service-preemption-probe",
+        not(feature = "uefi-service-preemption-probe")
+    )
+))]
 const SERVICE_B_ROOT: u64 = 0x00d0_0000;
 #[cfg(any(
     feature = "service-probe",
-    feature = "service-preemption-probe",
-    feature = "smp-service-migration-probe"
+    feature = "smp-service-migration-probe",
+    all(
+        feature = "service-preemption-probe",
+        not(feature = "uefi-service-preemption-probe")
+    )
 ))]
 const SERVICE_ENTRY: u64 = 0x0000_0001_4000_1000;
-#[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
+#[cfg(any(
+    feature = "service-probe",
+    all(
+        feature = "service-preemption-probe",
+        not(feature = "uefi-service-preemption-probe")
+    )
+))]
 const SERVICE_SENDER_ENTRY: u64 = SERVICE_ENTRY + 0x80;
 #[cfg(any(
     feature = "service-probe",
-    feature = "service-preemption-probe",
-    feature = "smp-service-migration-probe"
+    feature = "smp-service-migration-probe",
+    all(
+        feature = "service-preemption-probe",
+        not(feature = "uefi-service-preemption-probe")
+    )
 ))]
 const SERVICE_STACK_TOP: u64 = 0x0070_2000;
 
@@ -1991,16 +2014,40 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
     #[cfg(feature = "service-preemption-probe")]
     unsafe {
         asm!("cli", options(nomem, nostack));
-        let first_context = UserContext::new(
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        let (service_root, service_entry, service_stack_top) = {
+            let service = handoff.service().unwrap_or_else(|| halt());
+            let image_length = service
+                .image_pages()
+                .checked_mul(mrml_kernel::PAGE_SIZE)
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                .unwrap_or_else(|| halt());
+            let image = core::slice::from_raw_parts(
+                service.image_physical().get() as *const u8,
+                image_length,
+            );
+            let plan = ServiceAddressSpace::<40>::from_handoff(service, image, &[])
+                .unwrap_or_else(|_| halt());
+            let store =
+                PreallocatedPageTableStore::new(service.table_physical(), service.table_pages())
+                    .unwrap_or_else(|_| halt());
+            let tables = plan
+                .build_page_tables_with_current_kernel(store)
+                .unwrap_or_else(|_| halt());
+            (tables.root(), plan.entry(), plan.stack_top())
+        };
+        #[cfg(not(feature = "uefi-service-preemption-probe"))]
+        let (service_root, service_entry, service_stack_top) = (
             PhysAddr::new(SERVICE_ROOT).unwrap_or_else(|_| halt()),
             SERVICE_ENTRY,
             SERVICE_STACK_TOP,
-        )
-        .unwrap_or_else(|_| halt());
+        );
+        let first_context = UserContext::new(service_root, service_entry, service_stack_top)
+            .unwrap_or_else(|_| halt());
         let second_context = UserContext::new(
-            PhysAddr::new(SERVICE_B_ROOT).unwrap_or_else(|_| halt()),
-            SERVICE_SENDER_ENTRY,
-            SERVICE_STACK_TOP,
+            service_root,
+            service_entry.checked_add(0x80).unwrap_or_else(|| halt()),
+            service_stack_top,
         )
         .unwrap_or_else(|_| halt());
         let mut runtime = TaskRuntime::<2, 0>::new(1_000, 1).unwrap_or_else(|_| halt());
