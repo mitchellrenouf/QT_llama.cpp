@@ -286,8 +286,15 @@ hosts. Runtime indexes evaluate once and dispatch across the bounded temporary
 or local slots. A conditional-array probe emitted 352-byte COFF and 744-byte
 ELF64 objects; independent callers observed 42, 42, 13, and 99 across both arms
 and three indexes, including a zero divisor hidden in the unselected arm. An
-out-of-bounds Linux call terminated with `SIGILL`. Mutable arrays and aggregate
-assignment, array parameters and returns, unconstrained array defaults,
+out-of-bounds Linux call terminated with `SIGILL`. Mutable fixed-array locals
+also support whole-array `=` assignment. The complete right-hand array is
+materialized before any destination slot is overwritten, so self-referential
+permutations retain Rust's value semantics; assignment from either conditional
+branch follows the same path. Compound aggregate assignment is rejected. A
+probe that permuted `[13, 42, 99]`, retained a following scalar local, and then
+used a runtime index emitted 373-byte COFF and 768-byte ELF64 objects;
+independent callers observed 100, 14, and 43 on both hosts. Indexed element
+mutation, array parameters and returns, unconstrained array defaults,
 references, slices, and general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
@@ -645,7 +652,8 @@ breaks, references, trait coercions, never type, matches, and more general
 nested control-flow graphs are not claimed by this slice. Its fixed scalar
 array literals now have bounded direct-index coverage, including contextual
 array defaults selected through conditional loop-break branches and retained in
-immutable fixed-array locals, plus bounded runtime `usize` indexes. Replacements
+fixed-array locals, plus bounded runtime `usize` indexes and whole-array
+assignment for mutable locals. Replacements
 cover bounded cross-nested value exits, terminating nested value-loop operands,
 up to five compatible competing scalar values, both sequential and structured
 alternative syntax, lazy selection of the taken break edge, and the oracle's
@@ -653,7 +661,7 @@ labeled `break`-as-`while`-condition cases plus its two source orders for
 unreachable unit sibling breaks, its three scalar
 `Default::default()`/nested-break forms,
 and the three directly indexed array/default branch shapes. General `while`
-condition expressions, mutable or assigned aggregates, aggregate parameters or
+condition expressions, indexed aggregate mutation, aggregate parameters or
 returns, unconstrained aggregate defaults, and arbitrary nested value-loop
 graphs remain outside this bounded slice.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
@@ -778,7 +786,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 264 Windows library, conformance, rustc-nightly-replacement, and driver
+The 265 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1452,7 +1460,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 264 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 265 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

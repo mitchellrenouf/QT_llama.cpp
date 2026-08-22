@@ -3169,12 +3169,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         }
         let stack_slots = runtime_type_stack_slots(local_type);
         if let RuntimeExpressionType::Array { count, .. } = local_type {
-            if local.mutable {
-                return Err(CodegenError {
-                    kind: CodegenErrorKind::RuntimeExpressionUnsupported,
-                    span: translate_span(body_start, local.name_span),
-                });
-            }
             for index in 0..count {
                 self.emit_array_element(&tree, tree.root(), index, 0)?;
                 self.emit(&[0x50])?;
@@ -3289,12 +3283,6 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.name_span),
             });
         }
-        if matches!(target.ty, RuntimeExpressionType::Array { .. }) {
-            return Err(CodegenError {
-                kind: CodegenErrorKind::RuntimeExpressionUnsupported,
-                span: translate_span(body_start, assignment.name_span),
-            });
-        }
         if target.ty == RuntimeExpressionType::Bool
             && !matches!(
                 assignment.operator,
@@ -3333,6 +3321,15 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.value_span),
             });
         }
+        if let RuntimeExpressionType::Array { count, .. } = target.ty {
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                return Err(CodegenError {
+                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                    span: translate_span(body_start, assignment.name_span),
+                });
+            }
+            return self.emit_array_assignment(&tree, tree.root(), index, count);
+        }
         if assignment.operator == crate::AssignmentOperator::Assign {
             self.emit_expression(&tree, tree.root(), 0)?;
         } else {
@@ -3350,6 +3347,40 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             )?)?;
         }
         self.emit_store_stack_slot(self.local_stack_slots_from(index + 1)?)
+    }
+
+    fn emit_array_assignment<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        root: crate::ExprId,
+        local_index: usize,
+        count: usize,
+    ) -> Result<(), CodegenError> {
+        if count > 8 {
+            return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
+        }
+        for element in 0..count {
+            self.emit_array_element(tree, root, element, 0)?;
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+        }
+        let later_slots = self.local_stack_slots_from(local_index + 1)?;
+        for element in 0..count {
+            self.emit_stack_slot(count - 1 - element)?;
+            let destination = count
+                .checked_add(later_slots)
+                .and_then(|slots| slots.checked_add(count - 1 - element))
+                .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+            self.emit_store_stack_slot(destination)?;
+        }
+        self.evaluation_depth -= count;
+        let bytes = count
+            .checked_mul(8)
+            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+        if bytes != 0 {
+            self.emit(&[0x48, 0x83, 0xc4, bytes as u8])?;
+        }
+        Ok(())
     }
 
     fn emit_conditional_return<const MAX_EXPRESSION_NODES: usize>(
@@ -5117,13 +5148,16 @@ mod tests {
     }
 
     #[test]
-    fn stores_immutable_fixed_array_locals_for_scalar_indexes() {
+    fn stores_fixed_array_locals_for_scalar_indexes_and_assignment() {
         let sources = [
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let values: [u64; 3] = [13, 42, 99]; values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let before: u64 = input; let values = [13u64, 42, 99]; let after: u64 = 1; before + values[1] + after }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let values: [u64; 2] = Default::default(); values[0] + values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> u64 { let values: [u64; 2] = loop { break if select { break [13, 14] } else { break Default::default() }; }; values[0] + values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> u64 { let choice: bool = select; let values = if choice { [13u64, 14] } else { [20, 22] }; values[0] + values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let mut values = [13u64, 14]; values = [20, 22]; values[0] + values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let mut values = [13u64, 42]; values = [values[1], values[0]]; values[0] * 100 + values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> u64 { let mut values = [1u64, 2]; if select { values = [20, 22]; } else { values = [13, 14]; } values[0] + values[1] }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
@@ -5136,19 +5170,19 @@ mod tests {
             }
         }
 
-        let mutable = Parser::new(
-            "#[unsafe(no_mangle)] pub extern \"C\" fn bad() -> u64 { let mut values: [u64; 2] = [1, 2]; values[0] }",
+        let compound = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn bad() -> u64 { let mut values: [u64; 2] = [1, 2]; values += [3, 4]; values[0] }",
         )
         .parse_module::<2, 2>()
         .unwrap();
-        let Some(Item::Function(function)) = mutable.items()[0] else {
+        let Some(Item::Function(function)) = compound.items()[0] else {
             panic!("expected function")
         };
         assert_eq!(
             compile_x86_64_function::<_, 128, 2, 32>(&function, &NoConstants, X86_64Abi::Windows)
                 .unwrap_err()
                 .kind,
-            CodegenErrorKind::RuntimeExpressionUnsupported
+            CodegenErrorKind::UnsupportedRuntimeOperator
         );
     }
 

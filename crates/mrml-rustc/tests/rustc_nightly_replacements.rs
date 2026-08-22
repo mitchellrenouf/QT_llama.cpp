@@ -1650,6 +1650,13 @@ fn rustc_loop_break_value_runtime_array_indexes_reach_native_objects() {
 }
 
 #[test]
+fn rustc_loop_break_value_mutable_array_assignment_reaches_native_objects() {
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(index: usize) -> usize { let mut values = [13usize, 42, 99]; let after = 1usize; values = [values[2], values[0], values[1]]; values[index] + after }";
+    assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
+    assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
 fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",
