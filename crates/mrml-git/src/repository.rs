@@ -226,6 +226,11 @@ impl Repository {
         if let Some(id) = ObjectId::parse(revision) {
             return Ok(id);
         }
+        if revision.starts_with("refs/") {
+            validate_reference(revision)?;
+            let value=read_file_text_bounded(&join_path(&self.git_dir,revision),4096)?;
+            return ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference);
+        }
         for prefix in ["refs/heads", "refs/tags"] {
             let reference = mrml_runtime::mrml_format!("{prefix}/{revision}");
             validate_reference(&reference)?;
@@ -357,6 +362,10 @@ impl Repository {
         )?;
         Ok(id)
     }
+
+    pub fn checkout_branch_at(&self,branch:&str,id:ObjectId)->Result<ObjectId,RepositoryError>{let reference=mrml_runtime::mrml_format!("refs/heads/{branch}");validate_reference(&reference)?;self.read_commit(id)?;if !self.changes()?.is_empty(){return Err(RepositoryError::WorktreeDirty);}let path=join_path(&self.git_dir,&reference);if let Some(parent)=parent_path(&path){create_dir_all(parent)?;}write_file(&path,mrml_runtime::mrml_format!("{id}\n").as_bytes())?;self.switch_branch(branch)}
+
+    pub fn fast_forward(&self,revision:&str)->Result<MergeOutcome,RepositoryError>{if !self.changes()?.is_empty(){return Err(RepositoryError::WorktreeDirty);}let current=self.head()?.ok_or(RepositoryError::ReferenceMissing)?;let target=self.resolve_revision(revision)?;if self.is_ancestor(target,current)?{return Ok(MergeOutcome::UpToDate);}if !self.is_ancestor(current,target)?{return Err(RepositoryError::MergeRequired);}let commit=self.read_commit(target)?;let index=self.tree_index(commit.tree)?;self.materialize_index(&index)?;let branch=self.current_branch()?.ok_or(RepositoryError::DetachedHead)?;let path=join_path(&self.git_dir,&mrml_runtime::mrml_format!("refs/heads/{branch}"));let lock=mrml_runtime::mrml_format!("{path}.lock");if path_exists(&lock){return Err(RepositoryError::AlreadyExists);}write_file(&lock,mrml_runtime::mrml_format!("{target}\n").as_bytes())?;mrml_runtime::rename_file(&lock,&path)?;Ok(MergeOutcome::FastForward(target))}
 
     pub fn is_ancestor(
         &self,
@@ -2180,19 +2189,17 @@ mod tests {
             .unwrap();
         repository.switch_branch("main").unwrap();
         assert_eq!(
-            repository
-                .merge("topic", "MRML", "mrml@example.invalid", 3)
-                .unwrap(),
+            repository.fast_forward("topic").unwrap(),
             MergeOutcome::FastForward(topic)
         );
         assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"topic");
         assert_eq!(repository.head().unwrap(), Some(topic));
         assert_eq!(
-            repository
-                .merge("topic", "MRML", "mrml@example.invalid", 4)
-                .unwrap(),
+            repository.fast_forward("topic").unwrap(),
             MergeOutcome::UpToDate
         );
+        assert_eq!(repository.checkout_branch_at("clone-tip",topic).unwrap(),topic);
+        assert_eq!(repository.current_branch().unwrap().as_deref(),Some("clone-tip"));
         remove_dir_all(&path).unwrap();
     }
 

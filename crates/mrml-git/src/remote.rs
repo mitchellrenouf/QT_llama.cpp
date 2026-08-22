@@ -1,11 +1,11 @@
 use core::fmt;
-use mrml_runtime::Vector;
+use mrml_runtime::{Text,Vector};
 use mrml_ssh::{AuthenticatedSsh,ChannelEvent,GitChannel,GitService,RsaPrivateKey,SshRemote};
 use crate::{ObjectId,Repository,fetch_request,extract_pack_response,parse_advertisement};
 
 const MAX_WIRE:usize=1024*1024*1024;
 
-#[derive(Clone,Debug,Eq,PartialEq)]pub struct FetchResult{pub objects:Vector<ObjectId>,pub refs:usize}
+#[derive(Clone,Debug,Eq,PartialEq)]pub struct FetchResult{pub objects:Vector<ObjectId>,pub branches:Vector<(Text,ObjectId)>,pub default_branch:Option<Text>}
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]pub enum FetchError{Ssh,Protocol,Remote,Pack,Repository,TooLarge,NoReferences}
 
 pub fn fetch_ssh(repository:&Repository,remote_name:&str,remote:&SshRemote,key:&RsaPrivateKey,host_key:&[u8])->Result<FetchResult,FetchError>{
@@ -15,8 +15,8 @@ pub fn fetch_ssh(repository:&Repository,remote_name:&str,remote:&SshRemote,key:&
  let mut wants=Vector::new();for reference in &advertisement.refs{if reference.name.starts_with("refs/heads/")&&!wants.contains(&reference.id){wants.push(reference.id);}}
  if wants.is_empty(){return Err(FetchError::NoReferences);}let request=fetch_request(&wants,&[],&["side-band-64k","ofs-delta"]).map_err(|_|FetchError::Protocol)?;channel.send_all(&request).map_err(|_|FetchError::Ssh)?;channel.send_eof().map_err(|_|FetchError::Ssh)?;
  let response=collect_to_close(&mut channel)?;let pack=extract_pack_response(&response,true).map_err(|_|FetchError::Protocol)?;let objects=repository.import_pack(&pack).map_err(|_|FetchError::Pack)?;
- let mut refs=0;for reference in advertisement.refs{if reference.name.starts_with("refs/heads/"){repository.update_remote_ref(remote_name,&reference.name,reference.id).map_err(|_|FetchError::Repository)?;refs+=1;}}
- Ok(FetchResult{objects,refs})
+ let default_branch=advertisement.capabilities.iter().find_map(|capability|capability.strip_prefix("symref=HEAD:refs/heads/").map(Into::into));let mut branches=Vector::new();for reference in advertisement.refs{if let Some(branch)=reference.name.strip_prefix("refs/heads/"){repository.update_remote_ref(remote_name,&reference.name,reference.id).map_err(|_|FetchError::Repository)?;branches.push((branch.into(),reference.id));}}
+ Ok(FetchResult{objects,branches,default_branch})
 }
 
 fn append(output:&mut Vector<u8>,bytes:&[u8])->Result<(),FetchError>{if output.len().checked_add(bytes.len()).is_none_or(|n|n>MAX_WIRE){return Err(FetchError::TooLarge);}output.extend(bytes.iter().copied());Ok(())}

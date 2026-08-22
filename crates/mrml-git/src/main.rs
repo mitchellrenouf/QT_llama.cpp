@@ -266,9 +266,10 @@ fn print_ssh_remote(name: &str, url: &str, remote: &SshRemote) {
     );
 }
 
-fn ssh_credentials(repository:&Repository)->Result<(RsaPrivateKey,Vector<u8>)>{let private_path=repository.config_value("ssh","privateKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;let host_path=repository.config_value("ssh","hostKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;let private=read_file_text_bounded(&private_path,64*1024).map_err(|_|anyhow!("cannot read SSH private key"))?;let host=read_file_text_bounded(&host_path,64*1024).map_err(|_|anyhow!("cannot read pinned SSH host key"))?;let private=parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid SSH private key: {}",error))?;let host=parse_rsa_public_line(&host).and_then(|key|encode_rsa_public_key(&key)).map_err(|error|anyhow!("invalid SSH host key: {}",error))?;Ok((private,host))}
+fn ssh_credentials_paths(private_path:&str,host_path:&str)->Result<(RsaPrivateKey,Vector<u8>)>{let private=read_file_text_bounded(private_path,64*1024).map_err(|_|anyhow!("cannot read SSH private key"))?;let host=read_file_text_bounded(host_path,64*1024).map_err(|_|anyhow!("cannot read pinned SSH host key"))?;let private=parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid SSH private key: {}",error))?;let host=parse_rsa_public_line(&host).and_then(|key|encode_rsa_public_key(&key)).map_err(|error|anyhow!("invalid SSH host key: {}",error))?;Ok((private,host))}
+fn ssh_credentials(repository:&Repository)->Result<(RsaPrivateKey,Vector<u8>)>{let private=repository.config_value("ssh","privateKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;let host=repository.config_value("ssh","hostKey").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("run ssh auth <private-key.pem> <host-public-key> first"))?;ssh_credentials_paths(&private,&host)}
 
-fn native_fetch(repository:Option<&str>,name:&str)->Result<()>{let repo=native_repository(repository)?;let (_,remote)=ssh_remote(repository,name)?;let(key,host)=ssh_credentials(&repo)?;let result=fetch_ssh(&repo,name,&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;println!("Fetched {} object(s) and {} branch ref(s) from {}",result.objects.len(),result.refs,name);Ok(())}
+fn native_fetch(repository:Option<&str>,name:&str)->Result<()>{let repo=native_repository(repository)?;let (_,remote)=ssh_remote(repository,name)?;let(key,host)=ssh_credentials(&repo)?;let result=fetch_ssh(&repo,name,&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;println!("Fetched {} object(s) and {} branch ref(s) from {}",result.objects.len(),result.branches.len(),name);Ok(())}
 
 fn config_value(repository: Option<&str>, key: &str) -> Option<Text> {
     let (section, name) = key.rsplit_once('.')?;
@@ -356,7 +357,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "clone" if matches!(tail.len(), 1 | 2) => {
             checked_positionals(tail)?;
-            run_visible(repository, &collect("clone", &["--"], tail))
+            let remote=SshRemote::parse(&tail[0]).map_err(|error|anyhow!("invalid SSH remote: {}",error))?;let target=tail.get(1).cloned().unwrap_or_else(||remote.path.rsplit('/').next().unwrap_or("repository").trim_end_matches(".git").into());let private_path=mrml_runtime::environment_variable("MRML_GIT_SSH_KEY").ok_or_else(||anyhow!("clone requires MRML_GIT_SSH_KEY"))?;let host_path=mrml_runtime::environment_variable("MRML_GIT_SSH_HOST_KEY").ok_or_else(||anyhow!("clone requires MRML_GIT_SSH_HOST_KEY"))?;let(key,host)=ssh_credentials_paths(&private_path,&host_path)?;let repo=Repository::init(&target).map_err(|error|anyhow!("{}",error))?;repo.set_remote("origin",&tail[0],false).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("ssh","privateKey",&private_path).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("ssh","hostKey",&host_path).map_err(|error|anyhow!("{}",error))?;let result=fetch_ssh(&repo,"origin",&remote,&key,&host).map_err(|error|anyhow!("{}",error))?;let branch=result.default_branch.as_ref().and_then(|name|result.branches.iter().find(|(branch,_)|branch==name)).or_else(||result.branches.iter().find(|(branch,_)|branch=="main")).or_else(||result.branches.iter().find(|(branch,_)|branch=="master")).or_else(||result.branches.first()).ok_or_else(||anyhow!("remote has no branch to check out"))?;repo.checkout_branch_at(&branch.0,branch.1).map_err(|error|anyhow!("{}",error))?;println!("Cloned {} into {} on branch {}",tail[0],target,branch.0);Ok(())
         }
         "log" => {
             let count = tail.first().map(Text::as_str).unwrap_or("12");
@@ -629,7 +630,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "pull" if tail.len() <= 2 => {
             checked_positionals(tail)?;
-            run_visible(repository, &collect("pull", &["--ff-only"], tail))
+            let remote=tail.first().map(Text::as_str).unwrap_or("origin");native_fetch(repository,remote)?;let repo=native_repository(repository)?;let branch=tail.get(1).cloned().or_else(||repo.current_branch().ok().flatten()).ok_or_else(||anyhow!("pull requires a branch for detached HEAD"))?;let revision=format!("refs/remotes/{remote}/{branch}");match repo.fast_forward(&revision).map_err(|error|anyhow!("fast-forward pull failed: {}",error))?{MergeOutcome::UpToDate=>println!("Already up to date."),MergeOutcome::FastForward(id)=>println!("Fast-forward to {}",&id.to_hex()[..12]),_=>return Err(anyhow!("unexpected pull outcome"))}Ok(())
         }
         "push" if tail.len() <= 2 => {
             checked_positionals(tail)?;
