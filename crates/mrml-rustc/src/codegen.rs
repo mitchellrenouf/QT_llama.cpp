@@ -1826,6 +1826,22 @@ fn runtime_local_stack_slots(ty: RuntimeExpressionType) -> usize {
         .map_or(count, |bytes| bytes / 8)
 }
 
+fn runtime_expression_width(ty: RuntimeExpressionType) -> Option<RuntimeWidth> {
+    match ty {
+        RuntimeExpressionType::Integer(Some(integer_type)) => runtime_width(integer_type.name()),
+        RuntimeExpressionType::Char => runtime_width("char"),
+        RuntimeExpressionType::Array {
+            element: RuntimeArrayElementType::Integer(Some(integer_type)),
+            ..
+        } => runtime_width(integer_type.name()),
+        RuntimeExpressionType::Array {
+            element: RuntimeArrayElementType::Char,
+            ..
+        } => runtime_width("char"),
+        _ => None,
+    }
+}
+
 fn runtime_array_element_bytes(element: RuntimeArrayElementType) -> Option<usize> {
     match element {
         RuntimeArrayElementType::Unit | RuntimeArrayElementType::Default => Some(0),
@@ -4731,22 +4747,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         };
         let stack_slots = runtime_local_stack_slots(local_type);
         let previous_width = self.width;
-        self.width = match local_type {
-            RuntimeExpressionType::Integer(Some(integer_type)) => {
-                runtime_width(integer_type.name())
-            }
-            RuntimeExpressionType::Char => runtime_width("char"),
-            RuntimeExpressionType::Array {
-                element: RuntimeArrayElementType::Integer(Some(integer_type)),
-                ..
-            } => runtime_width(integer_type.name()),
-            RuntimeExpressionType::Array {
-                element: RuntimeArrayElementType::Char,
-                ..
-            } => runtime_width("char"),
-            _ => None,
-        }
-        .unwrap_or(previous_width);
+        self.width = runtime_expression_width(local_type).unwrap_or(previous_width);
         let emission = (|| {
             if let RuntimeExpressionType::Array { element, count } = local_type {
                 self.emit_array_to_stack(&tree, tree.root(), count)?;
@@ -4969,32 +4970,38 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.value_span),
             });
         }
-        if let RuntimeExpressionType::Array { element, count } = target.ty {
-            if assignment.operator != crate::AssignmentOperator::Assign {
-                return Err(CodegenError {
-                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
-                    span: translate_span(body_start, assignment.name_span),
-                });
+        let previous_width = self.width;
+        self.width = runtime_expression_width(target.ty).unwrap_or(previous_width);
+        let emission = (|| {
+            if let RuntimeExpressionType::Array { element, count } = target.ty {
+                if assignment.operator != crate::AssignmentOperator::Assign {
+                    return Err(CodegenError {
+                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                        span: translate_span(body_start, assignment.name_span),
+                    });
+                }
+                return self.emit_array_assignment(&tree, tree.root(), index, element, count);
             }
-            return self.emit_array_assignment(&tree, tree.root(), index, element, count);
-        }
-        if assignment.operator == crate::AssignmentOperator::Assign {
-            self.emit_expression(&tree, tree.root(), 0)?;
-        } else {
-            self.emit_identifier(assignment.binding_name())?;
-            self.emit(&[0x50])?;
-            self.evaluation_depth += 1;
-            self.emit_expression(&tree, tree.root(), 0)?;
-            self.evaluation_depth -= 1;
-            self.emit(&[0x59])?;
-            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
-                CodegenError {
-                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
-                    span: translate_span(body_start, assignment.name_span),
-                },
-            )?)?;
-        }
-        self.emit_store_stack_slot(self.local_stack_slots_from(index + 1)?)
+            if assignment.operator == crate::AssignmentOperator::Assign {
+                self.emit_expression(&tree, tree.root(), 0)?;
+            } else {
+                self.emit_identifier(assignment.binding_name())?;
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+                self.emit_expression(&tree, tree.root(), 0)?;
+                self.evaluation_depth -= 1;
+                self.emit(&[0x59])?;
+                self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                    CodegenError {
+                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                        span: translate_span(body_start, assignment.name_span),
+                    },
+                )?)?;
+            }
+            self.emit_store_stack_slot(self.local_stack_slots_from(index + 1)?)
+        })();
+        self.width = previous_width;
+        emission
     }
 
     fn emit_reference_array_assignment<const MAX_NODES: usize>(
@@ -5037,43 +5044,49 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.name_span),
             });
         }
-        self.emit_indexed_assignment_index::<MAX_NODES>(assignment, body_start, count)?;
-        self.emit(&[0x50])?;
-        self.evaluation_depth += 1;
-        self.emit_identifier(assignment.binding_name())?;
-        self.emit(&[0x50])?;
-        self.evaluation_depth += 1;
-        let element_bytes = runtime_array_element_bytes(element)
-            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
-        if assignment.operator != crate::AssignmentOperator::Assign {
-            self.emit_reference_array_address_from_stack_index(element_bytes, layout, 1)?;
-            if element_bytes == 0 {
-                self.emit(&[0x31, 0xc0])?;
-            } else {
-                self.emit_reference_load(element)?;
-            }
+        let previous_width = self.width;
+        self.width = runtime_expression_width(element_type).unwrap_or(previous_width);
+        let emission = (|| {
+            self.emit_indexed_assignment_index::<MAX_NODES>(assignment, body_start, count)?;
             self.emit(&[0x50])?;
             self.evaluation_depth += 1;
-        }
-        self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
-        if assignment.operator != crate::AssignmentOperator::Assign {
-            self.evaluation_depth -= 1;
-            self.emit(&[0x59])?;
-            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
-                CodegenError {
-                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
-                    span: translate_span(body_start, assignment.name_span),
-                },
-            )?)?;
-        }
-        if element_bytes != 0 {
-            self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
-            self.emit_reference_array_store_address_from_stack_index(element_bytes, layout, 1)?;
-            self.emit_reference_store(element)?;
-        }
-        self.emit(&[0x48, 0x83, 0xc4, 16])?;
-        self.evaluation_depth -= 2;
-        Ok(())
+            self.emit_identifier(assignment.binding_name())?;
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+            let element_bytes = runtime_array_element_bytes(element)
+                .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.emit_reference_array_address_from_stack_index(element_bytes, layout, 1)?;
+                if element_bytes == 0 {
+                    self.emit(&[0x31, 0xc0])?;
+                } else {
+                    self.emit_reference_load(element)?;
+                }
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+            }
+            self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.evaluation_depth -= 1;
+                self.emit(&[0x59])?;
+                self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                    CodegenError {
+                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                        span: translate_span(body_start, assignment.name_span),
+                    },
+                )?)?;
+            }
+            if element_bytes != 0 {
+                self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
+                self.emit_reference_array_store_address_from_stack_index(element_bytes, layout, 1)?;
+                self.emit_reference_store(element)?;
+            }
+            self.emit(&[0x48, 0x83, 0xc4, 16])?;
+            self.evaluation_depth -= 2;
+            Ok(())
+        })();
+        self.width = previous_width;
+        emission
     }
 
     fn emit_slice_assignment<const MAX_NODES: usize>(
@@ -5114,51 +5127,57 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.name_span),
             });
         }
-        self.emit_slice_assignment_index::<MAX_NODES>(assignment, body_start)?;
-        self.emit(&[0x50])?;
-        self.evaluation_depth += 1;
-        self.emit_identifier(assignment.binding_name())?;
-        self.emit(&[0x50])?;
-        self.evaluation_depth += 1;
-        let element_bytes = runtime_array_element_bytes(element)
-            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
-        if assignment.operator != crate::AssignmentOperator::Assign {
-            self.emit_reference_array_address_from_stack_index(
-                element_bytes,
-                RuntimeReferenceArrayLayout::Native,
-                1,
-            )?;
-            if element_bytes == 0 {
-                self.emit(&[0x31, 0xc0])?;
-            } else {
-                self.emit_reference_load(element)?;
-            }
+        let previous_width = self.width;
+        self.width = runtime_expression_width(element_type).unwrap_or(previous_width);
+        let emission = (|| {
+            self.emit_slice_assignment_index::<MAX_NODES>(assignment, body_start)?;
             self.emit(&[0x50])?;
             self.evaluation_depth += 1;
-        }
-        self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
-        if assignment.operator != crate::AssignmentOperator::Assign {
-            self.evaluation_depth -= 1;
-            self.emit(&[0x59])?;
-            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
-                CodegenError {
-                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
-                    span: translate_span(body_start, assignment.name_span),
-                },
-            )?)?;
-        }
-        if element_bytes != 0 {
-            self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
-            self.emit_reference_array_store_address_from_stack_index(
-                element_bytes,
-                RuntimeReferenceArrayLayout::Native,
-                1,
-            )?;
-            self.emit_reference_store(element)?;
-        }
-        self.emit(&[0x48, 0x83, 0xc4, 16])?;
-        self.evaluation_depth -= 2;
-        Ok(())
+            self.emit_identifier(assignment.binding_name())?;
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+            let element_bytes = runtime_array_element_bytes(element)
+                .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.emit_reference_array_address_from_stack_index(
+                    element_bytes,
+                    RuntimeReferenceArrayLayout::Native,
+                    1,
+                )?;
+                if element_bytes == 0 {
+                    self.emit(&[0x31, 0xc0])?;
+                } else {
+                    self.emit_reference_load(element)?;
+                }
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+            }
+            self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.evaluation_depth -= 1;
+                self.emit(&[0x59])?;
+                self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                    CodegenError {
+                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                        span: translate_span(body_start, assignment.name_span),
+                    },
+                )?)?;
+            }
+            if element_bytes != 0 {
+                self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
+                self.emit_reference_array_store_address_from_stack_index(
+                    element_bytes,
+                    RuntimeReferenceArrayLayout::Native,
+                    1,
+                )?;
+                self.emit_reference_store(element)?;
+            }
+            self.emit(&[0x48, 0x83, 0xc4, 16])?;
+            self.evaluation_depth -= 2;
+            Ok(())
+        })();
+        self.width = previous_width;
+        emission
     }
 
     fn emit_slice_assignment_index<const MAX_NODES: usize>(
@@ -5316,54 +5335,60 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             });
         }
 
-        self.emit_identifier(name)?;
-        self.emit(&[0x50])?;
-        self.evaluation_depth += 1;
-        if assignment.operator != crate::AssignmentOperator::Assign {
-            self.emit_reference_load(pointee)?;
+        let previous_width = self.width;
+        self.width = runtime_expression_width(value_type).unwrap_or(previous_width);
+        let emission = (|| {
+            self.emit_identifier(name)?;
             self.emit(&[0x50])?;
             self.evaluation_depth += 1;
-        }
-        let tree = assignment
-            .parse_value::<MAX_EXPRESSION_NODES>()
-            .map_err(|error| CodegenError {
-                kind: CodegenErrorKind::Expression(error.kind),
-                span: translate_span(body_start + assignment.value_span.start, error.span),
-            })?;
-        let actual_type = runtime_expression_type_with_locals(
-            self.function,
-            self.resolver,
-            &self.locals[..self.saved_locals],
-            &tree,
-            tree.root(),
-            0,
-        )
-        .map_err(|kind| CodegenError {
-            kind,
-            span: translate_span(body_start, assignment.value_span),
-        })?;
-        if !runtime_types_compatible(actual_type, value_type) {
-            return Err(CodegenError {
-                kind: CodegenErrorKind::RuntimeTypeMismatch,
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.emit_reference_load(pointee)?;
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+            }
+            let tree = assignment
+                .parse_value::<MAX_EXPRESSION_NODES>()
+                .map_err(|error| CodegenError {
+                    kind: CodegenErrorKind::Expression(error.kind),
+                    span: translate_span(body_start + assignment.value_span.start, error.span),
+                })?;
+            let actual_type = runtime_expression_type_with_locals(
+                self.function,
+                self.resolver,
+                &self.locals[..self.saved_locals],
+                &tree,
+                tree.root(),
+                0,
+            )
+            .map_err(|kind| CodegenError {
+                kind,
                 span: translate_span(body_start, assignment.value_span),
-            });
-        }
-        self.emit_expression(&tree, tree.root(), 0)?;
-        if assignment.operator != crate::AssignmentOperator::Assign {
+            })?;
+            if !runtime_types_compatible(actual_type, value_type) {
+                return Err(CodegenError {
+                    kind: CodegenErrorKind::RuntimeTypeMismatch,
+                    span: translate_span(body_start, assignment.value_span),
+                });
+            }
+            self.emit_expression(&tree, tree.root(), 0)?;
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.evaluation_depth -= 1;
+                self.emit(&[0x59])?;
+                self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                    CodegenError {
+                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                        span: translate_span(body_start, assignment.name_span),
+                    },
+                )?)?;
+            }
+            self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
+            self.emit_reference_store(pointee)?;
+            self.emit(&[0x48, 0x83, 0xc4, 0x08])?;
             self.evaluation_depth -= 1;
-            self.emit(&[0x59])?;
-            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
-                CodegenError {
-                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
-                    span: translate_span(body_start, assignment.name_span),
-                },
-            )?)?;
-        }
-        self.emit(&[0x48, 0x8b, 0x14, 0x24])?;
-        self.emit_reference_store(pointee)?;
-        self.emit(&[0x48, 0x83, 0xc4, 0x08])?;
-        self.evaluation_depth -= 1;
-        Ok(())
+            Ok(())
+        })();
+        self.width = previous_width;
+        emission
     }
 
     fn emit_indexed_assignment<const MAX_NODES: usize>(
@@ -5404,30 +5429,36 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, assignment.name_span),
             });
         }
-        self.emit_indexed_assignment_index::<MAX_NODES>(assignment, body_start, count)?;
-        self.emit(&[0x50])?;
-        self.evaluation_depth += 1;
-        if assignment.operator != crate::AssignmentOperator::Assign {
-            self.emit_array_local_element(local_index, element, count, 0)?;
+        let previous_width = self.width;
+        self.width = runtime_expression_width(element_type).unwrap_or(previous_width);
+        let emission = (|| {
+            self.emit_indexed_assignment_index::<MAX_NODES>(assignment, body_start, count)?;
             self.emit(&[0x50])?;
             self.evaluation_depth += 1;
-        }
-        self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
-        if assignment.operator != crate::AssignmentOperator::Assign {
-            self.evaluation_depth -= 1;
-            self.emit(&[0x59])?;
-            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
-                CodegenError {
-                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
-                    span: translate_span(body_start, assignment.name_span),
-                },
-            )?)?;
-        }
-        self.emit(&[0x50])?;
-        self.evaluation_depth += 1;
-        self.emit_array_local_element_store(local_index, element, count, 1)?;
-        self.evaluation_depth -= 2;
-        self.emit(&[0x48, 0x83, 0xc4, 16])
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.emit_array_local_element(local_index, element, count, 0)?;
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+            }
+            self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
+            if assignment.operator != crate::AssignmentOperator::Assign {
+                self.evaluation_depth -= 1;
+                self.emit(&[0x59])?;
+                self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                    CodegenError {
+                        kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                        span: translate_span(body_start, assignment.name_span),
+                    },
+                )?)?;
+            }
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+            self.emit_array_local_element_store(local_index, element, count, 1)?;
+            self.evaluation_depth -= 2;
+            self.emit(&[0x48, 0x83, 0xc4, 16])
+        })();
+        self.width = previous_width;
+        emission
     }
 
     fn emit_indexed_assignment_index<const MAX_NODES: usize>(
@@ -8119,6 +8150,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, wide: u64, signed: i16) -> u8 { let adjusted = wide + 2; let negative: i16 = signed + 2; if adjusted == 258 && negative == -1 { input + 1 } else { input } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let wide: u64 = 256; let signed: i16 = -3; if wide + 2 == 258 && signed + 2 == -1 { input + 1 } else { input } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let values: [u16; 3] = [256, 257, 258]; if values[1] == 257 { input + 1 } else { input } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> u8 { let mut wide: u64 = 256; wide += 2; let mut signed: i16 = -3; signed += 2; let mut values: [u16; 3] = [256, 257, 258]; values[1] += 1; if wide == 258 && signed == -1 && values[1] == 258 { input + 1 } else { input } }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
@@ -8139,6 +8171,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, values: [u16; 3]) -> u8 { if values[1] == 257 { input + 1 } else { input } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, values: &[u16; 3], slice: &[i32]) -> u8 { if values[1] == 257 && slice[0] == -3 { input + 1 } else { input } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, flag: &bool, character: &char) -> u8 { if *flag && *character == 'z' { input + 1 } else { input } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, wide: &mut u64, values: &mut [u16; 3], slice: &mut [i16]) -> u8 { *wide += 2; values[1] += 1; slice[0] += 2; if *wide == 258 && values[1] == 258 && slice[0] == -1 { input + 1 } else { input } }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();

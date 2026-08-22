@@ -475,6 +475,14 @@ from a `u8` function through both platform ABI classes. Their COFF objects were
 279 and 346 bytes; their ELF64 objects were 688 and 736 bytes. Boolean and
 character reference combinations have both-format regressions, and an explicit
 `[u32; 2]` element-to-`u64` cast is now positive coverage.
+Direct and compound assignment select the lvalue's width independently of the
+function result. A `u8` function mutated `u64` and `i16` scalar locals plus a
+packed `[u16; 3]` local and returned 42 through 757-byte COFF and 1,152-byte
+ELF64 objects. A second probe performed the same exact-width operations through
+`&mut u64`, `&mut [u16; 3]`, and `&mut [i16]`, preserving externally visible
+aliasing through 646-byte COFF and 1,032-byte ELF64 objects. A parameterized
+`u64` compound assignment emitted 239-byte COFF and 624-byte ELF64 objects;
+`u64::MAX += 2` reached `UD2` on both hosts.
 Array elements are still evaluated left to right; completed temporary slots are
 packed or reordered only afterward when positive-stride local backing is
 required.
@@ -744,8 +752,8 @@ Zero-parameter integer functions may use typed or inferred locals. Initializers
 are parsed, type-checked, lowered, and interpreted in declaration order; each
 binding becomes visible only after successful evaluation. Duplicate bindings,
 forward references, unsupported types, and out-of-range values are rejected.
-Parameterized functions emit same-width integer locals and Boolean locals into
-bounded stack slots. Later initializers and the tail can reload those slots;
+Parameterized functions emit independently typed integer locals and Boolean
+locals into bounded stack slots. Later initializers and the tail can reload those slots;
 parameter offsets incorporate saved locals and temporary expression depth, and
 the epilogue checks and removes the complete combined frame. Mutable integer
 and array frames use signed-eight-bit stack displacements only through offset

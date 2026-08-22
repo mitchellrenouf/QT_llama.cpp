@@ -1770,6 +1770,7 @@ fn rustc_independent_scalar_integer_widths_reach_native_objects() {
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, wide: u64, signed: i16) -> u8 { let adjusted = wide + 2; let negative: i16 = signed + 2; if adjusted == 258 && negative == -1 { input + 1 } else { input } }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8) -> u8 { let wide: u64 = 256; let signed: i16 = -3; if wide + 2 == 258 && signed + 2 == -1 { input + 1 } else { input } }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8) -> u8 { let values: [u16; 3] = [256, 257, 258]; if values[1] == 257 { input + 1 } else { input } }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8) -> u8 { let mut wide: u64 = 256; wide += 2; let mut signed: i16 = -3; signed += 2; let mut values: [u16; 3] = [256, 257, 258]; values[1] += 1; if wide == 258 && signed == -1 && values[1] == 258 { input + 1 } else { input } }",
     ];
     for source in sources {
         assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
@@ -1783,6 +1784,7 @@ fn rustc_independent_aggregate_parameter_widths_reach_native_objects() {
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, values: [u16; 3]) -> u8 { if values[1] == 257 { input + 1 } else { input } }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, values: &[u16; 3], slice: &[i32]) -> u8 { if values[1] == 257 && slice[0] == -3 { input + 1 } else { input } }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, flag: &bool, character: &char) -> u8 { if *flag && *character == 'z' { input + 1 } else { input } }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, wide: &mut u64, values: &mut [u16; 3], slice: &mut [i16]) -> u8 { *wide += 2; values[1] += 1; slice[0] += 2; if *wide == 258 && values[1] == 258 && slice[0] == -1 { input + 1 } else { input } }",
     ];
     for source in sources {
         assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
