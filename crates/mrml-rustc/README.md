@@ -320,8 +320,18 @@ compound-assignment probe emitted 452-byte COFF and 848-byte ELF64 objects;
 independent callers observed 24, 48, and 101 across all three elements on
 Windows gnullvm and Arch Linux WSL. Out-of-bounds calls terminated with
 illegal-instruction status `0xC000001D` on Windows and `SIGILL` on Linux.
-Array parameters and returns, unconstrained array defaults, references, slices,
-and general aggregate ABI transport remain separate work.
+One-element fixed scalar array parameters now use the shared one-eightbyte
+x86-64 ABI class. Integer, Boolean, and character elements retain their scalar
+normalization through direct indexing and copies into fixed-array locals on
+both Windows and System V. The exact pinned nightly
+`tests/ui/consts/const_let_eq.rs` compiled and ran unchanged on both hosts. An
+original `const fn` replacement emitted 128-byte COFF and 520-byte ELF64
+objects; independent pinned-nightly callers passed `[0]`, `[13]`, and
+`[1_000_000]` with following scalar arguments. Multi-eightbyte array parameters
+remain separated by their platform ABI classes: Windows passes them indirectly,
+while System V may split them across registers or place them by value on the
+stack. Array returns, unconstrained array defaults, references, slices, and
+general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -812,7 +822,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 270 Windows library, conformance, rustc-nightly-replacement, and driver
+The 271 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1486,7 +1496,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 270 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 271 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

@@ -535,6 +535,34 @@ pub fn compile_x86_64_function_with_options<
     }
     let mut integer_operand_type = None;
     for parameter in function.parameters().iter().flatten() {
+        if let Some(RuntimeExpressionType::Array { element, count }) =
+            runtime_array_type(parameter.ty.text)
+        {
+            if count != 1 {
+                return Err(CodegenError {
+                    kind: CodegenErrorKind::UnsupportedParameterType,
+                    span: parameter.ty.span,
+                });
+            }
+            match element {
+                RuntimeArrayElementType::Bool => continue,
+                RuntimeArrayElementType::Char if returns_char => continue,
+                RuntimeArrayElementType::Integer(Some(element))
+                    if (returns_unit || returns_bool || element.name() == return_type_text)
+                        && integer_operand_type
+                            .is_none_or(|existing| existing == element.name()) =>
+                {
+                    integer_operand_type = Some(element.name());
+                    continue;
+                }
+                _ => {
+                    return Err(CodegenError {
+                        kind: CodegenErrorKind::UnsupportedParameterType,
+                        span: parameter.ty.span,
+                    });
+                }
+            }
+        }
         if parameter.ty.text == "bool" {
             continue;
         }
@@ -2001,7 +2029,9 @@ fn runtime_expression_type_with_locals<
                     .flatten()
                     .find(|parameter| parameter.name == name)
                     .map(|parameter| {
-                        if parameter.ty.text == "bool" {
+                        if let Some(array) = runtime_array_type(parameter.ty.text) {
+                            array
+                        } else if parameter.ty.text == "bool" {
                             RuntimeExpressionType::Bool
                         } else if parameter.ty.text == "char" {
                             RuntimeExpressionType::Char
@@ -2799,7 +2829,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 self.emit_expression(tree, element, depth + 1)
             }
             ExprKind::Identifier(name) => {
-                let (local_index, local) = self.locals[..self.saved_locals]
+                if let Some((local_index, local)) = self.locals[..self.saved_locals]
                     .iter()
                     .enumerate()
                     .rev()
@@ -2808,28 +2838,45 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                             .filter(|local| local.name == name)
                             .map(|local| (local_index, local))
                     })
+                {
+                    let RuntimeExpressionType::Array { element, count } = local.ty else {
+                        return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+                    };
+                    if index >= count {
+                        return Err(self.error(CodegenErrorKind::ValueOutOfRange));
+                    }
+                    let slots = self
+                        .local_stack_slots_from(local_index + 1)?
+                        .checked_add(count - 1 - index)
+                        .and_then(|slots| slots.checked_add(self.evaluation_depth))
+                        .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+                    self.emit_stack_slot(slots)?;
+                    return self.emit_normalize_array_element(element);
+                }
+                let (parameter_index, parameter) = self
+                    .function
+                    .parameters()
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .find(|(_, parameter)| parameter.name == name)
                     .ok_or(self.error(CodegenErrorKind::UnknownRuntimeName))?;
-                let RuntimeExpressionType::Array { element, count } = local.ty else {
+                let RuntimeExpressionType::Array { element, count } =
+                    runtime_array_type(parameter.ty.text)
+                        .ok_or(self.error(CodegenErrorKind::RuntimeTypeMismatch))?
+                else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
                 };
-                if index >= count {
+                if count != 1 || index >= count {
                     return Err(self.error(CodegenErrorKind::ValueOutOfRange));
                 }
                 let slots = self
-                    .local_stack_slots_from(local_index + 1)?
-                    .checked_add(count - 1 - index)
+                    .local_stack_slots()?
+                    .checked_add(self.saved_parameters - 1 - parameter_index)
                     .and_then(|slots| slots.checked_add(self.evaluation_depth))
                     .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
                 self.emit_stack_slot(slots)?;
-                match element {
-                    RuntimeArrayElementType::Bool => self.emit(&[0x0f, 0xb6, 0xc0]),
-                    RuntimeArrayElementType::Integer(_) => self.emit_normalize(),
-                    RuntimeArrayElementType::Char => self.emit_normalize_width(
-                        runtime_width("char")
-                            .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?,
-                    ),
-                    RuntimeArrayElementType::Unit | RuntimeArrayElementType::Default => Ok(()),
-                }
+                self.emit_normalize_array_element(element)
             }
             ExprKind::If {
                 condition,
@@ -2860,6 +2907,21 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 self.emit_array_element(tree, then, index, depth + 1)
             }
             _ => Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported)),
+        }
+    }
+
+    fn emit_normalize_array_element(
+        &mut self,
+        element: RuntimeArrayElementType,
+    ) -> Result<(), CodegenError> {
+        match element {
+            RuntimeArrayElementType::Bool => self.emit(&[0x0f, 0xb6, 0xc0]),
+            RuntimeArrayElementType::Integer(_) => self.emit_normalize(),
+            RuntimeArrayElementType::Char => self.emit_normalize_width(
+                runtime_width("char")
+                    .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?,
+            ),
+            RuntimeArrayElementType::Unit | RuntimeArrayElementType::Default => Ok(()),
         }
     }
 
@@ -5551,6 +5613,41 @@ mod tests {
                 "{source}",
             );
         }
+    }
+
+    #[test]
+    fn loads_one_word_fixed_array_parameters() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u64; 1], after: u64) -> u64 { values[0] + after }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u64; 1]) -> u64 { let copied = values; copied[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [bool; 1]) -> bool { values[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [char; 1]) -> char { values[0] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result = compile_x86_64_function::<_, 512, 4, 64>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let unsupported = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [u64; 2]) -> u64 { values[0] }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = unsupported.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 256, 2, 32>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::UnsupportedParameterType,
+        );
     }
 
     #[test]
