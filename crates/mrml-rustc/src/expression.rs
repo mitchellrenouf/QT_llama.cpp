@@ -282,6 +282,7 @@ pub struct Expr<'source> {
 pub enum ExpressionErrorKind {
     Lexical(LexError),
     ExpectedExpression,
+    ExpectedColon,
     ExpectedCloseParen,
     ExpectedOpenBrace,
     ExpectedCloseBrace,
@@ -318,6 +319,7 @@ pub enum ExpressionErrorKind {
     UnsupportedInlineConstAssignment,
     NestingLimitExceeded,
     InvalidExpressionTree,
+    UnknownLoopLabel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -996,7 +998,20 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             }),
             Some(token) if token.text == "if" => self.if_expression(token, depth + 1),
             Some(token) if token.text == "match" => self.match_expression(token, depth + 1),
-            Some(token) if token.text == "loop" => self.loop_break_expression(token, depth + 1),
+            Some(token) if token.text == "loop" => {
+                self.loop_break_expression(token, None, depth + 1)
+            }
+            Some(label) if label.kind == TokenKind::Lifetime => {
+                let colon = self.take()?;
+                if !colon.is_some_and(|token| token.kind == TokenKind::Colon) {
+                    return Err(self.error(ExpressionErrorKind::ExpectedColon, colon));
+                }
+                let loop_token = self.take()?;
+                let Some(loop_token) = loop_token.filter(|token| token.text == "loop") else {
+                    return Err(self.error(ExpressionErrorKind::ExpectedExpression, loop_token));
+                };
+                self.loop_break_expression(loop_token, Some(label), depth + 1)
+            }
             Some(token) if token.text == "const" => self.const_block_expression(token, depth + 1),
             Some(token) if token.kind == TokenKind::Identifier => {
                 if matches!(token.text, "true" | "false") {
@@ -2379,6 +2394,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
     fn loop_break_expression(
         &mut self,
         loop_token: Token<'source>,
+        label: Option<Token<'source>>,
         depth: usize,
     ) -> Result<ExprId, ExpressionError> {
         if depth == MAX_EXPRESSION_DEPTH {
@@ -2399,6 +2415,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             if !break_token.is_some_and(|token| token.text == "break") {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, break_token));
             }
+            self.loop_break_label(label)?;
             let then_branch = self.expression(0, depth + 1)?;
             let semicolon = self.take()?;
             if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
@@ -2412,6 +2429,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             if !fallback_break.is_some_and(|token| token.text == "break") {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, fallback_break));
             }
+            self.loop_break_label(label)?;
             let else_branch = self.expression(0, depth + 1)?;
             let semicolon = self.take()?;
             if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
@@ -2428,7 +2446,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     else_branch,
                 },
                 span: Span {
-                    start: loop_token.span.start,
+                    start: label.map_or(loop_token.span.start, |label| label.span.start),
                     end: close.span.end,
                 },
             });
@@ -2436,6 +2454,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         if !control.is_some_and(|token| token.text == "break") {
             return Err(self.error(ExpressionErrorKind::ExpectedExpression, control));
         }
+        self.loop_break_label(label)?;
         let operand = self.expression(0, depth + 1)?;
         let semicolon = self.take()?;
         if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
@@ -2448,10 +2467,28 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         self.push(Expr {
             kind: ExprKind::LoopBreak { operand },
             span: Span {
-                start: loop_token.span.start,
+                start: label.map_or(loop_token.span.start, |label| label.span.start),
                 end: close.span.end,
             },
         })
+    }
+
+    fn loop_break_label(
+        &mut self,
+        expected: Option<Token<'source>>,
+    ) -> Result<(), ExpressionError> {
+        let Some(actual) = self
+            .peek()?
+            .filter(|token| token.kind == TokenKind::Lifetime)
+        else {
+            return Ok(());
+        };
+        self.take()?;
+        if expected.is_some_and(|expected| expected.text == actual.text) {
+            Ok(())
+        } else {
+            Err(self.error(ExpressionErrorKind::UnknownLoopLabel, Some(actual)))
+        }
     }
 
     fn unary(&mut self, depth: usize) -> Result<ExprId, ExpressionError> {
@@ -2844,6 +2881,7 @@ mod tests {
     #[test]
     fn parses_immediate_break_loop_values() {
         assert_eq!(evaluate("loop { break 13; }"), Ok(13));
+        assert_eq!(evaluate("'value: loop { break 'value 13; }"), Ok(13));
         let boolean = ExpressionParser::<8>::new("loop { break true; }")
             .parse()
             .unwrap();
@@ -2867,6 +2905,30 @@ mod tests {
             evaluate("loop { if false { break 1 / 0; } break 42; }"),
             Ok(42)
         );
+        assert_eq!(
+            evaluate("'value: loop { if false { break 'value 1 / 0; } break 'value 42; }"),
+            Ok(42)
+        );
+        assert_eq!(
+            ExpressionParser::<8>::new("'value loop { break 13; }")
+                .parse()
+                .unwrap_err()
+                .kind,
+            ExpressionErrorKind::ExpectedColon
+        );
+        for source in [
+            "loop { break 'value 13; }",
+            "'value: loop { break 'other 13; }",
+            "'value: loop { if true { break 'other 13; } break 42; }",
+        ] {
+            assert_eq!(
+                ExpressionParser::<16>::new(source)
+                    .parse()
+                    .unwrap_err()
+                    .kind,
+                ExpressionErrorKind::UnknownLoopLabel
+            );
+        }
         let conditional_bool =
             ExpressionParser::<16>::new("loop { if true { break false; } break true; }")
                 .parse()

@@ -1584,6 +1584,7 @@ fn rustc_immediate_break_loop_values_reach_native_objects() {
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> isize { let value: isize = loop { break 13; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: bool) -> bool { let value: bool = loop { break input; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u32) -> u32 { let value: u32 = loop { break input + 1; }; value }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u32) -> u32 { let value: u32 = 'value: loop { break 'value input + 1; }; value }",
     ];
     for source in sources {
         assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
@@ -1596,6 +1597,7 @@ fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool) -> bool { let value: bool = loop { if first { break true; } break false; }; value }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = 'value: loop { if first { break 'value input + 1; } break 'value 84 / input; }; value }",
     ];
     for source in sources {
         assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
