@@ -2965,8 +2965,15 @@ mod tests {
                 continue;
             }
             let mut decoder = Decoder::new(2).unwrap();
-            let mut output = [0i16; 5_760];
-            let samples = decoder.decode(&packet, &mut output, 48_000).unwrap();
+            let samples = 48_000usize
+                .checked_mul(parsed.frame_duration_us as usize)
+                .and_then(|value| value.checked_div(1_000_000))
+                .and_then(|value| value.checked_mul(usize::from(parsed.frame_count)))
+                .unwrap();
+            let mut output = [0i16; 23_040];
+            let samples = decoder
+                .decode(&packet, &mut output[..samples * 2], 48_000)
+                .unwrap();
             assert!(samples > 0);
             assert!(output[..samples * 2].iter().all(|&sample| sample == 0));
             assert_eq!(decoder.final_range(), 0);
