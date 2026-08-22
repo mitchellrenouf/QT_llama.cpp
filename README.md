@@ -280,8 +280,11 @@ unique APIC and firmware identities, and a single aligned local-APIC override
 before admitting the topology. A generational AP-startup state machine then
 enforces `offline -> INIT sent -> SIPI sent -> online`, rejects acknowledgements
 from the wrong APIC, and permanently invalidates stale attempts after failure.
-The loader does not yet copy MADT bytes from the RSDP/XSDT into the signed
-handoff, and real INIT/SIPI delivery, per-CPU interrupt routing, and a live
+Bounded ACPI discovery now validates both RSDP checksums, chooses XSDT or RSDT,
+checks the complete root and candidate MADT, rejects missing or duplicate MADTs,
+and copies the unique table into caller-owned memory with an independent final
+checksum. The UEFI loader does not yet invoke that discovery or carry the copy
+in the signed handoff, and real INIT/SIPI delivery, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of

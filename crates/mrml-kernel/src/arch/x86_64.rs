@@ -1,5 +1,6 @@
 use crate::{PAGE_SIZE, PhysAddr};
 
+mod acpi;
 mod address_space;
 mod context;
 mod descriptors;
@@ -10,6 +11,7 @@ mod privilege_stack;
 mod service_space;
 mod topology;
 mod trap;
+pub use acpi::{AcpiError, AcpiMemory, copy_madt};
 pub use address_space::{AddressSpace, AddressSpaceError, Mapping, MappingId};
 pub use context::{
     ContextError, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_INITIAL_RFLAGS, UserContext,

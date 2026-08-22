@@ -1411,9 +1411,12 @@ fields, unique APIC/firmware identities, at least one enabled CPU, and at most
 52-bit local-APIC address override. An AP lifecycle requires ordered INIT and
 SIPI publication and an acknowledgement from the exact expected APIC;
 generational attempt tokens prevent late acknowledgements from reviving failed
-or retried slots. RSDP/XSDT traversal and MADT copying into the signed handoff,
-hardware ICR delivery, AP trampoline execution, and SMP scheduling are still
-required. Platform-backed service page
+or retried slots. The architecture layer can now traverse an RSDP through a
+checksummed XSDT or RSDT using bounded physical reads, reject malformed roots
+and missing or duplicate MADTs, and independently revalidate the caller-owned
+MADT copy. Invoking that path in the UEFI loader and adding the copy to the
+signed handoff, hardware ICR delivery, AP trampoline execution, and SMP
+scheduling are still required. Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 
