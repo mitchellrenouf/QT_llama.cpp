@@ -499,7 +499,12 @@ rewound 4- and 8-byte array pointers to the expected elements through 142-,
 objects. `offset_from` accepts compatible scalar pointees, returns their signed
 element distance as `isize`, and rejects different pointees or non-pointer
 operands. A native caller measured both 3 and -3 between elements of the same
-`u32` array through a 128-byte COFF and 520-byte ELF64 object. Shared
+`u32` array through a 128-byte COFF and 520-byte ELF64 object.
+`byte_add`, `byte_sub`, `byte_offset`, their three wrapping counterparts, and
+`byte_offset_from` use one-byte scaling while preserving the original pointer
+type. Native callers advanced three bytes, rewound three bytes, and measured an
+eight-byte distance across two `u32` elements through 121-, 124-, and 129-byte
+COFF objects plus 512-, 512-, and 520-byte ELF64 objects. Shared
 and mutable fixed-array references remain one-word pointers, retain their
 element/count metadata through typed local copies and reborrows, and support
 bounds-checked constant or runtime indexing plus exact-width mutable element
@@ -1087,7 +1092,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 347 Windows library, conformance, rustc-nightly-replacement, and driver
+The 349 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1761,7 +1766,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 347 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 349 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

@@ -2062,6 +2062,23 @@ fn rustc_scalar_raw_pointer_distances_reach_native_objects() {
 }
 
 #[test]
+fn rustc_raw_pointer_byte_offsets_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u32, offset: usize) -> *const u32 { input.byte_add(offset) }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *mut u64, offset: usize) -> *mut u64 { input.byte_sub(offset) }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u16, offset: isize) -> *const u16 { input.byte_offset(offset) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u32, offset: usize) -> *const u32 { input.wrapping_byte_add(offset) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u64, offset: usize) -> *const u64 { input.wrapping_byte_sub(offset) }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *mut u16, offset: isize) -> *mut u16 { input.wrapping_byte_offset(offset) }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(pointer: *const u32, origin: *const u32) -> isize { pointer.byte_offset_from(origin) }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",

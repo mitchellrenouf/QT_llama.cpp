@@ -2214,7 +2214,9 @@ fn validate_runtime_inline_const<
             recurse(base)?;
             recurse(offset)?;
         }
-        ExprKind::RawPointerDifference { pointer, origin } => {
+        ExprKind::RawPointerDifference {
+            pointer, origin, ..
+        } => {
             recurse(pointer)?;
             recurse(origin)?;
         }
@@ -2633,7 +2635,9 @@ fn runtime_expression_type_with_locals<
             }
             Ok(base_type)
         }
-        ExprKind::RawPointerDifference { pointer, origin } => {
+        ExprKind::RawPointerDifference {
+            pointer, origin, ..
+        } => {
             let pointer_type = runtime_expression_type_with_locals(
                 function,
                 resolver,
@@ -3914,6 +3918,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 subtract,
                 wrapping: _,
                 signed: _,
+                bytes,
             } => {
                 let RuntimeExpressionType::RawPointer { pointee, .. } =
                     runtime_expression_type_with_locals(
@@ -3928,8 +3933,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
                 };
-                let element_bytes = runtime_array_element_bytes(pointee)
-                    .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+                let element_bytes = if bytes {
+                    1
+                } else {
+                    runtime_array_element_bytes(pointee)
+                        .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?
+                };
                 self.emit_expression(tree, base, depth + 1)?;
                 self.emit(&[0x50])?;
                 self.evaluation_depth += 1;
@@ -3949,7 +3958,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     self.emit(&[0x48, 0x01, 0xc8])?;
                 }
             }
-            ExprKind::RawPointerDifference { pointer, origin } => {
+            ExprKind::RawPointerDifference {
+                pointer,
+                origin,
+                bytes,
+            } => {
                 let RuntimeExpressionType::RawPointer { pointee, .. } =
                     runtime_expression_type_with_locals(
                         self.function,
@@ -3963,8 +3976,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 else {
                     return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
                 };
-                let element_bytes = runtime_array_element_bytes(pointee)
-                    .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+                let element_bytes = if bytes {
+                    1
+                } else {
+                    runtime_array_element_bytes(pointee)
+                        .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?
+                };
                 self.emit_expression(tree, pointer, depth + 1)?;
                 self.emit(&[0x50])?;
                 self.evaluation_depth += 1;
@@ -9103,6 +9120,30 @@ mod tests {
                 .kind,
                 CodegenErrorKind::RuntimeTypeMismatch,
             );
+        }
+    }
+
+    #[test]
+    fn offsets_and_measures_raw_pointers_by_bytes() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u32, offset: usize) -> *const u32 { input.byte_add(offset) }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *mut u64, offset: usize) -> *mut u64 { input.byte_sub(offset) }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16, offset: isize) -> *const u16 { input.byte_offset(offset) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u32, offset: usize) -> *const u32 { input.wrapping_byte_add(offset) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u64, offset: usize) -> *const u64 { input.wrapping_byte_sub(offset) }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u16, offset: isize) -> *mut u16 { input.wrapping_byte_offset(offset) }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(pointer: *const u32, origin: *const u32) -> isize { pointer.byte_offset_from(origin) }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1024, 4, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
         }
     }
 

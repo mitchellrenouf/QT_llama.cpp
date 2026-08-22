@@ -290,10 +290,12 @@ pub enum ExprKind<'source> {
         subtract: bool,
         wrapping: bool,
         signed: bool,
+        bytes: bool,
     },
     RawPointerDifference {
         pointer: ExprId,
         origin: ExprId,
+        bytes: bool,
     },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
@@ -1880,7 +1882,9 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
                 self.substitute_identifier(offset, name, replacement, depth + 1)?;
             }
-            ExprKind::RawPointerDifference { pointer, origin } => {
+            ExprKind::RawPointerDifference {
+                pointer, origin, ..
+            } => {
                 self.substitute_identifier(pointer, name, replacement, depth + 1)?;
                 self.substitute_identifier(origin, name, replacement, depth + 1)?;
             }
@@ -3423,6 +3427,13 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         | "offset"
                         | "wrapping_offset"
                         | "offset_from"
+                        | "byte_add"
+                        | "byte_sub"
+                        | "byte_offset"
+                        | "wrapping_byte_add"
+                        | "wrapping_byte_sub"
+                        | "wrapping_byte_offset"
+                        | "byte_offset_from"
                 )
             }) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
@@ -3441,6 +3452,13 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     | "offset"
                     | "wrapping_offset"
                     | "offset_from"
+                    | "byte_add"
+                    | "byte_sub"
+                    | "byte_offset"
+                    | "wrapping_byte_add"
+                    | "wrapping_byte_sub"
+                    | "wrapping_byte_offset"
+                    | "byte_offset_from"
             ) {
                 Some(self.expression(0, depth + 1)?)
             } else {
@@ -3469,20 +3487,44 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
                     })?,
                 },
-                "offset_from" => ExprKind::RawPointerDifference {
+                "offset_from" | "byte_offset_from" => ExprKind::RawPointerDifference {
                     pointer: base,
                     origin: argument.ok_or_else(|| {
                         self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
                     })?,
+                    bytes: method.text == "byte_offset_from",
                 },
                 method => ExprKind::RawPointerOffset {
                     base,
                     offset: argument.ok_or_else(|| {
                         self.error(ExpressionErrorKind::ExpectedExpression, Some(close))
                     })?,
-                    subtract: matches!(method, "sub" | "wrapping_sub"),
-                    wrapping: matches!(method, "wrapping_add" | "wrapping_sub" | "wrapping_offset"),
-                    signed: matches!(method, "offset" | "wrapping_offset"),
+                    subtract: matches!(
+                        method,
+                        "sub" | "wrapping_sub" | "byte_sub" | "wrapping_byte_sub"
+                    ),
+                    wrapping: matches!(
+                        method,
+                        "wrapping_add"
+                            | "wrapping_sub"
+                            | "wrapping_offset"
+                            | "wrapping_byte_add"
+                            | "wrapping_byte_sub"
+                            | "wrapping_byte_offset"
+                    ),
+                    signed: matches!(
+                        method,
+                        "offset" | "wrapping_offset" | "byte_offset" | "wrapping_byte_offset"
+                    ),
+                    bytes: matches!(
+                        method,
+                        "byte_add"
+                            | "byte_sub"
+                            | "byte_offset"
+                            | "wrapping_byte_add"
+                            | "wrapping_byte_sub"
+                            | "wrapping_byte_offset"
+                    ),
                 },
             };
             base = self.push(Expr {
