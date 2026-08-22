@@ -218,7 +218,21 @@ pub fn predict_intra_block(plane: &mut Plane, config: IntraPredictionConfig) -> 
         return predict_filter_intra(plane, region, filter_mode, config.bit_depth, edges());
     }
     match config.mode {
-        0 => predict_basic(plane, region, config.bit_depth, BasicIntraMode::Dc, edges()),
+        0 => predict_basic(
+            plane,
+            region,
+            config.bit_depth,
+            BasicIntraMode::Dc,
+            IntraEdges {
+                above: if config.have_above {
+                    Some(&above)
+                } else {
+                    None
+                },
+                left: if config.have_left { Some(&left) } else { None },
+                top_left,
+            },
+        ),
         1..=8 => {
             const ANGLES: [u16; 9] = [0, 90, 180, 45, 135, 113, 157, 203, 67];
             let angle =
@@ -898,6 +912,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plane.samples(), &[25, 25, 25, 25]);
+    }
+
+    #[test]
+    fn intra_dc_ignores_synthesized_unavailable_left_edge() {
+        let mut plane = Plane::new(8, 8, 0).unwrap();
+        for (column, sample) in [109, 109, 109, 109, 109, 108, 107, 106]
+            .into_iter()
+            .enumerate()
+        {
+            plane.set_sample(column, 3, sample).unwrap();
+        }
+        predict_intra_block(
+            &mut plane,
+            IntraPredictionConfig {
+                region: PredictionRegion {
+                    x: 0,
+                    y: 4,
+                    width: 8,
+                    height: 4,
+                },
+                bit_depth: 8,
+                mode: 0,
+                angle_delta: 0,
+                filter_intra_mode: None,
+                have_left: false,
+                have_above: true,
+                have_above_right: false,
+                have_below_left: false,
+            },
+        )
+        .unwrap();
+
+        assert!(plane.samples()[32..].iter().all(|&sample| sample == 108));
     }
 
     #[test]
