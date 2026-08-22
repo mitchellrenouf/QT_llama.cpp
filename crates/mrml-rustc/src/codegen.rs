@@ -5374,6 +5374,8 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let values: [u64; 3] = [13, 42, 99]; values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let before: u64 = input; let values = [13u64, 42, 99]; let after: u64 = 1; before + values[1] + after }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let values: [u64; 2] = Default::default(); values[0] + values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let values = [input + 1; 3]; values[0] + values[1] + values[2] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> bool { let values = [select; 2usize]; values[0] & values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> u64 { let values: [u64; 2] = loop { break if select { break [13, 14] } else { break Default::default() }; }; values[0] + values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> u64 { let choice: bool = select; let values = if choice { [13u64, 14] } else { [20, 22] }; values[0] + values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let mut values = [13u64, 14]; values = [20, 22]; values[0] + values[1] }",

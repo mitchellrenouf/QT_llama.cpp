@@ -1252,27 +1252,60 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     .peek()?
                     .is_some_and(|token| token.kind == TokenKind::CloseBracket)
                 {
-                    loop {
-                        if element_count == MAX_ARRAY_ELEMENTS {
-                            let token = self.peek()?;
+                    let first = self.expression(0, depth + 1)?;
+                    if self
+                        .peek()?
+                        .is_some_and(|token| token.kind == TokenKind::Semicolon)
+                    {
+                        self.take()?;
+                        let count = self.take()?;
+                        let Some(count) = count.filter(|token| token.kind == TokenKind::Integer)
+                        else {
+                            return Err(self.error(ExpressionErrorKind::ExpectedExpression, count));
+                        };
+                        let literal = decode_integer(count)?;
+                        if literal.suffix.is_some_and(|suffix| suffix != "usize") {
                             return Err(
-                                self.error(ExpressionErrorKind::TooManyArrayElements, token)
+                                self.error(ExpressionErrorKind::InvalidIntegerSuffix, Some(count))
                             );
                         }
-                        elements[element_count] = Some(self.expression(0, depth + 1)?);
-                        element_count += 1;
-                        if !self
-                            .peek()?
-                            .is_some_and(|token| token.kind == TokenKind::Comma)
-                        {
-                            break;
+                        let repeat = usize::try_from(literal.value).map_err(|_| {
+                            self.error(ExpressionErrorKind::TooManyArrayElements, Some(count))
+                        })?;
+                        if repeat > MAX_ARRAY_ELEMENTS {
+                            return Err(
+                                self.error(ExpressionErrorKind::TooManyArrayElements, Some(count))
+                            );
                         }
-                        self.take()?;
-                        if self
-                            .peek()?
-                            .is_some_and(|token| token.kind == TokenKind::CloseBracket)
-                        {
-                            break;
+                        for element in &mut elements[..repeat] {
+                            *element = Some(first);
+                        }
+                        element_count = repeat;
+                    } else {
+                        elements[0] = Some(first);
+                        element_count = 1;
+                        loop {
+                            if !self
+                                .peek()?
+                                .is_some_and(|token| token.kind == TokenKind::Comma)
+                            {
+                                break;
+                            }
+                            self.take()?;
+                            if self
+                                .peek()?
+                                .is_some_and(|token| token.kind == TokenKind::CloseBracket)
+                            {
+                                break;
+                            }
+                            if element_count == MAX_ARRAY_ELEMENTS {
+                                let token = self.peek()?;
+                                return Err(
+                                    self.error(ExpressionErrorKind::TooManyArrayElements, token)
+                                );
+                            }
+                            elements[element_count] = Some(self.expression(0, depth + 1)?);
+                            element_count += 1;
                         }
                     }
                 }
@@ -3708,6 +3741,8 @@ mod tests {
     fn parses_bounded_scalar_array_literals_and_indexes() {
         assert_eq!(evaluate("[1, 3u32, 5][1]"), Ok(3));
         assert_eq!(evaluate("[10, 20, 30,][2]"), Ok(30));
+        assert_eq!(evaluate("[42u32; 3][2]"), Ok(42));
+        assert_eq!(evaluate("[7; 0b100usize][3]"), Ok(7));
         assert_eq!(
             evaluate("[1 / 0, 42][1]"),
             Err(ConstEvalError::DivisionByZero)
@@ -3729,6 +3764,20 @@ mod tests {
                 .unwrap_err()
                 .kind,
             ExpressionErrorKind::TooManyArrayElements
+        );
+        assert_eq!(
+            ExpressionParser::<8>::new("[42; 9]")
+                .parse()
+                .unwrap_err()
+                .kind,
+            ExpressionErrorKind::TooManyArrayElements
+        );
+        assert_eq!(
+            ExpressionParser::<8>::new("[42; 2u8]")
+                .parse()
+                .unwrap_err()
+                .kind,
+            ExpressionErrorKind::InvalidIntegerSuffix
         );
         assert_eq!(
             evaluate(
