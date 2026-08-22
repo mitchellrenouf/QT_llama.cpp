@@ -521,11 +521,18 @@ fn dispatch(cli: &Cli) -> Result<()> {
             };
             require_arguments("commit", words)?;
             let message = join_words(words);
-            if sign {
-                run_visible(repository, &["commit", "-S", "-m", &message])
-            } else {
-                run_visible(repository, &["commit", "-m", &message])
-            }
+            if sign { return Err(anyhow!("native commit signing is not implemented yet")); }
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
+                .unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
+                .unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds().ok_or_else(|| anyhow!("system time is unavailable"))?;
+            let id = native_repository(repository)?.commit(&message, &name, &email, timestamp)
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("[{}] {}", (&id.to_hex()[..12]).bright_green(), message);
+            Ok(())
         }
         "fetch" if tail.len() <= 1 => {
             checked_positionals(tail)?;

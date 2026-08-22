@@ -26,6 +26,7 @@ pub enum RepositoryError {
     File(FileError), Index(IndexError), NotRepository, AlreadyExists, UnsupportedLayout,
     InvalidHead, InvalidReference, TooManyFiles, TooDeep, UnsupportedFileType, FileTooLarge,
     InvalidWorktreePath,
+    ConflictedIndex, DetachedHead, InvalidIdentity,
 }
 
 impl Repository {
@@ -127,6 +128,58 @@ impl Repository {
         Ok(())
     }
 
+    pub fn write_tree(&self) -> Result<ObjectId, RepositoryError> {
+        let index = self.index()?;
+        if index.entries.iter().any(|entry| entry.stage != 0) { return Err(RepositoryError::ConflictedIndex); }
+        self.write_tree_prefix(&index, "")
+    }
+
+    fn write_tree_prefix(&self, index: &Index, prefix: &str) -> Result<ObjectId, RepositoryError> {
+        let mut items: Vector<TreeItem> = Vector::new();
+        for entry in &index.entries {
+            let Some(remainder) = entry.path.strip_prefix(prefix) else { continue };
+            if let Some(split) = remainder.find('/') {
+                let name = &remainder[..split];
+                if items.iter().any(|item| item.directory && item.name == name) { continue; }
+                let mut child_prefix = Text::from(prefix); child_prefix.push_str(name); child_prefix.push('/');
+                let id = self.write_tree_prefix(index, &child_prefix)?;
+                items.push(TreeItem { name: name.into(), mode: 0o40000, id, directory: true });
+            } else if !remainder.is_empty() {
+                items.push(TreeItem { name: remainder.into(), mode: entry.mode, id: entry.id, directory: false });
+            }
+        }
+        items.sort_unstable_by(|left, right| tree_name_cmp(left, right));
+        let mut contents = Vector::new();
+        for item in items {
+            let mode = mrml_runtime::mrml_format!("{:o}", item.mode);
+            contents.extend(mode.as_bytes().iter().copied()); contents.push(b' ');
+            contents.extend(item.name.as_bytes().iter().copied()); contents.push(0); contents.extend(item.id.0);
+        }
+        self.write_object(ObjectKind::Tree, &contents)
+    }
+
+    pub fn commit(&self, message: &str, name: &str, email: &str, timestamp: u64) -> Result<ObjectId, RepositoryError> {
+        validate_identity(name, email)?;
+        if message.trim().is_empty() || message.chars().any(|character| character == '\0') { return Err(RepositoryError::InvalidIdentity); }
+        let branch = self.current_branch()?.ok_or(RepositoryError::DetachedHead)?;
+        let tree = self.write_tree()?;
+        let parent = self.head()?;
+        let mut contents = mrml_runtime::mrml_format!("tree {}\n", tree);
+        if let Some(parent) = parent { contents.push_str(&mrml_runtime::mrml_format!("parent {}\n", parent)); }
+        contents.push_str(&mrml_runtime::mrml_format!("author {} <{}> {} +0000\ncommitter {} <{}> {} +0000\n\n", name, email, timestamp, name, email, timestamp));
+        contents.push_str(message.trim()); contents.push('\n');
+        let id = self.write_object(ObjectKind::Commit, contents.as_bytes())?;
+        let reference = mrml_runtime::mrml_format!("refs/heads/{}", branch);
+        validate_reference(&reference)?;
+        let path = join_path(&self.git_dir, &reference);
+        if let Some(parent) = parent_path(&path) { create_dir_all(parent)?; }
+        let lock = mrml_runtime::mrml_format!("{}.lock", path);
+        if path_exists(&lock) { return Err(RepositoryError::AlreadyExists); }
+        write_file(&lock, mrml_runtime::mrml_format!("{}\n", id).as_bytes())?;
+        mrml_runtime::rename_file(&lock, &path)?;
+        Ok(id)
+    }
+
     pub fn changes(&self) -> Result<Vector<NativeChange>, RepositoryError> {
         let index = self.index()?;
         let mut changes = Vector::new();
@@ -184,6 +237,29 @@ fn validate_worktree_path(path: &str) -> Result<(), RepositoryError> {
     { Err(RepositoryError::InvalidWorktreePath) } else { Ok(()) }
 }
 
+struct TreeItem { name: Text, mode: u32, id: ObjectId, directory: bool }
+
+fn tree_name_cmp(left: &TreeItem, right: &TreeItem) -> core::cmp::Ordering {
+    let mut index = 0;
+    loop {
+        let left_byte = left.name.as_bytes().get(index).copied().or_else(|| left.directory.then_some(b'/'));
+        let right_byte = right.name.as_bytes().get(index).copied().or_else(|| right.directory.then_some(b'/'));
+        match (left_byte, right_byte) {
+            (Some(a), Some(b)) if a == b => index += 1,
+            (Some(a), Some(b)) => return a.cmp(&b),
+            (None, None) => return core::cmp::Ordering::Equal,
+            (None, Some(_)) => return core::cmp::Ordering::Less,
+            (Some(_), None) => return core::cmp::Ordering::Greater,
+        }
+    }
+}
+
+fn validate_identity(name: &str, email: &str) -> Result<(), RepositoryError> {
+    if name.trim().is_empty() || email.trim().is_empty() || name.contains(['\n', '\r', '<', '>'])
+        || email.contains(['\n', '\r', '<', '>'])
+    { Err(RepositoryError::InvalidIdentity) } else { Ok(()) }
+}
+
 impl From<FileError> for RepositoryError { fn from(value: FileError) -> Self { Self::File(value) } }
 impl From<IndexError> for RepositoryError { fn from(value: IndexError) -> Self { Self::Index(value) } }
 
@@ -199,6 +275,9 @@ impl fmt::Display for RepositoryError {
             Self::UnsupportedFileType => formatter.write_str("symbolic links and special files are not supported yet"),
             Self::FileTooLarge => formatter.write_str("working-tree file exceeds the native status limit"),
             Self::InvalidWorktreePath => formatter.write_str("unsafe or invalid working-tree path"),
+            Self::ConflictedIndex => formatter.write_str("cannot write a tree from an unmerged index"),
+            Self::DetachedHead => formatter.write_str("native commit requires a branch HEAD"),
+            Self::InvalidIdentity => formatter.write_str("invalid commit identity or message"),
         }
     }
 }
@@ -240,6 +319,19 @@ mod tests {
         repository.stage(&Vector::from([Text::from("hello.txt")])).unwrap();
         assert_eq!(repository.index().unwrap().entry("hello.txt").unwrap().id, ObjectId::blob(b"native"));
         assert!(repository.changes().unwrap().is_empty());
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn creates_tree_commit_and_branch_reference_natively() {
+        let path = root("commit");
+        let repository = Repository::init(&path).unwrap();
+        create_dir_all(&join_path(&path, "src")).unwrap();
+        write_file(&join_path(&path, "src/lib.rs"), b"pub fn native() {}\n").unwrap();
+        repository.stage(&Vector::from([Text::from("src/lib.rs")])).unwrap();
+        let commit = repository.commit("initial", "MRML", "mrml@example.invalid", 1_700_000_000).unwrap();
+        assert_eq!(repository.head().unwrap(), Some(commit));
+        assert!(path_is_file(&join_path(&repository.git_dir, &mrml_runtime::mrml_format!("objects/{}/{}", &commit.to_hex()[..2], &commit.to_hex()[2..]))));
         remove_dir_all(&path).unwrap();
     }
 }
