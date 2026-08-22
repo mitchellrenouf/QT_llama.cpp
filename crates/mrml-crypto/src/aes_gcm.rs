@@ -94,6 +94,34 @@ fn aes128_encrypt(key: &[u8; 16], input: &[u8; 16]) -> [u8; 16] {
     state
 }
 
+/// Applies AES-128 in counter mode using a big-endian 128-bit counter.
+/// Encryption and decryption are the same operation. The counter advances
+/// once per block and wrapping is rejected before any output is changed.
+pub fn aes128_ctr_xor(
+    key: &[u8; 16],
+    initial_counter: [u8; 16],
+    input: &[u8],
+    output: &mut [u8],
+) -> Result<[u8; 16], ()> {
+    if output.len() != input.len() {
+        return Err(());
+    }
+    let blocks = input.len().div_ceil(16) as u128;
+    let start = u128::from_be_bytes(initial_counter);
+    if start.checked_add(blocks).is_none() {
+        return Err(());
+    }
+    let mut counter = start;
+    for (source, target) in input.chunks(16).zip(output.chunks_mut(16)) {
+        let stream = aes128_encrypt(key, &counter.to_be_bytes());
+        for (index, byte) in source.iter().enumerate() {
+            target[index] = *byte ^ stream[index];
+        }
+        counter += 1;
+    }
+    Ok(counter.to_be_bytes())
+}
+
 fn add_round_key(state: &mut [u8; 16], key: &[u8]) {
     for i in 0..16 {
         state[i] ^= key[i];
@@ -268,5 +296,19 @@ mod tests {
         ));
         assert_eq!(encrypted, expected);
         assert_eq!(tag, hex("5bc94fbc3221a5db94fae95ae7121a47"));
+    }
+    #[test]
+    fn nist_ctr_vector_and_counter_progression() {
+        let key = hex("2b7e151628aed2a6abf7158809cf4f3c");
+        let counter = hex("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff");
+        let plain = hex::<32>("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51");
+        let expected = hex::<32>("874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff");
+        let mut encrypted = [0u8; 32];
+        let next = aes128_ctr_xor(&key, counter, &plain, &mut encrypted).unwrap();
+        assert_eq!(encrypted, expected);
+        assert_eq!(u128::from_be_bytes(next), u128::from_be_bytes(counter) + 2);
+        let mut opened = [0u8; 32];
+        aes128_ctr_xor(&key, counter, &encrypted, &mut opened).unwrap();
+        assert_eq!(opened, plain);
     }
 }

@@ -6,7 +6,8 @@ mod protocol;
 
 pub use protocol::{
     AlgorithmProposal, BinaryReader, BinaryWriter, ExchangeKeys, Identification, ProtocolError,
-    decode_plain_packet, derive_exchange_keys, encode_plain_packet, negotiate, parse_identification,
+    EncryptedPacketReader, EncryptedPacketWriter, decode_plain_packet, derive_exchange_keys,
+    encode_plain_packet, negotiate, parse_identification,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -1,5 +1,5 @@
 use core::fmt;
-use mrml_crypto::{Sha256, x25519_public, x25519_shared};
+use mrml_crypto::{Sha256, aes128_ctr_xor, hmac_sha256, x25519_public, x25519_shared};
 use mrml_runtime::{Text, Vector};
 
 const MAX_STRING: usize = 1024 * 1024;
@@ -17,6 +17,7 @@ pub enum ProtocolError {
     InvalidPublicKey,
     InvalidPacket,
     Entropy,
+    Authentication,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -182,6 +183,64 @@ pub fn decode_plain_packet(source: &[u8], block_size: usize) -> Result<(&[u8], u
     Ok((&packet[5..payload_end], total))
 }
 
+pub struct EncryptedPacketWriter {
+    key: [u8; 16],
+    counter: [u8; 16],
+    mac_key: [u8; 32],
+    sequence: u32,
+}
+
+impl EncryptedPacketWriter {
+    pub const fn new(key: [u8;16], counter: [u8;16], mac_key: [u8;32]) -> Self {
+        Self { key, counter, mac_key, sequence: 0 }
+    }
+    pub fn encode(&mut self, payload: &[u8]) -> Result<Vector<u8>, ProtocolError> {
+        let plain = encode_plain_packet(payload, 16)?;
+        let mac = hmac_sha256(&self.mac_key, &[&self.sequence.to_be_bytes(), &plain]);
+        let mut output = Vector::new();
+        output.try_resize(plain.len(), 0).map_err(|_| ProtocolError::Length)?;
+        self.counter = aes128_ctr_xor(&self.key, self.counter, &plain, &mut output).map_err(|_| ProtocolError::Length)?;
+        output.extend(mac);
+        self.sequence = self.sequence.wrapping_add(1);
+        Ok(output)
+    }
+}
+
+pub struct EncryptedPacketReader {
+    key: [u8; 16],
+    counter: [u8; 16],
+    mac_key: [u8; 32],
+    sequence: u32,
+}
+
+impl EncryptedPacketReader {
+    pub const fn new(key: [u8;16], counter: [u8;16], mac_key: [u8;32]) -> Self {
+        Self { key, counter, mac_key, sequence: 0 }
+    }
+    pub fn decode(&mut self, source: &[u8]) -> Result<(Vector<u8>, usize), ProtocolError> {
+        if source.len() < 16 + 32 { return Err(ProtocolError::Truncated); }
+        let mut first = [0u8;16];
+        aes128_ctr_xor(&self.key, self.counter, &source[..16], &mut first).map_err(|_| ProtocolError::Length)?;
+        let length = u32::from_be_bytes(first[..4].try_into().map_err(|_| ProtocolError::Truncated)?) as usize;
+        let encrypted_len = length.checked_add(4).ok_or(ProtocolError::Length)?;
+        if encrypted_len < 16 || encrypted_len > MAX_STRING + 260 || encrypted_len % 16 != 0 { return Err(ProtocolError::InvalidPacket); }
+        let total = encrypted_len.checked_add(32).ok_or(ProtocolError::Length)?;
+        if source.len() < total { return Err(ProtocolError::Truncated); }
+        let mut plain = Vector::new();
+        plain.try_resize(encrypted_len, 0).map_err(|_| ProtocolError::Length)?;
+        let next = aes128_ctr_xor(&self.key, self.counter, &source[..encrypted_len], &mut plain).map_err(|_| ProtocolError::Length)?;
+        let expected = hmac_sha256(&self.mac_key, &[&self.sequence.to_be_bytes(), &plain]);
+        let mut difference = 0u8;
+        for (left,right) in expected.iter().zip(&source[encrypted_len..total]) { difference |= left ^ right; }
+        if difference != 0 { return Err(ProtocolError::Authentication); }
+        let (payload, _) = decode_plain_packet(&plain, 16)?;
+        let mut owned = Vector::new(); owned.extend(payload.iter().copied());
+        self.counter = next;
+        self.sequence = self.sequence.wrapping_add(1);
+        Ok((owned,total))
+    }
+}
+
 pub fn derive_exchange_keys(
     client_secret: [u8; 32], server_public: [u8; 32], transcript: &[&[u8]], session_id: Option<[u8; 32]>,
 ) -> Result<ExchangeKeys, ProtocolError> {
@@ -228,7 +287,7 @@ fn ssh_mpint(value: &[u8]) -> Vector<u8> {
 }
 
 impl Default for BinaryWriter { fn default() -> Self { Self::new() } }
-impl fmt::Display for ProtocolError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(match self { Self::Truncated => "truncated SSH message", Self::Length => "SSH field exceeds length limit", Self::InvalidUtf8 => "SSH text is not UTF-8", Self::InvalidIdentification => "invalid SSH identification", Self::InvalidNameList => "invalid SSH algorithm name-list", Self::NoCommonAlgorithm => "no mutually supported SSH algorithm", Self::InvalidPublicKey => "invalid SSH Curve25519 public key", Self::InvalidPacket => "invalid SSH binary packet", Self::Entropy => "operating-system entropy is unavailable" }) } }
+impl fmt::Display for ProtocolError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(match self { Self::Truncated => "truncated SSH message", Self::Length => "SSH field exceeds length limit", Self::InvalidUtf8 => "SSH text is not UTF-8", Self::InvalidIdentification => "invalid SSH identification", Self::InvalidNameList => "invalid SSH algorithm name-list", Self::NoCommonAlgorithm => "no mutually supported SSH algorithm", Self::InvalidPublicKey => "invalid SSH Curve25519 public key", Self::InvalidPacket => "invalid SSH binary packet", Self::Entropy => "operating-system entropy is unavailable", Self::Authentication => "SSH packet authentication failed" }) } }
 impl core::error::Error for ProtocolError {}
 
 #[cfg(test)]
@@ -239,4 +298,5 @@ mod tests {
     #[test] fn negotiation_respects_client_preference() { assert_eq!(negotiate(&["a","b"],&["b","a"]),Ok("a"));assert_eq!(negotiate(&["a"],&["b"]),Err(ProtocolError::NoCommonAlgorithm)); }
     #[test] fn curve25519_exchange_derives_matching_material() { let a=[7u8;32];let b=[9u8;32];let ap=x25519_public(a);let bp=x25519_public(b);let left=derive_exchange_keys(a,bp,&[b"client",b"server",&ap,&bp],None).unwrap();let shared=x25519_shared(b,ap).unwrap();assert_eq!(left.shared_secret,shared);assert_ne!(left.client_key,left.server_key); }
     #[test] fn plain_packets_round_trip_and_validate_padding() { let packet=encode_plain_packet(b"\x14hello",8).unwrap();assert_eq!(packet.len()%8,0);let(payload,used)=decode_plain_packet(&packet,8).unwrap();assert_eq!(payload,b"\x14hello");assert_eq!(used,packet.len());let mut bad=packet;bad[4]=3;assert_eq!(decode_plain_packet(&bad,8),Err(ProtocolError::InvalidPacket)); }
+    #[test] fn encrypted_packets_authenticate_sequence_and_contents() { let key=[1;16];let iv=[2;16];let mac=[3;32];let mut writer=EncryptedPacketWriter::new(key,iv,mac);let first=writer.encode(b"first").unwrap();let second=writer.encode(b"second").unwrap();let mut reader=EncryptedPacketReader::new(key,iv,mac);assert_eq!(&*reader.decode(&first).unwrap().0,b"first");assert_eq!(&*reader.decode(&second).unwrap().0,b"second");let mut bad=first;let end=bad.len()-1;bad[end]^=1;let mut reader=EncryptedPacketReader::new(key,iv,mac);assert_eq!(reader.decode(&bad),Err(ProtocolError::Authentication)); }
 }
