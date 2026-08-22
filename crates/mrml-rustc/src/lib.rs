@@ -22,9 +22,9 @@ pub use codegen::{
     compile_x86_64_function_with_options,
 };
 pub use expression::{
-    BinaryOperator, ConstEvalError, ConstantResolver, Expr, ExprId, ExprKind, ExpressionError,
-    ExpressionErrorKind, ExpressionParser, ExpressionTree, IntegerLiteral, IntegerType,
-    NoConstants, ScalarType, UnaryOperator,
+    BinaryOperator, CastType, ConstEvalError, ConstantResolver, Expr, ExprId, ExprKind,
+    ExpressionError, ExpressionErrorKind, ExpressionParser, ExpressionTree, IntegerLiteral,
+    IntegerType, NoConstants, PointerPointee, ScalarType, UnaryOperator,
 };
 pub use ir::{
     ExecutionError, Instruction, IrError, IrErrorKind, IrProgram, lower_expression,

@@ -2649,23 +2649,38 @@ fn runtime_expression_type_with_locals<
             )
         }
         ExprKind::Cast { operand, target } => {
+            let operand_type = runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                operand,
+                depth + 1,
+            )?;
             if !matches!(
-                runtime_expression_type_with_locals(
-                    function,
-                    resolver,
-                    locals,
-                    tree,
-                    operand,
-                    depth + 1
-                )?,
-                RuntimeExpressionType::Integer(_)
+                operand_type,
+                RuntimeExpressionType::Integer(_) | RuntimeExpressionType::RawPointer { .. }
             ) {
                 return Err(CodegenErrorKind::RuntimeTypeMismatch);
             }
-            if runtime_width(target.name()).is_none() {
-                return Err(CodegenErrorKind::UnsupportedRuntimeType);
+            match target {
+                crate::CastType::Integer(target) => {
+                    if runtime_width(target.name()).is_none() {
+                        return Err(CodegenErrorKind::UnsupportedRuntimeType);
+                    }
+                    Ok(RuntimeExpressionType::Integer(Some(target)))
+                }
+                crate::CastType::RawPointer { pointee, mutable } => {
+                    let pointee = match pointee {
+                        crate::PointerPointee::Integer(ty) => {
+                            RuntimeArrayElementType::Integer(Some(ty))
+                        }
+                        crate::PointerPointee::Bool => RuntimeArrayElementType::Bool,
+                        crate::PointerPointee::Char => RuntimeArrayElementType::Char,
+                    };
+                    Ok(RuntimeExpressionType::RawPointer { pointee, mutable })
+                }
             }
-            Ok(RuntimeExpressionType::Integer(Some(target)))
         }
         ExprKind::Ascribe { operand, target } => {
             let operand_type = runtime_expression_type_with_locals(
@@ -3872,9 +3887,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             }
             ExprKind::Cast { operand, target } => {
                 self.emit_expression(tree, operand, depth + 1)?;
-                let width = runtime_width(target.name())
-                    .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
-                self.emit_normalize_width(width)?;
+                if let crate::CastType::Integer(target) = target {
+                    let width = runtime_width(target.name())
+                        .ok_or(self.error(CodegenErrorKind::UnsupportedRuntimeType))?;
+                    self.emit_normalize_width(width)?;
+                }
             }
             ExprKind::Ascribe { operand, target } => {
                 self.emit_expression(tree, operand, depth + 1)?;
@@ -8817,6 +8834,40 @@ mod tests {
                 CodegenErrorKind::RuntimeTypeMismatch,
             );
         }
+    }
+
+    #[test]
+    fn casts_scalar_raw_pointers_and_integers() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> usize { input as usize }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize) -> *const u8 { input as *const u8 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut u16) -> *const u8 { input as *const u8 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> *mut u16 { input as *mut u16 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> u8 { input as u8 }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1024, 4, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> *const u8 { input as *const u8 }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 768, 2, 80>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch,
+        );
     }
 
     #[test]

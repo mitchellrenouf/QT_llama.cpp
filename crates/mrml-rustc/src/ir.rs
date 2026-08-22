@@ -335,6 +335,12 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             }
             ExprKind::Cast { operand, target } => {
                 self.lower(operand, depth + 1)?;
+                let crate::CastType::Integer(target) = target else {
+                    return Err(IrError {
+                        kind: IrErrorKind::InvalidExpressionTree,
+                        span: expression.span,
+                    });
+                };
                 self.push(
                     Instruction::Cast(target, self.pointer_bits),
                     expression.span,

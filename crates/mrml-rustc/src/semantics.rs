@@ -2137,7 +2137,7 @@ fn evaluate_call_aware_integer<
             operand,
         } => !recurse(operand)? & mask,
         ExprKind::Cast { operand, target } => {
-            if target != ty {
+            if target != crate::CastType::Integer(ty) {
                 return Err(arithmetic_error(ConstEvalError::InvalidCast));
             }
             let source_type =
@@ -2738,7 +2738,7 @@ fn evaluate_signed_integer<R: ConstantResolver, const MAX_NODES: usize>(
             operand,
             target: cast,
         } => {
-            if cast != ty {
+            if cast != crate::CastType::Integer(ty) {
                 return Err(ExecutionError::Arithmetic(ConstEvalError::InvalidCast));
             }
             let source_type = expression_integer_type(tree, operand, constants).unwrap_or(ty);
@@ -2850,7 +2850,14 @@ fn expression_integer_type<R: ConstantResolver, const MAX_NODES: usize>(
         ExprKind::InlineConst { operand } => expression_integer_type(tree, operand, constants),
         ExprKind::Integer(literal) => literal.suffix.and_then(crate::IntegerType::from_name),
         ExprKind::Identifier(name) => constants.resolve_type(name),
-        ExprKind::Cast { target, .. } => Some(target),
+        ExprKind::Cast {
+            target: crate::CastType::Integer(target),
+            ..
+        } => Some(target),
+        ExprKind::Cast {
+            target: crate::CastType::RawPointer { .. },
+            ..
+        } => None,
         ExprKind::Unary { operand, .. } => expression_integer_type(tree, operand, constants),
         ExprKind::Binary { left, right, .. } => expression_integer_type(tree, left, constants)
             .or_else(|| expression_integer_type(tree, right, constants)),

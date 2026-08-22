@@ -157,6 +157,22 @@ pub enum ScalarType {
     Bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PointerPointee {
+    Integer(IntegerType),
+    Bool,
+    Char,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CastType {
+    Integer(IntegerType),
+    RawPointer {
+        pointee: PointerPointee,
+        mutable: bool,
+    },
+}
+
 impl ScalarType {
     fn from_name(name: &str) -> Option<Self> {
         if name == "bool" {
@@ -290,7 +306,7 @@ pub enum ExprKind<'source> {
     },
     Cast {
         operand: ExprId,
-        target: IntegerType,
+        target: CastType,
     },
     Unary {
         operator: UnaryOperator,
@@ -660,7 +676,10 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             }
             ExprKind::Cast { operand, target } => {
                 let value = self.evaluate_node(operand, resolver, depth + 1)?;
-                cast_integer(value, target, 64)
+                match target {
+                    CastType::Integer(target) => cast_integer(value, target, 64),
+                    CastType::RawPointer { .. } => Err(ConstEvalError::InvalidCast),
+                }
             }
             ExprKind::Ascribe { operand, target } => {
                 let value = self.evaluate_node(operand, resolver, depth + 1)?;
@@ -3425,24 +3444,54 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         while self.peek()?.is_some_and(|token| token.text == "as") {
             self.take()?;
             let target = self.take()?;
-            let Some(target) = target else {
+            let Some(first) = target else {
                 return Err(self.error(ExpressionErrorKind::ExpectedCastType, None));
             };
-            if target.kind != TokenKind::Identifier {
-                return Err(self.error(ExpressionErrorKind::ExpectedCastType, Some(target)));
-            }
-            let Some(integer_type) = IntegerType::from_name(target.text) else {
-                return Err(self.error(ExpressionErrorKind::UnsupportedCastType, Some(target)));
+            let (target, end) = if first.kind == TokenKind::Identifier {
+                let Some(integer_type) = IntegerType::from_name(first.text) else {
+                    return Err(self.error(ExpressionErrorKind::UnsupportedCastType, Some(first)));
+                };
+                (CastType::Integer(integer_type), first.span.end)
+            } else if first.text == "*" {
+                let qualifier = self.take()?;
+                let Some(qualifier) = qualifier.filter(|token| {
+                    token.kind == TokenKind::Identifier && matches!(token.text, "const" | "mut")
+                }) else {
+                    return Err(self.error(ExpressionErrorKind::ExpectedCastType, qualifier));
+                };
+                let pointee = self.take()?;
+                let Some(pointee) = pointee.filter(|token| token.kind == TokenKind::Identifier)
+                else {
+                    return Err(self.error(ExpressionErrorKind::ExpectedCastType, pointee));
+                };
+                let pointee_type = match pointee.text {
+                    "bool" => PointerPointee::Bool,
+                    "char" => PointerPointee::Char,
+                    name => {
+                        let Some(integer) = IntegerType::from_name(name) else {
+                            return Err(
+                                self.error(ExpressionErrorKind::UnsupportedCastType, Some(pointee))
+                            );
+                        };
+                        PointerPointee::Integer(integer)
+                    }
+                };
+                (
+                    CastType::RawPointer {
+                        pointee: pointee_type,
+                        mutable: qualifier.text == "mut",
+                    },
+                    pointee.span.end,
+                )
+            } else {
+                return Err(self.error(ExpressionErrorKind::ExpectedCastType, Some(first)));
             };
             let span = Span {
                 start: self.node_span(operand)?.start,
-                end: target.span.end,
+                end,
             };
             operand = self.push(Expr {
-                kind: ExprKind::Cast {
-                    operand,
-                    target: integer_type,
-                },
+                kind: ExprKind::Cast { operand, target },
                 span,
             })?;
         }
