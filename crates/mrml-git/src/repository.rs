@@ -683,10 +683,14 @@ impl Repository {
 
     pub fn write_tree(&self) -> Result<ObjectId, RepositoryError> {
         let index = self.index()?;
+        self.write_tree_from_index(&index)
+    }
+
+    fn write_tree_from_index(&self, index: &Index) -> Result<ObjectId, RepositoryError> {
         if index.entries.iter().any(|entry| entry.stage != 0) {
             return Err(RepositoryError::ConflictedIndex);
         }
-        self.write_tree_prefix(&index, "")
+        self.write_tree_prefix(index, "")
     }
 
     fn write_tree_prefix(&self, index: &Index, prefix: &str) -> Result<ObjectId, RepositoryError> {
@@ -776,6 +780,58 @@ impl Repository {
         }
         write_file(&lock, mrml_runtime::mrml_format!("{}\n", id).as_bytes())?;
         mrml_runtime::rename_file(&lock, &path)?;
+        Ok(id)
+    }
+
+    pub fn stash_push(&self, message: &str, name: &str, email: &str, timestamp: u64) -> Result<ObjectId, RepositoryError> {
+        validate_identity(name, email)?;
+        let head = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let baseline = self.tree_index(self.read_commit(head)?.tree)?;
+        let mut snapshot = self.index()?;
+        for entry in snapshot.clone().entries {
+            let path = join_path(&self.worktree, &entry.path);
+            if path_is_file(&path) {
+                let contents = read_file_bounded(&path, MAX_WORKTREE_FILE)?;
+                let id = self.write_object(ObjectKind::Blob, &contents)?;
+                snapshot.upsert(IndexEntry { path: entry.path.clone(), id, mode: entry.mode, size: contents.len().try_into().map_err(|_| RepositoryError::FileTooLarge)?, stage: 0 });
+            } else { snapshot.remove(&entry.path); }
+        }
+        if snapshot == baseline { return Err(RepositoryError::WorktreeDirty); }
+        let tree = self.write_tree_from_index(&snapshot)?;
+        let stash_path = join_path(&self.git_dir, "refs/stash");
+        let previous = if path_is_file(&stash_path) {
+            let value = read_file_text_bounded(&stash_path, 4096)?;
+            Some(ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?)
+        } else { None };
+        let mut contents = mrml_runtime::mrml_format!("tree {tree}\n");
+        if let Some(previous) = previous { contents.push_str(&mrml_runtime::mrml_format!("parent {previous}\n")); }
+        contents.push_str(&mrml_runtime::mrml_format!("author {name} <{email}> {timestamp} +0000\ncommitter {name} <{email}> {timestamp} +0000\nmrml-stash-base {head}\n\n{}\n", if message.trim().is_empty() { "WIP" } else { message.trim() }));
+        let id = self.write_object(ObjectKind::Commit, contents.as_bytes())?;
+        if let Some(parent) = parent_path(&stash_path) { create_dir_all(parent)?; }
+        write_file(&stash_path, mrml_runtime::mrml_format!("{id}\n").as_bytes())?;
+        self.materialize_index(&baseline)?;
+        Ok(id)
+    }
+
+    pub fn stash_list(&self, limit: usize) -> Result<Vector<(ObjectId, Commit)>, RepositoryError> {
+        let path = join_path(&self.git_dir, "refs/stash");
+        if !path_is_file(&path) { return Ok(Vector::new()); }
+        let value = read_file_text_bounded(&path, 4096)?;
+        let id = ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
+        self.history(id, limit)
+    }
+
+    pub fn stash_pop(&self) -> Result<ObjectId, RepositoryError> {
+        if !self.changes()?.is_empty() { return Err(RepositoryError::WorktreeDirty); }
+        let path = join_path(&self.git_dir, "refs/stash");
+        if !path_is_file(&path) { return Err(RepositoryError::ReferenceMissing); }
+        let value = read_file_text_bounded(&path, 4096)?;
+        let id = ObjectId::parse(value.trim()).ok_or(RepositoryError::InvalidReference)?;
+        let commit = self.read_commit(id)?;
+        let snapshot = self.tree_index(commit.tree)?;
+        self.materialize_index(&snapshot)?;
+        if let Some(previous) = commit.parents.first() { write_file(&path, mrml_runtime::mrml_format!("{previous}\n").as_bytes())?; }
+        else { mrml_runtime::remove_file(&path)?; }
         Ok(id)
     }
 
@@ -1234,6 +1290,18 @@ mod tests {
         assert_eq!(repository.merge("topic").unwrap(), MergeOutcome::FastForward(topic));
         assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"topic"); assert_eq!(repository.head().unwrap(), Some(topic));
         assert_eq!(repository.merge("topic").unwrap(), MergeOutcome::UpToDate);
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn pushes_lists_and_pops_stash_objects() {
+        let path = root("stash"); let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked"); let paths = Vector::from([Text::from("tracked")]);
+        write_file(&file, b"base").unwrap(); repository.stage(&paths).unwrap(); repository.commit("base", "MRML", "mrml@example.invalid", 1).unwrap();
+        write_file(&file, b"saved").unwrap(); let stash = repository.stash_push("checkpoint", "MRML", "mrml@example.invalid", 2).unwrap();
+        assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"base"); assert_eq!(repository.stash_list(10).unwrap()[0].0, stash);
+        assert_eq!(repository.stash_pop().unwrap(), stash); assert_eq!(&*read_file_bounded(&file, 16).unwrap(), b"saved");
+        assert!(repository.stash_list(10).unwrap().is_empty());
         remove_dir_all(&path).unwrap();
     }
 }

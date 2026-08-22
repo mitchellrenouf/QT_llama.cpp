@@ -647,18 +647,24 @@ fn dispatch(cli: &Cli) -> Result<()> {
             )
         }
         "stash" if tail.is_empty() || (tail.len() == 1 && tail[0] == "list") => {
-            run_visible(repository, &["stash", "list"])
+            for (index, (id, commit)) in native_repository(repository)?.stash_list(256).map_err(|error| anyhow!("{}", error))?.into_iter().enumerate() {
+                println!("stash@{{{}}}: {} {}", index, &id.to_hex()[..12], commit.message.trim());
+            }
+            Ok(())
         }
         "stash" if tail.len() == 1 && tail[0] == "pop" => {
-            run_visible(repository, &["stash", "pop"])
+            let id = native_repository(repository)?.stash_pop().map_err(|error| anyhow!("{}", error))?;
+            println!("Applied stash {}", &id.to_hex()[..12]);
+            Ok(())
         }
         "stash" if !tail.is_empty() && tail[0] == "push" => {
             let message = join_words(&tail[1..]);
-            if message.is_empty() {
-                run_visible(repository, &["stash", "push"])
-            } else {
-                run_visible(repository, &["stash", "push", "-m", &message])
-            }
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds().ok_or_else(|| anyhow!("system time is unavailable"))?;
+            let id = native_repository(repository)?.stash_push(&message, &name, &email, timestamp).map_err(|error| anyhow!("{}", error))?;
+            println!("Saved stash {}", &id.to_hex()[..12]);
+            Ok(())
         }
         command => Err(anyhow!(
             "invalid arguments for '{}'; run mrml-git help",
