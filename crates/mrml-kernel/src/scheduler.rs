@@ -1,4 +1,9 @@
-use core::array;
+use core::{
+    array,
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskId {
@@ -62,6 +67,102 @@ pub struct TaskMigration {
     destination: TaskId,
     state: TaskState,
     priority: Priority,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct DetachedTask {
+    source: TaskId,
+    state: TaskState,
+    priority: Priority,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationMailboxError {
+    Occupied,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct TaskAttachError {
+    error: KernelScheduleError,
+    task: DetachedTask,
+}
+
+impl TaskAttachError {
+    pub const fn error(&self) -> KernelScheduleError {
+        self.error
+    }
+
+    pub fn into_task(self) -> DetachedTask {
+        self.task
+    }
+}
+
+const MAILBOX_EMPTY: u8 = 0;
+const MAILBOX_WRITING: u8 = 1;
+const MAILBOX_FULL: u8 = 2;
+const MAILBOX_READING: u8 = 3;
+
+/// Allocation-free multi-producer, multi-consumer ownership transfer slot.
+/// Atomic state transitions ensure only the successful publisher writes the
+/// slot and only the successful receiver takes its non-copyable task ticket.
+pub struct MigrationMailbox {
+    state: AtomicU8,
+    task: UnsafeCell<MaybeUninit<DetachedTask>>,
+}
+
+// SAFETY: access to `task` is exclusively granted by the atomic state machine.
+unsafe impl Sync for MigrationMailbox {}
+
+impl MigrationMailbox {
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(MAILBOX_EMPTY),
+            task: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    pub fn publish(&self, task: DetachedTask) -> Result<(), (MigrationMailboxError, DetachedTask)> {
+        if self
+            .state
+            .compare_exchange(
+                MAILBOX_EMPTY,
+                MAILBOX_WRITING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return Err((MigrationMailboxError::Occupied, task));
+        }
+
+        // SAFETY: the EMPTY -> WRITING transition grants this publisher the
+        // only access to the uninitialized slot until FULL is published.
+        unsafe { (*self.task.get()).write(task) };
+        self.state.store(MAILBOX_FULL, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn take(&self) -> Option<DetachedTask> {
+        self.state
+            .compare_exchange(
+                MAILBOX_FULL,
+                MAILBOX_READING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .ok()?;
+        // SAFETY: the FULL -> READING transition grants this receiver the only
+        // access, and Acquire observes the publisher's initialized bytes.
+        let task = unsafe { (*self.task.get()).assume_init_read() };
+        self.state.store(MAILBOX_EMPTY, Ordering::Release);
+        Some(task)
+    }
+}
+
+impl Default for MigrationMailbox {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TaskMigration {
@@ -349,6 +450,52 @@ impl<const TASKS: usize> KernelScheduler<TASKS> {
         })
     }
 
+    /// Retires a non-running local identity and returns its scheduling policy
+    /// as a linear ticket suitable for release/acquire transfer to another CPU.
+    pub fn detach(&mut self, task: TaskId) -> Result<DetachedTask, KernelScheduleError> {
+        if self.current == Some(task) {
+            return Err(KernelScheduleError::CurrentTaskCannotMigrate);
+        }
+        let source = self
+            .scheduler
+            .task(task)
+            .map_err(KernelScheduleError::Scheduler)?;
+        let detached = DetachedTask {
+            source: task,
+            state: source.state,
+            priority: source.priority,
+        };
+        self.scheduler
+            .remove(task)
+            .map_err(KernelScheduleError::Scheduler)?;
+        Ok(detached)
+    }
+
+    /// Admits an exclusively owned migration ticket. Failure returns the same
+    /// ticket so the caller can retry, route elsewhere, or restore it.
+    pub fn attach(&mut self, task: DetachedTask) -> Result<TaskMigration, TaskAttachError> {
+        let destination = match self.create(task.priority) {
+            Ok(destination) => destination,
+            Err(error) => return Err(TaskAttachError { error, task }),
+        };
+        if task.state == TaskState::Blocked {
+            let state_result = self.scheduler.set_state(destination, TaskState::Blocked);
+            if let Err(error) = state_result {
+                let _ = self.scheduler.remove(destination);
+                return Err(TaskAttachError {
+                    error: KernelScheduleError::Scheduler(error),
+                    task,
+                });
+            }
+        }
+        Ok(TaskMigration {
+            source: task.source,
+            destination,
+            state: task.state,
+            priority: task.priority,
+        })
+    }
+
     fn select_replacement(&mut self, from: Option<TaskId>) -> ScheduleOutcome {
         self.remaining = self.quantum_ticks;
         match self.scheduler.schedule() {
@@ -597,5 +744,53 @@ mod tests {
                 to: task
             }
         );
+    }
+
+    #[test]
+    fn detached_ticket_crosses_mailbox_and_attaches_once() {
+        let mut source = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mut destination = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let task = source.create(Priority::REALTIME).unwrap();
+        let mailbox = MigrationMailbox::new();
+
+        mailbox.publish(source.detach(task).unwrap()).unwrap();
+        assert_eq!(source.start(), ScheduleOutcome::Idle);
+        let migration = destination.attach(mailbox.take().unwrap()).unwrap();
+        assert_eq!(migration.source(), task);
+        assert_eq!(migration.priority(), Priority::REALTIME);
+        assert!(mailbox.take().is_none());
+    }
+
+    #[test]
+    fn occupied_mailbox_returns_the_unpublished_ticket() {
+        let mut first = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mut second = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mailbox = MigrationMailbox::new();
+        let first_id = first.create(Priority::NORMAL).unwrap();
+        mailbox.publish(first.detach(first_id).unwrap()).unwrap();
+        let second_id = second.create(Priority::BACKGROUND).unwrap();
+
+        let (error, returned) = mailbox
+            .publish(second.detach(second_id).unwrap())
+            .unwrap_err();
+        assert_eq!(error, MigrationMailboxError::Occupied);
+        assert_eq!(returned.source, second_id);
+    }
+
+    #[test]
+    fn failed_attach_returns_ticket_for_another_destination() {
+        let mut source = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mut full = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mut fallback = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let task = source.create(Priority::RESPONSIVE).unwrap();
+        full.create(Priority::NORMAL).unwrap();
+
+        let error = full.attach(source.detach(task).unwrap()).unwrap_err();
+        assert_eq!(
+            error.error(),
+            KernelScheduleError::Scheduler(SchedulerError::Full)
+        );
+        let migration = fallback.attach(error.into_task()).unwrap();
+        assert_eq!(migration.source(), task);
     }
 }
