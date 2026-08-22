@@ -6,6 +6,8 @@ pub enum PageTableBuildError {
     Storage,
     InvalidIntermediate,
     AlreadyMapped,
+    NotMapped,
+    MappingMismatch,
     AddressOverflow,
     Page(PageError),
 }
@@ -88,6 +90,63 @@ impl<S: PageTableStore> PageTableBuilder<S> {
         self.store.write(table, index, leaf.bits())
     }
 
+    /// Replaces leaf permissions only when every page still matches the exact
+    /// expected physical frame and old permissions. Logical validation is
+    /// completed for the full range before the first write.
+    pub fn protect(
+        &mut self,
+        expected: Mapping,
+        final_permissions: PagePermissions,
+    ) -> Result<(), PageTableBuildError> {
+        for page in 0..expected.pages() {
+            let (virtual_address, physical_address) = mapping_page(expected, page)?;
+            let (table, index) = self.leaf_location(virtual_address)?;
+            let current = self.store.read(table, index)?;
+            if current & 1 == 0 {
+                return Err(PageTableBuildError::NotMapped);
+            }
+            let wanted = PageTableEntry::leaf(physical_address, expected.permissions())
+                .map_err(PageTableBuildError::Page)?
+                .bits();
+            if current != wanted {
+                return Err(PageTableBuildError::MappingMismatch);
+            }
+            PageTableEntry::leaf(physical_address, final_permissions)
+                .map_err(PageTableBuildError::Page)?;
+        }
+        for page in 0..expected.pages() {
+            let (virtual_address, physical_address) = mapping_page(expected, page)?;
+            let (table, index) = self.leaf_location(virtual_address)?;
+            let final_entry = PageTableEntry::leaf(physical_address, final_permissions)
+                .map_err(PageTableBuildError::Page)?;
+            self.store.write(table, index, final_entry.bits())?;
+        }
+        Ok(())
+    }
+
+    fn leaf_location(
+        &self,
+        virtual_address: VirtAddr,
+    ) -> Result<(PhysAddr, usize), PageTableBuildError> {
+        let mut table = self.root;
+        for index in [
+            virtual_address.pml4_index(),
+            virtual_address.pdpt_index(),
+            virtual_address.directory_index(),
+        ] {
+            let entry = self.store.read(table, index)?;
+            if entry & 1 == 0 {
+                return Err(PageTableBuildError::NotMapped);
+            }
+            if entry & (1 << 7) != 0 || entry & !((1 << 63) | 0xfff | ADDRESS_MASK) != 0 {
+                return Err(PageTableBuildError::InvalidIntermediate);
+            }
+            table = PhysAddr::new(entry & ADDRESS_MASK)
+                .map_err(|_| PageTableBuildError::InvalidIntermediate)?;
+        }
+        Ok((table, virtual_address.table_index()))
+    }
+
     fn descend(
         &mut self,
         parent: PhysAddr,
@@ -109,6 +168,26 @@ impl<S: PageTableStore> PageTableBuilder<S> {
         }
         PhysAddr::new(current & ADDRESS_MASK).map_err(|_| PageTableBuildError::InvalidIntermediate)
     }
+}
+
+fn mapping_page(mapping: Mapping, page: u64) -> Result<(VirtAddr, PhysAddr), PageTableBuildError> {
+    let offset = page
+        .checked_mul(PAGE_SIZE)
+        .ok_or(PageTableBuildError::AddressOverflow)?;
+    let virtual_address = mapping
+        .virtual_start()
+        .get()
+        .checked_add(offset)
+        .ok_or(PageTableBuildError::AddressOverflow)?;
+    let physical_address = mapping
+        .physical_start()
+        .get()
+        .checked_add(offset)
+        .ok_or(PageTableBuildError::AddressOverflow)?;
+    Ok((
+        VirtAddr::new(virtual_address).map_err(PageTableBuildError::Page)?,
+        PhysAddr::new(physical_address).map_err(|_| PageTableBuildError::AddressOverflow)?,
+    ))
 }
 
 #[cfg(test)]
@@ -204,5 +283,40 @@ mod tests {
         assert_eq!(leaf & ADDRESS_MASK, 0x9000);
         assert_eq!(leaf & (1 << 63), 0);
         assert_eq!(leaf & (1 << 1), 0);
+    }
+
+    #[test]
+    fn protection_requires_exact_old_mapping_before_any_write() {
+        let store = Tables {
+            pages: [[0; 512]; 8],
+            used: 0,
+        };
+        let mut builder = PageTableBuilder::new(store).unwrap();
+        let mapping = Mapping::new(
+            VirtAddr::new(0x8000).unwrap(),
+            PhysAddr::new(0x8000).unwrap(),
+            1,
+            PagePermissions::KERNEL_MMIO_READ_WRITE,
+        )
+        .unwrap();
+        builder.map(mapping).unwrap();
+        builder
+            .protect(mapping, PagePermissions::KERNEL_LOW_READ_EXECUTE)
+            .unwrap();
+        assert_eq!(
+            builder.protect(mapping, PagePermissions::KERNEL_LOW_READ_EXECUTE),
+            Err(PageTableBuildError::MappingMismatch)
+        );
+        let executable = Mapping::new(
+            VirtAddr::new(0x8000).unwrap(),
+            PhysAddr::new(0x8000).unwrap(),
+            1,
+            PagePermissions::KERNEL_LOW_READ_EXECUTE,
+        )
+        .unwrap();
+        assert_eq!(
+            builder.protect(executable, PagePermissions::KERNEL_MMIO_READ_WRITE),
+            Ok(())
+        );
     }
 }

@@ -85,6 +85,7 @@ impl PagePermissions {
     pub const KERNEL_READ: Self = Self(0);
     pub const KERNEL_READ_WRITE: Self = Self(1 << 0);
     pub const KERNEL_READ_EXECUTE: Self = Self(1 << 1);
+    pub const KERNEL_LOW_READ_EXECUTE: Self = Self((1 << 1) | (1 << 3));
     pub const KERNEL_SHARED_READ: Self = Self(1 << 3);
     pub const KERNEL_SHARED_READ_WRITE: Self = Self((1 << 0) | (1 << 3));
     pub const KERNEL_MMIO_READ_WRITE: Self = Self((1 << 0) | (1 << 3));

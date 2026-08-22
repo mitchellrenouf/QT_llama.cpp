@@ -307,6 +307,11 @@ the opaque installed-page result can advance the lifecycle to SIPI. WHP now
 creates a dedicated low GPA page, writes it while guest-RW/NX, atomically
 replaces the mapping with guest-RX, and verifies host reads still match while
 guest writes are denied. This passed against the live Windows hypervisor.
+For in-kernel sealing, the page-table layer now preflights an entire existing
+mapping against its exact physical frames and old permissions before replacing
+leaf permissions; missing, aliased, huge, or already-modified entries fail
+before the first logical update. A dedicated low-supervisor RX permission keeps
+the SIPI page executable without making it user-accessible or writable.
 Concrete UEFI/KVM page backends, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed

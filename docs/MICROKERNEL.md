@@ -1435,7 +1435,12 @@ opaque installed result may publish SIPI. The WHP implementation allocates a
 dedicated low guest-physical page, stages it RW/NX, replaces the GPA mapping
 with RX, and verifies the copied bytes and denied guest write against the live
 Windows hypervisor. UEFI/KVM page backends, live AP execution, and SMP
-scheduling are still required. Platform-backed service page
+scheduling are still required. The common page-table builder now supports an
+exact-match protection transition: it preflights every 4 KiB leaf, physical
+frame, and old permission before changing any logical mapping. This supplies a
+supervisor-only low-page RW/NX-to-RX path for a BSP-built relocated trampoline
+without accepting missing, huge, aliased, or concurrently changed entries.
+Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.
 
