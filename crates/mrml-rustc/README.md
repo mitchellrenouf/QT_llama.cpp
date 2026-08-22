@@ -424,7 +424,10 @@ from range expressions and general aggregate ABI transport remain separate
 work. The postfix `len()` method reads the preserved runtime length from shared
 or mutable slice references, including typed copies and mutable reborrows. A
 native four-element probe added the copied and original lengths and returned 8
-through 146-byte COFF and 528-byte ELF64 objects.
+through 146-byte COFF and 528-byte ELF64 objects. The `is_empty()` method tests
+that same runtime length and normalizes the result to Rust `bool`. Independent
+callers observed true for an empty slice and false for a one-element slice
+through 130-byte COFF and 520-byte ELF64 objects.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as

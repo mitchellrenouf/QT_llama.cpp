@@ -2047,6 +2047,7 @@ fn validate_runtime_inline_const<
             recurse(index)?;
         }
         ExprKind::SliceLen { base } => recurse(base)?,
+        ExprKind::SliceIsEmpty { base } => recurse(base)?,
         ExprKind::Cast { operand, .. }
         | ExprKind::Ascribe { operand, .. }
         | ExprKind::Unary { operand, .. }
@@ -2310,6 +2311,26 @@ fn runtime_expression_type_with_locals<
             Ok(RuntimeExpressionType::Integer(Some(
                 crate::IntegerType::Usize,
             )))
+        }
+        ExprKind::SliceIsEmpty { base } => {
+            let base_type = runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                base,
+                depth + 1,
+            )?;
+            if !matches!(
+                base_type,
+                RuntimeExpressionType::Reference {
+                    target: RuntimeReferenceTarget::Slice(_),
+                    ..
+                }
+            ) {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            }
+            Ok(RuntimeExpressionType::Bool)
         }
         ExprKind::Integer(literal) => Ok(RuntimeExpressionType::Integer(
             literal.suffix.and_then(crate::IntegerType::from_name),
@@ -3306,6 +3327,30 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 let source = reference_source_name(tree, base)
                     .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
                 self.emit_slice_length(source)?;
+            }
+            ExprKind::SliceIsEmpty { base } => {
+                let base_type = runtime_expression_type_with_locals(
+                    self.function,
+                    self.resolver,
+                    &self.locals[..self.saved_locals],
+                    tree,
+                    base,
+                    depth + 1,
+                )
+                .map_err(|kind| self.error(kind))?;
+                if !matches!(
+                    base_type,
+                    RuntimeExpressionType::Reference {
+                        target: RuntimeReferenceTarget::Slice(_),
+                        ..
+                    }
+                ) {
+                    return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+                }
+                let source = reference_source_name(tree, base)
+                    .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
+                self.emit_slice_length(source)?;
+                self.emit(&[0x48, 0x85, 0xc0, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0])?;
             }
             ExprKind::Integer(literal) => {
                 if literal.value > u128::from(self.width.maximum) {
@@ -7539,6 +7584,8 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [usize], index: usize) -> usize { let copied: &mut [usize] = &mut *values; copied[index] += 2; values[index] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &[usize]) -> usize { values.len() }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [usize]) -> usize { let copied: &mut [usize] = &mut *values; copied.len() + values.len() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &[usize]) -> bool { values.is_empty() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [usize]) -> bool { let copied: &mut [usize] = &mut *values; copied.is_empty() || values.is_empty() }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [i16]) -> i16 { values[1] = -12; values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [bool]) -> bool { values[2] ^= true; values[2] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: &mut [char]) -> char { values[1] = 'z'; values[1] }",

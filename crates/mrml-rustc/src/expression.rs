@@ -248,6 +248,9 @@ pub enum ExprKind<'source> {
     SliceLen {
         base: ExprId,
     },
+    SliceIsEmpty {
+        base: ExprId,
+    },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -404,6 +407,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::Identifier(_)
             | ExprKind::Call { .. }
             | ExprKind::Cast { .. } => false,
+            ExprKind::SliceIsEmpty { .. } => true,
             ExprKind::Ascribe {
                 operand,
                 target: ScalarType::Bool,
@@ -605,6 +609,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 self.evaluate_array_element(base, index, resolver, depth + 1)
             }
             ExprKind::SliceLen { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::SliceIsEmpty { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -1795,6 +1800,9 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 self.substitute_identifier(index, name, replacement, depth + 1)?;
             }
             ExprKind::SliceLen { base } => {
+                self.substitute_identifier(base, name, replacement, depth + 1)?;
+            }
+            ExprKind::SliceIsEmpty { base } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
             }
             ExprKind::Cast { operand, .. }
@@ -3255,7 +3263,8 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             }
             self.take()?;
             let method = self.take()?;
-            let Some(_method) = method.filter(|method| method.text == "len") else {
+            let Some(method) = method.filter(|method| matches!(method.text, "len" | "is_empty"))
+            else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
             };
             let open = self.take()?;
@@ -3267,8 +3276,13 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
             };
             let start = self.node_span(base)?.start;
+            let kind = if method.text == "len" {
+                ExprKind::SliceLen { base }
+            } else {
+                ExprKind::SliceIsEmpty { base }
+            };
             base = self.push(Expr {
-                kind: ExprKind::SliceLen { base },
+                kind,
                 span: Span {
                     start,
                     end: close.span.end,
