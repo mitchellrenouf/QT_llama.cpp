@@ -126,7 +126,24 @@ pub fn inflate_zlib(source: &[u8]) -> Result<Vector<u8>, InflateError> {
         return Err(InflateError::Header);
     }
     let end = source.len() - 4;
-    let mut b = Bits::new(&source[2..end]);
+    let (out, consumed) = inflate_raw(&source[2..end])?;
+    if consumed != end - 2 {
+        return Err(InflateError::Header);
+    }
+    if adler(&out)
+        != u32::from_be_bytes(
+            source[end..]
+                .try_into()
+                .map_err(|_| InflateError::Truncated)?,
+        )
+    {
+        return Err(InflateError::Checksum);
+    }
+    Ok(out)
+}
+
+pub(crate) fn inflate_raw(source: &[u8]) -> Result<(Vector<u8>, usize), InflateError> {
+    let mut b = Bits::new(source);
     let mut out = Vector::new();
     loop {
         let last = b.read(1)? != 0;
@@ -146,16 +163,7 @@ pub fn inflate_zlib(source: &[u8]) -> Result<Vector<u8>, InflateError> {
             break;
         }
     }
-    if adler(&out)
-        != u32::from_be_bytes(
-            source[end..]
-                .try_into()
-                .map_err(|_| InflateError::Truncated)?,
-        )
-    {
-        return Err(InflateError::Checksum);
-    }
-    Ok(out)
+    Ok((out, b.p))
 }
 fn room(out: &Vector<u8>, n: usize) -> Result<(), InflateError> {
     out.len()

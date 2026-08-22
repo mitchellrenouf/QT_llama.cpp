@@ -6,6 +6,7 @@ mod diff;
 mod index;
 mod inflate;
 mod object;
+mod pack;
 mod repository;
 mod sha1;
 
@@ -15,6 +16,7 @@ pub use object::{
     Commit, Object, ObjectError, ObjectKind, TreeEntry, decode_loose_object, encode_loose_object,
     parse_tree,
 };
+pub use pack::{PackError, PackObject, parse_pack};
 pub use repository::{
     BlameLine, MergeOutcome, NativeChange, NativeChangeKind, RebaseOutcome, Repository,
     RepositoryError,

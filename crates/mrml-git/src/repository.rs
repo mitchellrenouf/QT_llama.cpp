@@ -7,7 +7,7 @@ use mrml_runtime::{
 
 use crate::{
     Commit, FileDiff, Index, IndexEntry, IndexError, Object, ObjectError, ObjectId, ObjectKind,
-    decode_loose_object, encode_loose_object, parse_tree,
+    decode_loose_object, encode_loose_object, parse_pack, parse_tree, PackError,
 };
 
 const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
@@ -78,6 +78,7 @@ pub enum RepositoryError {
     ReferenceMissing,
     CurrentBranch,
     Object(ObjectError),
+    Pack(PackError),
     WorktreeDirty,
     MergeRequired,
 }
@@ -205,6 +206,17 @@ impl Repository {
             return Err(RepositoryError::InvalidHead);
         }
         Ok(object)
+    }
+
+    pub fn import_pack(&self, source: &[u8]) -> Result<Vector<ObjectId>, RepositoryError> {
+        let objects = parse_pack(source)?;
+        let mut ids = Vector::new();
+        for object in objects {
+            let id = self.write_object(object.kind, &object.contents)?;
+            if id != object.id { return Err(RepositoryError::InvalidHead); }
+            ids.push(id);
+        }
+        Ok(ids)
     }
 
     pub fn resolve_revision(&self, revision: &str) -> Result<ObjectId, RepositoryError> {
@@ -1799,6 +1811,7 @@ impl From<ObjectError> for RepositoryError {
         Self::Object(value)
     }
 }
+impl From<PackError> for RepositoryError { fn from(value: PackError) -> Self { Self::Pack(value) } }
 
 impl fmt::Display for RepositoryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1806,6 +1819,7 @@ impl fmt::Display for RepositoryError {
             Self::File(error) => write!(formatter, "{error}"),
             Self::Index(error) => write!(formatter, "{error}"),
             Self::Object(error) => write!(formatter, "{error}"),
+            Self::Pack(error) => write!(formatter, "{error}"),
             Self::WorktreeDirty => formatter.write_str("working tree is not clean"),
             Self::MergeRequired => {
                 formatter.write_str("non-fast-forward merge requires native three-way merge")
