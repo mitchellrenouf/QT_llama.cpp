@@ -904,6 +904,29 @@ fn rustc_diverging_empty_inner_loop_has_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_empty_while_and_top_level_diverging_loops_have_executable_replacements() {
+    // Original scalar replacements for empty and diverging loop bodies in
+    // pinned tests/ui/for-loop-while/loop-break-cont.rs.
+    for source in [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(enter: bool) -> u32 { while enter {} 42 }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { loop {} }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> u32 { loop { 1; } }",
+    ] {
+        for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+            assert!(
+                compile_source_function::<1536, 1024, 4, 4, 4, 48>(
+                    source,
+                    "probe",
+                    format,
+                    TargetLayout::X86_64,
+                )
+                .is_ok()
+            );
+        }
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

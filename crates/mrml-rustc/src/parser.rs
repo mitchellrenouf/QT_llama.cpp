@@ -1521,7 +1521,6 @@ impl<'source> BodyParser<'source> {
             let mut conditional_else_arm_count = 0usize;
             let mut nested_blocks = [None; MAX_NESTED_LOOP_BLOCKS];
             let mut nested_block_count = 0usize;
-            let mut has_break = false;
             loop {
                 let next = probe.peek()?;
                 if next.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
@@ -1918,12 +1917,6 @@ impl<'source> BodyParser<'source> {
                         let mut arm = probe.conditional_loop_arm(&mut assignment_count)?;
                         arm.condition = arm_condition;
                         arm.condition_span = arm_condition_span;
-                        has_break |= matches!(
-                            arm.terminal,
-                            Some(
-                                ConditionalLoopTerminal::Break | ConditionalLoopTerminal::Return(_)
-                            )
-                        );
                         conditional_else_arms[conditional_else_arm_count] = Some(arm);
                         conditional_else_arm_count += 1;
                         if arm.condition.is_none() {
@@ -1936,8 +1929,6 @@ impl<'source> BodyParser<'source> {
                         condition: &self.source[condition_span.start..condition_span.end],
                         condition_span,
                     };
-                    has_break |=
-                        control.is_some_and(|control| matches!(control.text, "break" | "return"));
                     operations[operation_count] =
                         Some(if action_count != 0 || else_arm.is_some() {
                             conditional_blocks[conditional_block_count] =
@@ -1983,7 +1974,6 @@ impl<'source> BodyParser<'source> {
                     })?;
                     if control.text == "return" {
                         let (value, value_span) = probe.return_value()?;
-                        has_break = true;
                         operations[operation_count] =
                             Some(LoopOperation::Return(LoopReturn { value, value_span }));
                     } else {
@@ -1991,7 +1981,6 @@ impl<'source> BodyParser<'source> {
                         if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
                             return Err(probe.error(ParseErrorKind::ExpectedSemicolon, semicolon));
                         }
-                        has_break |= control.text == "break";
                         operations[operation_count] = Some(if control.text == "break" {
                             LoopOperation::Break
                         } else {
@@ -2025,12 +2014,6 @@ impl<'source> BodyParser<'source> {
                 }
                 let name = probe.peek()?;
                 return Err(probe.error(ParseErrorKind::ExpectedIdentifier, name));
-            }
-            if operation_count == 0 {
-                return Err(probe.error(ParseErrorKind::ExpectedBody, Some(loop_token)));
-            }
-            if loop_token.text == "loop" && !has_break {
-                return Err(probe.error(ParseErrorKind::ExpectedBody, Some(loop_token)));
             }
             if body.while_loop_count == MAX_LOCALS {
                 return Err(probe.error(ParseErrorKind::TooManyLocals, Some(loop_token)));
@@ -3621,6 +3604,37 @@ mod tests {
             function.parse_body::<2>().unwrap_err().kind,
             ParseErrorKind::TooManyLoopOperations
         );
+    }
+
+    #[test]
+    fn parses_empty_while_and_diverging_loop_bodies() {
+        let empty_while = Parser::new("fn probe(enter: bool) -> u64 { while enter {} 42 }")
+            .parse_module::<2, 2>()
+            .unwrap();
+        let Some(Item::Function(function)) = empty_while.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<2>().unwrap();
+        assert_eq!(body.while_loops()[0].unwrap().operation_count(), 0);
+        assert_eq!(body.tail_expression, "42");
+        assert!(!body.tail_diverges);
+
+        for source in [
+            "fn spin() -> u64 { loop {} }",
+            "fn spin() -> u64 { loop { 1; } }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            let body = function.parse_body::<2>().unwrap();
+            assert!(body.tail_diverges);
+            assert_eq!(body.tail_expression, "");
+            assert_eq!(
+                body.while_loops()[0].unwrap().operation_count(),
+                usize::from(source.contains("1;"))
+            );
+        }
     }
 
     #[test]

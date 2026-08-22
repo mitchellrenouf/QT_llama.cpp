@@ -3384,6 +3384,30 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_empty_while_and_bounds_top_level_diverging_loops() {
+        let skipped = Parser::new(
+            "const fn probe(enter: bool) -> u8 { while enter {} 42 } const VALUE: u8 = probe(false);",
+        )
+        .parse_module::<3, 2>()
+        .unwrap();
+        let values = analyze_constants::<2, 48, 3, 2>(&skipped, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("VALUE"), Some(42));
+
+        for source in [
+            "const fn spin() -> u8 { loop {} } const BAD: u8 = spin();",
+            "const fn spin() -> u8 { loop { 1; } } const BAD: u8 = spin();",
+        ] {
+            let module = Parser::new(source).parse_module::<3, 2>().unwrap();
+            assert_eq!(
+                analyze_constants::<2, 48, 3, 2>(&module, TargetLayout::X86_64)
+                    .unwrap_err()
+                    .kind,
+                SemanticErrorKind::ConstLoopLimitExceeded
+            );
+        }
+    }
+
+    #[test]
     fn evaluates_condition_headed_inner_while_loops() {
         let module = Parser::new(
             "const fn sum(limit: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < limit { while inner < 3 { inner += 1; total += inner as u16; } outer += 1; inner = 0; } total } const ZERO: u16 = sum(0); const ONE: u16 = sum(1); const FIVE: u16 = sum(5);",

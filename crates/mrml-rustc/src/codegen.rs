@@ -4325,6 +4325,33 @@ mod tests {
     }
 
     #[test]
+    fn emits_empty_while_and_top_level_diverging_loop_backedges() {
+        for source in [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn probe(enter: bool) -> u64 { while enter {} 42 }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn spin() -> u64 { loop {} }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn spin() -> u64 { loop { 1; } }",
+        ] {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let machine =
+                    compile_x86_64_function::<_, 512, 2, 32>(&function, &NoConstants, abi).unwrap();
+                assert!(machine.bytes().windows(5).any(|instruction| {
+                    instruction[0] == 0xe9
+                        && i32::from_le_bytes([
+                            instruction[1],
+                            instruction[2],
+                            instruction[3],
+                            instruction[4],
+                        ]) < 0
+                }));
+            }
+        }
+    }
+
+    #[test]
     fn emits_bounded_unconditional_loops_and_explicit_continue() {
         let sources = [
             "#[unsafe(no_mangle)] pub extern \"C\" fn once() -> u64 { let mut value: u64 = 0; loop { value += 1; if value == 1 { break; } } value }",
@@ -4352,10 +4379,11 @@ mod tests {
         let Some(Item::Function(function)) = endless.items()[0] else {
             panic!("expected function")
         };
-        assert_eq!(
-            function.parse_body::<4>().unwrap_err().kind,
-            crate::ParseErrorKind::ExpectedBody
-        );
+        let body = function.parse_body::<4>().unwrap();
+        assert_eq!(body.tail_expression, "value");
+        for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+            assert!(compile_x86_64_function::<_, 512, 4, 32>(&function, &NoConstants, abi).is_ok());
+        }
     }
 
     #[test]
