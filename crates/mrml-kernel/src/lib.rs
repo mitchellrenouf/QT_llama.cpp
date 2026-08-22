@@ -61,9 +61,10 @@ pub use policy::{
     VmName, VmPolicy,
 };
 pub use scheduler::{
-    BalanceOutcome, DetachedTask, KernelScheduleError, KernelScheduler, MigrationMailbox,
-    MigrationMailboxError, OwnershipMailbox, OwnershipMailboxError, Priority, ScheduleOutcome,
-    Scheduler, SchedulerError, SchedulerLoad, TaskAttachError, TaskId, TaskMigration, TaskState,
+    BalanceOutcome, BalancePolicyError, BalanceTarget, DetachedTask, KernelScheduleError,
+    KernelScheduler, MigrationMailbox, MigrationMailboxError, OwnershipMailbox,
+    OwnershipMailboxError, PeriodicBalancer, Priority, ScheduleOutcome, Scheduler, SchedulerError,
+    SchedulerLoad, TaskAttachError, TaskId, TaskMigration, TaskState,
 };
 pub use service_lifecycle::{
     RestartPolicy, ServiceError, ServiceFault, ServiceId, ServiceRetirement, ServiceState,

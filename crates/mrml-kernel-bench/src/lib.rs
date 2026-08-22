@@ -8,7 +8,8 @@
 mod tests {
     use core::hint::black_box;
     use mrml_kernel::{
-        CapabilitySpace, KernelScheduler, ObjectId, Priority, Rights, Scheduler, VmTable,
+        CapabilitySpace, KernelScheduler, ObjectId, PeriodicBalancer, Priority, Rights, Scheduler,
+        SchedulerLoad, VmTable,
     };
     use mrml_runtime::{Instant, mrml_println};
 
@@ -109,6 +110,28 @@ mod tests {
             elapsed,
             picoseconds,
             ITERATIONS
+        );
+        assert!(per_operation < MAX_NANOSECONDS_PER_OPERATION);
+    }
+
+    #[test]
+    #[ignore = "manual release-mode performance gate"]
+    fn periodic_balance_full_topology_budget() {
+        const BALANCE_ITERATIONS: u64 = 100_000;
+        let mut policy = PeriodicBalancer::<256>::new(0, 1).unwrap();
+        let mut loads = [SchedulerLoad::new(1, 1, 4).unwrap(); 256];
+        loads[0] = SchedulerLoad::new(4, 4, 8).unwrap();
+        let start = Instant::now();
+        for tick in 1..=BALANCE_ITERATIONS {
+            black_box(policy.poll(black_box(tick), 0, black_box(&loads)).unwrap());
+        }
+        let elapsed = start.elapsed().as_nanos();
+        let per_operation = elapsed / BALANCE_ITERATIONS as u128;
+        mrml_println!(
+            "MRML_KERNEL_BENCH periodic_balance_256_total_ns={} periodic_balance_256_ns={} iterations={}",
+            elapsed,
+            per_operation,
+            BALANCE_ITERATIONS
         );
         assert!(per_operation < MAX_NANOSECONDS_PER_OPERATION);
     }

@@ -341,7 +341,11 @@ GDT/IDT/TSS with guarded entry and double-fault stacks, and only then publishes
 online. The BSP zeroes and unmaps the trampoline after the final
 acknowledgement. A freshly signed two-vCPU QEMU 11.1 TCG/UEFI image completed
 this sequence on Windows; both CPUs halted in kernel-owned code with distinct
-descriptor tables and the same CR3. A freshly signed two-vCPU nested-KVM image
+descriptor tables and the same CR3. A fresh 2026-08-22 rebuild from the current
+sources repeated the authenticated loader-to-kernel path and emitted the exact
+terminal trace `... 28 29 2b 26 27 30 05`, proving retry acknowledgement,
+rearm, final trampoline revocation, and BSP return. A freshly signed two-vCPU
+nested-KVM image
 also completed the sequence on Arch Linux under WSL2. The VMM gives each vCPU
 a normalized APIC identity, holds the AP in KVM's architectural uninitialized
 state until INIT/SIPI makes it runnable, maps the authenticated low trampoline
@@ -377,6 +381,14 @@ retains its current task, selects one non-running task, and transfers it to the
 one-task destination. Fresh policy-selected runs completed in 64,381
 microseconds on nested KVM and 62,785 microseconds on WHP. Periodic multi-peer
 balancing orchestration remains unfinished.
+The kernel now has a bounded allocation-free `PeriodicBalancer` foundation for
+that orchestration. It rejects invalid topology, CPU identity, zero cadence,
+clock regression, and deadline overflow; suppresses catch-up bursts after a
+delayed tick; skips full or insufficiently underloaded peers; and rotates
+equal-load destinations to avoid stable-index starvation. Windows and Linux
+tests exercise the cadence and selection policy. Wiring repeated timer/IPI
+cycles into the live multi-vCPU kernel remains unfinished. The release-mode
+256-CPU selection gate measured 348 ns per poll on Windows and 341 ns on Linux.
 The task runtime also has a non-copyable complete-domain migration ticket. It
 retires a non-current scheduler identity together with its saved CPL3 context,
 page-table root, capability space, and bounded IPC inbox; destination admission

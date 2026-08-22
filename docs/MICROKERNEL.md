@@ -1455,7 +1455,15 @@ the current task, deterministically detaches one non-running responsive task,
 and transfers it to CPU 1. CPU 1 verifies the preserved priority and its new
 two-task load before switching. Fresh policy-selected runs measured
 `total=64381us` on nested KVM and `total=62785us` on WHP. Periodic multi-peer
-balancing orchestration remains pending. The
+balancing orchestration remains pending. The allocation-free
+`PeriodicBalancer` now supplies its bounded policy foundation. It rejects
+invalid topology/local identity, zero cadence, clock regression, and deadline
+overflow; advances its next deadline from the observed tick to avoid catch-up
+storms; skips full or insufficiently underloaded peers; and rotates equal-load
+candidates. Windows and Linux tests cover cadence, delayed ticks, tie rotation,
+capacity, and fail-closed time/topology handling. Repeated live timer/IPI
+orchestration remains pending. The release-mode 256-CPU scan measured 348 ns
+per poll on Windows and 341 ns on Linux. The
 task runtime now extends migration from scheduler metadata to a complete linear
 user-domain ticket containing the saved CPL3 context and page-table root,
 capability space, and bounded IPC inbox. Admission consumes the ticket only
@@ -1509,8 +1517,8 @@ final permissions, and revokes and zeroes every failed installation; only its
 opaque installed result may publish SIPI. The WHP implementation allocates a
 dedicated low guest-physical page, stages it RW/NX, replaces the GPA mapping
 with RX, and verifies the copied bytes and denied guest write against the live
-Windows hypervisor. UEFI, KVM, and WHP live AP execution are now verified; SMP
-scheduling is still required. The common page-table builder
+Windows hypervisor. UEFI, KVM, and WHP live AP execution and hosted SMP
+scheduling are now verified. The common page-table builder
 now supports an
 exact-match protection transition: it preflights every 4 KiB leaf, physical
 frame, and old permission before changing any logical mapping. This supplies a
@@ -1551,6 +1559,8 @@ compile-time TSC frequency and longer host-thread scheduling allowance without
 changing production's invariant-TSC-only hardware timing. A freshly generated
 one-use Lamport key signed the exact two-vCPU test kernel; its byte trace reached
 AP acknowledgement, trampoline rearm, final revocation, and normal BSP return.
+A fresh 2026-08-22 build of the current loader and kernel repeated this result
+with terminal trace bytes `28 29 2b 26 27 30 05` under QEMU 11.1 TCG/UEFI.
 QEMU register inspection showed both CPUs halted in kernel code with a shared
 CR3 and distinct GDT, IDT, and TSS addresses.
 Platform-backed service page

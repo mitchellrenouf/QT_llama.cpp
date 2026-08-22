@@ -95,6 +95,105 @@ impl SchedulerLoad {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BalancePolicyError {
+    InvalidCpuCount,
+    InvalidLocalCpu,
+    InvalidInterval,
+    TickRegression,
+    TickExhausted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BalanceTarget {
+    cpu: usize,
+    load: SchedulerLoad,
+}
+
+impl BalanceTarget {
+    pub const fn cpu(self) -> usize {
+        self.cpu
+    }
+
+    pub const fn load(self) -> SchedulerLoad {
+        self.load
+    }
+}
+
+/// Bounded periodic policy for selecting one remote scheduler to receive work.
+/// It suppresses catch-up bursts after delayed ticks and rotates equal-load
+/// peers so a stable topology cannot starve a higher-numbered CPU.
+pub struct PeriodicBalancer<const CPUS: usize> {
+    interval_ticks: u64,
+    next_tick: u64,
+    last_tick: u64,
+    cursor: usize,
+}
+
+impl<const CPUS: usize> PeriodicBalancer<CPUS> {
+    pub const fn new(start_tick: u64, interval_ticks: u64) -> Result<Self, BalancePolicyError> {
+        if CPUS < 2 {
+            return Err(BalancePolicyError::InvalidCpuCount);
+        }
+        if interval_ticks == 0 {
+            return Err(BalancePolicyError::InvalidInterval);
+        }
+        let Some(next_tick) = start_tick.checked_add(interval_ticks) else {
+            return Err(BalancePolicyError::TickExhausted);
+        };
+        Ok(Self {
+            interval_ticks,
+            next_tick,
+            last_tick: start_tick,
+            cursor: 0,
+        })
+    }
+
+    pub fn poll(
+        &mut self,
+        tick: u64,
+        local_cpu: usize,
+        loads: &[SchedulerLoad; CPUS],
+    ) -> Result<Option<BalanceTarget>, BalancePolicyError> {
+        if local_cpu >= CPUS {
+            return Err(BalancePolicyError::InvalidLocalCpu);
+        }
+        if tick < self.last_tick {
+            return Err(BalancePolicyError::TickRegression);
+        }
+        self.last_tick = tick;
+        if tick < self.next_tick {
+            return Ok(None);
+        }
+        self.next_tick = tick
+            .checked_add(self.interval_ticks)
+            .ok_or(BalancePolicyError::TickExhausted)?;
+
+        let local = loads[local_cpu];
+        let mut selected = None;
+        for offset in 0..CPUS {
+            let cpu = (self.cursor + offset) % CPUS;
+            let candidate = loads[cpu];
+            if cpu == local_cpu
+                || candidate.occupied() == candidate.capacity()
+                || local.runnable() < candidate.runnable().saturating_add(2)
+            {
+                continue;
+            }
+            if selected.is_none_or(|(_, load): (usize, SchedulerLoad)| {
+                (candidate.runnable(), candidate.occupied()) < (load.runnable(), load.occupied())
+            }) {
+                selected = Some((cpu, candidate));
+            }
+        }
+        let Some((cpu, load)) = selected else {
+            return Ok(None);
+        };
+        self.cursor = (cpu + 1) % CPUS;
+        Ok(Some(BalanceTarget { cpu, load }))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BalanceOutcome {
     Balanced,
     Migrated(TaskMigration),
@@ -1004,5 +1103,67 @@ mod tests {
         let detached = source.detach_for_rebalance(underloaded).unwrap().unwrap();
         assert_eq!(detached.priority, Priority::RESPONSIVE);
         assert_eq!(source.load().runnable(), 2);
+    }
+
+    #[test]
+    fn periodic_balancer_waits_and_suppresses_delayed_tick_bursts() {
+        let mut policy = PeriodicBalancer::<2>::new(10, 5).unwrap();
+        let loads = [
+            SchedulerLoad::new(3, 3, 4).unwrap(),
+            SchedulerLoad::new(0, 0, 4).unwrap(),
+        ];
+        assert_eq!(policy.poll(14, 0, &loads), Ok(None));
+        assert_eq!(policy.poll(15, 0, &loads).unwrap().unwrap().cpu(), 1);
+        assert_eq!(policy.poll(16, 0, &loads), Ok(None));
+        assert_eq!(policy.poll(100, 0, &loads).unwrap().unwrap().cpu(), 1);
+        assert_eq!(policy.poll(101, 0, &loads), Ok(None));
+    }
+
+    #[test]
+    fn periodic_balancer_rotates_equal_peers_and_skips_full_destinations() {
+        let mut policy = PeriodicBalancer::<3>::new(0, 1).unwrap();
+        let loads = [
+            SchedulerLoad::new(3, 3, 4).unwrap(),
+            SchedulerLoad::new(0, 0, 4).unwrap(),
+            SchedulerLoad::new(0, 0, 4).unwrap(),
+        ];
+        assert_eq!(policy.poll(1, 0, &loads).unwrap().unwrap().cpu(), 1);
+        assert_eq!(policy.poll(2, 0, &loads).unwrap().unwrap().cpu(), 2);
+
+        let full = [
+            SchedulerLoad::new(3, 3, 4).unwrap(),
+            SchedulerLoad::new(1, 0, 1).unwrap(),
+            SchedulerLoad::new(1, 1, 4).unwrap(),
+        ];
+        assert_eq!(policy.poll(3, 0, &full).unwrap().unwrap().cpu(), 2);
+    }
+
+    #[test]
+    fn periodic_balancer_rejects_invalid_time_and_topology() {
+        assert!(matches!(
+            PeriodicBalancer::<1>::new(0, 1),
+            Err(BalancePolicyError::InvalidCpuCount)
+        ));
+        assert!(matches!(
+            PeriodicBalancer::<2>::new(0, 0),
+            Err(BalancePolicyError::InvalidInterval)
+        ));
+        assert!(matches!(
+            PeriodicBalancer::<2>::new(u64::MAX, 1),
+            Err(BalancePolicyError::TickExhausted)
+        ));
+        let loads = [
+            SchedulerLoad::new(0, 0, 1).unwrap(),
+            SchedulerLoad::new(0, 0, 1).unwrap(),
+        ];
+        let mut policy = PeriodicBalancer::<2>::new(5, 2).unwrap();
+        assert_eq!(
+            policy.poll(4, 0, &loads),
+            Err(BalancePolicyError::TickRegression)
+        );
+        assert_eq!(
+            policy.poll(5, 2, &loads),
+            Err(BalancePolicyError::InvalidLocalCpu)
+        );
     }
 }
