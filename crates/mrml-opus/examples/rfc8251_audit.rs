@@ -61,17 +61,32 @@ fn audit(path: &Path) -> Result<Totals, String> {
 
 fn main() -> Result<(), String> {
     let mut arguments = std::env::args_os().skip(1);
-    let directory =
-        PathBuf::from(arguments.next().ok_or_else(|| {
-            "usage: rfc8251_audit <vector-directory> [--require-exact]".to_owned()
-        })?);
+    let input = PathBuf::from(arguments.next().ok_or_else(|| {
+        "usage: rfc8251_audit <vector-directory|vector.bit> [--require-exact]".to_owned()
+    })?);
     let require_exact = arguments.any(|argument| argument == "--require-exact");
     let mut all = Totals::default();
-    for number in 1..=12 {
-        let path = directory.join(format!("testvector{number:02}.bit"));
+    let paths: Vec<(String, PathBuf)> = if input.is_file() {
+        let label = input
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("vector")
+            .to_owned();
+        vec![(label, input)]
+    } else {
+        (1..=12)
+            .map(|number| {
+                (
+                    format!("{number:02}"),
+                    input.join(format!("testvector{number:02}.bit")),
+                )
+            })
+            .collect()
+    };
+    for (label, path) in paths {
         let totals = audit(&path)?;
         println!(
-            "{number:02}: packets={} decoded={} exact_ranges={}",
+            "{label}: packets={} decoded={} exact_ranges={}",
             totals.packets, totals.decoded, totals.exact_ranges
         );
         all.packets += totals.packets;
