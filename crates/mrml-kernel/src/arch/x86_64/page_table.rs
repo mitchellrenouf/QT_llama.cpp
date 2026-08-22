@@ -159,6 +159,48 @@ impl<S: PageTableStore> PageTableBuilder<S> {
         let root = store.allocate_zeroed()?;
         Ok(Self { store, root })
     }
+
+    /// Creates a fresh lower half while sharing only the current kernel's
+    /// supervisor upper-half hierarchy.
+    ///
+    /// # Safety
+    ///
+    /// The current CR3 and every referenced upper-half table must remain live
+    /// and immutable while the returned address space can run. The caller must
+    /// exclude concurrent mutation during this snapshot.
+    pub unsafe fn new_with_current_supervisor_half(store: S) -> Result<Self, PageTableBuildError> {
+        let source: u64;
+        unsafe { asm!("mov {}, cr3", out(reg) source, options(nomem, nostack, preserves_flags)) };
+        let source = PhysAddr::new(source & ADDRESS_MASK)
+            .map_err(|_| PageTableBuildError::InvalidIntermediate)?;
+        Self::new_with_supervisor_half_from(store, &IdentityMappedPageTables, source)
+    }
+
+    fn new_with_supervisor_half_from<R: PageTableStore>(
+        mut store: S,
+        source_store: &R,
+        source: PhysAddr,
+    ) -> Result<Self, PageTableBuildError> {
+        let root = store.allocate_zeroed()?;
+        for index in 256..512 {
+            let entry = source_store.read(source, index)?;
+            if entry & 1 == 0 {
+                if entry != 0 {
+                    return Err(PageTableBuildError::InvalidIntermediate);
+                }
+                continue;
+            }
+            if entry & (1 << 2) != 0
+                || entry & (1 << 7) != 0
+                || entry & !((1 << 63) | 0xfff | ADDRESS_MASK) != 0
+                || entry & ADDRESS_MASK == 0
+            {
+                return Err(PageTableBuildError::InvalidIntermediate);
+            }
+            store.write(root, index, entry)?;
+        }
+        Ok(Self { store, root })
+    }
     pub const fn root(&self) -> PhysAddr {
         self.root
     }
@@ -598,6 +640,40 @@ mod tests {
             store.write(PhysAddr::new(base.get() + 4 * PAGE_SIZE).unwrap(), 0, 0),
             Err(PageTableBuildError::Storage)
         );
+    }
+
+    #[test]
+    fn fresh_root_copies_only_valid_supervisor_upper_half() {
+        let mut source = Tables {
+            pages: [[0; 512]; 8],
+            used: 0,
+        };
+        let source_root = source.allocate_zeroed().unwrap();
+        let kernel_entry = PageTableEntry::table(PhysAddr::new(0x20_0000).unwrap(), false)
+            .unwrap()
+            .bits();
+        source.write(source_root, 300, kernel_entry).unwrap();
+        let destination = Tables {
+            pages: [[u64::MAX; 512]; 8],
+            used: 0,
+        };
+        let builder =
+            PageTableBuilder::new_with_supervisor_half_from(destination, &source, source_root)
+                .unwrap();
+        assert_eq!(builder.store().read(builder.root(), 255), Ok(0));
+        assert_eq!(builder.store().read(builder.root(), 300), Ok(kernel_entry));
+
+        source
+            .write(source_root, 300, kernel_entry | (1 << 2))
+            .unwrap();
+        let destination = Tables {
+            pages: [[0; 512]; 8],
+            used: 0,
+        };
+        assert!(matches!(
+            PageTableBuilder::new_with_supervisor_half_from(destination, &source, source_root),
+            Err(PageTableBuildError::InvalidIntermediate)
+        ));
     }
 
     #[test]

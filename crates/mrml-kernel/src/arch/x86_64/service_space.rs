@@ -211,6 +211,25 @@ impl<const MAPPINGS: usize> ServiceAddressSpace<MAPPINGS> {
         Ok(tables)
     }
 
+    /// Builds the isolated user half while retaining the live kernel's
+    /// supervisor-only upper half for safe trap and syscall entry.
+    ///
+    /// # Safety
+    ///
+    /// The current kernel page tables must satisfy the ownership and lifetime
+    /// contract of [`PageTableBuilder::new_with_current_supervisor_half`].
+    pub unsafe fn build_page_tables_with_current_kernel<S: PageTableStore>(
+        &self,
+        store: S,
+    ) -> Result<PageTableBuilder<S>, ServiceSpaceError> {
+        let mut tables = unsafe { PageTableBuilder::new_with_current_supervisor_half(store) }
+            .map_err(ServiceSpaceError::Tables)?;
+        for mapping in self.space.mappings() {
+            tables.map(mapping).map_err(ServiceSpaceError::Tables)?;
+        }
+        Ok(tables)
+    }
+
     pub fn mappings(&self) -> impl Iterator<Item = Mapping> + '_ {
         self.space.mappings()
     }
