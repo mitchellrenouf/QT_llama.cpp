@@ -8,6 +8,7 @@ const MAX_INLINE_CONST_EXPRESSION_STATEMENTS: usize = 8;
 const MAX_MATCH_PATTERNS: usize = 8;
 const MAX_MATCH_ALTERNATIVES: usize = 4;
 const MAX_RANGE_VALIDATIONS: usize = MAX_MATCH_PATTERNS * MAX_MATCH_ALTERNATIVES;
+const MAX_LOOP_BREAK_BRANCHES: usize = 4;
 
 type InlineConstBinding<'source> = (&'source str, ExprKind<'source>, bool, Option<ScalarType>);
 
@@ -315,6 +316,7 @@ pub enum ExpressionErrorKind {
     TooManyInlineConstBindings,
     TooManyInlineConstAssignments,
     TooManyInlineConstExpressionStatements,
+    TooManyLoopBreakBranches,
     ImmutableInlineConstAssignment,
     UnsupportedInlineConstAssignment,
     NestingLimitExceeded,
@@ -2404,8 +2406,14 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
             return Err(self.error(ExpressionErrorKind::ExpectedOpenBrace, open));
         }
-        let control = self.take()?;
-        if control.is_some_and(|token| token.text == "if") {
+        let mut conditions = [None; MAX_LOOP_BREAK_BRANCHES];
+        let mut branches = [None; MAX_LOOP_BREAK_BRANCHES];
+        let mut branch_count = 0usize;
+        let mut control = self.take()?;
+        while control.is_some_and(|token| token.text == "if") {
+            if branch_count == MAX_LOOP_BREAK_BRANCHES {
+                return Err(self.error(ExpressionErrorKind::TooManyLoopBreakBranches, control));
+            }
             let condition = self.expression(0, depth + 1)?;
             let open = self.take()?;
             if !open.is_some_and(|token| token.kind == TokenKind::OpenBrace) {
@@ -2425,31 +2433,10 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
                 return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
             }
-            let fallback_break = self.take()?;
-            if !fallback_break.is_some_and(|token| token.text == "break") {
-                return Err(self.error(ExpressionErrorKind::ExpectedExpression, fallback_break));
-            }
-            self.loop_break_label(label)?;
-            let else_branch = self.expression(0, depth + 1)?;
-            let semicolon = self.take()?;
-            if !semicolon.is_some_and(|token| token.kind == TokenKind::Semicolon) {
-                return Err(self.error(ExpressionErrorKind::TrailingToken, semicolon));
-            }
-            let close = self.take()?;
-            let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
-                return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
-            };
-            return self.push(Expr {
-                kind: ExprKind::LoopBreakIf {
-                    condition,
-                    then_branch,
-                    else_branch,
-                },
-                span: Span {
-                    start: label.map_or(loop_token.span.start, |label| label.span.start),
-                    end: close.span.end,
-                },
-            });
+            conditions[branch_count] = Some(condition);
+            branches[branch_count] = Some(then_branch);
+            branch_count += 1;
+            control = self.take()?;
         }
         if !control.is_some_and(|token| token.text == "break") {
             return Err(self.error(ExpressionErrorKind::ExpectedExpression, control));
@@ -2464,13 +2451,34 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
         let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBrace) else {
             return Err(self.error(ExpressionErrorKind::ExpectedCloseBrace, close));
         };
-        self.push(Expr {
-            kind: ExprKind::LoopBreak { operand },
-            span: Span {
-                start: label.map_or(loop_token.span.start, |label| label.span.start),
-                end: close.span.end,
-            },
-        })
+        let span = Span {
+            start: label.map_or(loop_token.span.start, |label| label.span.start),
+            end: close.span.end,
+        };
+        if branch_count == 0 {
+            return self.push(Expr {
+                kind: ExprKind::LoopBreak { operand },
+                span,
+            });
+        }
+        let mut result = operand;
+        for index in (0..branch_count).rev() {
+            result = self.push(Expr {
+                kind: ExprKind::LoopBreakIf {
+                    condition: conditions[index].ok_or(ExpressionError {
+                        kind: ExpressionErrorKind::InvalidExpressionTree,
+                        span,
+                    })?,
+                    then_branch: branches[index].ok_or(ExpressionError {
+                        kind: ExpressionErrorKind::InvalidExpressionTree,
+                        span,
+                    })?,
+                    else_branch: result,
+                },
+                span,
+            })?;
+        }
+        Ok(result)
     }
 
     fn loop_break_label(
@@ -2908,6 +2916,27 @@ mod tests {
         assert_eq!(
             evaluate("'value: loop { if false { break 'value 1 / 0; } break 'value 42; }"),
             Ok(42)
+        );
+        assert_eq!(
+            evaluate(
+                "'value: loop { if false { break 'value 1 / 0; } if true { break 'value 42; } if true { break 'value 1 / 0; } break 'value 1 / 0; }"
+            ),
+            Ok(42)
+        );
+        assert_eq!(
+            evaluate(
+                "loop { if false { break 1; } if false { break 2; } if false { break 3; } if true { break 4; } break 5; }"
+            ),
+            Ok(4)
+        );
+        assert_eq!(
+            ExpressionParser::<32>::new(
+                "loop { if false { break 1; } if false { break 2; } if false { break 3; } if false { break 4; } if true { break 5; } break 6; }"
+            )
+            .parse()
+            .unwrap_err()
+            .kind,
+            ExpressionErrorKind::TooManyLoopBreakBranches
         );
         assert_eq!(
             ExpressionParser::<8>::new("'value loop { break 13; }")

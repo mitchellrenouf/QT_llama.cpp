@@ -197,17 +197,18 @@ integer type with `RangeEndpointOutOfRange` before emitting partial code.
 An immediate value-producing loop expression of the form
 `loop { break expression; }` is represented in the same fixed-capacity arena.
 Its operand retains its integer or Boolean type through direct evaluation, IR
-lowering, local initialization, and native emission. The bounded two-exit form
-`loop { if condition { break first; } break fallback; }` additionally checks a
-Boolean condition, unifies both break types, and evaluates only the selected
-operand. Both forms accept one lifetime-style loop label and matching labeled
-breaks; missing colons and unknown break labels fail with dedicated expression
-diagnostics. General iterating loop expressions, more than two competing break
-values, coercion, and nested diverging loops remain separate work. An original
-labeled two-exit probe emitted deterministic 248-byte COFF and 640-byte ELF64
-objects. Independent pinned-nightly callers passed both branches, signed
-results, and a selected zero input that would trap if the fallback division
-were evaluated.
+lowering, local initialization, and native emission. Up to four source-ordered
+`if condition { break value; }` exits may precede the required fallback break.
+Every condition must be Boolean, all five possible values unify to one type,
+and only the selected operand is evaluated. These forms accept one
+lifetime-style loop label and matching labeled breaks; missing colons, unknown
+break labels, and a fifth conditional exit fail with dedicated expression
+diagnostics. General iterating loop expressions, larger break-value graphs,
+coercion, and nested diverging loops remain separate work. An original labeled
+four-guard probe emitted deterministic 407-byte COFF and 800-byte ELF64 objects.
+Independent pinned-nightly callers selected every exit, covered signed results,
+and passed a selected zero input that would trap if fallback division were
+evaluated.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code;
 both explicit `-> ()` and an omitted function return type select a C-ABI void
@@ -555,9 +556,10 @@ The complete upstream `tests/ui/for-loop-while/loop-break-value.rs` also compile
 and ran unchanged under the pinned nightly. Original MRML replacements cover
 its immediate scalar integer and Boolean break-value forms, including matching
 labels. The oracle file's arrays, references, trait coercions, never type,
-nested loops, matches, and larger break-value control-flow graphs are not
-claimed by this slice. A second replacement covers two compatible competing
-scalar values and lazy selection of the taken break edge.
+nested loops, matches, and break-value control-flow graphs beyond four guarded
+exits plus a fallback are not claimed by this slice. Replacements cover up to
+five compatible competing scalar values and lazy selection of the taken break
+edge.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate

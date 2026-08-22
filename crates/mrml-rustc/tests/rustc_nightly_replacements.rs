@@ -1598,6 +1598,7 @@ fn rustc_competing_break_loop_values_reach_native_objects() {
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool) -> bool { let value: bool = loop { if first { break true; } break false; }; value }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = 'value: loop { if first { break 'value input + 1; } break 'value 84 / input; }; value }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = 'value: loop { if first { break 'value input + 1; } if input == 0 { break 'value 42; } if input == 1 { break 'value 43; } break 'value 84 / input; }; value }",
     ];
     for source in sources {
         assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
