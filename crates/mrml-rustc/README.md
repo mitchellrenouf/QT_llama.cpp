@@ -360,9 +360,17 @@ The exact pinned nightly `tests/ui/array-slice-vec/vec-fixed-length.rs` compiled
 and ran unchanged on both hosts. Independent mutate-and-return callers passed a
 four-byte `[u8; 4]`, a ten-byte `[u16; 5]`, and a three-byte `[bool; 3]` on both
 ABIs. Their COFF objects were 553, 608, and 411 bytes; their ELF64 objects were
-944, 1,048, and 824 bytes. Zero-sized array ABI classes, unconstrained array
-defaults, references, slices, and general aggregate ABI transport remain
-separate work.
+944, 1,048, and 824 bytes. Zero-length arrays and arrays of unit elements now
+follow their zero-sized ABI classes without transporting result bytes. System V
+omits zero-sized arguments from register allocation, while Windows preserves
+their positional argument slots; later scalar arguments therefore arrive in
+the same locations as pinned nightly on each platform. Array expressions still
+evaluate normally, and unit elements retain their auditable internal slots.
+Independent callers passed zero-length and three-unit parameters between scalar
+arguments and consumed both zero-sized return forms on both hosts. The four
+COFF objects were 195, 201, 99, and 119 bytes; their ELF64 counterparts were
+584, 592, 488, and 512 bytes. Unconstrained array defaults, references, slices,
+and general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -853,7 +861,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 276 Windows library, conformance, rustc-nightly-replacement, and driver
+The 277 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1527,7 +1535,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 276 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 277 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

@@ -1735,6 +1735,20 @@ fn rustc_fixed_length_packed_array_abi_reaches_native_objects() {
 }
 
 #[test]
+fn rustc_zero_sized_array_abi_reaches_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, empty: [u8; 0], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(a: usize, units: [(); 3], b: usize, c: usize) -> usize { a + b * 10 + c * 100 }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8) -> [u8; 0] { [] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8) -> [(); 3] { [(); 3] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",

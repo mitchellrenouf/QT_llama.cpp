@@ -527,6 +527,10 @@ pub fn compile_x86_64_function_with_options<
     let returns_bool = return_type_text == "bool";
     let returns_char = return_type_text == "char";
     let return_array = runtime_array_type(return_type_text);
+    let returns_zero_sized_array = return_array
+        .and_then(runtime_array_abi_layout)
+        .is_some_and(|(_, bytes, _)| bytes == 0);
+    let returns_value_free = returns_unit || returns_zero_sized_array;
     if !returns_unit
         && !returns_bool
         && !returns_char
@@ -538,14 +542,14 @@ pub fn compile_x86_64_function_with_options<
             span: return_type_span,
         });
     }
-    if let Some(RuntimeExpressionType::Array { element, count }) = return_array
-        && (count == 0
-            || !matches!(
-                element,
-                RuntimeArrayElementType::Bool
-                    | RuntimeArrayElementType::Char
-                    | RuntimeArrayElementType::Integer(Some(_))
-            ))
+    if let Some(RuntimeExpressionType::Array { element, .. }) = return_array
+        && !matches!(
+            element,
+            RuntimeArrayElementType::Unit
+                | RuntimeArrayElementType::Bool
+                | RuntimeArrayElementType::Char
+                | RuntimeArrayElementType::Integer(Some(_))
+        )
     {
         return Err(CodegenError {
             kind: CodegenErrorKind::UnsupportedReturnType,
@@ -578,17 +582,16 @@ pub fn compile_x86_64_function_with_options<
         if let Some(RuntimeExpressionType::Array { element, count }) =
             runtime_array_type(parameter.ty.text)
         {
-            if count == 0 {
-                return Err(CodegenError {
-                    kind: CodegenErrorKind::UnsupportedParameterType,
-                    span: parameter.ty.span,
-                });
+            if runtime_array_element_bytes(element) == Some(0) || count == 0 {
+                continue;
             }
             match element {
                 RuntimeArrayElementType::Bool => continue,
                 RuntimeArrayElementType::Char if operand_type == "char" => continue,
                 RuntimeArrayElementType::Integer(Some(element))
-                    if (returns_unit || returns_boolean_like || element.name() == operand_type)
+                    if (returns_value_free
+                        || returns_boolean_like
+                        || element.name() == operand_type)
                         && integer_operand_type
                             .is_none_or(|existing| existing == element.name()) =>
                 {
@@ -607,7 +610,7 @@ pub fn compile_x86_64_function_with_options<
             continue;
         }
         if runtime_width(parameter.ty.text).is_none()
-            || (!returns_unit && !returns_boolean_like && parameter.ty.text != operand_type)
+            || (!returns_value_free && !returns_boolean_like && parameter.ty.text != operand_type)
             || integer_operand_type.is_some_and(|ty| ty != parameter.ty.text)
         {
             return Err(CodegenError {
@@ -617,11 +620,12 @@ pub fn compile_x86_64_function_with_options<
         }
         integer_operand_type = Some(parameter.ty.text);
     }
-    let operand_type = if (returns_boolean_like || returns_unit) && integer_operand_type.is_some() {
-        integer_operand_type.unwrap_or("u64")
-    } else {
-        operand_type
-    };
+    let operand_type =
+        if (returns_boolean_like || returns_value_free) && integer_operand_type.is_some() {
+            integer_operand_type.unwrap_or("u64")
+        } else {
+            operand_type
+        };
     let expected_type = if returns_unit {
         RuntimeExpressionType::Unit
     } else if returns_bool {
@@ -639,7 +643,7 @@ pub fn compile_x86_64_function_with_options<
     })?;
     let uses_sret = return_array.and_then(runtime_array_abi_layout).is_some_and(
         |(_, bytes, words)| match abi {
-            X86_64Abi::Windows => !matches!(bytes, 1 | 2 | 4 | 8),
+            X86_64Abi::Windows => bytes != 0 && !matches!(bytes, 1 | 2 | 4 | 8),
             X86_64Abi::SystemV => words > 2,
         },
     );
@@ -2497,7 +2501,9 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                         let RuntimeExpressionType::Array { count, .. } = array else {
                             unreachable!()
                         };
-                        if matches!(bytes, 1 | 2 | 4 | 8) {
+                        if bytes == 0 {
+                            self.emit_zero_array_slots(count)?;
+                        } else if matches!(bytes, 1 | 2 | 4 | 8) {
                             self.emit_parameter_register_or_stack_load(
                                 X86_64Abi::Windows,
                                 abi_index,
@@ -2527,7 +2533,13 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     if let Some(array) = runtime_array_type(parameter.ty.text) {
                         let (_, _, words) = runtime_array_abi_layout(array)
                             .ok_or(self.error(CodegenErrorKind::UnsupportedParameterType))?;
-                        if words <= 2 && register + words <= 6 {
+                        let RuntimeExpressionType::Array { count, .. } = array else {
+                            unreachable!()
+                        };
+                        if words == 0 {
+                            self.emit_zero_array_slots(count)?;
+                            pushed_slots += count;
+                        } else if words <= 2 && register + words <= 6 {
                             for word in 0..words {
                                 self.emit_parameter_register_load(X86_64Abi::SystemV, register)?;
                                 self.emit_unpack_array_word(array, word)?;
@@ -2651,6 +2663,16 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 _ => return Err(self.error(CodegenErrorKind::UnsupportedParameterType)),
             }
             self.emit(&[0x52])?;
+        }
+        Ok(())
+    }
+
+    fn emit_zero_array_slots(&mut self, count: usize) -> Result<(), CodegenError> {
+        if count != 0 {
+            self.emit(&[0x31, 0xc0])?;
+        }
+        for _ in 0..count {
+            self.emit(&[0x50])?;
         }
         Ok(())
     }
@@ -4228,7 +4250,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         let (element_bytes, _, words) = runtime_array_abi_layout(expected_type)
             .ok_or(self.error(CodegenErrorKind::UnsupportedReturnType))?;
         self.emit_array_to_stack(tree, root, count)?;
-        if self.uses_sret {
+        if words == 0 {
+            // Zero-sized aggregates have no result transport. Their elements are
+            // still evaluated and materialized above so expression semantics stay
+            // identical to non-zero-sized arrays.
+        } else if self.uses_sret {
             let pointer_slot = self
                 .evaluation_depth
                 .checked_add(self.local_stack_slots()?)
@@ -6028,6 +6054,8 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [i16; 3]) -> i16 { values[0] + values[2] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [char; 2]) -> char { values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(values: [bool; 3]) -> bool { values[0] ^ values[2] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(a: u64, empty: [u8; 0], b: u64, c: u64) -> u64 { a + b + c }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(a: u64, units: [(); 3], b: u64, c: u64) -> u64 { a + b + c }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 8>().unwrap();
@@ -6073,6 +6101,8 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: i16) -> [i16; 3] { [input, -2, input + 1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: char) -> [char; 2] { [input, 'z'] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> [bool; 3] { [input, false, true] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> [u8; 0] { [] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> [(); 3] { [(); 3] }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
