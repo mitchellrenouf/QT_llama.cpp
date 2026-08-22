@@ -320,6 +320,8 @@ static AP_STARTUP_WORKSPACE: ApStartupWorkspace =
 static mut TIMER_SCHEDULER: Option<KernelScheduler<1>> = None;
 #[cfg(any(feature = "preemption-probe", feature = "service-preemption-probe"))]
 static mut PREEMPTION_RUNTIME: Option<TaskRuntime<2, 0>> = None;
+#[cfg(feature = "uefi-service-preemption-probe")]
+static mut UEFI_SERVICE_RECOVERED: bool = false;
 #[cfg(feature = "user-probe")]
 static mut USER_RUNTIME: Option<TaskRuntime<2, 1>> = None;
 #[cfg(feature = "user-probe")]
@@ -945,6 +947,16 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
         asm!("out dx, eax", in("dx") 0x4d5bu16, in("eax") 2u32, options(nomem, nostack));
         let runtime_pointer = core::ptr::addr_of_mut!(PREEMPTION_RUNTIME);
         let runtime = (*runtime_pointer).as_mut().unwrap_or_else(|| halt());
+        #[cfg(feature = "uefi-service-preemption-probe")]
+        if core::ptr::addr_of!(UEFI_SERVICE_RECOVERED).read() {
+            let current = runtime.current().unwrap_or_else(|| halt());
+            if runtime.preempt_current(interrupted) != Ok(ScheduleOutcome::Continue(current)) {
+                halt();
+            }
+            LocalApicTimer::acknowledge();
+            uefi_service_trace(0x9a);
+            halt();
+        }
         let next = match runtime.preempt_current(interrupted) {
             Ok(ScheduleOutcome::Switch { to, .. }) => to,
             _ => halt(),
@@ -1170,8 +1182,34 @@ unsafe extern "sysv64" fn mrml_exception_dispatch(frame: *const HardwareTrapFram
         );
         if proof == 6 {
             #[cfg(feature = "uefi-service-preemption-probe")]
-            asm!("out dx, al", in("dx") 0xe9u16, in("al") 0x91u8, options(nomem, nostack));
-            halt();
+            {
+                let runtime = (*core::ptr::addr_of_mut!(PREEMPTION_RUNTIME))
+                    .as_mut()
+                    .unwrap_or_else(|| halt());
+                let retired = runtime
+                    .terminate_current_fault(_disposition)
+                    .unwrap_or_else(|_| halt());
+                let next = match retired.next {
+                    ScheduleOutcome::Switch { to, .. }
+                        if retired.vector == 3 && retired.address.is_none() =>
+                    {
+                        to
+                    }
+                    _ => halt(),
+                };
+                if runtime.context(retired.task).is_ok() {
+                    halt();
+                }
+                core::ptr::addr_of_mut!(UEFI_SERVICE_RECOVERED).write(true);
+                uefi_service_trace(0x91);
+                let context = runtime
+                    .context(next)
+                    .map(|context| context as *const UserContext)
+                    .unwrap_or_else(|_| halt());
+                enter_service_preemption_context(&*context)
+            }
+            #[cfg(not(feature = "uefi-service-preemption-probe"))]
+            halt()
         }
     }
     #[cfg(feature = "fault-probe")]

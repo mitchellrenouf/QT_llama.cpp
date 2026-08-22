@@ -256,9 +256,11 @@ service verification inside the kernel, privately clones supervisor mappings,
 and creates final W^X user mappings in a fresh CR3. A signed QEMU TCG run then
 entered CPL3, accepted a real APIC timer only through exact-vector context
 conversion, cleared the hardware Resume Flag before rescheduling, restored a
-second CPL3 context, and handled its user breakpoint without halting the
-kernel. Fresh post-change regressions completed the equivalent cross-root path
-in 2,125 microseconds on nested KVM and 8,428 microseconds on WHP.
+second CPL3 context, retired and revoked that task after its user breakpoint,
+resumed the surviving CPL3 task, and accepted a later timer interrupt before
+the intentional proof halt. Fresh post-change regressions completed the
+equivalent cross-root path in 2,125 microseconds on nested KVM and 8,428
+microseconds on WHP.
 Validated generational ring-three context
 storage is implemented. The live image now installs ring-three code/data
 descriptors plus a validated 64-bit TSS, loads `TR`, disables its I/O bitmap,
