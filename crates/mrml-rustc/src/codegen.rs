@@ -639,6 +639,13 @@ pub fn compile_x86_64_function_with_options<
         if parameter.ty.text == "bool" {
             continue;
         }
+        if parameter.ty.text == "usize"
+            && operand_type != "usize"
+            && !returns_value_free
+            && !returns_boolean_like
+        {
+            continue;
+        }
         if runtime_width(parameter.ty.text).is_none()
             || (!returns_value_free && !returns_boolean_like && parameter.ty.text != operand_type)
             || integer_operand_type.is_some_and(|ty| ty != parameter.ty.text)
@@ -8062,6 +8069,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u32) -> u32 { let mut values = [input, 100000, 200000]; values = [input, values[1], values[2]]; let slice: &[u32] = &values[..2]; slice[0] + slice[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> bool { let mut values = [input, false, true]; let slice: &mut [bool] = &mut values[1..]; slice[0] ^= true; values[1] && slice[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: char) -> char { let mut values = [input, 'x', 'y']; let slice: &mut [char] = &mut values[1..3]; slice[0] = 'z'; values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(start: usize, end: usize) -> u8 { let mut values = [7u8, 10, 20, 30]; let slice: &mut [u8] = &mut values[start..end]; slice[0] += 2; values[start] + slice[1] }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 8>().unwrap();
@@ -8074,6 +8082,21 @@ mod tests {
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
+    }
+
+    #[test]
+    fn keeps_auxiliary_usize_parameters_out_of_narrow_arithmetic() {
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8, index: usize) -> u8 { input + index }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 512, 2, 64>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch,
+        );
     }
 
     #[test]

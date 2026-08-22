@@ -452,9 +452,14 @@ slices and copied a `u32` array before slicing it. Independent Windows and Arch
 Linux callers observed 32, 3,002, and 100,007; their COFF objects were 641, 685,
 and 671 bytes and their ELF64 objects were 1,032, 1,072, and 1,064 bytes.
 Boolean and character local slices have object-emission regressions for their
-exact-width stores. Array elements are still evaluated left to right; completed
-temporary slots are packed or reordered only afterward when positive-stride
-local backing is required.
+exact-width stores. Narrow-return functions now admit auxiliary `usize`
+parameters without changing the arithmetic width; runtime range endpoints use
+that path while ordinary mixed-width arithmetic remains rejected. A dynamic
+`u8` local-range probe returned 32 through 744-byte COFF and 1,136-byte ELF64
+objects. Reversed endpoints reached Windows `0xC000001D` and Linux `SIGILL`.
+Array elements are still evaluated left to right; completed temporary slots are
+packed or reordered only afterward when positive-stride local backing is
+required.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -954,7 +959,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 307 Windows library, conformance, rustc-nightly-replacement, and driver
+The 308 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1628,7 +1633,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 305 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 308 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
