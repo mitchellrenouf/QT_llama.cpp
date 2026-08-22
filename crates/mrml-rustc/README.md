@@ -442,6 +442,13 @@ range forms. Each endpoint is evaluated once; inclusive-end overflow,
 callers selected elements 1 through 2 dynamically, observed length 2, changed
 20 to 22, and returned 34 through 422-byte COFF and 808-byte ELF64 objects. A
 reversed range produced Windows `0xC000001D` and Linux `SIGILL`. Ranges over
+slice references use the same five forms with the fat pointer's runtime length
+as their upper bound. Shared and mutable subslices retain the adjusted address
+and derived length; omitted ends load the saved base length. A mutable `u16`
+subslice probe selected elements 1 through 2, changed 10 to 12, returned 32,
+and exposed the changed backing slice through 430-byte COFF and 816-byte ELF64
+objects. Both `start > end` and `end > slice.len()` reached Windows
+`0xC000001D` and Linux `SIGILL` before pointer use. Ranges over
 fixed-array locals use positive-stride contiguous stack backing, so shared and
 mutable slices preserve aliasing with the original local. Native callers
 dynamically selected elements 1 through 2 from an eight-byte-element local,
@@ -985,7 +992,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 312 Windows library, conformance, rustc-nightly-replacement, and driver
+The 314 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1659,7 +1666,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 312 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 314 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

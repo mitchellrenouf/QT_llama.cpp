@@ -1765,6 +1765,20 @@ fn rustc_packed_fixed_array_local_slices_reach_native_objects() {
 }
 
 #[test]
+fn rustc_slice_subranges_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [u16], start: usize, end: usize) -> u16 { let slice: &mut [u16] = &mut values[start..end]; slice[0] += 2; slice[0] + slice[1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize], start: usize, end: usize) -> usize { let slice: &[usize] = &values[start..=end]; slice.len() + slice[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize], end: usize) -> usize { let slice: &[usize] = &values[..end]; slice.len() + slice[0] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize], start: usize) -> usize { let slice: &[usize] = &values[start..]; slice.len() + slice[0] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_independent_scalar_integer_widths_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u8, wide: u64, signed: i16) -> u8 { let adjusted = wide + 2; let negative: i16 = signed + 2; if adjusted == 258 && negative == -1 { input + 1 } else { input } }",
