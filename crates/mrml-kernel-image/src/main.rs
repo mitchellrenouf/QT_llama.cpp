@@ -95,7 +95,7 @@ use mrml_kernel::{
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
 #[cfg(feature = "smp-ipi-probe")]
-use mrml_kernel::{DetachedTaskDomain, OwnershipMailbox, SchedulerLoad};
+use mrml_kernel::{DetachedTaskDomain, OwnershipMailbox, PeriodicBalancer, SchedulerLoad};
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::{Endpoint, ObjectId, Rights};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
@@ -1355,15 +1355,19 @@ unsafe fn start_application_processors(topology: &X86CpuTopology, handoff: &Boot
 unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
     let bsp_apic_id = current_apic_id().unwrap_or_else(|| halt());
     let mut target = None;
+    let mut bsp_cpu = None;
     for cpu in 0..topology.len() {
         let descriptor = topology.cpu(cpu).unwrap_or_else(|_| halt());
-        if descriptor.apic_id() != bsp_apic_id
-            && target.replace((cpu, descriptor.apic_id())).is_some()
-        {
+        if descriptor.apic_id() == bsp_apic_id {
+            if bsp_cpu.replace(cpu).is_some() {
+                halt();
+            }
+        } else if target.replace((cpu, descriptor.apic_id())).is_some() {
             halt();
         }
     }
     let (cpu, destination) = target.unwrap_or_else(|| halt());
+    let bsp_cpu = bsp_cpu.unwrap_or_else(|| halt());
     let timing = ap_startup_timing().unwrap_or_else(|| halt());
     for _ in 0..1_000 {
         if AP_IPI_READY[cpu].load(Ordering::Acquire) {
@@ -1409,8 +1413,23 @@ unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
     if !matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == first) {
         halt();
     }
+    if topology.len() != 2 || bsp_cpu >= 2 || cpu >= 2 {
+        halt();
+    }
+    let unavailable = SchedulerLoad::new(0, 0, 0).unwrap_or_else(|| halt());
+    let mut loads = [unavailable; 2];
+    loads[bsp_cpu] = source.load();
+    loads[cpu] = remote_load;
+    let mut policy = PeriodicBalancer::<2>::new(0, 1).unwrap_or_else(|_| halt());
+    let selected = policy
+        .poll(1, bsp_cpu, &loads)
+        .unwrap_or_else(|_| halt())
+        .unwrap_or_else(|| halt());
+    if selected.cpu() != cpu || selected.load() != remote_load {
+        halt();
+    }
     let detached = source
-        .detach_domain_for_rebalance(remote_load)
+        .detach_domain_for_rebalance(selected.load())
         .unwrap_or_else(|_| halt())
         .unwrap_or_else(|| halt());
     if source.load().runnable() != 2 || SMP_MIGRATION_MAILBOX.publish(detached).is_err() {

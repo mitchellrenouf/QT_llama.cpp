@@ -1463,7 +1463,10 @@ storms; skips full or insufficiently underloaded peers; and rotates equal-load
 candidates. Windows and Linux tests cover cadence, delayed ticks, tie rotation,
 capacity, and fail-closed time/topology handling. Repeated live timer/IPI
 orchestration remains pending. The release-mode 256-CPU scan measured 348 ns
-per poll on Windows and 341 ns on Linux. The
+per poll on Windows and 341 ns on Linux. The signed two-vCPU CPL3 migration
+path now uses this policy to select its published destination load before
+detaching the complete domain; fresh KVM and WHP runs both reached the terminal
+CPU/task proof. Repeated timer-driven invocation remains pending. The
 task runtime now extends migration from scheduler metadata to a complete linear
 user-domain ticket containing the saved CPL3 context and page-table root,
 capability space, and bounded IPC inbox. Admission consumes the ticket only

@@ -389,6 +389,9 @@ equal-load destinations to avoid stable-index starvation. Windows and Linux
 tests exercise the cadence and selection policy. Wiring repeated timer/IPI
 cycles into the live multi-vCPU kernel remains unfinished. The release-mode
 256-CPU selection gate measured 348 ns per poll on Windows and 341 ns on Linux.
+The signed two-vCPU CPL3 migration path now obtains its destination from this
+policy rather than a hard-coded peer and passes under both KVM and WHP; only
+repeated timer-driven invocation remains to close the orchestration gap.
 The task runtime also has a non-copyable complete-domain migration ticket. It
 retires a non-current scheduler identity together with its saved CPL3 context,
 page-table root, capability space, and bounded IPC inbox; destination admission
