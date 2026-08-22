@@ -492,10 +492,11 @@ fn dispatch(cli: &Cli) -> Result<()> {
         "operation-abort" if tail.len() == 1 && tail[0] == "cherry-pick" => {
             run_visible(repository, &["cherry-pick", "--abort"])
         }
-        "stage" => run_visible(
-            repository,
-            &collect("add", &["--"], require_arguments("stage", tail)?),
-        ),
+        "stage" => {
+            checked_positionals(require_arguments("stage", tail)?)?;
+            native_repository(repository)?.stage(tail).map_err(|error| anyhow!("{}", error))?;
+            native_dashboard(repository)
+        }
         "unstage" => run_visible(
             repository,
             &collect(

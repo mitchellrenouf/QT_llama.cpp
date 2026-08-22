@@ -117,6 +117,44 @@ impl Index {
     pub fn entry(&self, path: &str) -> Option<&IndexEntry> {
         self.entries.iter().find(|entry| entry.stage == 0 && entry.path == path)
     }
+
+    pub fn upsert(&mut self, entry: IndexEntry) {
+        if let Some(existing) = self.entries.iter_mut().find(|item| item.path == entry.path && item.stage == entry.stage) {
+            *existing = entry;
+        } else {
+            self.entries.push(entry);
+        }
+        self.entries.sort_unstable_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()).then(left.stage.cmp(&right.stage)));
+    }
+
+    pub fn remove(&mut self, path: &str) -> bool {
+        let before = self.entries.len();
+        let mut index = 0;
+        while index < self.entries.len() {
+            if self.entries[index].path == path { self.entries.remove(index); } else { index += 1; }
+        }
+        self.entries.len() != before
+    }
+
+    pub fn encode(&self) -> Result<Vector<u8>, IndexError> {
+        if self.entries.len() > MAX_ENTRIES { return Err(IndexError::TooManyEntries); }
+        let mut output = Vector::new();
+        output.extend(*b"DIRC"); output.extend(2u32.to_be_bytes()); output.extend((self.entries.len() as u32).to_be_bytes());
+        for entry in &self.entries {
+            validate_path(&entry.path)?;
+            let start = output.len();
+            output.extend([0u8; 24]);
+            output.extend(entry.mode.to_be_bytes());
+            output.extend([0u8; 8]);
+            output.extend(entry.size.to_be_bytes());
+            output.extend(entry.id.0);
+            let path_length = entry.path.len().min(0x0fff) as u16;
+            output.extend((path_length | ((entry.stage as u16 & 3) << 12)).to_be_bytes());
+            output.extend(entry.path.as_bytes().iter().copied()); output.push(0);
+            while (output.len() - start) % 8 != 0 { output.push(0); }
+        }
+        let checksum = Sha1::digest(&output); output.extend(checksum); Ok(output)
+    }
 }
 
 fn validate_path(path: &str) -> Result<(), IndexError> {
@@ -188,5 +226,11 @@ mod tests {
         let mut bytes = one_entry_index();
         bytes[20] ^= 1;
         assert_eq!(Index::parse(&bytes), Err(IndexError::InvalidChecksum));
+    }
+
+    #[test]
+    fn encoded_index_round_trips() {
+        let parsed = Index::parse(&one_entry_index()).unwrap();
+        assert_eq!(Index::parse(&parsed.encode().unwrap()).unwrap(), parsed);
     }
 }

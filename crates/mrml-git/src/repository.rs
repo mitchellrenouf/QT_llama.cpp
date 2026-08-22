@@ -25,6 +25,7 @@ pub struct NativeChange { pub path: Text, pub kind: NativeChangeKind }
 pub enum RepositoryError {
     File(FileError), Index(IndexError), NotRepository, AlreadyExists, UnsupportedLayout,
     InvalidHead, InvalidReference, TooManyFiles, TooDeep, UnsupportedFileType, FileTooLarge,
+    InvalidWorktreePath,
 }
 
 impl Repository {
@@ -102,6 +103,30 @@ impl Repository {
         Ok(id)
     }
 
+    pub fn stage(&self, paths: &[Text]) -> Result<(), RepositoryError> {
+        let mut index = self.index()?;
+        for relative in paths {
+            validate_worktree_path(relative)?;
+            let disk_path = join_path(&self.worktree, relative);
+            if !path_exists(&disk_path) {
+                index.remove(relative);
+                continue;
+            }
+            if !path_is_file(&disk_path) { return Err(RepositoryError::UnsupportedFileType); }
+            let contents = read_file_bounded(&disk_path, MAX_WORKTREE_FILE).map_err(|error| {
+                if error == FileError::ReadFailed { RepositoryError::FileTooLarge } else { error.into() }
+            })?;
+            let id = self.write_object(ObjectKind::Blob, &contents)?;
+            index.upsert(crate::IndexEntry { path: relative.clone(), id, mode: 0o100644, size: contents.len() as u32, stage: 0 });
+        }
+        let encoded = index.encode()?;
+        let temporary = join_path(&self.git_dir, "index.lock");
+        if path_exists(&temporary) { return Err(RepositoryError::AlreadyExists); }
+        write_file(&temporary, &encoded)?;
+        mrml_runtime::rename_file(&temporary, &join_path(&self.git_dir, "index"))?;
+        Ok(())
+    }
+
     pub fn changes(&self) -> Result<Vector<NativeChange>, RepositoryError> {
         let index = self.index()?;
         let mut changes = Vector::new();
@@ -152,6 +177,13 @@ fn validate_reference(reference: &str) -> Result<(), RepositoryError> {
     { Err(RepositoryError::InvalidReference) } else { Ok(()) }
 }
 
+fn validate_worktree_path(path: &str) -> Result<(), RepositoryError> {
+    if path.is_empty() || mrml_runtime::path_is_absolute(path) || path.contains('\\')
+        || path.split('/').any(|part| part.is_empty() || matches!(part, "." | ".."))
+        || path.chars().any(char::is_control)
+    { Err(RepositoryError::InvalidWorktreePath) } else { Ok(()) }
+}
+
 impl From<FileError> for RepositoryError { fn from(value: FileError) -> Self { Self::File(value) } }
 impl From<IndexError> for RepositoryError { fn from(value: IndexError) -> Self { Self::Index(value) } }
 
@@ -166,6 +198,7 @@ impl fmt::Display for RepositoryError {
             Self::TooManyFiles => formatter.write_str("working tree contains too many files"), Self::TooDeep => formatter.write_str("working tree is too deeply nested"),
             Self::UnsupportedFileType => formatter.write_str("symbolic links and special files are not supported yet"),
             Self::FileTooLarge => formatter.write_str("working-tree file exceeds the native status limit"),
+            Self::InvalidWorktreePath => formatter.write_str("unsafe or invalid working-tree path"),
         }
     }
 }
@@ -196,6 +229,17 @@ mod tests {
         let repository = Repository::init(&path).unwrap();
         write_file(&join_path(&path, "hello.txt"), b"native").unwrap();
         assert_eq!(repository.changes().unwrap(), Vector::from([NativeChange { path: "hello.txt".into(), kind: NativeChangeKind::Untracked }]));
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn stages_blob_and_updates_index_natively() {
+        let path = root("stage");
+        let repository = Repository::init(&path).unwrap();
+        write_file(&join_path(&path, "hello.txt"), b"native").unwrap();
+        repository.stage(&Vector::from([Text::from("hello.txt")])).unwrap();
+        assert_eq!(repository.index().unwrap().entry("hello.txt").unwrap().id, ObjectId::blob(b"native"));
+        assert!(repository.changes().unwrap().is_empty());
         remove_dir_all(&path).unwrap();
     }
 }
