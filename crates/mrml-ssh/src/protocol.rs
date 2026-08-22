@@ -15,6 +15,8 @@ pub enum ProtocolError {
     InvalidNameList,
     NoCommonAlgorithm,
     InvalidPublicKey,
+    InvalidPacket,
+    Entropy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,6 +146,42 @@ pub fn negotiate<'a>(client: &'a [&'a str], server: &[&str]) -> Result<&'a str, 
     client.iter().copied().find(|choice| server.contains(choice)).ok_or(ProtocolError::NoCommonAlgorithm)
 }
 
+/// Encodes the pre-NEWKEYS SSH binary packet form. The packet length excludes
+/// its own four-byte field and the random padding is never exposed as payload.
+pub fn encode_plain_packet(payload: &[u8], block_size: usize) -> Result<Vector<u8>, ProtocolError> {
+    if payload.is_empty() || payload.len() > MAX_STRING || block_size < 8 || !block_size.is_power_of_two() {
+        return Err(ProtocolError::InvalidPacket);
+    }
+    let body = payload.len().checked_add(5).ok_or(ProtocolError::Length)?;
+    let aligned = body.checked_add(block_size - 1).ok_or(ProtocolError::Length)? & !(block_size - 1);
+    let padding = aligned.checked_sub(payload.len() + 5).ok_or(ProtocolError::Length)?;
+    let padding = if padding < 4 { padding + block_size } else { padding };
+    if padding > u8::MAX as usize { return Err(ProtocolError::InvalidPacket); }
+    let packet_length = payload.len().checked_add(padding + 1).ok_or(ProtocolError::Length)?;
+    let mut output = Vector::new();
+    output.extend((packet_length as u32).to_be_bytes());
+    output.push(padding as u8);
+    output.extend(payload.iter().copied());
+    let start = output.len();
+    output.try_resize(start + padding, 0).map_err(|_| ProtocolError::Length)?;
+    mrml_runtime::fill_random(&mut output[start..]).map_err(|_| ProtocolError::Entropy)?;
+    Ok(output)
+}
+
+pub fn decode_plain_packet(source: &[u8], block_size: usize) -> Result<(&[u8], usize), ProtocolError> {
+    if block_size < 8 || !block_size.is_power_of_two() { return Err(ProtocolError::InvalidPacket); }
+    let header: [u8;4] = source.get(..4).ok_or(ProtocolError::Truncated)?.try_into().map_err(|_| ProtocolError::Truncated)?;
+    let length = u32::from_be_bytes(header) as usize;
+    if length < 6 || length > MAX_STRING + 256 || (length + 4) % block_size != 0 { return Err(ProtocolError::InvalidPacket); }
+    let total = length.checked_add(4).ok_or(ProtocolError::Length)?;
+    let packet = source.get(..total).ok_or(ProtocolError::Truncated)?;
+    let padding = packet[4] as usize;
+    if padding < 4 || padding + 1 > length { return Err(ProtocolError::InvalidPacket); }
+    let payload_end = total - padding;
+    if payload_end <= 5 { return Err(ProtocolError::InvalidPacket); }
+    Ok((&packet[5..payload_end], total))
+}
+
 pub fn derive_exchange_keys(
     client_secret: [u8; 32], server_public: [u8; 32], transcript: &[&[u8]], session_id: Option<[u8; 32]>,
 ) -> Result<ExchangeKeys, ProtocolError> {
@@ -190,7 +228,7 @@ fn ssh_mpint(value: &[u8]) -> Vector<u8> {
 }
 
 impl Default for BinaryWriter { fn default() -> Self { Self::new() } }
-impl fmt::Display for ProtocolError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(match self { Self::Truncated => "truncated SSH message", Self::Length => "SSH field exceeds length limit", Self::InvalidUtf8 => "SSH text is not UTF-8", Self::InvalidIdentification => "invalid SSH identification", Self::InvalidNameList => "invalid SSH algorithm name-list", Self::NoCommonAlgorithm => "no mutually supported SSH algorithm", Self::InvalidPublicKey => "invalid SSH Curve25519 public key" }) } }
+impl fmt::Display for ProtocolError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(match self { Self::Truncated => "truncated SSH message", Self::Length => "SSH field exceeds length limit", Self::InvalidUtf8 => "SSH text is not UTF-8", Self::InvalidIdentification => "invalid SSH identification", Self::InvalidNameList => "invalid SSH algorithm name-list", Self::NoCommonAlgorithm => "no mutually supported SSH algorithm", Self::InvalidPublicKey => "invalid SSH Curve25519 public key", Self::InvalidPacket => "invalid SSH binary packet", Self::Entropy => "operating-system entropy is unavailable" }) } }
 impl core::error::Error for ProtocolError {}
 
 #[cfg(test)]
@@ -200,4 +238,5 @@ mod tests {
     #[test] fn identification_allows_banners_but_requires_ssh_two() { let (id,used)=parse_identification(b"notice\r\nSSH-2.0-mrml_0.4 test\r\nrest").unwrap();assert_eq!(id.software,"mrml_0.4");assert_eq!(id.comments.as_deref(),Some("test"));assert_eq!(used,31);assert_eq!(parse_identification(b"SSH-1.5-old\r\n"),Err(ProtocolError::InvalidIdentification)); }
     #[test] fn negotiation_respects_client_preference() { assert_eq!(negotiate(&["a","b"],&["b","a"]),Ok("a"));assert_eq!(negotiate(&["a"],&["b"]),Err(ProtocolError::NoCommonAlgorithm)); }
     #[test] fn curve25519_exchange_derives_matching_material() { let a=[7u8;32];let b=[9u8;32];let ap=x25519_public(a);let bp=x25519_public(b);let left=derive_exchange_keys(a,bp,&[b"client",b"server",&ap,&bp],None).unwrap();let shared=x25519_shared(b,ap).unwrap();assert_eq!(left.shared_secret,shared);assert_ne!(left.client_key,left.server_key); }
+    #[test] fn plain_packets_round_trip_and_validate_padding() { let packet=encode_plain_packet(b"\x14hello",8).unwrap();assert_eq!(packet.len()%8,0);let(payload,used)=decode_plain_packet(&packet,8).unwrap();assert_eq!(payload,b"\x14hello");assert_eq!(used,packet.len());let mut bad=packet;bad[4]=3;assert_eq!(decode_plain_packet(&bad,8),Err(ProtocolError::InvalidPacket)); }
 }
