@@ -528,6 +528,7 @@ pub fn compile_x86_64_function_with_options<
     let returns_bool = return_type_text == "bool";
     let returns_char = return_type_text == "char";
     let return_array = runtime_array_type(return_type_text);
+    let return_reference = runtime_reference_type(return_type_text);
     let returns_zero_sized_array = return_array
         .and_then(runtime_array_abi_layout)
         .is_some_and(|(_, bytes, _)| bytes == 0);
@@ -537,6 +538,7 @@ pub fn compile_x86_64_function_with_options<
         && !returns_char
         && runtime_width(return_type_text).is_none()
         && return_array.is_none()
+        && return_reference.is_none()
     {
         return Err(CodegenError {
             kind: CodegenErrorKind::UnsupportedReturnType,
@@ -550,6 +552,26 @@ pub fn compile_x86_64_function_with_options<
                 | RuntimeArrayElementType::Bool
                 | RuntimeArrayElementType::Char
                 | RuntimeArrayElementType::Integer(Some(_))
+        )
+    {
+        return Err(CodegenError {
+            kind: CodegenErrorKind::UnsupportedReturnType,
+            span: return_type_span,
+        });
+    }
+    if let Some(RuntimeExpressionType::Reference { target, .. }) = return_reference
+        && !matches!(
+            target,
+            RuntimeReferenceTarget::Scalar(
+                RuntimeArrayElementType::Bool
+                    | RuntimeArrayElementType::Char
+                    | RuntimeArrayElementType::Integer(Some(_))
+            ) | RuntimeReferenceTarget::Array {
+                element: RuntimeArrayElementType::Bool
+                    | RuntimeArrayElementType::Char
+                    | RuntimeArrayElementType::Integer(Some(_)),
+                ..
+            }
         )
     {
         return Err(CodegenError {
@@ -575,7 +597,7 @@ pub fn compile_x86_64_function_with_options<
             ..
         }) => "char",
         Some(_) => "u64",
-        None if returns_bool || returns_unit => "u64",
+        None if returns_bool || returns_unit || return_reference.is_some() => "u64",
         None => return_type_text,
     };
     let mut integer_operand_type = None;
@@ -653,6 +675,8 @@ pub fn compile_x86_64_function_with_options<
         RuntimeExpressionType::Char
     } else if let Some(array) = return_array {
         array
+    } else if let Some(reference) = return_reference {
+        reference
     } else {
         RuntimeExpressionType::Integer(crate::IntegerType::from_name(return_type_text))
     };
@@ -1911,7 +1935,8 @@ fn runtime_types_compatible(left: RuntimeExpressionType, right: RuntimeExpressio
                 ) => left == right && left_count == right_count,
                 _ => false,
             };
-            targets_compatible && left_mutable == right_mutable
+            targets_compatible
+                && (left_mutable == right_mutable || (left_mutable && !right_mutable))
         }
         (RuntimeExpressionType::Integer(left), RuntimeExpressionType::Integer(right)) => {
             left.is_none() || right.is_none() || left == right
@@ -7844,6 +7869,42 @@ mod tests {
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
+    }
+
+    #[test]
+    fn returns_thin_references() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u16) -> &u16 { input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut i32) -> &mut i32 { input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &[u8; 4]) -> &[u8; 4] { input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u16) -> &u16 { let copied: &u16 = input; copied }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u16) -> &u16 { &*input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut u16) -> &mut u16 { &mut *input }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &mut u16) -> &u16 { input }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result = compile_x86_64_function::<_, 768, 4, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let source =
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: &u16) -> &mut u16 { input }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 512, 2, 64>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch,
+        );
     }
 
     #[test]
