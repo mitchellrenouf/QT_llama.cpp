@@ -1,6 +1,6 @@
 use core::fmt;
 use mrml_runtime::{TcpStream,Vector};
-use crate::{BinaryReader,BinaryWriter,EncryptedPacketReader,EncryptedPacketWriter,Identification,ProtocolError,RsaPrivateKey,build_kex_init,build_publickey_auth,decode_plain_packet,derive_exchange_keys,encode_plain_packet,negotiate_kex_init,parse_identification,verify_rsa_sha2_256};
+use crate::{BinaryReader,BinaryWriter,ChannelEvent,ChannelState,EncryptedPacketReader,EncryptedPacketWriter,GitService,Identification,ProtocolError,RsaPrivateKey,build_channel_data,build_channel_eof,build_channel_open,build_exec_request,build_kex_init,build_publickey_auth,build_window_adjust,decode_plain_packet,derive_exchange_keys,encode_plain_packet,negotiate_kex_init,parse_channel_event,parse_identification,verify_rsa_sha2_256};
 
 const CLIENT_ID:&[u8]=b"SSH-2.0-mrml_0.4\r\n";
 const MAX_BANNER:usize=50*257;
@@ -34,6 +34,14 @@ impl AuthenticatedSsh{
   let auth=build_publickey_auth(&keys.exchange_hash,user,key).map_err(WireError::Protocol)?;wire.send(&auth)?;let response=wire.receive()?;if response.first().copied()!=Some(52){return Err(WireError::Protocol(ProtocolError::Authentication));}
   Ok(Self{wire,session_id:keys.exchange_hash})
  }
+}
+
+pub struct GitChannel{ssh:AuthenticatedSsh,state:ChannelState}
+impl GitChannel{
+ pub fn open(mut ssh:AuthenticatedSsh,service:GitService,path:&str)->Result<Self,WireError>{ssh.wire.send(&build_channel_open(0).map_err(WireError::Protocol)?)?;let opened=parse_channel_event(&ssh.wire.receive()?).map_err(WireError::Protocol)?;let state=ChannelState::confirmed(0,&opened).map_err(WireError::Protocol)?;ssh.wire.send(&build_exec_request(state.remote,service,path).map_err(WireError::Protocol)?)?;match parse_channel_event(&ssh.wire.receive()?).map_err(WireError::Protocol)?{ChannelEvent::Success(id)if id==state.local=>Ok(Self{ssh,state}),_=>Err(WireError::Protocol(ProtocolError::Authentication))}}
+ pub fn send_all(&mut self,mut bytes:&[u8])->Result<(),WireError>{while !bytes.is_empty(){if self.state.send_window==0{match self.receive_event()?{ChannelEvent::WindowAdjusted{..}=>continue,_=>return Err(WireError::Protocol(ProtocolError::InvalidPacket))}}let count=bytes.len().min(self.state.send_packet as usize).min(self.state.send_window as usize);self.state.accept_send(count).map_err(WireError::Protocol)?;self.ssh.wire.send(&build_channel_data(self.state.remote,&bytes[..count]).map_err(WireError::Protocol)?)?;bytes=&bytes[count..];}Ok(())}
+ pub fn send_eof(&mut self)->Result<(),WireError>{self.ssh.wire.send(&build_channel_eof(self.state.remote))}
+ pub fn receive_event(&mut self)->Result<ChannelEvent,WireError>{let event=parse_channel_event(&self.ssh.wire.receive()?).map_err(WireError::Protocol)?;match &event{ChannelEvent::WindowAdjusted{recipient,bytes}if *recipient==self.state.local=>self.state.add_window(*bytes).map_err(WireError::Protocol)?,ChannelEvent::Data{recipient,bytes}|ChannelEvent::ExtendedData{recipient,bytes,..}if *recipient==self.state.local=>{self.state.accept_receive(bytes.len()).map_err(WireError::Protocol)?;if self.state.receive_window<1024*1024{let replenish=2*1024*1024-self.state.receive_window;self.ssh.wire.send(&build_window_adjust(self.state.remote,replenish).map_err(WireError::Protocol)?)?;self.state.receive_window+=replenish;}},ChannelEvent::Close(recipient)if *recipient==self.state.local=>self.state.closed=true,_=>{}}Ok(event)}
 }
 
 fn identification_line(id:&Identification)->Vector<u8>{let mut line=mrml_runtime::mrml_format!("SSH-{}-{}",id.protocol,id.software);if let Some(comments)=&id.comments{line.push(' ');line.push_str(comments);}let mut bytes=Vector::new();bytes.extend(line.bytes());bytes}
