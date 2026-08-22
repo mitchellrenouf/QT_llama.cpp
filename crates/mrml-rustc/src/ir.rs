@@ -261,7 +261,7 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             ExprKind::Unit | ExprKind::DefaultValue => {
                 self.push(Instruction::PushInteger(0), expression.span)?;
             }
-            ExprKind::Array { .. } => {
+            ExprKind::Array { .. } | ExprKind::ArrayRepeat { .. } => {
                 return Err(IrError {
                     kind: IrErrorKind::InvalidExpressionTree,
                     span: expression.span,
@@ -473,6 +473,15 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
                         self.push(Instruction::Pop, expression.span)?;
                     }
                 }
+            }
+            ExprKind::ArrayRepeat { element, count } => {
+                if index >= count {
+                    return Err(IrError {
+                        kind: IrErrorKind::InvalidExpressionTree,
+                        span: expression.span,
+                    });
+                }
+                self.lower(element, depth + 1)?;
             }
             ExprKind::If {
                 condition,

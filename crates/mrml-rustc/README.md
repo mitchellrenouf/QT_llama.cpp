@@ -269,15 +269,21 @@ an original scalar-index replacement: its 93-byte COFF and 488-byte ELF64
 objects returned the middle value `3` through independent Windows gnullvm and
 Arch Linux WSL callers. Array-valued conditional loop-break branches now also
 unify a `Default::default()` arm with a same-length fixed scalar array arm.
-Non-empty scalar repeat literals `[expression; length]` accept an unsuffixed or
-`usize` literal length up to eight and reuse the same fixed-array typing,
+Scalar repeat literals `[expression; length]` accept an unsuffixed or `usize`
+literal length up to eight and reuse the same fixed-array typing,
 indexing, local storage, and mutation paths. Other integer suffixes and a ninth
 element are rejected before lowering. An original bounded replacement covers
 the first repeat-and-mutate shape from pinned nightly
 `tests/ui/array-slice-vec/mutability-inherits-through-fixed-length-vec.rs`;
 iteration over array references remains outside this slice. The exact pinned
-run-pass test compiled and ran unchanged on both hosts. MRML's bounded
-repeat-and-mutate replacement emitted 480-byte COFF and 872-byte ELF64 objects;
+run-pass test compiled and ran unchanged on both hosts. Repeat operands have a
+distinct expression representation and are evaluated exactly once before their
+value is copied, including when the length is zero. The pinned intentional
+failure `tests/ui/array-slice-vec/eval-empty-array-expr.rs` printed its expected
+panic on both hosts. MRML's zero-length division replacement emitted 131-byte
+COFF and 528-byte ELF64 objects; an independent Linux call with a zero divisor
+terminated with `SIGILL`. The bounded repeat-and-mutate replacement emitted
+438-byte COFF and 832-byte ELF64 objects after single-evaluation materialization;
 independent callers observed 5, 35, and 3,000,005 for zero, ordinary, and
 million-valued inputs on Windows gnullvm and Arch Linux WSL.
 Constant indexing preserves conditional-arm laziness, including a trapping
@@ -806,7 +812,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 269 Windows library, conformance, rustc-nightly-replacement, and driver
+The 270 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1480,7 +1486,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 269 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 270 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

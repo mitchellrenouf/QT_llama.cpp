@@ -1745,6 +1745,7 @@ fn validate_runtime_inline_const<
                 recurse(*element)?;
             }
         }
+        ExprKind::ArrayRepeat { element, .. } => recurse(element)?,
         ExprKind::Index { base, index } => {
             recurse(base)?;
             recurse(index)?;
@@ -1942,6 +1943,17 @@ fn runtime_expression_type_with_locals<
                 count: element_count,
             })
         }
+        ExprKind::ArrayRepeat { element, count } => Ok(RuntimeExpressionType::Array {
+            element: runtime_array_element_type(runtime_expression_type_with_locals(
+                function,
+                resolver,
+                locals,
+                tree,
+                element,
+                depth + 1,
+            )?)?,
+            count,
+        }),
         ExprKind::Index { base, index } => {
             let index_type = runtime_expression_type_with_locals(
                 function,
@@ -2440,7 +2452,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
         match expression.kind {
             ExprKind::Unit | ExprKind::DefaultValue => self.emit(&[0x31, 0xc0])?,
-            ExprKind::Array { .. } => {
+            ExprKind::Array { .. } | ExprKind::ArrayRepeat { .. } => {
                 return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
             }
             ExprKind::Index { base, index } => match tree.evaluate_at(index, self.resolver) {
@@ -2780,6 +2792,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
                 self.emit_expression(tree, element, depth + 1)
             }
+            ExprKind::ArrayRepeat { element, count } => {
+                if index >= count {
+                    return Err(self.error(CodegenErrorKind::ValueOutOfRange));
+                }
+                self.emit_expression(tree, element, depth + 1)
+            }
             ExprKind::Identifier(name) => {
                 let (local_index, local) = self.locals[..self.saved_locals]
                     .iter()
@@ -2856,11 +2874,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         if count > 8 {
             return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
         }
-        for candidate in 0..count {
-            self.emit_array_element(tree, base, candidate, depth + 1)?;
-            self.emit(&[0x50])?;
-            self.evaluation_depth += 1;
-        }
+        self.emit_array_to_stack(tree, base, count)?;
         self.emit_expression(tree, index, depth + 1)?;
         self.emit(&[0x50])?;
         self.evaluation_depth += 1;
@@ -2890,16 +2904,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         base: crate::ExprId,
         index: usize,
         count: usize,
-        depth: usize,
+        _depth: usize,
     ) -> Result<(), CodegenError> {
         if count > 8 || index >= count {
             return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
         }
-        for candidate in 0..count {
-            self.emit_array_element(tree, base, candidate, depth + 1)?;
-            self.emit(&[0x50])?;
-            self.evaluation_depth += 1;
-        }
+        self.emit_array_to_stack(tree, base, count)?;
         self.emit_stack_slot(count - 1 - index)?;
         self.evaluation_depth -= count;
         let bytes = count
@@ -3175,11 +3185,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         }
         let stack_slots = runtime_type_stack_slots(local_type);
         if let RuntimeExpressionType::Array { count, .. } = local_type {
-            for index in 0..count {
-                self.emit_array_element(&tree, tree.root(), index, 0)?;
-                self.emit(&[0x50])?;
-                self.evaluation_depth += 1;
-            }
+            self.emit_array_to_stack(&tree, tree.root(), count)?;
             self.evaluation_depth -= count;
         } else {
             self.emit_expression(&tree, tree.root(), 0)?;
@@ -3580,11 +3586,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         if count > 8 {
             return Err(self.error(CodegenErrorKind::RuntimeExpressionUnsupported));
         }
-        for element in 0..count {
-            self.emit_array_element(tree, root, element, 0)?;
-            self.emit(&[0x50])?;
-            self.evaluation_depth += 1;
-        }
+        self.emit_array_to_stack(tree, root, count)?;
         let later_slots = self.local_stack_slots_from(local_index + 1)?;
         for element in 0..count {
             self.emit_stack_slot(count - 1 - element)?;
@@ -3600,6 +3602,44 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
         if bytes != 0 {
             self.emit(&[0x48, 0x83, 0xc4, bytes as u8])?;
+        }
+        Ok(())
+    }
+
+    fn emit_array_to_stack<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        root: crate::ExprId,
+        count: usize,
+    ) -> Result<(), CodegenError> {
+        let expression = tree
+            .expression(root)
+            .ok_or(self.error(CodegenErrorKind::RuntimeExpressionUnsupported))?;
+        if let ExprKind::ArrayRepeat {
+            element,
+            count: repeat,
+        } = expression.kind
+        {
+            if repeat != count {
+                return Err(self.error(CodegenErrorKind::RuntimeTypeMismatch));
+            }
+            self.emit_expression(tree, element, 0)?;
+            if count == 0 {
+                return Ok(());
+            }
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+            for _ in 1..count {
+                self.emit_stack_slot(0)?;
+                self.emit(&[0x50])?;
+                self.evaluation_depth += 1;
+            }
+            return Ok(());
+        }
+        for element in 0..count {
+            self.emit_array_element(tree, root, element, 0)?;
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
         }
         Ok(())
     }
@@ -5376,6 +5416,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let values: [u64; 2] = Default::default(); values[0] + values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> u64 { let values = [input + 1; 3]; values[0] + values[1] + values[2] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> bool { let values = [select; 2usize]; values[0] & values[1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64, divisor: u64) -> u64 { let values: [u64; 0] = [input / divisor; 0]; 42 }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> u64 { let values: [u64; 2] = loop { break if select { break [13, 14] } else { break Default::default() }; }; values[0] + values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> u64 { let choice: bool = select; let values = if choice { [13u64, 14] } else { [20, 22] }; values[0] + values[1] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let mut values = [13u64, 14]; values = [20, 22]; values[0] + values[1] }",

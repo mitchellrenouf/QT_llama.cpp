@@ -1671,6 +1671,13 @@ fn rustc_fixed_array_repeat_literals_reach_native_objects() {
 }
 
 #[test]
+fn rustc_zero_length_array_repeat_still_evaluates_its_operand() {
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize, divisor: usize) -> usize { let values: [usize; 0] = [input / divisor; 0]; 42 }";
+    assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
+    assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
 fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",

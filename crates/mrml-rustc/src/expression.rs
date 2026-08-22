@@ -234,6 +234,10 @@ pub enum ExprKind<'source> {
         elements: [Option<ExprId>; MAX_ARRAY_ELEMENTS],
         element_count: usize,
     },
+    ArrayRepeat {
+        element: ExprId,
+        count: usize,
+    },
     Index {
         base: ExprId,
         index: ExprId,
@@ -386,6 +390,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             ExprKind::Unit
             | ExprKind::DefaultValue
             | ExprKind::Array { .. }
+            | ExprKind::ArrayRepeat { .. }
             | ExprKind::Index { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
@@ -573,7 +578,9 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             .ok_or(ConstEvalError::InvalidExpressionTree)?;
         match expression.kind {
             ExprKind::Unit | ExprKind::DefaultValue => Ok(0),
-            ExprKind::Array { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::Array { .. } | ExprKind::ArrayRepeat { .. } => {
+                Err(ConstEvalError::InvalidExpressionTree)
+            }
             ExprKind::Index { base, index } => {
                 let index = self.evaluate_node(index, resolver, depth + 1)?;
                 let index =
@@ -722,6 +729,12 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 }
                 selected.ok_or(ConstEvalError::ArrayIndexOutOfBounds)
             }
+            ExprKind::ArrayRepeat { element, count } => {
+                if index >= count {
+                    return Err(ConstEvalError::ArrayIndexOutOfBounds);
+                }
+                self.evaluate_node(element, resolver, depth + 1)
+            }
             ExprKind::If {
                 condition,
                 then_branch,
@@ -755,6 +768,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
         let expression = self.expression(id)?;
         match expression.kind {
             ExprKind::Array { element_count, .. } => Some(element_count),
+            ExprKind::ArrayRepeat { count, .. } => Some(count),
             ExprKind::If {
                 then_branch,
                 else_branch,
@@ -1277,10 +1291,22 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                                 self.error(ExpressionErrorKind::TooManyArrayElements, Some(count))
                             );
                         }
-                        for element in &mut elements[..repeat] {
-                            *element = Some(first);
-                        }
-                        element_count = repeat;
+                        let close = self.take()?;
+                        let Some(close) =
+                            close.filter(|token| token.kind == TokenKind::CloseBracket)
+                        else {
+                            return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
+                        };
+                        return self.push(Expr {
+                            kind: ExprKind::ArrayRepeat {
+                                element: first,
+                                count: repeat,
+                            },
+                            span: Span {
+                                start: open.span.start,
+                                end: close.span.end,
+                            },
+                        });
                     } else {
                         elements[0] = Some(first);
                         element_count = 1;
@@ -1745,6 +1771,9 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 for element in elements[..element_count].iter().flatten() {
                     self.substitute_identifier(*element, name, replacement, depth + 1)?;
                 }
+            }
+            ExprKind::ArrayRepeat { element, .. } => {
+                self.substitute_identifier(element, name, replacement, depth + 1)?;
             }
             ExprKind::Index { base, index } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
