@@ -9,6 +9,7 @@ pub const MAX_CONDITIONAL_LOOP_ACTIONS: usize = 4;
 pub const MAX_CONDITIONAL_LOOP_ELSE_ARMS: usize = 4;
 pub const MAX_NESTED_LOOP_ACTIONS: usize = 4;
 pub const MAX_NESTED_LOOP_BLOCKS: usize = 4;
+pub const MAX_NESTED_LOOP_CONDITIONAL_BREAKS: usize = 4;
 pub const MAX_NESTED_LOOP_CONDITIONAL_CONTINUES: usize = 4;
 pub const MAX_NESTED_LOOP_CONDITIONAL_RETURNS: usize = 4;
 pub const MAX_BODY_STATEMENTS: usize = 32;
@@ -283,9 +284,13 @@ pub struct NestedLoopBlock<'source> {
     pub entry_condition: Option<ConditionalLoopControl<'source>>,
     actions: [Option<ConditionalLoopAction<'source>>; MAX_NESTED_LOOP_ACTIONS],
     action_count: usize,
-    pub break_condition: Option<ConditionalLoopControl<'source>>,
     pub unconditional_break: bool,
     pub return_statement: Option<LoopReturn<'source>>,
+    conditional_breaks:
+        [Option<ConditionalLoopControl<'source>>; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
+    conditional_break_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
+    conditional_break_control_orders: [usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS],
+    conditional_break_count: usize,
     conditional_continues:
         [Option<ConditionalLoopControl<'source>>; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
     conditional_continue_action_indices: [usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES],
@@ -304,6 +309,18 @@ impl<'source> NestedLoopBlock<'source> {
 
     pub const fn action_count(&self) -> usize {
         self.action_count
+    }
+
+    pub fn conditional_breaks(&self) -> &[Option<ConditionalLoopControl<'source>>] {
+        &self.conditional_breaks[..self.conditional_break_count]
+    }
+
+    pub fn conditional_break_action_indices(&self) -> &[usize] {
+        &self.conditional_break_action_indices[..self.conditional_break_count]
+    }
+
+    pub fn conditional_break_control_orders(&self) -> &[usize] {
+        &self.conditional_break_control_orders[..self.conditional_break_count]
     }
 
     pub fn conditional_continues(&self) -> &[Option<ConditionalLoopControl<'source>>] {
@@ -676,6 +693,7 @@ pub enum ParseErrorKind {
     TooManyConditionalLoopElseArms,
     TooManyNestedLoopActions,
     TooManyNestedLoopBlocks,
+    TooManyNestedLoopConditionalBreaks,
     TooManyNestedLoopConditionalContinues,
     TooManyNestedLoopConditionalReturns,
     TooManyExpressionStatements,
@@ -1508,6 +1526,12 @@ impl<'source> BodyParser<'source> {
                     };
                     let mut actions = [None; MAX_NESTED_LOOP_ACTIONS];
                     let mut action_count = 0usize;
+                    let mut conditional_breaks = [None; MAX_NESTED_LOOP_CONDITIONAL_BREAKS];
+                    let mut conditional_break_action_indices =
+                        [0usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS];
+                    let mut conditional_break_control_orders =
+                        [0usize; MAX_NESTED_LOOP_CONDITIONAL_BREAKS];
+                    let mut conditional_break_count = 0usize;
                     let mut conditional_continues = [None; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
                     let mut conditional_continue_action_indices =
                         [0usize; MAX_NESTED_LOOP_CONDITIONAL_CONTINUES];
@@ -1524,15 +1548,13 @@ impl<'source> BodyParser<'source> {
                     let mut body_closed = false;
                     let mut unconditional_break = false;
                     let mut return_statement = None;
-                    let break_condition;
                     loop {
                         let next = probe.peek()?;
-                        if entry_condition.is_some()
-                            && next.is_some_and(|token| token.kind == TokenKind::CloseBrace)
+                        if next.is_some_and(|token| token.kind == TokenKind::CloseBrace)
+                            && (entry_condition.is_some() || conditional_break_count != 0)
                         {
                             probe.take()?;
                             body_closed = true;
-                            break_condition = None;
                             break;
                         }
                         if next.is_some_and(|token| token.text == "break") {
@@ -1543,7 +1565,6 @@ impl<'source> BodyParser<'source> {
                                     probe.error(ParseErrorKind::ExpectedSemicolon, semicolon)
                                 );
                             }
-                            break_condition = None;
                             unconditional_break = true;
                             break;
                         }
@@ -1551,7 +1572,6 @@ impl<'source> BodyParser<'source> {
                             probe.take()?;
                             let (value, value_span) = probe.return_value()?;
                             return_statement = Some(LoopReturn { value, value_span });
-                            break_condition = None;
                             break;
                         }
                         if next.is_some_and(|token| token.text == "if") {
@@ -1632,8 +1652,19 @@ impl<'source> BodyParser<'source> {
                                 conditional_return_count += 1;
                                 continue;
                             }
-                            break_condition = Some(condition);
-                            break;
+                            if conditional_break_count == MAX_NESTED_LOOP_CONDITIONAL_BREAKS {
+                                return Err(probe.error(
+                                    ParseErrorKind::TooManyNestedLoopConditionalBreaks,
+                                    inner_control,
+                                ));
+                            }
+                            conditional_breaks[conditional_break_count] = Some(condition);
+                            conditional_break_action_indices[conditional_break_count] =
+                                action_count;
+                            conditional_break_control_orders[conditional_break_count] =
+                                this_control_order;
+                            conditional_break_count += 1;
+                            continue;
                         }
                         if action_count == MAX_NESTED_LOOP_ACTIONS {
                             return Err(probe.error(ParseErrorKind::TooManyNestedLoopActions, next));
@@ -1671,8 +1702,8 @@ impl<'source> BodyParser<'source> {
                     operations[operation_count] = Some(
                         if entry_condition.is_none()
                             && action_count == 0
-                            && break_condition.is_none()
                             && return_statement.is_none()
+                            && conditional_break_count == 0
                             && conditional_continue_count == 0
                             && conditional_return_count == 0
                         {
@@ -1688,9 +1719,12 @@ impl<'source> BodyParser<'source> {
                                 entry_condition,
                                 actions,
                                 action_count,
-                                break_condition,
                                 unconditional_break,
                                 return_statement,
+                                conditional_breaks,
+                                conditional_break_action_indices,
+                                conditional_break_control_orders,
+                                conditional_break_count,
                                 conditional_continues,
                                 conditional_continue_action_indices,
                                 conditional_continue_control_orders,
@@ -3028,8 +3062,7 @@ mod tests {
         let nested = loop_statement.nested_blocks()[index].unwrap();
         assert_eq!(nested.action_count(), 3);
         assert_eq!(
-            nested
-                .break_condition
+            nested.conditional_breaks()[0]
                 .expect("expected conditional break")
                 .condition,
             "selected == 5"
@@ -3134,6 +3167,37 @@ mod tests {
             ParseErrorKind::TooManyNestedLoopConditionalContinues
         );
 
+        let multiple_breaks = Parser::new(
+            "fn nested(limit: u64, first: u64, second: u64) -> u64 { let mut outer: u64 = 0; let mut inner: u64 = 0; let mut total: u64 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { break; } total += inner; if inner == second { break; } } outer += 1; inner = 0; } total }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = multiple_breaks.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<4>().unwrap();
+        let outer = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::NestedBlock(index)) = outer.operations()[0] else {
+            panic!("expected nested while block")
+        };
+        let inner = outer.nested_blocks()[index].unwrap();
+        assert_eq!(inner.conditional_breaks().len(), 2);
+        assert_eq!(inner.conditional_break_action_indices(), &[1, 2]);
+        assert_eq!(inner.conditional_break_control_orders(), &[0, 1]);
+
+        let crowded_breaks = Parser::new(
+            "fn nested(a: bool, b: bool, c: bool, d: bool) { loop { loop { if a { break; } if b { break; } if c { break; } if d { break; } if true { break; } } } }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = crowded_breaks.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            function.parse_body::<4>().unwrap_err().kind,
+            ParseErrorKind::TooManyNestedLoopConditionalBreaks
+        );
+
         let crowded_returns = Parser::new(
             "fn nested(a: bool, b: bool, c: bool, d: bool) -> u64 { loop { loop { if a { return 1; } if b { return 2; } if c { return 3; } if d { return 4; } if true { return 5; } } } }",
         )
@@ -3168,7 +3232,7 @@ mod tests {
                 .condition,
             "inner < 3"
         );
-        assert_eq!(inner.break_condition, None);
+        assert!(inner.conditional_breaks().is_empty());
         assert!(matches!(
             loop_statement.operations()[1],
             Some(LoopOperation::Assignment(_))

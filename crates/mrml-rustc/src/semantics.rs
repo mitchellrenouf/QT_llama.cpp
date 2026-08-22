@@ -1432,8 +1432,40 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 .conditional_returns()
                                 .len()
                                 .checked_add(block.conditional_continues().len())
+                                .and_then(|count| {
+                                    count.checked_add(block.conditional_breaks().len())
+                                })
                                 .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
                             for control_order in 0..control_count {
+                                for ((condition, break_action_index), break_control_order) in block
+                                    .conditional_breaks()
+                                    .iter()
+                                    .flatten()
+                                    .zip(block.conditional_break_action_indices())
+                                    .zip(block.conditional_break_control_orders())
+                                {
+                                    if action_index == *break_action_index
+                                        && control_order == *break_control_order
+                                    {
+                                        let tree = condition
+                                            .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>(
+                                            )
+                                            .map_err(|error| {
+                                                SemanticErrorKind::Expression(error.kind)
+                                            })?;
+                                        if evaluate_boolean_const_expression(
+                                            context,
+                                            symbol_count,
+                                            &tree,
+                                            tree.root(),
+                                            resolver,
+                                            depth,
+                                        )? {
+                                            resolver.truncate(nested_checkpoint)?;
+                                            break 'nested;
+                                        }
+                                    }
+                                }
                                 for ((conditional, return_action_index), return_control_order) in
                                     block
                                         .conditional_returns()
@@ -1549,21 +1581,9 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                                 depth,
                             )?));
                         }
-                        let should_break = if let Some(condition) = block.break_condition {
-                            let tree = condition
-                                .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
-                                .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
-                            evaluate_boolean_const_expression(
-                                context,
-                                symbol_count,
-                                &tree,
-                                tree.root(),
-                                resolver,
-                                depth,
-                            )?
-                        } else {
-                            block.unconditional_break || block.entry_condition.is_none()
-                        };
+                        let should_break = block.unconditional_break
+                            || (block.entry_condition.is_none()
+                                && block.conditional_breaks().is_empty());
                         resolver.truncate(nested_checkpoint)?;
                         if should_break {
                             break;
@@ -3276,6 +3296,20 @@ mod tests {
         assert_eq!(values.resolve("SAME_SKIP"), Some(13));
         assert_eq!(values.resolve("CONTINUE_WINS"), Some(5));
         assert_eq!(values.resolve("RETURN_WINS"), Some(40));
+    }
+
+    #[test]
+    fn evaluates_positioned_conditional_breaks_inside_an_inner_loop() {
+        let module = Parser::new(
+            "const fn sum(limit: u8, first: u8, second: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { break; } total += inner as u16; if inner == second { break; } } outer += 1; inner = 0; } total } const FIRST: u16 = sum(1, 1, 2); const SECOND: u16 = sum(1, 4, 2); const LATE: u16 = sum(1, 4, 4); const NATURAL: u16 = sum(1, 6, 7);",
+        )
+        .parse_module::<6, 4>()
+        .unwrap();
+        let values = analyze_constants::<4, 128, 6, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("FIRST"), Some(0));
+        assert_eq!(values.resolve("SECOND"), Some(3));
+        assert_eq!(values.resolve("LATE"), Some(6));
+        assert_eq!(values.resolve("NATURAL"), Some(15));
     }
 
     #[test]

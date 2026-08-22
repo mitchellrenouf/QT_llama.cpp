@@ -828,6 +828,24 @@ fn rustc_multiple_ordered_nested_continues_have_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_positioned_nested_breaks_have_an_executable_replacement() {
+    // Original scalar replacement for ordered conditional break edges in
+    // pinned tests/ui/for-loop-while/break.rs and loop-break-cont.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, first: u32, second: u32) -> u32 { let mut outer: u32 = 0; let mut inner: u32 = 0; let mut total: u32 = 0; while outer < limit { while inner < 5 { inner += 1; if inner == first { break; } total += inner; if inner == second { break; } } outer += 1; inner = 0; } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<3072, 2048, 4, 4, 4, 96>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",
