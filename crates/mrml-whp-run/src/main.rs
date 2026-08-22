@@ -79,15 +79,17 @@ fn application_main() -> Result<()> {
     let preemption_mode = arguments.len() == 5 && arguments[4] == "preemption-probe";
     let smp_mode = arguments.len() == 5 && arguments[4] == "smp-probe";
     let smp_scheduler_mode = arguments.len() == 5 && arguments[4] == "smp-scheduler-probe";
+    let smp_ipi_mode = arguments.len() == 5 && arguments[4] == "smp-ipi-probe";
     if arguments.len() != 7
         && !service_artifact_mode
         && !timer_mode
         && !preemption_mode
         && !smp_mode
         && !smp_scheduler_mode
+        && !smp_ipi_mode
     {
         return Err(anyhow!(
-            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-scheduler-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
+            "usage: mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION CUDA.signed CUDA.public CUDA_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION timer-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION preemption-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-scheduler-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION smp-ipi-probe\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run KERNEL.signed RELEASE.public MINIMUM_VERSION service-preemption-probe SERVICE.signed SERVICE.public SERVICE_MINIMUM_VERSION\n       mrml-whp-run --export-cuda-bundle OUTPUT.ptx"
         ));
     }
     let minimum_version = arguments[3]
@@ -150,22 +152,26 @@ fn application_main() -> Result<()> {
         (None, None) => None,
         _ => return Err(anyhow!("incomplete service verification inputs")),
     };
-    let cuda_bundle =
-        if service_artifact_mode || timer_mode || preemption_mode || smp_mode || smp_scheduler_mode
-        {
-            None
-        } else {
-            Some(verify_cuda_bundle(
-                &arguments[4],
-                &arguments[5],
-                &arguments[6],
-            )?)
-        };
+    let cuda_bundle = if service_artifact_mode
+        || timer_mode
+        || preemption_mode
+        || smp_mode
+        || smp_scheduler_mode
+        || smp_ipi_mode
+    {
+        None
+    } else {
+        Some(verify_cuda_bundle(
+            &arguments[4],
+            &arguments[5],
+            &arguments[6],
+        )?)
+    };
     let verification_micros = verification_started.elapsed().as_micros();
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
-    let hosted_smp = smp_mode || smp_scheduler_mode;
+    let hosted_smp = smp_mode || smp_scheduler_mode || smp_ipi_mode;
     let handoff = if hosted_smp {
         smp_boot_handoff(
             executable.artifact().version(),
@@ -282,6 +288,8 @@ fn application_main() -> Result<()> {
         let expected_bootstrap = VmExit::Io {
             port: if smp_scheduler_mode {
                 0x4d5e
+            } else if smp_ipi_mode {
+                0x4d60
             } else {
                 SMP_PROBE_PORT
             },
@@ -292,6 +300,8 @@ fn application_main() -> Result<()> {
         let expected_application = VmExit::Io {
             port: if smp_scheduler_mode {
                 0x4d5f
+            } else if smp_ipi_mode {
+                0x4d61
             } else {
                 SMP_PROBE_PORT
             },

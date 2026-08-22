@@ -22,6 +22,8 @@ smp-probe = ["kernel-image"]
 whp-smp-probe = ["smp-probe", "ap-startup-trace"]
 smp-scheduler-probe = ["kernel-image", "emulated-ap-timing", "ap-startup-trace"]
 whp-smp-scheduler-probe = ["smp-scheduler-probe"]
+smp-ipi-probe = ["kernel-image", "emulated-ap-timing", "ap-startup-trace"]
+whp-smp-ipi-probe = ["smp-ipi-probe"]
 
 [[bin]]
 name = "mrml-kernel-pe"

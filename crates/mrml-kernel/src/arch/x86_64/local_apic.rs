@@ -44,6 +44,49 @@ pub enum LocalApicError {
     InvalidDelay,
 }
 
+pub struct LocalApicController;
+
+impl LocalApicController {
+    /// Enables interrupt acceptance on the current CPU without programming a
+    /// timer or publishing an IPI.
+    ///
+    /// # Safety
+    ///
+    /// The caller must execute at CPL0 with exclusive ownership of the current
+    /// CPU's local APIC. In xAPIC mode its MMIO page must be mapped supervisor
+    /// writable, uncached, and NX at the architectural address.
+    pub unsafe fn enable() -> Result<(), LocalApicError> {
+        let features = __cpuid(1);
+        if features.edx & (1 << 9) == 0 {
+            return Err(LocalApicError::Unsupported);
+        }
+        let base = unsafe { read_msr(IA32_APIC_BASE) };
+        if features.ecx & (1 << 21) != 0 {
+            unsafe { write_msr(IA32_APIC_BASE, base | APIC_GLOBAL_ENABLE | X2APIC_ENABLE) };
+            unsafe {
+                write_msr(
+                    X2APIC_SPURIOUS_VECTOR,
+                    APIC_SOFTWARE_ENABLE | SPURIOUS_VECTOR,
+                )
+            };
+            unsafe { write_msr(X2APIC_TASK_PRIORITY, 0) };
+        } else {
+            if base & APIC_BASE_MASK != XAPIC_BASE as u64 {
+                return Err(LocalApicError::Unsupported);
+            }
+            unsafe { write_msr(IA32_APIC_BASE, (base | APIC_GLOBAL_ENABLE) & !X2APIC_ENABLE) };
+            unsafe {
+                write_xapic(
+                    XAPIC_SPURIOUS_VECTOR,
+                    APIC_SOFTWARE_ENABLE | SPURIOUS_VECTOR,
+                )
+            };
+            unsafe { write_xapic(XAPIC_TASK_PRIORITY, 0) };
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ApStartupTiming {
     tsc_hz: u64,
@@ -121,6 +164,19 @@ pub struct ApicIpi {
 }
 
 impl ApicIpi {
+    pub const fn fixed(destination: u32, vector: u8) -> Result<Self, LocalApicError> {
+        if destination == u32::MAX {
+            return Err(LocalApicError::InvalidDestination);
+        }
+        if vector < 32 || vector == SPURIOUS_VECTOR as u8 {
+            return Err(LocalApicError::InvalidVector);
+        }
+        Ok(Self {
+            destination,
+            command: vector as u32,
+        })
+    }
+
     pub const fn init(destination: u32) -> Result<Self, LocalApicError> {
         if destination == u32::MAX {
             return Err(LocalApicError::InvalidDestination);
@@ -450,6 +506,9 @@ mod tests {
         let deassert = ApicIpi::init_deassert(0x1234).unwrap();
         assert_eq!(deassert.destination(), 0x1234);
         assert_eq!(deassert.command(), 0x0000_8500);
+        let fixed = ApicIpi::fixed(0x1234, 0x41).unwrap();
+        assert_eq!(fixed.destination(), 0x1234);
+        assert_eq!(fixed.command(), 0x41);
         let startup = ApicIpi::startup(7, 8).unwrap();
         assert_eq!(startup.destination(), 7);
         assert_eq!(startup.command(), 0x0000_0608);
@@ -462,6 +521,8 @@ mod tests {
             Err(LocalApicError::InvalidDestination)
         );
         assert_eq!(ApicIpi::startup(1, 0), Err(LocalApicError::InvalidVector));
+        assert_eq!(ApicIpi::fixed(1, 31), Err(LocalApicError::InvalidVector));
+        assert_eq!(ApicIpi::fixed(1, 0xff), Err(LocalApicError::InvalidVector));
     }
 
     #[test]

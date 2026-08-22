@@ -6,11 +6,15 @@ use core::arch::x86_64::{__cpuid, __cpuid_count};
 use core::arch::{asm, global_asm};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-#[cfg(feature = "smp-scheduler-probe")]
+#[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
-#[cfg(any(feature = "timer-probe", feature = "smp-scheduler-probe"))]
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "smp-scheduler-probe",
+    feature = "smp-ipi-probe"
+))]
 use mrml_kernel::KernelScheduler;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::SyscallRequest;
@@ -22,6 +26,13 @@ use mrml_kernel::SyscallRequest;
 ))]
 use mrml_kernel::TaskRuntime;
 use mrml_kernel::UserCallFrame;
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "preemption-probe",
+    feature = "service-preemption-probe",
+    feature = "smp-scheduler-probe"
+))]
+use mrml_kernel::arch::x86_64::TimerDivide;
 #[cfg(any(
     feature = "user-probe",
     feature = "service-probe",
@@ -53,9 +64,10 @@ use mrml_kernel::arch::x86_64::{
     feature = "timer-probe",
     feature = "preemption-probe",
     feature = "service-preemption-probe",
-    feature = "smp-scheduler-probe"
+    feature = "smp-scheduler-probe",
+    feature = "smp-ipi-probe"
 ))]
-use mrml_kernel::arch::x86_64::{LocalApicTimer, TimerDivide};
+use mrml_kernel::arch::x86_64::{LocalApicController, LocalApicTimer};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, MAX_HANDOFF_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -88,7 +100,8 @@ use mrml_kernel::{
     feature = "service-preemption-probe",
     feature = "user-probe",
     feature = "service-probe",
-    feature = "smp-scheduler-probe"
+    feature = "smp-scheduler-probe",
+    feature = "smp-ipi-probe"
 ))]
 use mrml_kernel::{Priority, ScheduleOutcome};
 
@@ -117,6 +130,8 @@ const TIMER_TICK_PORT: u16 = 0x4d55;
     feature = "smp-scheduler-probe"
 ))]
 const TIMER_VECTOR: u8 = 32;
+#[cfg(feature = "smp-ipi-probe")]
+const RESCHEDULE_VECTOR: u8 = 33;
 #[cfg(feature = "user-probe")]
 const USER_PROBE_PORT: u16 = 0x4d56;
 #[cfg(feature = "user-probe")]
@@ -129,12 +144,20 @@ const SERVICE_FRAME_PORT: u16 = 0x4d59;
 const SERVICE_CALL_PORT: u16 = 0x4d5a;
 #[cfg(feature = "smp-probe")]
 const SMP_PROBE_PORT: u16 = 0x4d5c;
-#[cfg(any(feature = "whp-smp-probe", feature = "whp-smp-scheduler-probe"))]
+#[cfg(any(
+    feature = "whp-smp-probe",
+    feature = "whp-smp-scheduler-probe",
+    feature = "whp-smp-ipi-probe"
+))]
 const WHP_SMP_HANDSHAKE_PORT: u16 = 0x4d5d;
 #[cfg(feature = "smp-scheduler-probe")]
 const SMP_SCHEDULER_READY_PORT: u16 = 0x4d5e;
 #[cfg(feature = "smp-scheduler-probe")]
 const SMP_SCHEDULER_TICK_PORT: u16 = 0x4d5f;
+#[cfg(feature = "smp-ipi-probe")]
+const SMP_IPI_READY_PORT: u16 = 0x4d60;
+#[cfg(feature = "smp-ipi-probe")]
+const SMP_IPI_PROOF_PORT: u16 = 0x4d61;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
 const SERVICE_ROOT: u64 = 0x00c0_0000;
 #[cfg(any(feature = "service-probe", feature = "service-preemption-probe"))]
@@ -156,15 +179,15 @@ unsafe impl Sync for ApDescriptorSlots {}
 static AP_DESCRIPTORS: ApDescriptorSlots =
     ApDescriptorSlots([const { UnsafeCell::new(MaybeUninit::uninit()) }; MAX_X86_64_CPUS]);
 static AP_ONLINE: ApOnlineTable<MAX_X86_64_CPUS> = ApOnlineTable::empty();
-#[cfg(feature = "smp-scheduler-probe")]
+#[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
 struct ApSchedulerSlot {
     apic_id: AtomicU32,
     initialized: AtomicBool,
-    scheduler: UnsafeCell<MaybeUninit<KernelScheduler<1>>>,
+    scheduler: UnsafeCell<MaybeUninit<KernelScheduler<2>>>,
 }
-#[cfg(feature = "smp-scheduler-probe")]
+#[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
 unsafe impl Sync for ApSchedulerSlot {}
-#[cfg(feature = "smp-scheduler-probe")]
+#[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
 impl ApSchedulerSlot {
     const fn empty() -> Self {
         Self {
@@ -174,14 +197,20 @@ impl ApSchedulerSlot {
         }
     }
 }
-#[cfg(feature = "smp-scheduler-probe")]
+#[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
 struct ApSchedulerSlots([ApSchedulerSlot; MAX_X86_64_CPUS]);
-#[cfg(feature = "smp-scheduler-probe")]
+#[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
 unsafe impl Sync for ApSchedulerSlots {}
-#[cfg(feature = "smp-scheduler-probe")]
+#[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
 #[unsafe(link_section = ".data")]
 static AP_SCHEDULERS: ApSchedulerSlots =
     ApSchedulerSlots([const { ApSchedulerSlot::empty() }; MAX_X86_64_CPUS]);
+#[cfg(feature = "smp-ipi-probe")]
+static AP_IPI_READY: [AtomicBool; MAX_X86_64_CPUS] =
+    [const { AtomicBool::new(false) }; MAX_X86_64_CPUS];
+#[cfg(feature = "smp-ipi-probe")]
+static AP_RESCHEDULE_REQUEST: [AtomicBool; MAX_X86_64_CPUS] =
+    [const { AtomicBool::new(false) }; MAX_X86_64_CPUS];
 #[cfg(not(feature = "fault-probe"))]
 struct ApStartupWorkspace(UnsafeCell<MaybeUninit<ApStartupTable<MAX_X86_64_CPUS>>>);
 #[cfg(not(feature = "fault-probe"))]
@@ -317,6 +346,31 @@ mrml_timer_interrupt:
     call mrml_timer_dispatch
     ud2
 
+    .global mrml_reschedule_interrupt
+mrml_reschedule_interrupt:
+    cld
+    push 0
+    push 33
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
+    and rsp, -16
+    call mrml_reschedule_dispatch
+    ud2
+
     .global mrml_user_probe
 mrml_user_probe:
     int 0x80
@@ -405,6 +459,8 @@ unsafe extern "C" {
         feature = "smp-scheduler-probe"
     ))]
     fn mrml_timer_interrupt() -> !;
+    #[cfg(feature = "smp-ipi-probe")]
+    fn mrml_reschedule_interrupt() -> !;
     #[cfg(feature = "preemption-probe")]
     fn mrml_preemption_spin() -> !;
     #[cfg(feature = "preemption-probe")]
@@ -593,10 +649,9 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
         for (cpu, slot) in AP_SCHEDULERS.0.iter().enumerate() {
             if slot.initialized.load(Ordering::Acquire)
                 && slot.apic_id.load(Ordering::Acquire) == apic_id
+                && owner.replace((cpu, slot)).is_some()
             {
-                if owner.replace((cpu, slot)).is_some() {
-                    halt();
-                }
+                halt();
             }
         }
         let (cpu, slot) = owner.unwrap_or_else(|| halt());
@@ -684,6 +739,50 @@ unsafe extern "sysv64" fn mrml_timer_dispatch(frame: *const HardwareTrapFrame) -
     )))]
     {
         #[cfg(not(feature = "timer-probe"))]
+        let _ = frame;
+        halt()
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFrame) -> ! {
+    #[cfg(feature = "smp-ipi-probe")]
+    unsafe {
+        let frame = frame.as_ref().unwrap_or_else(|| halt());
+        let normalized = frame.normalize(0, 0);
+        if normalized.vector != u64::from(RESCHEDULE_VECTOR) || normalized.cs & 3 != 0 {
+            halt();
+        }
+        let apic_id = current_apic_id().unwrap_or_else(|| halt());
+        let mut owner = None;
+        for (cpu, slot) in AP_SCHEDULERS.0.iter().enumerate() {
+            if slot.initialized.load(Ordering::Acquire)
+                && slot.apic_id.load(Ordering::Acquire) == apic_id
+                && owner.replace((cpu, slot)).is_some()
+            {
+                halt();
+            }
+        }
+        let (cpu, slot) = owner.unwrap_or_else(|| halt());
+        if !AP_RESCHEDULE_REQUEST[cpu].swap(false, Ordering::AcqRel) {
+            halt();
+        }
+        let scheduler = (&mut *slot.scheduler.get()).assume_init_mut();
+        let next = match scheduler.yield_current().unwrap_or_else(|_| halt()) {
+            ScheduleOutcome::Switch { to, .. } => to,
+            _ => halt(),
+        };
+        LocalApicTimer::acknowledge();
+        asm!(
+            "out dx, eax",
+            in("dx") SMP_IPI_PROOF_PORT,
+            in("eax") ((cpu as u32) << 16) | next.token() as u32,
+            options(nomem, nostack)
+        );
+        halt();
+    }
+    #[cfg(not(feature = "smp-ipi-probe"))]
+    {
         let _ = frame;
         halt()
     }
@@ -905,7 +1004,11 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
             stacks.double_fault_top().unwrap_or_else(|_| halt()),
         )
     };
-    #[cfg(any(feature = "whp-smp-probe", feature = "whp-smp-scheduler-probe"))]
+    #[cfg(any(
+        feature = "whp-smp-probe",
+        feature = "whp-smp-scheduler-probe",
+        feature = "whp-smp-ipi-probe"
+    ))]
     unsafe {
         asm!(
             "out dx, eax",
@@ -919,7 +1022,7 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
     }
     #[cfg(feature = "smp-scheduler-probe")]
     unsafe {
-        let mut scheduler = KernelScheduler::<1>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let mut scheduler = KernelScheduler::<2>::new(1_000, 1).unwrap_or_else(|_| halt());
         if scheduler.create(Priority::NORMAL).is_err()
             || !matches!(scheduler.start(), ScheduleOutcome::Switch { .. })
         {
@@ -954,6 +1057,48 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
             options(noreturn, nomem, nostack)
         );
     }
+    #[cfg(feature = "smp-ipi-probe")]
+    unsafe {
+        let mut scheduler = KernelScheduler::<2>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let first = scheduler
+            .create(Priority::NORMAL)
+            .unwrap_or_else(|_| halt());
+        let second = scheduler
+            .create(Priority::NORMAL)
+            .unwrap_or_else(|_| halt());
+        if !matches!(scheduler.start(), ScheduleOutcome::Switch { to, .. } if to == first)
+            || second.token() as u32 != 1
+        {
+            halt();
+        }
+        let apic_id = current_apic_id().unwrap_or_else(|| halt());
+        let slot = AP_SCHEDULERS.0.get(cpu).unwrap_or_else(|| halt());
+        if slot.initialized.load(Ordering::Acquire)
+            || slot
+                .apic_id
+                .compare_exchange(u32::MAX, apic_id, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            halt();
+        }
+        (*slot.scheduler.get()).write(scheduler);
+        slot.initialized.store(true, Ordering::Release);
+        LocalApicController::enable().unwrap_or_else(|_| halt());
+        AP_IPI_READY[cpu].store(true, Ordering::Release);
+        asm!(
+            "out dx, eax",
+            in("dx") SMP_IPI_READY_PORT,
+            in("eax") ((cpu as u32) << 16) | generation,
+            options(nomem, nostack)
+        );
+        asm!(
+            "sti",
+            "2:",
+            "pause",
+            "jmp 2b",
+            options(noreturn, nomem, nostack)
+        );
+    }
     #[cfg(feature = "smp-probe")]
     unsafe {
         asm!(
@@ -963,7 +1108,7 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
             options(nomem, nostack)
         )
     };
-    #[cfg(not(feature = "smp-scheduler-probe"))]
+    #[cfg(not(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe")))]
     halt()
 }
 
@@ -1081,6 +1226,45 @@ unsafe fn start_application_processors(topology: &X86CpuTopology, handoff: &Boot
     smp_trace(0x30);
 }
 
+#[cfg(all(not(feature = "fault-probe"), feature = "smp-ipi-probe"))]
+unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
+    let bsp_apic_id = current_apic_id().unwrap_or_else(|| halt());
+    let mut target = None;
+    for cpu in 0..topology.len() {
+        let descriptor = topology.cpu(cpu).unwrap_or_else(|_| halt());
+        if descriptor.apic_id() != bsp_apic_id
+            && target.replace((cpu, descriptor.apic_id())).is_some()
+        {
+            halt();
+        }
+    }
+    let (cpu, destination) = target.unwrap_or_else(|| halt());
+    let timing = ap_startup_timing().unwrap_or_else(|| halt());
+    for _ in 0..1_000 {
+        if AP_IPI_READY[cpu].load(Ordering::Acquire) {
+            break;
+        }
+        timing.wait_micros(100).unwrap_or_else(|_| halt());
+    }
+    if !AP_IPI_READY[cpu].load(Ordering::Acquire)
+        || AP_RESCHEDULE_REQUEST[cpu]
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        halt();
+    }
+    unsafe { ApicIpi::fixed(destination, RESCHEDULE_VECTOR).and_then(|ipi| ipi.send()) }
+        .unwrap_or_else(|_| halt());
+    unsafe {
+        asm!(
+            "out dx, eax",
+            in("dx") SMP_IPI_READY_PORT,
+            in("eax") topology.len() as u32,
+            options(nomem, nostack)
+        )
+    };
+}
+
 #[cfg(not(feature = "fault-probe"))]
 fn current_apic_id() -> Option<u32> {
     let maximum = __cpuid(0).eax;
@@ -1195,6 +1379,10 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
                     smp_trace(0x04);
                     unsafe { start_application_processors(&topology, &handoff) };
                     smp_trace(0x05);
+                    #[cfg(feature = "smp-ipi-probe")]
+                    unsafe {
+                        send_reschedule_probe(&topology)
+                    };
                     #[cfg(feature = "smp-probe")]
                     unsafe {
                         asm!(
@@ -1862,6 +2050,17 @@ unsafe fn install_descriptor_state(
         state.install_external(
             TIMER_VECTOR,
             mrml_timer_interrupt as *const () as usize as u64,
+        )
+    }
+    .is_err()
+    {
+        halt();
+    }
+    #[cfg(feature = "smp-ipi-probe")]
+    if unsafe {
+        state.install_external(
+            RESCHEDULE_VECTOR,
+            mrml_reschedule_interrupt as *const () as usize as u64,
         )
     }
     .is_err()

@@ -80,6 +80,7 @@ enum LaunchMode {
     GpuBenchmark,
     SmpProbe,
     SmpSchedulerProbe,
+    SmpIpiProbe,
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -96,8 +97,9 @@ impl LaunchMode {
             "gpu-benchmark" => Ok(Self::GpuBenchmark),
             "smp-probe" => Ok(Self::SmpProbe),
             "smp-scheduler-probe" => Ok(Self::SmpSchedulerProbe),
+            "smp-ipi-probe" => Ok(Self::SmpIpiProbe),
             _ => Err(anyhow!(
-                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, gpu-benchmark, smp-probe, or smp-scheduler-probe"
+                "mode must be boot, fault-probe, timer-probe, preemption-probe, user-probe, service-probe, service-preemption-probe, gpu-benchmark, smp-probe, smp-scheduler-probe, or smp-ipi-probe"
             )),
         }
     }
@@ -205,7 +207,10 @@ fn application_main() -> Result<()> {
     let mut entropy = [0u8; 32];
     mrml_runtime::fill_random(&mut entropy)
         .map_err(|_| anyhow!("operating-system boot entropy failed"))?;
-    let smp_mode = matches!(mode, LaunchMode::SmpProbe | LaunchMode::SmpSchedulerProbe);
+    let smp_mode = matches!(
+        mode,
+        LaunchMode::SmpProbe | LaunchMode::SmpSchedulerProbe | LaunchMode::SmpIpiProbe
+    );
     let handoff = if smp_mode {
         smp_boot_handoff(
             executable.artifact().version(),
@@ -262,7 +267,7 @@ fn application_main() -> Result<()> {
         | LaunchMode::ServicePreemptionProbe => {
             system.prepare_timer_kernel_guest::<13>(0, &executable, handoff.as_slice(), layout)
         }
-        LaunchMode::SmpProbe | LaunchMode::SmpSchedulerProbe => {
+        LaunchMode::SmpProbe | LaunchMode::SmpSchedulerProbe | LaunchMode::SmpIpiProbe => {
             system.prepare_smp_kernel_guest::<13>(&executable, handoff.as_slice(), layout)
         }
         _ => system.prepare_kernel_guest::<13>(0, &executable, handoff.as_slice(), layout),
@@ -323,9 +328,12 @@ fn application_main() -> Result<()> {
             .run_smp()
             .map_err(|error| anyhow!("KVM SMP execution failed: {:?}", error))?;
         let scheduler_probe = mode == LaunchMode::SmpSchedulerProbe;
+        let ipi_probe = mode == LaunchMode::SmpIpiProbe;
         let expected_bootstrap = VmExit::Io {
             port: if scheduler_probe {
                 0x4d5e
+            } else if ipi_probe {
+                0x4d60
             } else {
                 SMP_PROBE_PORT
             },
@@ -336,6 +344,8 @@ fn application_main() -> Result<()> {
         let expected_application = VmExit::Io {
             port: if scheduler_probe {
                 0x4d5f
+            } else if ipi_probe {
+                0x4d61
             } else {
                 SMP_PROBE_PORT
             },
@@ -1145,6 +1155,10 @@ mod tests {
         assert_eq!(
             LaunchMode::parse("smp-scheduler-probe").unwrap(),
             LaunchMode::SmpSchedulerProbe
+        );
+        assert_eq!(
+            LaunchMode::parse("smp-ipi-probe").unwrap(),
+            LaunchMode::SmpIpiProbe
         );
     }
 

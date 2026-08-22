@@ -359,8 +359,14 @@ scheduler, programs its own local-APIC timer, receives vector 32 through its
 private IDT and privilege stack, advances exactly one local tick, acknowledges
 EOI, and emits a CPU-indexed proof while CPU 0 independently completes startup
 and trampoline revocation. The measured runs completed in 52,565 microseconds
-on nested KVM and 63,092 microseconds on WHP. Cross-CPU task migration,
-load balancing, and interprocessor reschedule interrupts remain unfinished.
+on nested KVM and 63,092 microseconds on WHP. A signed `smp-ipi-probe` adds
+directed rescheduling: CPU 0 publishes
+a one-shot request only after CPU 1 has release-published its APIC-bound
+two-task scheduler, then sends a directed fixed-delivery vector 33. CPU 1
+accepts it through its private interrupt state, atomically consumes the request,
+switches from task slot 0 to slot 1, acknowledges EOI, and emits a CPU/task-bound
+proof. KVM completed this in 50,690 microseconds and WHP in 63,173 microseconds.
+General task migration and load balancing remain unfinished.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

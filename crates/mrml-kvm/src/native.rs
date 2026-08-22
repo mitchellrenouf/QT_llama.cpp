@@ -1199,7 +1199,7 @@ impl<const N: usize> KvmBackend<N> {
                             if matches!(
                                 exit,
                                 VmExit::Io {
-                                    port: 0x4d5e,
+                                    port: 0x4d5e | 0x4d60,
                                     size: 4,
                                     write: true,
                                     ..
