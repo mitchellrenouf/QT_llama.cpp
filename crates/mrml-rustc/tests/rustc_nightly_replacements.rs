@@ -607,6 +607,25 @@ fn rustc_nested_loop_actions_have_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_repeated_inner_loop_has_an_executable_replacement() {
+    // Original bounded scalar extension of the nested exit targeting in pinned
+    // tests/ui/for-loop-while/nested-loop-break-unit.rs. Each outer iteration
+    // runs three inner iterations before the inner conditional break.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32) -> u32 { let mut outer: u32 = 0; let mut inner: u32 = 0; let mut total: u32 = 0; while outer < limit { loop { let selected: u32 = inner + 1; inner = selected; total += selected; if selected == 3 { break; } } outer += 1; inner = 0; } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<2048, 1536, 4, 4, 4, 64>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

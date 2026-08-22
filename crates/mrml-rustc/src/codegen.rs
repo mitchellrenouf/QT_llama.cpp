@@ -691,6 +691,7 @@ pub fn compile_x86_64_function_with_options<
                     span: function.body_expression_span,
                 })?;
                 let nested_checkpoint = emitter.saved_locals;
+                let nested_start = emitter.length;
                 for action in block.actions().iter().flatten() {
                     match action {
                         crate::ConditionalLoopAction::Local(local) => {
@@ -715,8 +716,54 @@ pub fn compile_x86_64_function_with_options<
                         }
                     }
                 }
+                let conditional_exit = if let Some(condition) = block.break_condition {
+                    let tree = condition
+                        .parse_condition::<MAX_EXPRESSION_NODES>()
+                        .map_err(|error| CodegenError {
+                            kind: CodegenErrorKind::Expression(error.kind),
+                            span: translate_span(
+                                function.body_expression_span.start
+                                    + condition.condition_span.start,
+                                error.span,
+                            ),
+                        })?;
+                    let condition_type = runtime_expression_type_with_locals(
+                        function,
+                        emitter.resolver,
+                        &emitter.locals[..emitter.saved_locals],
+                        &tree,
+                        tree.root(),
+                        0,
+                    )
+                    .map_err(|kind| CodegenError {
+                        kind,
+                        span: translate_span(
+                            function.body_expression_span.start,
+                            condition.condition_span,
+                        ),
+                    })?;
+                    if condition_type != RuntimeExpressionType::Bool {
+                        return Err(CodegenError {
+                            kind: CodegenErrorKind::RuntimeTypeMismatch,
+                            span: translate_span(
+                                function.body_expression_span.start,
+                                condition.condition_span,
+                            ),
+                        });
+                    }
+                    emitter.emit_expression(&tree, tree.root(), 0)?;
+                    Some(())
+                } else {
+                    None
+                };
                 emitter.emit_stack_cleanup_to(nested_checkpoint)?;
                 emitter.truncate_scoped_locals(nested_checkpoint)?;
+                if conditional_exit.is_some() {
+                    emitter.emit(&[0x48, 0x85, 0xc0])?;
+                    let exit = emitter.emit_forward_branch(0x85)?;
+                    emitter.emit_backward_branch(nested_start)?;
+                    emitter.patch_forward_branch(exit)?;
+                }
                 ends_with_unconditional_control = false;
                 continue;
             }

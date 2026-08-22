@@ -1405,33 +1405,62 @@ fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: us
                     let block = loop_statement.nested_blocks()[*index]
                         .as_ref()
                         .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
-                    let nested_checkpoint = resolver.count;
-                    for action in block.actions().iter().flatten() {
-                        match action {
-                            crate::ConditionalLoopAction::Local(local) => {
-                                evaluate_const_local(context, symbol_count, local, resolver, depth)?
-                            }
-                            crate::ConditionalLoopAction::Assignment(assignment) => {
-                                evaluate_const_assignment(
+                    let mut nested_iterations = 0usize;
+                    loop {
+                        if nested_iterations == MAX_CONST_LOOP_ITERATIONS {
+                            return Err(SemanticErrorKind::UnsupportedConstCall);
+                        }
+                        nested_iterations += 1;
+                        let nested_checkpoint = resolver.count;
+                        for action in block.actions().iter().flatten() {
+                            match action {
+                                crate::ConditionalLoopAction::Local(local) => evaluate_const_local(
                                     context,
                                     symbol_count,
-                                    assignment,
+                                    local,
                                     resolver,
                                     depth,
-                                )?;
-                            }
-                            crate::ConditionalLoopAction::Expression(statement) => {
-                                evaluate_const_expression_statement(
-                                    context,
-                                    symbol_count,
-                                    statement,
-                                    resolver,
-                                    depth,
-                                )?;
+                                )?,
+                                crate::ConditionalLoopAction::Assignment(assignment) => {
+                                    evaluate_const_assignment(
+                                        context,
+                                        symbol_count,
+                                        assignment,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
+                                crate::ConditionalLoopAction::Expression(statement) => {
+                                    evaluate_const_expression_statement(
+                                        context,
+                                        symbol_count,
+                                        statement,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
                             }
                         }
+                        let should_break = if let Some(condition) = block.break_condition {
+                            let tree = condition
+                                .parse_condition::<MAX_CONST_FUNCTION_EXPRESSION_NODES>()
+                                .map_err(|error| SemanticErrorKind::Expression(error.kind))?;
+                            evaluate_boolean_const_expression(
+                                context,
+                                symbol_count,
+                                &tree,
+                                tree.root(),
+                                resolver,
+                                depth,
+                            )?
+                        } else {
+                            true
+                        };
+                        resolver.truncate(nested_checkpoint)?;
+                        if should_break {
+                            break;
+                        }
                     }
-                    resolver.truncate(nested_checkpoint)?;
                 }
                 crate::LoopOperation::ConditionalBlock(index) => {
                     let block = loop_statement.conditional_blocks()[*index]
@@ -3099,6 +3128,19 @@ mod tests {
         assert_eq!(values.resolve("ZERO"), Some(0));
         assert_eq!(values.resolve("ONE"), Some(1));
         assert_eq!(values.resolve("FIVE"), Some(15));
+    }
+
+    #[test]
+    fn evaluates_repeated_inner_iterations_until_a_conditional_break() {
+        let module = Parser::new(
+            "const fn sum(limit: u8) -> u16 { let mut outer: u8 = 0; let mut inner: u8 = 0; let mut total: u16 = 0; while outer < limit { loop { let selected: u8 = inner + 1; inner = selected; total += selected as u16; if selected == 3 { break; } } outer += 1; inner = 0; } total } const ZERO: u16 = sum(0); const ONE: u16 = sum(1); const FIVE: u16 = sum(5);",
+        )
+        .parse_module::<5, 4>()
+        .unwrap();
+        let values = analyze_constants::<3, 96, 5, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("ZERO"), Some(0));
+        assert_eq!(values.resolve("ONE"), Some(6));
+        assert_eq!(values.resolve("FIVE"), Some(30));
     }
 
     #[test]
