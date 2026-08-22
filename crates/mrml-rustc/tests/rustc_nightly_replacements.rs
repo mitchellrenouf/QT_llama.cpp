@@ -2079,6 +2079,19 @@ fn rustc_raw_pointer_byte_offsets_reach_native_objects() {
 }
 
 #[test]
+fn rustc_raw_pointer_null_checks_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *const u16) -> bool { input.is_null() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: *mut char) -> bool { input.is_null() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe() -> bool { (0usize as *const u8).is_null() }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_typed_and_mutable_scalar_reference_copies_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: &usize) -> usize { let copied: &usize = input; *copied }",

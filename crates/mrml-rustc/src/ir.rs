@@ -280,6 +280,7 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
             | ExprKind::StrAsBytes { .. }
             | ExprKind::StrIsCharBoundary { .. }
             | ExprKind::ReferenceAsPointer { .. }
+            | ExprKind::RawPointerIsNull { .. }
             | ExprKind::RawPointerOffset { .. }
             | ExprKind::RawPointerDifference { .. } => {
                 return Err(IrError {

@@ -2210,6 +2210,7 @@ fn validate_runtime_inline_const<
             recurse(index)?;
         }
         ExprKind::ReferenceAsPointer { base, .. } => recurse(base)?,
+        ExprKind::RawPointerIsNull { base } => recurse(base)?,
         ExprKind::RawPointerOffset { base, offset, .. } => {
             recurse(base)?;
             recurse(offset)?;
@@ -2591,6 +2592,22 @@ fn runtime_expression_type_with_locals<
                 return Err(CodegenErrorKind::ImmutableAssignment);
             }
             Ok(RuntimeExpressionType::RawPointer { pointee, mutable })
+        }
+        ExprKind::RawPointerIsNull { base } => {
+            if !matches!(
+                runtime_expression_type_with_locals(
+                    function,
+                    resolver,
+                    locals,
+                    tree,
+                    base,
+                    depth + 1,
+                )?,
+                RuntimeExpressionType::RawPointer { .. }
+            ) {
+                return Err(CodegenErrorKind::RuntimeTypeMismatch);
+            }
+            Ok(RuntimeExpressionType::Bool)
         }
         ExprKind::RawPointerOffset {
             base,
@@ -3911,6 +3928,10 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             }
             ExprKind::ReferenceAsPointer { base, .. } => {
                 self.emit_expression(tree, base, depth + 1)?;
+            }
+            ExprKind::RawPointerIsNull { base } => {
+                self.emit_expression(tree, base, depth + 1)?;
+                self.emit(&[0x48, 0x85, 0xc0, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0])?;
             }
             ExprKind::RawPointerOffset {
                 base,
@@ -9145,6 +9166,38 @@ mod tests {
                 assert!(result.is_ok(), "{source}: {result:?}");
             }
         }
+    }
+
+    #[test]
+    fn checks_raw_pointers_for_null() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *const u16) -> bool { input.is_null() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: *mut char) -> bool { input.is_null() }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> bool { (0usize as *const u8).is_null() }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1024, 4, 96>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: usize) -> bool { input.is_null() }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 768, 2, 80>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch,
+        );
     }
 
     #[test]

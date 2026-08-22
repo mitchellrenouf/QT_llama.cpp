@@ -284,6 +284,9 @@ pub enum ExprKind<'source> {
         base: ExprId,
         mutable: bool,
     },
+    RawPointerIsNull {
+        base: ExprId,
+    },
     RawPointerOffset {
         base: ExprId,
         offset: ExprId,
@@ -452,6 +455,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::StrAsBytes { .. }
             | ExprKind::StrIsCharBoundary { .. }
             | ExprKind::ReferenceAsPointer { .. }
+            | ExprKind::RawPointerIsNull { .. }
             | ExprKind::RawPointerOffset { .. }
             | ExprKind::RawPointerDifference { .. }
             | ExprKind::Integer(_)
@@ -666,6 +670,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             ExprKind::StrAsBytes { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::StrIsCharBoundary { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::ReferenceAsPointer { .. } => Err(ConstEvalError::InvalidExpressionTree),
+            ExprKind::RawPointerIsNull { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::RawPointerOffset { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::RawPointerDifference { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
@@ -1876,6 +1881,9 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             | ExprKind::SliceIsEmpty { base }
             | ExprKind::StrAsBytes { base }
             | ExprKind::ReferenceAsPointer { base, .. } => {
+                self.substitute_identifier(base, name, replacement, depth + 1)?;
+            }
+            ExprKind::RawPointerIsNull { base } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
             }
             ExprKind::RawPointerOffset { base, offset, .. } => {
@@ -3434,6 +3442,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         | "wrapping_byte_sub"
                         | "wrapping_byte_offset"
                         | "byte_offset_from"
+                        | "is_null"
                 )
             }) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
@@ -3481,6 +3490,7 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                     base,
                     mutable: true,
                 },
+                "is_null" => ExprKind::RawPointerIsNull { base },
                 "is_char_boundary" => ExprKind::StrIsCharBoundary {
                     base,
                     index: argument.ok_or_else(|| {
