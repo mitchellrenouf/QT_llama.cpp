@@ -1709,6 +1709,19 @@ fn rustc_copy_out_of_array_multiword_parameter_reaches_native_objects() {
 }
 
 #[test]
+fn rustc_block_expression_fixed_array_returns_reach_native_objects() {
+    let sources = [
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize) -> [usize; 1] { [input + 1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize) -> [usize; 2] { [input, input + 1] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: usize, after: usize) -> [usize; 3] { [input, 42, after] }",
+    ];
+    for source in sources {
+        assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+        assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+    }
+}
+
+#[test]
 fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",

@@ -526,13 +526,55 @@ pub fn compile_x86_64_function_with_options<
     let returns_unit = return_type_text == "()";
     let returns_bool = return_type_text == "bool";
     let returns_char = return_type_text == "char";
-    if !returns_unit && !returns_bool && !returns_char && runtime_width(return_type_text).is_none()
+    let return_array = runtime_array_type(return_type_text);
+    if !returns_unit
+        && !returns_bool
+        && !returns_char
+        && runtime_width(return_type_text).is_none()
+        && return_array.is_none()
     {
         return Err(CodegenError {
             kind: CodegenErrorKind::UnsupportedReturnType,
             span: return_type_span,
         });
     }
+    if let Some(RuntimeExpressionType::Array { element, count }) = return_array
+        && (count == 0
+            || !matches!(
+                element,
+                RuntimeArrayElementType::Bool
+                    | RuntimeArrayElementType::Char
+                    | RuntimeArrayElementType::Integer(Some(_))
+            )
+            || (count > 1
+                && !matches!(element, RuntimeArrayElementType::Integer(Some(ty)) if ty.bits(64) == Some(64))))
+    {
+        return Err(CodegenError {
+            kind: CodegenErrorKind::UnsupportedReturnType,
+            span: return_type_span,
+        });
+    }
+    let returns_boolean_like = returns_bool
+        || matches!(
+            return_array,
+            Some(RuntimeExpressionType::Array {
+                element: RuntimeArrayElementType::Bool,
+                ..
+            })
+        );
+    let operand_type = match return_array {
+        Some(RuntimeExpressionType::Array {
+            element: RuntimeArrayElementType::Integer(Some(element)),
+            ..
+        }) => element.name(),
+        Some(RuntimeExpressionType::Array {
+            element: RuntimeArrayElementType::Char,
+            ..
+        }) => "char",
+        Some(_) => "u64",
+        None if returns_bool || returns_unit => "u64",
+        None => return_type_text,
+    };
     let mut integer_operand_type = None;
     for parameter in function.parameters().iter().flatten() {
         if let Some(RuntimeExpressionType::Array { element, count }) =
@@ -540,9 +582,9 @@ pub fn compile_x86_64_function_with_options<
         {
             match element {
                 RuntimeArrayElementType::Bool if count == 1 => continue,
-                RuntimeArrayElementType::Char if count == 1 && returns_char => continue,
+                RuntimeArrayElementType::Char if count == 1 && operand_type == "char" => continue,
                 RuntimeArrayElementType::Integer(Some(element))
-                    if (returns_unit || returns_bool || element.name() == return_type_text)
+                    if (returns_unit || returns_boolean_like || element.name() == operand_type)
                         && (count == 1 || element.bits(64) == Some(64))
                         && integer_operand_type
                             .is_none_or(|existing| existing == element.name()) =>
@@ -562,7 +604,7 @@ pub fn compile_x86_64_function_with_options<
             continue;
         }
         if runtime_width(parameter.ty.text).is_none()
-            || (!returns_unit && !returns_bool && parameter.ty.text != return_type_text)
+            || (!returns_unit && !returns_boolean_like && parameter.ty.text != operand_type)
             || integer_operand_type.is_some_and(|ty| ty != parameter.ty.text)
         {
             return Err(CodegenError {
@@ -572,10 +614,10 @@ pub fn compile_x86_64_function_with_options<
         }
         integer_operand_type = Some(parameter.ty.text);
     }
-    let operand_type = if returns_bool || returns_unit {
+    let operand_type = if (returns_boolean_like || returns_unit) && integer_operand_type.is_some() {
         integer_operand_type.unwrap_or("u64")
     } else {
-        return_type_text
+        operand_type
     };
     let expected_type = if returns_unit {
         RuntimeExpressionType::Unit
@@ -583,6 +625,8 @@ pub fn compile_x86_64_function_with_options<
         RuntimeExpressionType::Bool
     } else if returns_char {
         RuntimeExpressionType::Char
+    } else if let Some(array) = return_array {
+        array
     } else {
         RuntimeExpressionType::Integer(crate::IntegerType::from_name(return_type_text))
     };
@@ -590,6 +634,14 @@ pub fn compile_x86_64_function_with_options<
         kind: CodegenErrorKind::UnsupportedRuntimeType,
         span: function.name_span,
     })?;
+    let uses_sret = matches!(
+        return_array,
+        Some(RuntimeExpressionType::Array { count, .. })
+            if match abi {
+                X86_64Abi::Windows => count > 1,
+                X86_64Abi::SystemV => count > 2,
+            }
+    );
     let saved_parameter_slots = function
         .parameters()
         .iter()
@@ -598,6 +650,7 @@ pub fn compile_x86_64_function_with_options<
             let slots = runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
             total.checked_add(slots)
         })
+        .and_then(|slots| slots.checked_add(usize::from(uses_sret)))
         .ok_or(CodegenError {
             kind: CodegenErrorKind::TooManyAbiParameters,
             span: function.name_span,
@@ -618,6 +671,7 @@ pub fn compile_x86_64_function_with_options<
         abi,
         width,
         overflow_checks: options.overflow_checks,
+        uses_sret,
         saved_parameter_slots,
         locals: [None; MAX_PARAMETERS],
         saved_locals: 0,
@@ -1290,8 +1344,7 @@ pub fn compile_x86_64_function_with_options<
                         ),
                     });
                 }
-                emitter.emit_expression(&value_tree, value_tree.root(), 0)?;
-                emitter.emit_epilogue()?;
+                emitter.emit_typed_return(&value_tree, value_tree.root(), expected_type)?;
                 ends_with_unconditional_control = true;
                 break;
             }
@@ -1364,8 +1417,7 @@ pub fn compile_x86_64_function_with_options<
                 emitter.emit_expression(&condition_tree, condition_tree.root(), 0)?;
                 emitter.emit(&[0x48, 0x85, 0xc0])?;
                 let skip_return = emitter.emit_forward_branch(0x84)?;
-                emitter.emit_expression(&value_tree, value_tree.root(), 0)?;
-                emitter.emit_epilogue()?;
+                emitter.emit_typed_return(&value_tree, value_tree.root(), expected_type)?;
                 emitter.patch_forward_branch(skip_return)?;
                 ends_with_unconditional_control = false;
                 continue;
@@ -1555,8 +1607,7 @@ pub fn compile_x86_64_function_with_options<
             span: translate_span(function.body_expression_span.start, body.tail_span),
         });
     }
-    emitter.emit_expression(&tree, tree.root(), 0)?;
-    emitter.emit_epilogue()?;
+    emitter.emit_typed_return(&tree, tree.root(), expected_type)?;
     emitter.finish()
 }
 
@@ -2335,6 +2386,7 @@ struct RuntimeEmitter<'tree, 'source, R, const MAX_BYTES: usize, const MAX_PARAM
     abi: X86_64Abi,
     width: RuntimeWidth,
     overflow_checks: bool,
+    uses_sret: bool,
     saved_parameter_slots: usize,
     locals: [Option<RuntimeLocal<'source>>; MAX_PARAMETERS],
     saved_locals: usize,
@@ -2400,15 +2452,19 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     fn emit_prologue(&mut self) -> Result<(), CodegenError> {
         match self.abi {
             X86_64Abi::Windows => {
-                let mut pushed_slots = 0usize;
+                let mut pushed_slots = usize::from(self.uses_sret);
+                if self.uses_sret {
+                    self.emit(&[0x51])?;
+                }
                 for (index, parameter) in self.function.parameters().iter().flatten().enumerate() {
+                    let abi_index = index + usize::from(self.uses_sret);
                     let count =
                         runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
                     if count <= 1 {
-                        self.emit_windows_parameter_word(index, pushed_slots)?;
+                        self.emit_windows_parameter_word(abi_index, pushed_slots)?;
                         pushed_slots += 1;
                     } else {
-                        self.emit_windows_parameter_pointer(index, pushed_slots)?;
+                        self.emit_windows_parameter_pointer(abi_index, pushed_slots)?;
                         for element in 0..count {
                             self.emit_pointer_element_push(element)?;
                             pushed_slots += 1;
@@ -2417,9 +2473,12 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 }
             }
             X86_64Abi::SystemV => {
-                let mut register = 0usize;
+                let mut register = usize::from(self.uses_sret);
                 let mut stack_offset = 8usize;
-                let mut pushed_slots = 0usize;
+                let mut pushed_slots = usize::from(self.uses_sret);
+                if self.uses_sret {
+                    self.emit(&[0x57])?;
+                }
                 for parameter in self.function.parameters().iter().flatten() {
                     let count =
                         runtime_array_type(parameter.ty.text).map_or(1, runtime_type_stack_slots);
@@ -3875,8 +3934,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         self.emit_expression(&condition_tree, condition_tree.root(), 0)?;
         self.emit(&[0x48, 0x85, 0xc0])?;
         let skip_return = self.emit_forward_branch(0x84)?;
-        self.emit_expression(&value_tree, value_tree.root(), 0)?;
-        self.emit_epilogue()?;
+        self.emit_typed_return(&value_tree, value_tree.root(), expected_type)?;
         self.patch_forward_branch(skip_return)
     }
 
@@ -4009,7 +4067,55 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, return_statement.value_span),
             });
         }
-        self.emit_expression(&value_tree, value_tree.root(), 0)?;
+        self.emit_typed_return(&value_tree, value_tree.root(), expected_type)
+    }
+
+    fn emit_typed_return<const MAX_NODES: usize>(
+        &mut self,
+        tree: &crate::ExpressionTree<'_, MAX_NODES>,
+        root: crate::ExprId,
+        expected_type: RuntimeExpressionType,
+    ) -> Result<(), CodegenError> {
+        let RuntimeExpressionType::Array { count, .. } = expected_type else {
+            self.emit_expression(tree, root, 0)?;
+            return self.emit_epilogue();
+        };
+        self.emit_array_to_stack(tree, root, count)?;
+        if self.uses_sret {
+            let pointer_slot = self
+                .evaluation_depth
+                .checked_add(self.local_stack_slots()?)
+                .and_then(|slots| slots.checked_add(self.saved_parameter_slots - 1))
+                .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+            self.emit_stack_slot(pointer_slot)?;
+            self.emit(&[0x48, 0x89, 0xc2])?;
+            for element in 0..count {
+                self.emit_stack_slot(count - 1 - element)?;
+                let displacement = u8::try_from(element * 8)
+                    .map_err(|_| self.error(CodegenErrorKind::OutputTooSmall))?;
+                if displacement == 0 {
+                    self.emit(&[0x48, 0x89, 0x02])?;
+                } else {
+                    self.emit(&[0x48, 0x89, 0x42, displacement])?;
+                }
+            }
+            self.emit(&[0x48, 0x89, 0xd0])?;
+        } else if count == 1 {
+            self.emit_stack_slot(0)?;
+        } else if self.abi == X86_64Abi::SystemV && count == 2 {
+            self.emit_stack_slot(0)?;
+            self.emit(&[0x48, 0x89, 0xc2])?;
+            self.emit_stack_slot(1)?;
+        } else {
+            return Err(self.error(CodegenErrorKind::UnsupportedReturnType));
+        }
+        self.evaluation_depth -= count;
+        let bytes = count
+            .checked_mul(8)
+            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+        if bytes != 0 {
+            self.emit(&[0x48, 0x83, 0xc4, bytes as u8])?;
+        }
         self.emit_epilogue()
     }
 
@@ -4072,8 +4178,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit_expression(&condition_tree, condition_tree.root(), 0)?;
             self.emit(&[0x48, 0x85, 0xc0])?;
             let next_branch = self.emit_forward_branch(0x84)?;
-            self.emit_expression(&value_tree, value_tree.root(), 0)?;
-            self.emit_epilogue()?;
+            self.emit_typed_return(&value_tree, value_tree.root(), expected_type)?;
             self.patch_forward_branch(next_branch)?;
         }
         let Some(else_value) = conditional.else_value.as_ref() else {
@@ -4103,8 +4208,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 span: translate_span(body_start, else_value.value_span),
             });
         }
-        self.emit_expression(&else_tree, else_tree.root(), 0)?;
-        self.emit_epilogue()
+        self.emit_typed_return(&else_tree, else_tree.root(), expected_type)
     }
 
     fn emit_normalize(&mut self) -> Result<(), CodegenError> {
@@ -5763,6 +5867,30 @@ mod tests {
                 .kind,
             CodegenErrorKind::UnsupportedParameterType,
         );
+    }
+
+    #[test]
+    fn returns_fixed_arrays_through_x86_64_abi_classes() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> [u64; 1] { [input + 1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> [bool; 1] { [input] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: char) -> [char; 1] { [input] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> [u64; 2] { [input, input + 1] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64, after: u64) -> [u64; 3] { [input, 42, after] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u64) -> [u64; 3] { let values = [input, input + 1, input + 2]; return values; }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> [u64; 3] { if select { return [13u64, 42, 99]; } [1, 2, 3] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool) -> [u64; 2] { if select { return [13u64, 42]; } else { return [1, 2]; } }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result = compile_x86_64_function::<_, 768, 4, 64>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
     }
 
     #[test]
