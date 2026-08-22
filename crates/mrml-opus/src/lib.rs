@@ -611,6 +611,54 @@ impl Encoder {
         duration_us: u32,
         output: &mut [u8],
     ) -> Result<usize, Error> {
+        self.encode_silk_bandwidth_duration_impl(
+            input,
+            sample_rate,
+            bandwidth,
+            duration_us,
+            output,
+            None,
+        )
+    }
+
+    /// Encodes a SILK-only packet with a caller-supplied, TOC-less 5 ms CELT
+    /// transition frame in the implicit byte-aligned redundancy tail.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_silk_with_redundancy(
+        &mut self,
+        input: &[i16],
+        sample_rate: u32,
+        bandwidth: Bandwidth,
+        duration_us: u32,
+        redundant_celt: &[u8],
+        at_beginning: bool,
+        output: &mut [u8],
+    ) -> Result<usize, Error> {
+        let position = if at_beginning {
+            transition::RedundancyPosition::Beginning
+        } else {
+            transition::RedundancyPosition::End
+        };
+        self.encode_silk_bandwidth_duration_impl(
+            input,
+            sample_rate,
+            bandwidth,
+            duration_us,
+            output,
+            Some((redundant_celt, position)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_silk_bandwidth_duration_impl(
+        &mut self,
+        input: &[i16],
+        sample_rate: u32,
+        bandwidth: Bandwidth,
+        duration_us: u32,
+        output: &mut [u8],
+        redundancy: Option<(&[u8], transition::RedundancyPosition)>,
+    ) -> Result<usize, Error> {
         if !matches!(sample_rate, 8_000 | 12_000 | 16_000 | 24_000 | 48_000) {
             return Err(Error::InvalidFrameSize);
         }
@@ -656,6 +704,7 @@ impl Encoder {
                 lsf_order,
                 interval_duration_ms == 20,
                 output,
+                redundancy,
             );
         }
         let mut source = [0.0f32; 2880];
@@ -714,14 +763,28 @@ impl Encoder {
         };
         output[0] = config << 3;
         let no_fec = [None; 3];
-        let payload = self.silk.encode(
-            &mut output[1..],
-            bandwidth,
-            duration_ms,
-            header,
-            &parameters[..intervals],
-            &no_fec[..intervals],
-        )?;
+        let payload = if let Some((redundant, position)) = redundancy {
+            encode_silk_mono_transition(
+                &mut self.silk,
+                &mut output[1..],
+                bandwidth,
+                duration_ms,
+                header,
+                &parameters[..intervals],
+                &no_fec[..intervals],
+                redundant,
+                position,
+            )?
+        } else {
+            self.silk.encode(
+                &mut output[1..],
+                bandwidth,
+                duration_ms,
+                header,
+                &parameters[..intervals],
+                &no_fec[..intervals],
+            )?
+        };
         if payload > MAX_FRAME_BYTES {
             return Err(Error::BufferTooSmall);
         }
@@ -742,6 +805,7 @@ impl Encoder {
         lsf_order: u8,
         interpolate_lsf: bool,
         output: &mut [u8],
+        redundancy: Option<(&[u8], transition::RedundancyPosition)>,
     ) -> Result<usize, Error> {
         let input_frames = sample_rate as usize * usize::from(duration_ms) / 1000;
         let narrow_count = intervals * interval_samples;
@@ -820,14 +884,28 @@ impl Encoder {
         };
         output[0] = config << 3 | 1 << 2;
         let empty_fec = [empty_fec; 3];
-        let payload = self.silk_stereo.encode(
-            &mut output[1..],
-            bandwidth,
-            duration_ms,
-            header,
-            &regular[..intervals],
-            &empty_fec[..intervals],
-        )?;
+        let payload = if let Some((redundant, position)) = redundancy {
+            encode_silk_stereo_transition(
+                &mut self.silk_stereo,
+                &mut output[1..],
+                bandwidth,
+                duration_ms,
+                header,
+                &regular[..intervals],
+                &empty_fec[..intervals],
+                redundant,
+                position,
+            )?
+        } else {
+            self.silk_stereo.encode(
+                &mut output[1..],
+                bandwidth,
+                duration_ms,
+                header,
+                &regular[..intervals],
+                &empty_fec[..intervals],
+            )?
+        };
         if payload > MAX_FRAME_BYTES {
             return Err(Error::BufferTooSmall);
         }
@@ -1661,6 +1739,96 @@ impl Encoder {
         self.celt_seed = result.seed;
         Ok(payload_bytes + 1)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_silk_mono_transition(
+    encoder: &mut silk_packet::MonoPayloadEncoder,
+    output: &mut [u8],
+    bandwidth: Bandwidth,
+    duration_ms: u8,
+    header: silk_frame::LayerHeader,
+    regular: &[silk_codec::MonoFrameParameters],
+    fec: &[Option<&silk_codec::MonoFrameParameters>],
+    redundant: &[u8],
+    position: transition::RedundancyPosition,
+) -> Result<usize, Error> {
+    if !(2..=257).contains(&redundant.len()) {
+        return Err(Error::InvalidPacket);
+    }
+    let mut probe_bytes = [0u8; MAX_FRAME_BYTES];
+    let mut probe = RangeEncoder::new(&mut probe_bytes);
+    silk_packet::MonoPayloadEncoder::new().encode_range(
+        &mut probe,
+        bandwidth,
+        duration_ms,
+        header,
+        regular,
+        fec,
+    )?;
+    probe.encode_bit_logp(position == transition::RedundancyPosition::Beginning, 1)?;
+    let main_bytes = usize::try_from(probe.tell().div_ceil(8)).map_err(|_| Error::InvalidPacket)?;
+    let total = main_bytes
+        .checked_add(redundant.len())
+        .filter(|&size| size <= MAX_FRAME_BYTES)
+        .ok_or(Error::BufferTooSmall)?;
+    if output.len() < total {
+        return Err(Error::BufferTooSmall);
+    }
+    {
+        let mut range = RangeEncoder::new(&mut output[..total]);
+        range.reserve_tail(redundant.len())?;
+        encoder.encode_range(&mut range, bandwidth, duration_ms, header, regular, fec)?;
+        transition::encode_header(&mut range, Mode::Silk, total, position, redundant.len())?;
+        range.finish()?;
+    }
+    output[main_bytes..total].copy_from_slice(redundant);
+    Ok(total)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_silk_stereo_transition(
+    encoder: &mut silk_packet::StereoPayloadEncoder,
+    output: &mut [u8],
+    bandwidth: Bandwidth,
+    duration_ms: u8,
+    header: silk_frame::LayerHeader,
+    regular: &[silk_packet::StereoFrameParameters<'_>],
+    fec: &[silk_packet::StereoFrameParameters<'_>],
+    redundant: &[u8],
+    position: transition::RedundancyPosition,
+) -> Result<usize, Error> {
+    if !(2..=257).contains(&redundant.len()) {
+        return Err(Error::InvalidPacket);
+    }
+    let mut probe_bytes = [0u8; MAX_FRAME_BYTES];
+    let mut probe = RangeEncoder::new(&mut probe_bytes);
+    silk_packet::StereoPayloadEncoder::new().encode_range(
+        &mut probe,
+        bandwidth,
+        duration_ms,
+        header,
+        regular,
+        fec,
+    )?;
+    probe.encode_bit_logp(position == transition::RedundancyPosition::Beginning, 1)?;
+    let main_bytes = usize::try_from(probe.tell().div_ceil(8)).map_err(|_| Error::InvalidPacket)?;
+    let total = main_bytes
+        .checked_add(redundant.len())
+        .filter(|&size| size <= MAX_FRAME_BYTES)
+        .ok_or(Error::BufferTooSmall)?;
+    if output.len() < total {
+        return Err(Error::BufferTooSmall);
+    }
+    {
+        let mut range = RangeEncoder::new(&mut output[..total]);
+        range.reserve_tail(redundant.len())?;
+        encoder.encode_range(&mut range, bandwidth, duration_ms, header, regular, fec)?;
+        transition::encode_header(&mut range, Mode::Silk, total, position, redundant.len())?;
+        range.finish()?;
+    }
+    output[main_bytes..total].copy_from_slice(redundant);
+    Ok(total)
 }
 
 pub struct Decoder {
@@ -3260,6 +3428,78 @@ mod tests {
             ),
             Err(Error::InvalidFrameSize)
         );
+    }
+
+    #[test]
+    fn silk_only_encoder_emits_transition_redundancy_for_every_configuration() {
+        for channels in [1u8, 2] {
+            let transition_frames = 48_000usize / 200;
+            let mut transition_input = [0i16; 480];
+            for (index, sample) in transition_input[..transition_frames * usize::from(channels)]
+                .iter_mut()
+                .enumerate()
+            {
+                *sample = (((index % 29) as i32 - 14) * 310) as i16;
+            }
+            let mut transition_packet = [0u8; 65];
+            let transition_size = Encoder::new(channels)
+                .unwrap()
+                .encode_celt_with_payload(
+                    &transition_input[..transition_frames * usize::from(channels)],
+                    48_000,
+                    &mut transition_packet,
+                    64,
+                    1,
+                    Bandwidth::Full,
+                )
+                .unwrap();
+            let redundant = &transition_packet[1..transition_size];
+
+            for bandwidth in [Bandwidth::Narrow, Bandwidth::Medium, Bandwidth::Wide] {
+                for duration_us in [10_000u32, 20_000, 40_000, 60_000] {
+                    for at_beginning in [false, true] {
+                        let frames = 48_000usize * duration_us as usize / 1_000_000;
+                        let samples = frames * usize::from(channels);
+                        let mut input = [0i16; 5_760];
+                        for (index, sample) in input[..samples].iter_mut().enumerate() {
+                            *sample = (((index % 41) as i32 - 20) * 360) as i16;
+                        }
+                        let mut packet = [0u8; MAX_FRAME_BYTES + 1];
+                        let size = Encoder::new(channels)
+                            .unwrap()
+                            .encode_silk_with_redundancy(
+                                &input[..samples],
+                                48_000,
+                                bandwidth,
+                                duration_us,
+                                redundant,
+                                at_beginning,
+                                &mut packet,
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "{channels:?} {bandwidth:?} {duration_us} {at_beginning}: {error:?}"
+                                )
+                            });
+                        assert_eq!(&packet[size - redundant.len()..size], redundant);
+                        let parsed = Packet::parse(&packet[..size]).unwrap();
+                        assert_eq!(
+                            (parsed.mode, parsed.bandwidth, parsed.frame_duration_us),
+                            (Mode::Silk, bandwidth, duration_us)
+                        );
+                        let mut decoded = [0i16; 5_760];
+                        assert_eq!(
+                            Decoder::new(channels).unwrap().decode(
+                                &packet[..size],
+                                &mut decoded[..samples],
+                                48_000,
+                            ),
+                            Ok(frames)
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

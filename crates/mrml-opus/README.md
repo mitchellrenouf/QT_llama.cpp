@@ -32,6 +32,7 @@ power-complementarily cross-laps embedded 5 ms CELT transition frames with
 mode-transition state resets. Hybrid encoding can embed a caller-supplied,
 TOC-less 5 ms CELT redundancy frame with normative signaling and rate-budget
 separation. Automatic CELT-to-Hybrid beginning redundancy is emitted; reverse or
-delayed transitions, SILK-only redundancy emission, and independent
-interoperability-vector coverage remain incomplete. The crate
+delayed automatic transitions and independent interoperability-vector coverage
+remain incomplete. SILK-only packets can emit caller-supplied beginning or end
+CELT transition redundancy for every SILK configuration. The crate
 never labels a private audio format as Opus.

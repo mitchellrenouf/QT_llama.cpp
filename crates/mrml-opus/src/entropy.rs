@@ -133,6 +133,21 @@ impl<'a> RangeEncoder<'a> {
         Ok(())
     }
 
+    /// Excludes a byte-aligned payload at the end of the frame from both the
+    /// range-coded front and raw-bit back writers.
+    pub fn reserve_tail(&mut self, bytes: usize) -> Result<usize, Error> {
+        if bytes == 0
+            || self.raw_bits != 0
+            || self.raw_window != 0
+            || self.back != self.data.len()
+            || bytes >= self.back.saturating_sub(self.front)
+        {
+            return Err(Error::InvalidPacket);
+        }
+        self.back -= bytes;
+        Ok(self.back)
+    }
+
     pub fn encode_uint(&mut self, value: u32, total: u32) -> Result<(), Error> {
         if total == 0 || value >= total {
             return Err(Error::InvalidPacket);
@@ -564,6 +579,18 @@ mod tests {
         let mut decoder = RangeDecoder::new(&[0, 0b1010_0110, 0b0011_0101]);
         assert_eq!(decoder.raw_bits(4), Ok(0b0101));
         assert_eq!(decoder.raw_bits(6), Ok(0b100011));
+    }
+
+    #[test]
+    fn encoder_tail_reservation_protects_byte_aligned_payload() {
+        let mut data = [0xa5u8; 12];
+        {
+            let mut encoder = RangeEncoder::new(&mut data);
+            assert_eq!(encoder.reserve_tail(3), Ok(9));
+            encoder.encode_bit_logp(true, 2).unwrap();
+            assert_eq!(encoder.finish(), Ok(12));
+        }
+        assert_eq!(&data[9..], &[0, 0, 0]);
     }
 
     #[test]
