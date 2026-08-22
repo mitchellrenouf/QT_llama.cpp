@@ -7,10 +7,10 @@ mod index;
 mod inflate;
 mod object;
 mod pack;
+mod remote;
 mod repository;
 mod sha1;
 mod transport;
-mod remote;
 
 pub use diff::FileDiff;
 pub use index::{Index, IndexEntry, IndexError};
@@ -19,13 +19,16 @@ pub use object::{
     parse_tree,
 };
 pub use pack::{PackError, PackObject, encode_pack, parse_pack};
+pub use remote::{FetchError, FetchResult, PushError, PushResult, check_ssh, fetch_ssh, push_ssh};
 pub use repository::{
     BlameLine, MergeOutcome, NativeChange, NativeChangeKind, RebaseOutcome, Repository,
     RepositoryError,
 };
 pub use sha1::{ObjectId, Sha1};
-pub use transport::{Advertisement, RemoteRef, TransportError, decode_packets, encode_flush, encode_packet, extract_pack_response, fetch_request, parse_advertisement,parse_push_response,push_request};
-pub use remote::{FetchError, FetchResult, PushError,PushResult,fetch_ssh,push_ssh};
+pub use transport::{
+    Advertisement, RemoteRef, TransportError, decode_packets, encode_flush, encode_packet,
+    extract_pack_response, fetch_request, parse_advertisement, parse_push_response, push_request,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cli {

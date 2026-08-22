@@ -4,7 +4,7 @@
 
 use mrml_error::{Context, Result, anyhow};
 use mrml_git::{
-    Change, Cli, MergeOutcome, NativeChangeKind, RebaseOutcome, Repository, fetch_ssh, push_ssh,
+    Cli, MergeOutcome, NativeChangeKind, RebaseOutcome, Repository, check_ssh, fetch_ssh, push_ssh,
     validate_positional,
 };
 use mrml_runtime::{
@@ -14,127 +14,6 @@ use mrml_ssh::{
     RsaPrivateKey, SshRemote, encode_rsa_public_key, parse_rsa_private_pem, parse_rsa_public_line,
 };
 use mrml_terminal_style::Colorize;
-
-fn run(_repository: Option<&str>, args: &[&str]) -> Result<Text> {
-    Err(native_missing(args))
-}
-
-fn run_visible(_repository: Option<&str>, args: &[&str]) -> Result<()> {
-    Err(native_missing(args))
-}
-
-fn native_missing(args: &[&str]) -> mrml_error::Error {
-    anyhow!(
-        "native '{}' support is not implemented yet; mrml-git never delegates to a host Git executable",
-        args.first().copied().unwrap_or("operation")
-    )
-}
-
-fn status(_repository: Option<&str>) -> Result<Vector<Change>> {
-    Err(native_missing(&["legacy status parser"]))
-}
-
-fn print_changes(changes: &[Change]) {
-    if changes.is_empty() {
-        println!("  {}", "clean — ready for the next idea".green());
-        return;
-    }
-    for change in changes {
-        let lane = match (change.staged(), change.unstaged()) {
-            (true, true) => "both ".bright_yellow(),
-            (true, false) => "stage".bright_green(),
-            _ => "work ".red(),
-        };
-        if let Some(old) = &change.original_path {
-            println!(
-                "  {}  {:9} {} → {}",
-                lane,
-                change.state().label(),
-                old.dimmed(),
-                change.path.bright_white()
-            );
-        } else {
-            println!(
-                "  {}  {:9} {}",
-                lane,
-                change.state().label(),
-                change.path.bright_white()
-            );
-        }
-    }
-}
-
-fn upstream_counts(repository: Option<&str>) -> Option<(Text, Text)> {
-    let upstream = run(
-        repository,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-    )
-    .ok()?;
-    let counts = run(
-        repository,
-        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-    )
-    .ok()?;
-    Some((upstream.trim().into(), counts.trim().into()))
-}
-
-fn dashboard(repository: Option<&str>) -> Result<()> {
-    let root = run(repository, &["rev-parse", "--show-toplevel"])?;
-    let branch = run(repository, &["branch", "--show-current"])?;
-    let branch = if branch.trim().is_empty() {
-        "detached HEAD"
-    } else {
-        branch.trim()
-    };
-    let head = run(repository, &["log", "-1", "--format=%h  %s  %cr"])
-        .unwrap_or_else(|_| "no commits yet".into());
-    let changes = status(repository)?;
-    let staged = changes.iter().filter(|item| item.staged()).count();
-    let unstaged = changes.iter().filter(|item| item.unstaged()).count();
-    println!(
-        "{}",
-        "╭─ MRML GIT · WORKSPACE PULSE ─────────────────────────╮"
-            .bright_cyan()
-            .bold()
-    );
-    println!("  {}   {}", "root".dimmed(), root.trim());
-    println!("  {} {}", "branch".dimmed(), branch.magenta().bold());
-    println!("  {}   {}", "head".dimmed(), head.trim());
-    if let Some((upstream, counts)) = upstream_counts(repository) {
-        let mut parts = counts.split_whitespace();
-        println!(
-            "  {} {}  {} ahead  {} behind",
-            "track".dimmed(),
-            upstream,
-            parts.next().unwrap_or("0").green(),
-            parts.next().unwrap_or("0").yellow()
-        );
-    } else {
-        println!("  {} {}", "track".dimmed(), "no upstream".yellow());
-    }
-    println!(
-        "  {}  {} staged  {} unstaged  {} total",
-        "pulse".dimmed(),
-        format!("{}", staged).green(),
-        format!("{}", unstaged).red(),
-        changes.len()
-    );
-    println!(
-        "{}",
-        "├─ CHANGES ────────────────────────────────────────────┤".bright_cyan()
-    );
-    print_changes(&changes);
-    println!(
-        "{}",
-        "╰──────────────────────────────────────────────────────╯".bright_cyan()
-    );
-    Ok(())
-}
 
 fn native_repository(repository: Option<&str>) -> Result<Repository> {
     Repository::discover(repository.unwrap_or(".")).map_err(|error| anyhow!("{}", error))
@@ -155,6 +34,20 @@ fn native_dashboard(repository: Option<&str>) -> Result<()> {
         println!("  {}   {}", "head".dimmed(), id);
     } else {
         println!("  {}   no commits yet", "head".dimmed());
+    }
+    if let Some((upstream, ahead, behind)) = repository
+        .upstream_status()
+        .map_err(|error| anyhow!("{}", error))?
+    {
+        println!(
+            "  {} {}  {} ahead  {} behind",
+            "track".dimmed(),
+            upstream,
+            ahead,
+            behind
+        );
+    } else {
+        println!("  {} {}", "track".dimmed(), "no upstream".yellow());
     }
     if changes.is_empty() {
         println!("  {}", "clean — index matches working tree".green());
@@ -309,7 +202,15 @@ fn repository_signing_key(repository: &Repository) -> Result<RsaPrivateKey> {
         read_file_text_bounded(&path, 64 * 1024).map_err(|_| anyhow!("cannot read signing key"))?;
     parse_rsa_private_pem(&text).map_err(|error| anyhow!("invalid signing key: {}", error))
 }
-fn repository_verification_key(repository:&Repository)->Result<mrml_ssh::RsaPublicKey>{let path=repository.config_value("gpg.ssh","allowedSignersFile").map_err(|error|anyhow!("{}",error))?.ok_or_else(||anyhow!("signing verification requires an allowed signer file"))?;let text=read_file_text_bounded(&path,64*1024).map_err(|_|anyhow!("cannot read allowed signer"))?;parse_rsa_public_line(&text).map_err(|error|anyhow!("invalid allowed signer: {}",error))}
+fn repository_verification_key(repository: &Repository) -> Result<mrml_ssh::RsaPublicKey> {
+    let path = repository
+        .config_value("gpg.ssh", "allowedSignersFile")
+        .map_err(|error| anyhow!("{}", error))?
+        .ok_or_else(|| anyhow!("signing verification requires an allowed signer file"))?;
+    let text = read_file_text_bounded(&path, 64 * 1024)
+        .map_err(|_| anyhow!("cannot read allowed signer"))?;
+    parse_rsa_public_line(&text).map_err(|error| anyhow!("invalid allowed signer: {}", error))
+}
 
 fn native_fetch(repository: Option<&str>, name: &str) -> Result<()> {
     let repo = native_repository(repository)?;
@@ -371,29 +272,6 @@ fn print_signing_status(repository: Option<&str>) -> Result<()> {
             label.green().bold(),
             config_value(repository, key).unwrap_or_else(|| "not configured".into())
         );
-    }
-    Ok(())
-}
-
-fn conflicts(repository: Option<&str>) -> Result<()> {
-    let changes = status(repository)?;
-    let conflicted = changes
-        .iter()
-        .filter(|change| change.conflicted())
-        .collect::<Vector<_>>();
-    if conflicted.is_empty() {
-        println!("{}", "no unresolved conflicts".green());
-    } else {
-        println!("{} unresolved conflict(s)", conflicted.len());
-        for change in conflicted {
-            println!(
-                "  {}  {}{}  {}",
-                "conflict".red().bold(),
-                change.index,
-                change.worktree,
-                change.path
-            );
-        }
     }
     Ok(())
 }
@@ -633,12 +511,19 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "upstream" if tail.len() == 1 => {
             checked_positionals(tail)?;
-            let setting = format!("--set-upstream-to={}", tail[0]);
-            run_visible(repository, &["branch", &setting])
+            native_repository(repository)?
+                .set_upstream(&tail[0])
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("Branch now tracks {}", tail[0]);
+            Ok(())
         }
         "publish" if tail.len() == 2 => {
             checked_positionals(tail)?;
-            native_push(repository, &tail[0], Some(&tail[1]))
+            native_push(repository, &tail[0], Some(&tail[1]))?;
+            native_repository(repository)?
+                .set_upstream(&format!("{}/{}", tail[0], tail[1]))
+                .map_err(|error| anyhow!("{}", error))?;
+            Ok(())
         }
         "merge" if tail.len() == 1 => {
             checked_positionals(tail)?;
@@ -772,7 +657,12 @@ fn dispatch(cli: &Cli) -> Result<()> {
             let timestamp = mrml_runtime::unix_time_seconds()
                 .ok_or_else(|| anyhow!("system time is unavailable"))?;
             let repo = native_repository(repository)?;
-            let sign=sign||repo.config_value("commit","gpgsign").ok().flatten().is_some_and(|value|value.eq_ignore_ascii_case("true"));
+            let sign = sign
+                || repo
+                    .config_value("commit", "gpgsign")
+                    .ok()
+                    .flatten()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("true"));
             let id = if sign {
                 let key = repository_signing_key(&repo)?;
                 repo.commit_signed(&message, &name, &email, timestamp, &key)
@@ -878,19 +768,46 @@ fn dispatch(cli: &Cli) -> Result<()> {
             let (url, parsed) = ssh_remote(repository, name)?;
             print_ssh_remote(name, &url, &parsed);
             println!("{}", "checking read-only SSH access...".dimmed());
-            run_visible(
-                repository,
-                &["ls-remote", "--exit-code", "--", name, "HEAD"],
-            )
+            let repo = native_repository(repository)?;
+            let (key, host) = ssh_credentials(&repo)?;
+            let refs = check_ssh(&parsed, &key, &host).map_err(|error| anyhow!("{}", error))?;
+            println!(
+                "{} authenticated; {} reference(s) advertised",
+                "SSH access valid".green().bold(),
+                refs
+            );
+            Ok(())
         }
         "signing" if tail.len() == 2 && tail[0] == "configure" => {
             checked_positionals(&tail[1..])?;
-            let repo=native_repository(repository)?;let text=read_file_text_bounded(&tail[1],64*1024).map_err(|_|anyhow!("cannot read signing key"))?;parse_rsa_private_pem(&text).map_err(|error|anyhow!("invalid signing key: {}",error))?;repo.set_config_value("gpg","format","ssh").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("user","signingkey",&tail[1]).map_err(|error|anyhow!("{}",error))?;
+            let repo = native_repository(repository)?;
+            let text = read_file_text_bounded(&tail[1], 64 * 1024)
+                .map_err(|_| anyhow!("cannot read signing key"))?;
+            parse_rsa_private_pem(&text)
+                .map_err(|error| anyhow!("invalid signing key: {}", error))?;
+            repo.set_config_value("gpg", "format", "ssh")
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("user", "signingkey", &tail[1])
+                .map_err(|error| anyhow!("{}", error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 3 && tail[0] == "configure" => {
             checked_positionals(&tail[1..])?;
-            let repo=native_repository(repository)?;let private=read_file_text_bounded(&tail[1],64*1024).map_err(|_|anyhow!("cannot read signing key"))?;parse_rsa_private_pem(&private).map_err(|error|anyhow!("invalid signing key: {}",error))?;let allowed=read_file_text_bounded(&tail[2],64*1024).map_err(|_|anyhow!("cannot read allowed signer"))?;parse_rsa_public_line(&allowed).map_err(|error|anyhow!("invalid allowed signer: {}",error))?;repo.set_config_value("gpg","format","ssh").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("user","signingkey",&tail[1]).map_err(|error|anyhow!("{}",error))?;repo.set_config_value("gpg.ssh","allowedSignersFile",&tail[2]).map_err(|error|anyhow!("{}",error))?;
+            let repo = native_repository(repository)?;
+            let private = read_file_text_bounded(&tail[1], 64 * 1024)
+                .map_err(|_| anyhow!("cannot read signing key"))?;
+            parse_rsa_private_pem(&private)
+                .map_err(|error| anyhow!("invalid signing key: {}", error))?;
+            let allowed = read_file_text_bounded(&tail[2], 64 * 1024)
+                .map_err(|_| anyhow!("cannot read allowed signer"))?;
+            parse_rsa_public_line(&allowed)
+                .map_err(|error| anyhow!("invalid allowed signer: {}", error))?;
+            repo.set_config_value("gpg", "format", "ssh")
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("user", "signingkey", &tail[1])
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("gpg.ssh", "allowedSignersFile", &tail[2])
+                .map_err(|error| anyhow!("{}", error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 1 && tail[0] == "auto" => {
@@ -901,21 +818,49 @@ fn dispatch(cli: &Cli) -> Result<()> {
                     "run signing configure <key> [allowed-signers] first"
                 ));
             }
-            let repo=native_repository(repository)?;repo.set_config_value("commit","gpgsign","true").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("tag","gpgsign","true").map_err(|error|anyhow!("{}",error))?;
+            let repo = native_repository(repository)?;
+            repo.set_config_value("commit", "gpgsign", "true")
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("tag", "gpgsign", "true")
+                .map_err(|error| anyhow!("{}", error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 1 && tail[0] == "status" => print_signing_status(repository),
         "signing" if tail.len() == 1 && tail[0] == "off" => {
-            let repo=native_repository(repository)?;repo.set_config_value("commit","gpgsign","false").map_err(|error|anyhow!("{}",error))?;repo.set_config_value("tag","gpgsign","false").map_err(|error|anyhow!("{}",error))?;
+            let repo = native_repository(repository)?;
+            repo.set_config_value("commit", "gpgsign", "false")
+                .map_err(|error| anyhow!("{}", error))?;
+            repo.set_config_value("tag", "gpgsign", "false")
+                .map_err(|error| anyhow!("{}", error))?;
             print_signing_status(repository)
         }
         "signing" if tail.len() == 2 && tail[0] == "verify" => {
             checked_positionals(&tail[1..])?;
-            let repo=native_repository(repository)?;let id=repo.resolve_revision(&tail[1]).map_err(|error|anyhow!("{}",error))?;let key=repository_verification_key(&repo)?;repo.verify_commit_signature(id,&key).map_err(|error|anyhow!("{}",error))?;println!("{} commit {}","valid SSH signature".green().bold(),&id.to_hex()[..12]);Ok(())
+            let repo = native_repository(repository)?;
+            let id = repo
+                .resolve_revision(&tail[1])
+                .map_err(|error| anyhow!("{}", error))?;
+            let key = repository_verification_key(&repo)?;
+            repo.verify_commit_signature(id, &key)
+                .map_err(|error| anyhow!("{}", error))?;
+            println!(
+                "{} commit {}",
+                "valid SSH signature".green().bold(),
+                &id.to_hex()[..12]
+            );
+            Ok(())
         }
         "signing" if tail.len() == 2 && tail[0] == "verify-tag" => {
             checked_positionals(&tail[1..])?;
-            let repo=native_repository(repository)?;let id=repo.resolve_revision(&tail[1]).map_err(|error|anyhow!("{}",error))?;let key=repository_verification_key(&repo)?;repo.verify_tag_signature(id,&key).map_err(|error|anyhow!("{}",error))?;println!("{} tag {}","valid SSH signature".green().bold(),tail[1]);Ok(())
+            let repo = native_repository(repository)?;
+            let id = repo
+                .resolve_revision(&tail[1])
+                .map_err(|error| anyhow!("{}", error))?;
+            let key = repository_verification_key(&repo)?;
+            repo.verify_tag_signature(id, &key)
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("{} tag {}", "valid SSH signature".green().bold(), tail[1]);
+            Ok(())
         }
         "tag" if tail.is_empty() => {
             for (name, _) in native_repository(repository)?
@@ -937,7 +882,21 @@ fn dispatch(cli: &Cli) -> Result<()> {
         "tag-sign" if tail.len() >= 2 => {
             checked_positionals(&tail[..1])?;
             let message = join_words(&tail[1..]);
-            let repo=native_repository(repository)?;let key=repository_signing_key(&repo)?;let name=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_NAME")).unwrap_or_else(||"MRML User".into());let email=mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL").or_else(||mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL")).unwrap_or_else(||"mrml@localhost".into());let timestamp=mrml_runtime::unix_time_seconds().ok_or_else(||anyhow!("system time is unavailable"))?;let id=repo.create_signed_tag(&tail[0],&message,&name,&email,timestamp,&key).map_err(|error|anyhow!("{}",error))?;println!("Signed tag {} at {}",tail[0],&id.to_hex()[..12]);Ok(())
+            let repo = native_repository(repository)?;
+            let key = repository_signing_key(&repo)?;
+            let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
+                .unwrap_or_else(|| "MRML User".into());
+            let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
+                .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
+                .unwrap_or_else(|| "mrml@localhost".into());
+            let timestamp = mrml_runtime::unix_time_seconds()
+                .ok_or_else(|| anyhow!("system time is unavailable"))?;
+            let id = repo
+                .create_signed_tag(&tail[0], &message, &name, &email, timestamp, &key)
+                .map_err(|error| anyhow!("{}", error))?;
+            println!("Signed tag {} at {}", tail[0], &id.to_hex()[..12]);
+            Ok(())
         }
         "stash" if tail.is_empty() || (tail.len() == 1 && tail[0] == "list") => {
             for (index, (id, commit)) in native_repository(repository)?

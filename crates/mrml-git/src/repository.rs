@@ -1594,6 +1594,142 @@ impl Repository {
         Ok(())
     }
 
+    pub fn set_upstream(&self, spec: &str) -> Result<(), RepositoryError> {
+        let (remote, branch) = spec
+            .split_once('/')
+            .ok_or(RepositoryError::InvalidReference)?;
+        validate_config_name(remote)?;
+        validate_reference(&mrml_runtime::mrml_format!("refs/heads/{branch}"))?;
+        self.resolve_revision(&mrml_runtime::mrml_format!(
+            "refs/remotes/{remote}/{branch}"
+        ))?;
+        let current = self
+            .current_branch()?
+            .ok_or(RepositoryError::DetachedHead)?;
+        let path = join_path(&self.git_dir, "config");
+        let config = read_file_text_bounded(&path, 1024 * 1024)?;
+        let target = mrml_runtime::mrml_format!("[branch \"{current}\"]");
+        let mut output = Text::new();
+        let mut active = false;
+        let mut found = false;
+        let mut remote_written = false;
+        let mut merge_written = false;
+        for raw in config.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') {
+                if active {
+                    if !remote_written {
+                        output.push_str(&mrml_runtime::mrml_format!("\tremote = {remote}\n"));
+                    }
+                    if !merge_written {
+                        output.push_str(&mrml_runtime::mrml_format!(
+                            "\tmerge = refs/heads/{branch}\n"
+                        ));
+                    }
+                }
+                active = target == line;
+                found |= active;
+                remote_written = false;
+                merge_written = false;
+            }
+            if active
+                && line
+                    .split_once('=')
+                    .is_some_and(|(key, _)| key.trim() == "remote")
+            {
+                output.push_str(&mrml_runtime::mrml_format!("\tremote = {remote}\n"));
+                remote_written = true;
+            } else if active
+                && line
+                    .split_once('=')
+                    .is_some_and(|(key, _)| key.trim() == "merge")
+            {
+                output.push_str(&mrml_runtime::mrml_format!(
+                    "\tmerge = refs/heads/{branch}\n"
+                ));
+                merge_written = true;
+            } else {
+                output.push_str(raw);
+                output.push('\n');
+            }
+        }
+        if active {
+            if !remote_written {
+                output.push_str(&mrml_runtime::mrml_format!("\tremote = {remote}\n"));
+            }
+            if !merge_written {
+                output.push_str(&mrml_runtime::mrml_format!(
+                    "\tmerge = refs/heads/{branch}\n"
+                ));
+            }
+        }
+        if !found {
+            output.push_str(&mrml_runtime::mrml_format!(
+                "\n{target}\n\tremote = {remote}\n\tmerge = refs/heads/{branch}\n"
+            ));
+        }
+        write_file(&path, output.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn upstream_status(&self) -> Result<Option<(Text, usize, usize)>, RepositoryError> {
+        let branch = self
+            .current_branch()?
+            .ok_or(RepositoryError::DetachedHead)?;
+        let config = read_file_text_bounded(&join_path(&self.git_dir, "config"), 1024 * 1024)?;
+        let target = mrml_runtime::mrml_format!("[branch \"{branch}\"]");
+        let mut active = false;
+        let mut remote = None;
+        let mut merge: Option<Text> = None;
+        for raw in config.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') {
+                active = target == line;
+            } else if active {
+                if let Some((key, value)) = line.split_once('=') {
+                    match key.trim() {
+                        "remote" => remote = Some(Text::from(value.trim())),
+                        "merge" => merge = value.trim().strip_prefix("refs/heads/").map(Into::into),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let (Some(remote), Some(upstream_branch)) = (remote, merge) else {
+            return Ok(None);
+        };
+        let local = self.head()?.ok_or(RepositoryError::ReferenceMissing)?;
+        let remote_id = self.resolve_revision(&mrml_runtime::mrml_format!(
+            "refs/remotes/{remote}/{upstream_branch}"
+        ))?;
+        let left = self.reachable_commits(local)?;
+        let right = self.reachable_commits(remote_id)?;
+        let ahead = left.iter().filter(|id| !right.contains(id)).count();
+        let behind = right.iter().filter(|id| !left.contains(id)).count();
+        Ok(Some((
+            mrml_runtime::mrml_format!("{remote}/{upstream_branch}"),
+            ahead,
+            behind,
+        )))
+    }
+
+    fn reachable_commits(&self, start: ObjectId) -> Result<Vector<ObjectId>, RepositoryError> {
+        let mut pending = Vector::from([start]);
+        let mut seen = Vector::new();
+        while let Some(id) = pending.pop() {
+            if seen.contains(&id) {
+                continue;
+            }
+            if seen.len() >= 1_000_000 {
+                return Err(RepositoryError::TooManyFiles);
+            }
+            let commit = self.read_commit(id)?;
+            seen.push(id);
+            pending.extend(commit.parents.iter().copied());
+        }
+        Ok(seen)
+    }
+
     pub fn stage(&self, paths: &[Text]) -> Result<(), RepositoryError> {
         let mut index = self.index()?;
         for relative in paths {
@@ -2378,16 +2514,21 @@ mod tests {
         repository.verify_commit_signature(id, &key.public).unwrap();
         let object = repository.read_object(id).unwrap();
         assert!(object.contents.windows(7).any(|part| part == b"gpgsig "));
-        let tag=repository.create_signed_tag("v1","release","Signer","signer@example.invalid",8,&key).unwrap();
-        repository.verify_tag_signature(tag,&key.public).unwrap();
-        assert_eq!(repository.resolve_revision("v1"),Ok(tag));
+        let tag = repository
+            .create_signed_tag("v1", "release", "Signer", "signer@example.invalid", 8, &key)
+            .unwrap();
+        repository.verify_tag_signature(tag, &key.public).unwrap();
+        assert_eq!(repository.resolve_revision("v1"), Ok(tag));
         let mut wrong = key.public.clone();
         wrong.exponent = Vector::from([3]);
         assert_eq!(
             repository.verify_commit_signature(id, &wrong),
             Err(RepositoryError::Signing)
         );
-        assert_eq!(repository.verify_tag_signature(tag,&wrong),Err(RepositoryError::Signing));
+        assert_eq!(
+            repository.verify_tag_signature(tag, &wrong),
+            Err(RepositoryError::Signing)
+        );
         remove_dir_all(&path).unwrap();
     }
 
@@ -2552,6 +2693,39 @@ mod tests {
             Some("host.pub")
         );
         assert!(repository.set_config_value("ssh", "bad key", "x").is_err());
+        remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn tracks_upstream_and_computes_native_divergence() {
+        let path = root("upstream");
+        let repository = Repository::init(&path).unwrap();
+        let file = join_path(&path, "tracked");
+        let paths = Vector::from([Text::from("tracked")]);
+        write_file(&file, b"base").unwrap();
+        repository.stage(&paths).unwrap();
+        let base = repository
+            .commit("base", "MRML", "mrml@example.invalid", 1)
+            .unwrap();
+        repository
+            .update_remote_ref("origin", "refs/heads/main", base)
+            .unwrap();
+        repository.set_upstream("origin/main").unwrap();
+        assert_eq!(
+            repository.upstream_status().unwrap(),
+            Some((Text::from("origin/main"), 0, 0))
+        );
+        write_file(&file, b"local").unwrap();
+        repository.stage(&paths).unwrap();
+        repository
+            .commit("local", "MRML", "mrml@example.invalid", 2)
+            .unwrap();
+        assert_eq!(
+            repository.upstream_status().unwrap(),
+            Some((Text::from("origin/main"), 1, 0))
+        );
+        assert!(repository.set_upstream("../escape").is_err());
+        assert!(repository.set_upstream("origin/missing").is_err());
         remove_dir_all(&path).unwrap();
     }
 
