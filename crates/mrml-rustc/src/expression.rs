@@ -3471,6 +3471,9 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                         | "expose_provenance"
                         | "cast_const"
                         | "cast_mut"
+                        | "read"
+                        | "read_unaligned"
+                        | "read_volatile"
                         | "with_addr"
                 )
             }) else {
@@ -3529,6 +3532,10 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
                 "cast_mut" => ExprKind::RawPointerMutability {
                     base,
                     mutable: true,
+                },
+                "read" | "read_unaligned" | "read_volatile" => ExprKind::Unary {
+                    operator: UnaryOperator::Dereference,
+                    operand: base,
                 },
                 "with_addr" => ExprKind::RawPointerWithAddress {
                     base,

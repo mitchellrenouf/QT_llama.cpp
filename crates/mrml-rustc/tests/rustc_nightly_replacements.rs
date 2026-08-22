@@ -1994,6 +1994,9 @@ fn rustc_reference_data_pointers_reach_native_objects() {
 fn rustc_scalar_raw_pointer_dereferences_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u16) -> u16 { *input }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u32) -> u32 { input.read() }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *const u32) -> u32 { input.read_unaligned() }",
+        "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *mut u32) -> u32 { input.read_volatile() }",
         "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *mut u16) -> u16 { *input = 42; *input }",
         "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn probe(input: *mut i16) -> i16 { *input += 2; *input }",
     ];

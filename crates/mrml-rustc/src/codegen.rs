@@ -9035,6 +9035,9 @@ mod tests {
     fn dereferences_scalar_raw_pointers() {
         let sources = [
             "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u16) -> u16 { *input }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u32) -> u32 { input.read() }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *const u32) -> u32 { input.read_unaligned() }",
+            "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *mut u32) -> u32 { input.read_volatile() }",
             "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *mut u16) -> u16 { *input = 42; *input }",
             "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: *mut i16) -> i16 { *input += 2; *input }",
         ];
@@ -9060,6 +9063,18 @@ mod tests {
                 .unwrap_err()
                 .kind,
             CodegenErrorKind::ImmutableAssignment,
+        );
+
+        let source = "#[unsafe(no_mangle)] pub unsafe extern \"C\" fn value(input: usize) -> usize { input.read() }";
+        let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 768, 2, 80>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::RuntimeTypeMismatch,
         );
     }
 

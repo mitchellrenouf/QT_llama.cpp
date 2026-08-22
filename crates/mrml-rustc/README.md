@@ -478,6 +478,11 @@ scalar references; writes through `*const T` are rejected. Native callers read
 ABI functions accept the `unsafe fn` qualifier in its ordinary position after
 `const` and before `extern`; the native raw-pointer probes retain that explicit
 unsafe boundary without changing their deterministic object bytes.
+The scalar `read()`, `read_unaligned()`, and `read_volatile()` methods reuse the
+same typed load path for shared or mutable pointers. An independent caller
+observed aligned, deliberately unaligned, and volatile `u32` values through
+108-, 118-, and 117-byte COFF objects plus 496-, 512-, and 504-byte ELF64
+objects; non-pointer receivers are rejected.
 Pointers with compatible scalar pointees support `==`, `!=`, `<`, `<=`, `>`,
 and `>=`, using unsigned address ordering and mutable-to-const compatibility.
 An independent caller exercised equal, ascending, and descending addresses
