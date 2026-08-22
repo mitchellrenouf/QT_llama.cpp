@@ -3,10 +3,12 @@
 use mrml_runtime::{Text, Vector};
 
 mod index;
+mod object;
 mod repository;
 mod sha1;
 
 pub use index::{Index, IndexEntry, IndexError};
+pub use object::{ObjectKind, encode_loose_object};
 pub use repository::{NativeChange, NativeChangeKind, Repository, RepositoryError};
 pub use sha1::{ObjectId, Sha1};
 

@@ -5,7 +5,7 @@ use mrml_runtime::{
     write_file,
 };
 
-use crate::{Index, IndexError, ObjectId};
+use crate::{Index, IndexError, ObjectId, ObjectKind, encode_loose_object};
 
 const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKTREE_FILE: usize = 256 * 1024 * 1024;
@@ -88,6 +88,18 @@ impl Repository {
         let path = join_path(&self.git_dir, "index");
         if !path_is_file(&path) { return Ok(Index::empty()); }
         Ok(Index::parse(&read_file_bounded(&path, MAX_INDEX_BYTES)?)?)
+    }
+
+    pub fn write_object(&self, kind: ObjectKind, contents: &[u8]) -> Result<ObjectId, RepositoryError> {
+        let (id, encoded) = encode_loose_object(kind, contents);
+        let hex = id.to_hex();
+        let directory = join_path(&join_path(&self.git_dir, "objects"), &hex[..2]);
+        let path = join_path(&directory, &hex[2..]);
+        if !path_is_file(&path) {
+            create_dir_all(&directory)?;
+            write_file(&path, &encoded)?;
+        }
+        Ok(id)
     }
 
     pub fn changes(&self) -> Result<Vector<NativeChange>, RepositoryError> {
