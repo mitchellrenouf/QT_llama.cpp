@@ -37,16 +37,28 @@ impl<const MAPPINGS: usize> ServiceAddressSpace<MAPPINGS> {
     /// allocation, preferred virtual base, entry, stack, and table arena.
     pub fn from_handoff(
         service: ServiceLaunch,
-        materialized_image: &[u8],
+        executable: &VerifiedExecutable<'_>,
         kernel_mappings: &[Mapping],
     ) -> Result<Self, ServiceSpaceError> {
-        let image = PeImage::parse(materialized_image).map_err(ServiceSpaceError::Pe)?;
+        if executable.artifact().kind() != ArtifactKind::ServiceImage
+            || executable.artifact().version() != service.version()
+            || executable.artifact().digest() != &service.measurement()
+        {
+            return Err(ServiceSpaceError::HandoffMismatch);
+        }
+        Self::from_handoff_image(service, executable.image(), kernel_mappings)
+    }
+
+    fn from_handoff_image(
+        service: ServiceLaunch,
+        image: &PeImage<'_>,
+        kernel_mappings: &[Mapping],
+    ) -> Result<Self, ServiceSpaceError> {
         let expected_bytes = service
             .image_pages()
             .checked_mul(PAGE_SIZE)
             .ok_or(ServiceSpaceError::Overflow)?;
-        if materialized_image.len() as u64 != expected_bytes
-            || u64::from(image.image_size()) > expected_bytes
+        if u64::from(image.image_size()) > expected_bytes
             || image.image_base() != service.image_virtual()
             || service.entry()
                 != service
@@ -79,7 +91,7 @@ impl<const MAPPINGS: usize> ServiceAddressSpace<MAPPINGS> {
             .checked_sub(stack_bytes)
             .ok_or(ServiceSpaceError::InvalidStack)?;
         Self::build(
-            &image,
+            image,
             service.image_virtual(),
             &allocations,
             allocation_count,
@@ -338,6 +350,8 @@ mod tests {
         let mut materialized = [0u8; 8192];
         let entry = image.materialize(&mut materialized).unwrap();
         let service = ServiceLaunch::new(
+            PhysAddr::new(0x10_0000).unwrap(),
+            1024,
             PhysAddr::new(0x20_0000).unwrap(),
             2,
             image.image_base(),
@@ -351,7 +365,7 @@ mod tests {
             [1; 64],
         )
         .unwrap();
-        let plan = ServiceAddressSpace::<8>::from_handoff(service, &materialized, &[]).unwrap();
+        let plan = ServiceAddressSpace::<8>::from_handoff_image(service, &image, &[]).unwrap();
         assert_eq!(plan.entry(), entry);
         assert_eq!(plan.stack_top(), 0x7000_2000);
         assert!(plan.mappings().any(|mapping| {
@@ -361,6 +375,8 @@ mod tests {
         }));
 
         let wrong_entry = ServiceLaunch::new(
+            service.artifact_physical(),
+            service.artifact_length(),
             service.image_physical(),
             service.image_pages(),
             service.image_virtual(),
@@ -375,7 +391,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            ServiceAddressSpace::<8>::from_handoff(wrong_entry, &materialized, &[]).err(),
+            ServiceAddressSpace::<8>::from_handoff_image(wrong_entry, &image, &[]).err(),
             Some(ServiceSpaceError::HandoffMismatch)
         );
     }

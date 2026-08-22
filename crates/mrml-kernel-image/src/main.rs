@@ -81,6 +81,8 @@ use mrml_kernel::arch::x86_64::{
 };
 #[cfg(feature = "uefi-service-preemption-probe")]
 use mrml_kernel::arch::x86_64::{PreallocatedPageTableStore, ServiceAddressSpace};
+#[cfg(feature = "uefi-service-preemption-probe")]
+use mrml_kernel::{ArtifactKind, SignedArtifact, TrustRoot};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, MAX_HANDOFF_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -2021,16 +2023,24 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         #[cfg(feature = "uefi-service-preemption-probe")]
         let (service_root, service_entry, service_stack_top) = {
             let service = handoff.service().unwrap_or_else(|| halt());
-            let image_length = service
-                .image_pages()
-                .checked_mul(mrml_kernel::PAGE_SIZE)
-                .and_then(|bytes| usize::try_from(bytes).ok())
-                .unwrap_or_else(|| halt());
-            let image = core::slice::from_raw_parts(
-                service.image_physical().get() as *const u8,
-                image_length,
+            let artifact_length =
+                usize::try_from(service.artifact_length()).unwrap_or_else(|_| halt());
+            let artifact = core::slice::from_raw_parts(
+                service.artifact_physical().get() as *const u8,
+                artifact_length,
             );
-            let plan = ServiceAddressSpace::<40>::from_handoff(service, image, &[])
+            let signed = SignedArtifact::decode(artifact).unwrap_or_else(|_| halt());
+            let verified = signed
+                .verify_executable(
+                    &TrustRoot::new(
+                        ArtifactKind::ServiceImage,
+                        embedded_service_root().unwrap_or_else(|| halt()),
+                        embedded_service_minimum_version().unwrap_or_else(|| halt()),
+                    ),
+                    ArtifactKind::ServiceImage,
+                )
+                .unwrap_or_else(|_| halt());
+            let plan = ServiceAddressSpace::<40>::from_handoff(service, &verified, &[])
                 .unwrap_or_else(|_| halt());
             let store =
                 PreallocatedPageTableStore::new(service.table_physical(), service.table_pages())
@@ -2279,6 +2289,49 @@ unsafe fn run_kernel(bytes: *const u8, length: usize) -> ! {
         };
     }
     halt()
+}
+
+#[cfg(feature = "uefi-service-preemption-probe")]
+fn embedded_service_root() -> Option<[u8; 64]> {
+    let encoded = option_env!("MRML_SERVICE_ROOT_DIGEST_HEX")?.as_bytes();
+    if encoded.len() != 128 {
+        return None;
+    }
+    let mut digest = [0u8; 64];
+    let mut index = 0usize;
+    while index < digest.len() {
+        digest[index] = hex_nibble(encoded[index * 2])?
+            .checked_mul(16)?
+            .checked_add(hex_nibble(encoded[index * 2 + 1])?)?;
+        index += 1;
+    }
+    Some(digest)
+}
+
+#[cfg(feature = "uefi-service-preemption-probe")]
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "uefi-service-preemption-probe")]
+fn embedded_service_minimum_version() -> Option<u64> {
+    let bytes = option_env!("MRML_SERVICE_MIN_VERSION")?.as_bytes();
+    if bytes.is_empty() || bytes.len() > 20 {
+        return None;
+    }
+    let mut value = 0u64;
+    for byte in bytes {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
+    }
+    (value != 0).then_some(value)
 }
 
 #[cfg(feature = "user-probe")]

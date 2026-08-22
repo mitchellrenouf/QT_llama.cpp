@@ -316,6 +316,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
             ArtifactKind::Kernel,
         )
         .map_err(|_| LOAD_ERROR)?;
+    loader_trace(0xa1);
     let kernel_measured =
         measure_artifact(services, signed.payload(), b"MRML authenticated kernel PE")?;
     if require_tpm_measurement() && !kernel_measured {
@@ -345,6 +346,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         .image()
         .materialize_at(image_destination, image_address)
         .map_err(|_| LOAD_ERROR)?;
+    loader_trace(0xa2);
     let service_file = unsafe {
         load_file(
             image,
@@ -354,6 +356,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
             MAX_SERVICE_IMAGE_BYTES as usize + SIGNED_ARTIFACT_OVERHEAD_BYTES,
         )
     }?;
+    loader_trace(0xa3);
     let service_bytes = unsafe {
         core::slice::from_raw_parts(service_file.address as *const u8, service_file.length)
     };
@@ -368,6 +371,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
             ArtifactKind::ServiceImage,
         )
         .map_err(|_| LOAD_ERROR)?;
+    loader_trace(0xa4);
     let service_measured = measure_artifact(
         services,
         service_signed.payload(),
@@ -394,6 +398,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         .image()
         .materialize(&mut service_image[..service_image_size])
         .map_err(|_| LOAD_ERROR)?;
+    loader_trace(0xa5);
     let mut service_stack_physical = 0u64;
     check(unsafe {
         (services.allocate_pages)(0, 2, SERVICE_STACK_PAGES, &mut service_stack_physical)
@@ -427,6 +432,8 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
     let service_stack_top = 0x0000_0002_0000_0000u64;
     let prepared_service = PreparedService {
         launch: ServiceLaunch::new(
+            PhysAddr::new(service_file.address).map_err(|_| LOAD_ERROR)?,
+            service_file.length as u64,
             PhysAddr::new(service_image_physical).map_err(|_| LOAD_ERROR)?,
             service_image_pages as u64,
             service_verified.image().image_base(),
@@ -441,6 +448,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         )
         .map_err(|_| LOAD_ERROR)?,
     };
+    loader_trace(0xa6);
     let transition = prepare_transition(
         services,
         verified.image(),
@@ -448,6 +456,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         framebuffer,
         prepared_service,
     )?;
+    loader_trace(0xa7);
     let kernel_version = verified.artifact().version();
     let kernel_measurement = *verified.artifact().digest();
     paint(framebuffer, [0x00, 0x60, 0x20]);
@@ -463,6 +472,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Result<(), Status> {
         return Err(LOAD_ERROR);
     }
 
+    loader_trace(0xa8);
     let (map_size, descriptor_size) = unsafe { exit_boot_services(image, services) }?;
     unsafe {
         launch_after_exit(
@@ -523,6 +533,7 @@ unsafe fn launch_after_exit(
     if region_count == 0 {
         halt();
     }
+    loader_trace(0xb1);
     let mut acpi_memory = FirmwareAcpiMemory {
         regions: &regions[..region_count],
     };
@@ -531,6 +542,7 @@ unsafe fn launch_after_exit(
         Ok(length) => length,
         Err(_) => halt(),
     };
+    loader_trace(0xb2);
     if enter_kernel(
         transition,
         kernel_entry,
@@ -918,6 +930,7 @@ fn enter_kernel(
         handoff,
     )
     .map_err(|_| LOAD_ERROR)?;
+    loader_trace(0xb3);
     if kernel_entry == 0 {
         return Err(LOAD_ERROR);
     }
@@ -1070,6 +1083,12 @@ fn prepare_transition(
     )?;
     map_identity(
         &mut tables,
+        service.launch.artifact_physical().get(),
+        service.launch.artifact_length().div_ceil(PAGE_BYTES as u64),
+        PagePermissions::KERNEL_READ,
+    )?;
+    map_identity(
+        &mut tables,
         service.launch.image_physical().get(),
         service.launch.image_pages(),
         PagePermissions::KERNEL_READ,
@@ -1211,6 +1230,12 @@ fn paint(framebuffer: Framebuffer, rgb: [u8; 3]) {
     for pixel in framebuffer.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&encoded);
     }
+}
+
+fn loader_trace(stage: u8) {
+    unsafe {
+        core::arch::asm!("out dx, al", in("dx") 0xe9u16, in("al") stage, options(nomem, nostack))
+    };
 }
 
 fn halt() -> ! {

@@ -7,7 +7,7 @@ pub const HANDOFF_HEADER_BYTES: usize = 168;
 pub const HANDOFF_REGION_BYTES: usize = 24;
 pub const MAX_HANDOFF_REGIONS: usize = 128;
 pub const MAX_HANDOFF_MADT_BYTES: usize = 8 * 1024;
-pub const HANDOFF_SERVICE_BYTES: usize = 144;
+pub const HANDOFF_SERVICE_BYTES: usize = 160;
 pub const MAX_HANDOFF_BYTES: usize = HANDOFF_HEADER_BYTES
     + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES
     + MAX_HANDOFF_MADT_BYTES
@@ -29,6 +29,8 @@ const KNOWN_FLAGS: u16 = FLAG_SECURE_BOOT
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServiceLaunch {
+    artifact_physical: PhysAddr,
+    artifact_length: u64,
     image_physical: PhysAddr,
     image_pages: u64,
     image_virtual: u64,
@@ -45,6 +47,8 @@ pub struct ServiceLaunch {
 impl ServiceLaunch {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        artifact_physical: PhysAddr,
+        artifact_length: u64,
         image_physical: PhysAddr,
         image_pages: u64,
         image_virtual: u64,
@@ -57,6 +61,8 @@ impl ServiceLaunch {
         version: u64,
         measurement: [u8; 64],
     ) -> Result<Self, HandoffError> {
+        let artifact_pages = artifact_length.div_ceil(crate::PAGE_SIZE);
+        let _ = checked_pages(artifact_physical, artifact_pages)?;
         let image_bytes = checked_pages(image_physical, image_pages)?;
         let stack_bytes = checked_pages(stack_physical, stack_pages)?;
         let _ = checked_pages(table_physical, table_pages)?;
@@ -70,6 +76,10 @@ impl ServiceLaunch {
             || stack_pages > 256
             || !(4..=256).contains(&table_pages)
             || version == 0
+            || artifact_length
+                > (crate::MAX_SERVICE_IMAGE_BYTES as u64)
+                    .checked_add(crate::SIGNED_ARTIFACT_OVERHEAD_BYTES as u64)
+                    .ok_or(HandoffError::NonCanonical)?
             || measurement.iter().all(|byte| *byte == 0)
             || !user_page(image_virtual)
             || !user_address(entry)
@@ -81,10 +91,30 @@ impl ServiceLaunch {
             || physical_ranges_overlap(image_physical, image_pages, stack_physical, stack_pages)
             || physical_ranges_overlap(image_physical, image_pages, table_physical, table_pages)
             || physical_ranges_overlap(stack_physical, stack_pages, table_physical, table_pages)
+            || physical_ranges_overlap(
+                artifact_physical,
+                artifact_pages,
+                image_physical,
+                image_pages,
+            )
+            || physical_ranges_overlap(
+                artifact_physical,
+                artifact_pages,
+                stack_physical,
+                stack_pages,
+            )
+            || physical_ranges_overlap(
+                artifact_physical,
+                artifact_pages,
+                table_physical,
+                table_pages,
+            )
         {
             return Err(HandoffError::NonCanonical);
         }
         Ok(Self {
+            artifact_physical,
+            artifact_length,
             image_physical,
             image_pages,
             image_virtual,
@@ -97,6 +127,13 @@ impl ServiceLaunch {
             version,
             measurement,
         })
+    }
+
+    pub const fn artifact_physical(self) -> PhysAddr {
+        self.artifact_physical
+    }
+    pub const fn artifact_length(self) -> u64 {
+        self.artifact_length
     }
 
     pub const fn image_physical(self) -> PhysAddr {
@@ -335,6 +372,10 @@ impl BootHandoff {
         }
         if let Some(service) = service {
             for (start, pages) in [
+                (
+                    service.artifact_physical(),
+                    service.artifact_length().div_ceil(crate::PAGE_SIZE),
+                ),
                 (service.image_physical(), service.image_pages()),
                 (service.stack_physical(), service.stack_pages()),
                 (service.table_physical(), service.table_pages()),
@@ -649,6 +690,8 @@ fn encode_handoff_inner(
 
 fn encode_service(service: ServiceLaunch, output: &mut [u8]) {
     let fields = [
+        service.artifact_physical().get(),
+        service.artifact_length(),
         service.image_physical().get(),
         service.image_pages(),
         service.image_virtual(),
@@ -664,24 +707,26 @@ fn encode_service(service: ServiceLaunch, output: &mut [u8]) {
         let offset = index * 8;
         output[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
-    output[80..HANDOFF_SERVICE_BYTES].copy_from_slice(&service.measurement());
+    output[96..HANDOFF_SERVICE_BYTES].copy_from_slice(&service.measurement());
 }
 
 fn decode_service(input: &[u8], offset: usize) -> Result<ServiceLaunch, HandoffError> {
-    let measurement = input[offset + 80..offset + HANDOFF_SERVICE_BYTES]
+    let measurement = input[offset + 96..offset + HANDOFF_SERVICE_BYTES]
         .try_into()
         .map_err(|_| HandoffError::NonCanonical)?;
     ServiceLaunch::new(
         PhysAddr::new(read_u64(input, offset)).map_err(HandoffError::InvalidMemoryMap)?,
         read_u64(input, offset + 8),
-        read_u64(input, offset + 16),
+        PhysAddr::new(read_u64(input, offset + 16)).map_err(HandoffError::InvalidMemoryMap)?,
         read_u64(input, offset + 24),
-        PhysAddr::new(read_u64(input, offset + 32)).map_err(HandoffError::InvalidMemoryMap)?,
+        read_u64(input, offset + 32),
         read_u64(input, offset + 40),
-        read_u64(input, offset + 48),
-        PhysAddr::new(read_u64(input, offset + 56)).map_err(HandoffError::InvalidMemoryMap)?,
+        PhysAddr::new(read_u64(input, offset + 48)).map_err(HandoffError::InvalidMemoryMap)?,
+        read_u64(input, offset + 56),
         read_u64(input, offset + 64),
-        read_u64(input, offset + 72),
+        PhysAddr::new(read_u64(input, offset + 72)).map_err(HandoffError::InvalidMemoryMap)?,
+        read_u64(input, offset + 80),
+        read_u64(input, offset + 88),
         measurement,
     )
 }
@@ -701,6 +746,10 @@ fn checked_pages(start: PhysAddr, pages: u64) -> Result<u64, HandoffError> {
 
 fn service_storage_is_reserved(service: ServiceLaunch, regions: &[MemoryRegion]) -> bool {
     [
+        (
+            service.artifact_physical(),
+            service.artifact_length().div_ceil(crate::PAGE_SIZE),
+        ),
         (service.image_physical(), service.image_pages()),
         (service.stack_physical(), service.stack_pages()),
         (service.table_physical(), service.table_pages()),
@@ -975,6 +1024,8 @@ mod tests {
         )
         .unwrap();
         let service = ServiceLaunch::new(
+            PhysAddr::new(0x11_0000).unwrap(),
+            1024,
             PhysAddr::new(0x10_0000).unwrap(),
             2,
             0x1_4000_0000,
