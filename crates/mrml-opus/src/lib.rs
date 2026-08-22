@@ -404,6 +404,24 @@ fn payload_bytes_for_bitrate(bitrate: u32) -> Result<usize, Error> {
         .ok_or(Error::InvalidPacket)
 }
 
+fn hybrid_geometry(
+    bandwidth: Bandwidth,
+    duration_us: u32,
+) -> Result<(u8, u8, u8, usize, usize, bool), Error> {
+    let config_base = match bandwidth {
+        Bandwidth::SuperWide => 12,
+        Bandwidth::Full => 14,
+        Bandwidth::Narrow | Bandwidth::Medium | Bandwidth::Wide => {
+            return Err(Error::UnsupportedAudioMode);
+        }
+    };
+    match duration_us {
+        10_000 => Ok((10, 2, config_base, 160, 480, false)),
+        20_000 => Ok((20, 3, config_base + 1, 320, 960, true)),
+        _ => Err(Error::InvalidFrameSize),
+    }
+}
+
 /// Stateful allocation-free PCM encoder.
 ///
 /// Supports 20 ms SILK, CELT, and hybrid analysis for mono or stereo input.
@@ -507,12 +525,30 @@ impl Encoder {
                                 &redundant_packet[1..redundant_size],
                                 transition::RedundancyPosition::Beginning,
                             )),
+                            Bandwidth::Full,
+                            20_000,
                         )
                     } else {
-                        self.encode_hybrid_with_payload(input, sample_rate, output, payload, None)
+                        self.encode_hybrid_with_payload(
+                            input,
+                            sample_rate,
+                            output,
+                            payload,
+                            None,
+                            Bandwidth::Full,
+                            20_000,
+                        )
                     }
                 } else {
-                    self.encode_hybrid_with_payload(input, sample_rate, output, payload, None)
+                    self.encode_hybrid_with_payload(
+                        input,
+                        sample_rate,
+                        output,
+                        payload,
+                        None,
+                        Bandwidth::Full,
+                        20_000,
+                    )
                 }
             }
             EncoderMode::Celt => {
@@ -1025,7 +1061,7 @@ impl Encoder {
                     mrml_math::log2(amplitude.max(1.0e-12)) - bands::ENERGY_MEANS[band];
             }
         }
-        let config = celt_frame::FrameConfig {
+        let frame_config = celt_frame::FrameConfig {
             frame_bytes: payload_bytes,
             channels: self.channels,
             lm,
@@ -1065,7 +1101,7 @@ impl Encoder {
             let mut range = RangeEncoder::new(&mut output[1..payload_bytes + 1]);
             let plan = celt_frame::encode_plan(
                 &mut range,
-                config,
+                frame_config,
                 &request,
                 &target,
                 &mut self.celt_energies,
@@ -1074,7 +1110,7 @@ impl Encoder {
             let result = if self.channels == 1 {
                 celt_frame::encode_shapes_mono(
                     &mut range,
-                    config,
+                    frame_config,
                     &plan,
                     &normalized[..native_count],
                     &mut pulse_workspace,
@@ -1086,7 +1122,7 @@ impl Encoder {
             } else {
                 celt_frame::encode_shapes_stereo(
                     &mut range,
-                    config,
+                    frame_config,
                     &plan,
                     &normalized[..native_count * channels],
                     &mut pulse_workspace,
@@ -1111,7 +1147,37 @@ impl Encoder {
         output: &mut [u8],
     ) -> Result<usize, Error> {
         let payload_bytes = if self.channels == 2 { 1_275 } else { 512 };
-        self.encode_hybrid_with_payload(input, sample_rate, output, payload_bytes, None)
+        self.encode_hybrid_with_payload(
+            input,
+            sample_rate,
+            output,
+            payload_bytes,
+            None,
+            Bandwidth::Full,
+            20_000,
+        )
+    }
+
+    /// Encodes a Hybrid SILK+CELT packet at either legal Hybrid bandwidth and
+    /// frame duration.
+    pub fn encode_hybrid_bandwidth_duration(
+        &mut self,
+        input: &[i16],
+        sample_rate: u32,
+        bandwidth: Bandwidth,
+        duration_us: u32,
+        output: &mut [u8],
+    ) -> Result<usize, Error> {
+        let payload_bytes = if self.channels == 2 { 1_275 } else { 512 };
+        self.encode_hybrid_with_payload(
+            input,
+            sample_rate,
+            output,
+            payload_bytes,
+            None,
+            bandwidth,
+            duration_us,
+        )
     }
 
     /// Encodes a 20 ms Hybrid packet with a caller-supplied, TOC-less 5 ms
@@ -1136,9 +1202,12 @@ impl Encoder {
             output,
             payload_bytes,
             Some((redundant_celt, position)),
+            Bandwidth::Full,
+            20_000,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn encode_hybrid_with_payload(
         &mut self,
         input: &[i16],
@@ -1146,6 +1215,8 @@ impl Encoder {
         output: &mut [u8],
         payload_bytes: usize,
         redundancy: Option<(&[u8], transition::RedundancyPosition)>,
+        bandwidth: Bandwidth,
+        duration_us: u32,
     ) -> Result<usize, Error> {
         if !(16..=MAX_FRAME_BYTES).contains(&payload_bytes) {
             return Err(Error::InvalidPacket);
@@ -1157,8 +1228,12 @@ impl Encoder {
                 output,
                 payload_bytes,
                 redundancy,
+                bandwidth,
+                duration_us,
             );
         }
+        let (duration_ms, lm, config, silk_count, celt_count, interpolate_lsf) =
+            hybrid_geometry(bandwidth, duration_us)?;
         let redundancy_len = redundancy.map_or(0, |(payload, _)| payload.len());
         if redundancy_len > 257 || (redundancy.is_some() && redundancy_len < 2) {
             return Err(Error::InvalidPacket);
@@ -1170,7 +1245,7 @@ impl Encoder {
         if !matches!(sample_rate, 8_000 | 12_000 | 16_000 | 24_000 | 48_000) {
             return Err(Error::InvalidFrameSize);
         }
-        let input_frames = sample_rate as usize / 50;
+        let input_frames = sample_rate as usize * duration_us as usize / 1_000_000;
         let channels = usize::from(self.channels);
         if input.len() != input_frames * channels {
             return Err(Error::InvalidFrameSize);
@@ -1179,7 +1254,7 @@ impl Encoder {
             return Err(Error::BufferTooSmall);
         }
         if input.iter().all(|&sample| sample == 0) {
-            return encode_dtx(15, false, output);
+            return encode_dtx(config, false, output);
         }
         let mut source = [0.0f32; 960];
         for frame in 0..input_frames {
@@ -1191,10 +1266,13 @@ impl Encoder {
         }
         let mut silk_pcm = [0.0f32; 320];
         let mut celt_pcm = [0.0f32; 960];
-        silk::resample_linear(&source[..input_frames], &mut silk_pcm)?;
-        silk::resample_linear(&source[..input_frames], &mut celt_pcm)?;
+        silk::resample_linear(&source[..input_frames], &mut silk_pcm[..silk_count])?;
+        silk::resample_linear(&source[..input_frames], &mut celt_pcm[..celt_count])?;
         let mut excitation = [0i32; silk_entropy::MAX_EXCITATION_SAMPLES];
-        for (target, &sample) in excitation[..320].iter_mut().zip(&silk_pcm) {
+        for (target, &sample) in excitation[..silk_count]
+            .iter_mut()
+            .zip(&silk_pcm[..silk_count])
+        {
             *target = if payload_bytes < 512 {
                 0
             } else {
@@ -1211,7 +1289,7 @@ impl Encoder {
                     order: 16,
                     index: [0; 16],
                 },
-                interpolation_q2: Some(4),
+                interpolation_q2: interpolate_lsf.then_some(4),
             },
             primary_pitch: None,
             contour_index: 0,
@@ -1228,39 +1306,52 @@ impl Encoder {
                 silk_frame::ChannelHeader { vad: 0, lbrr: 0 },
             ],
         };
-        for sample in &mut celt_pcm {
+        for sample in &mut celt_pcm[..celt_count] {
             let current = *sample;
             *sample = current - 0.850_006_1 * self.preemphasis_memory[0];
             self.preemphasis_memory[0] = current;
         }
         let mut transform_input = [0.0f32; 1_920];
-        transform_input[..960].copy_from_slice(&celt_pcm);
-        transform_input[960..].copy_from_slice(&celt_pcm);
+        transform_input[..celt_count].copy_from_slice(&celt_pcm[..celt_count]);
+        transform_input[celt_count..2 * celt_count].copy_from_slice(&celt_pcm[..celt_count]);
         let mut coefficients = [0.0f32; 960];
-        celt::forward_mdct(&transform_input, &mut coefficients)?;
+        celt::forward_mdct(
+            &transform_input[..2 * celt_count],
+            &mut coefficients[..celt_count],
+        )?;
         let mut amplitudes = [0.0f32; bands::BAND_COUNT];
         let mut normalized = [0.0f32; 960];
-        bands::normalize_bands(&coefficients, 3, &mut amplitudes, &mut normalized)?;
+        bands::normalize_bands(
+            &coefficients[..celt_count],
+            lm,
+            &mut amplitudes,
+            &mut normalized[..celt_count],
+        )?;
         let mut target = celt_energy::LogEnergies::new();
-        for (band, &amplitude) in amplitudes.iter().enumerate().skip(17) {
+        let end = if bandwidth == Bandwidth::SuperWide {
+            19
+        } else {
+            bands::BAND_COUNT
+        };
+        for (band, &amplitude) in amplitudes.iter().enumerate().take(end).skip(17) {
             target.values_mut()[0][band] =
                 mrml_math::log2(amplitude.max(1.0e-12)) - bands::ENERGY_MEANS[band];
         }
-        let config = celt_frame::FrameConfig {
+        let frame_config = celt_frame::FrameConfig {
             frame_bytes: main_bytes,
             channels: 1,
-            lm: 3,
+            lm,
             start: 17,
-            end: bands::BAND_COUNT,
+            end,
         };
         let mut residuals = [[0i16; bands::BAND_COUNT]; 2];
         celt_energy::residuals_for_target(
             celt_energy::CoarseConfig {
                 channels: 1,
-                lm: 3,
+                lm,
                 intra: true,
                 start: 17,
-                end: bands::BAND_COUNT,
+                end,
                 frame_bytes: main_bytes,
             },
             &self.celt_energies,
@@ -1279,20 +1370,20 @@ impl Encoder {
             boosts: [0; bands::BAND_COUNT],
             trim: 5,
             coded_bands: 0,
-            intensity: bands::BAND_COUNT,
+            intensity: end,
             dual_stereo: false,
         };
         let mut coded_residuals = [[0i16; bands::BAND_COUNT]; 2];
         let mut pulse_workspace = [0i32; 960];
         let mut recurrence = [0u32; pvq::MAX_PULSES + 1];
-        output[0] = 15 << 3;
+        output[0] = config << 3;
         let result = {
             let mut range = RangeEncoder::new(&mut output[1..main_bytes + 1]);
             self.silk.reset();
             self.silk.encode_range(
                 &mut range,
                 Bandwidth::Wide,
-                20,
+                duration_ms,
                 header,
                 &[silk_parameters],
                 &[None],
@@ -1310,7 +1401,7 @@ impl Encoder {
             }
             let plan = celt_frame::encode_plan(
                 &mut range,
-                config,
+                frame_config,
                 &request,
                 &target,
                 &mut self.celt_energies,
@@ -1318,9 +1409,9 @@ impl Encoder {
             )?;
             let result = celt_frame::encode_shapes_mono(
                 &mut range,
-                config,
+                frame_config,
                 &plan,
-                &normalized,
+                &normalized[..celt_count],
                 &mut pulse_workspace,
                 &mut recurrence,
                 &target,
@@ -1338,6 +1429,7 @@ impl Encoder {
         Ok(payload_bytes + 1)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn encode_hybrid_stereo(
         &mut self,
         input: &[i16],
@@ -1345,7 +1437,11 @@ impl Encoder {
         output: &mut [u8],
         payload_bytes: usize,
         redundancy: Option<(&[u8], transition::RedundancyPosition)>,
+        bandwidth: Bandwidth,
+        duration_us: u32,
     ) -> Result<usize, Error> {
+        let (duration_ms, lm, config, silk_count, celt_count, interpolate_lsf) =
+            hybrid_geometry(bandwidth, duration_us)?;
         let redundancy_len = redundancy.map_or(0, |(payload, _)| payload.len());
         if redundancy_len > 257 || (redundancy.is_some() && redundancy_len < 2) {
             return Err(Error::InvalidPacket);
@@ -1357,7 +1453,7 @@ impl Encoder {
         if !matches!(sample_rate, 8_000 | 12_000 | 16_000 | 24_000 | 48_000) {
             return Err(Error::InvalidFrameSize);
         }
-        let input_frames = sample_rate as usize / 50;
+        let input_frames = sample_rate as usize * duration_us as usize / 1_000_000;
         if input.len() != input_frames * 2 {
             return Err(Error::InvalidFrameSize);
         }
@@ -1365,7 +1461,7 @@ impl Encoder {
             return Err(Error::BufferTooSmall);
         }
         if input.iter().all(|&sample| sample == 0) {
-            return encode_dtx(15, true, output);
+            return encode_dtx(config, true, output);
         }
         let mut source = [[0.0f32; 960]; 2];
         let mut silk_pcm = [[0.0f32; 320]; 2];
@@ -1374,12 +1470,18 @@ impl Encoder {
             for frame in 0..input_frames {
                 source[channel][frame] = input[frame * 2 + channel] as f32 / 32_768.0;
             }
-            silk::resample_linear(&source[channel][..input_frames], &mut silk_pcm[channel])?;
-            silk::resample_linear(&source[channel][..input_frames], &mut celt_pcm[channel])?;
+            silk::resample_linear(
+                &source[channel][..input_frames],
+                &mut silk_pcm[channel][..silk_count],
+            )?;
+            silk::resample_linear(
+                &source[channel][..input_frames],
+                &mut celt_pcm[channel][..celt_count],
+            )?;
         }
         let mut mid_excitation = [0i32; silk_entropy::MAX_EXCITATION_SAMPLES];
         let mut side_excitation = [0i32; silk_entropy::MAX_EXCITATION_SAMPLES];
-        for index in 0..320 {
+        for index in 0..silk_count {
             let mid = 0.5 * (silk_pcm[0][index] + silk_pcm[1][index]);
             let side = 0.5 * (silk_pcm[0][index] - silk_pcm[1][index]);
             if payload_bytes >= 1_024 {
@@ -1397,7 +1499,7 @@ impl Encoder {
                     order: 16,
                     index: [0; 16],
                 },
-                interpolation_q2: Some(4),
+                interpolation_q2: interpolate_lsf.then_some(4),
             },
             primary_pitch: None,
             contour_index: 0,
@@ -1432,43 +1534,57 @@ impl Encoder {
         let mut normalized = [0.0f32; 1_920];
         let mut target = celt_energy::LogEnergies::new();
         for channel in 0..2 {
-            for sample in &mut celt_pcm[channel] {
+            for sample in &mut celt_pcm[channel][..celt_count] {
                 let current = *sample;
                 *sample = current - 0.850_006_1 * self.preemphasis_memory[channel];
                 self.preemphasis_memory[channel] = current;
             }
             let mut transform_input = [0.0f32; 1_920];
-            transform_input[..960].copy_from_slice(&celt_pcm[channel]);
-            transform_input[960..].copy_from_slice(&celt_pcm[channel]);
+            transform_input[..celt_count].copy_from_slice(&celt_pcm[channel][..celt_count]);
+            transform_input[celt_count..2 * celt_count]
+                .copy_from_slice(&celt_pcm[channel][..celt_count]);
             let mut coefficients = [0.0f32; 960];
-            celt::forward_mdct(&transform_input, &mut coefficients)?;
+            celt::forward_mdct(
+                &transform_input[..2 * celt_count],
+                &mut coefficients[..celt_count],
+            )?;
             let mut amplitudes = [0.0f32; bands::BAND_COUNT];
             bands::normalize_bands(
-                &coefficients,
-                3,
+                &coefficients[..celt_count],
+                lm,
                 &mut amplitudes,
-                &mut normalized[channel * 960..(channel + 1) * 960],
+                &mut normalized[channel * celt_count..(channel + 1) * celt_count],
             )?;
-            for (band, &amplitude) in amplitudes.iter().enumerate().skip(17) {
+            let end = if bandwidth == Bandwidth::SuperWide {
+                19
+            } else {
+                bands::BAND_COUNT
+            };
+            for (band, &amplitude) in amplitudes.iter().enumerate().take(end).skip(17) {
                 target.values_mut()[channel][band] =
                     mrml_math::log2(amplitude.max(1.0e-12)) - bands::ENERGY_MEANS[band];
             }
         }
-        let config = celt_frame::FrameConfig {
+        let end = if bandwidth == Bandwidth::SuperWide {
+            19
+        } else {
+            bands::BAND_COUNT
+        };
+        let frame_config = celt_frame::FrameConfig {
             frame_bytes: main_bytes,
             channels: 2,
-            lm: 3,
+            lm,
             start: 17,
-            end: bands::BAND_COUNT,
+            end,
         };
         let mut residuals = [[0i16; bands::BAND_COUNT]; 2];
         celt_energy::residuals_for_target(
             celt_energy::CoarseConfig {
                 channels: 2,
-                lm: 3,
+                lm,
                 intra: true,
                 start: 17,
-                end: bands::BAND_COUNT,
+                end,
                 frame_bytes: main_bytes,
             },
             &self.celt_energies,
@@ -1487,20 +1603,20 @@ impl Encoder {
             boosts: [0; bands::BAND_COUNT],
             trim: 5,
             coded_bands: 0,
-            intensity: bands::BAND_COUNT,
+            intensity: end,
             dual_stereo: false,
         };
         let mut coded_residuals = [[0i16; bands::BAND_COUNT]; 2];
         let mut pulse_workspace = [0i32; 1_920];
         let mut recurrence = [0u32; pvq::MAX_PULSES + 1];
-        output[0] = 15 << 3 | 1 << 2;
+        output[0] = config << 3 | 1 << 2;
         let result = {
             let mut range = RangeEncoder::new(&mut output[1..main_bytes + 1]);
             self.silk_stereo.reset();
             self.silk_stereo.encode_range(
                 &mut range,
                 Bandwidth::Wide,
-                20,
+                duration_ms,
                 header,
                 &[regular],
                 &[empty_fec],
@@ -1518,7 +1634,7 @@ impl Encoder {
             }
             let plan = celt_frame::encode_plan(
                 &mut range,
-                config,
+                frame_config,
                 &request,
                 &target,
                 &mut self.celt_energies,
@@ -1526,9 +1642,9 @@ impl Encoder {
             )?;
             let result = celt_frame::encode_shapes_stereo(
                 &mut range,
-                config,
+                frame_config,
                 &plan,
-                &normalized,
+                &normalized[..celt_count * 2],
                 &mut pulse_workspace,
                 &mut recurrence,
                 &target,
@@ -3075,6 +3191,74 @@ mod tests {
                 &mut packet,
             ),
             Err(Error::UnsupportedAudioMode)
+        );
+    }
+
+    #[test]
+    fn public_hybrid_encoder_supports_every_rfc_configuration() {
+        for channels in [1u8, 2] {
+            for bandwidth in [Bandwidth::SuperWide, Bandwidth::Full] {
+                for duration_us in [10_000u32, 20_000] {
+                    let frames = 48_000usize * duration_us as usize / 1_000_000;
+                    let samples = frames * usize::from(channels);
+                    let mut input = [0i16; 1_920];
+                    for (index, sample) in input[..samples].iter_mut().enumerate() {
+                        *sample = (((index % 37) as i32 - 18) * 420) as i16;
+                    }
+                    let mut packet = [0u8; MAX_FRAME_BYTES + 1];
+                    let size = Encoder::new(channels)
+                        .unwrap()
+                        .encode_hybrid_bandwidth_duration(
+                            &input[..samples],
+                            48_000,
+                            bandwidth,
+                            duration_us,
+                            &mut packet,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("{channels:?} {bandwidth:?} {duration_us}: {error:?}")
+                        });
+                    let parsed = Packet::parse(&packet[..size]).unwrap();
+                    assert_eq!(
+                        (parsed.mode, parsed.bandwidth, parsed.frame_duration_us),
+                        (Mode::Hybrid, bandwidth, duration_us)
+                    );
+                    assert_eq!(parsed.stereo, channels == 2);
+                    let mut decoded = [0i16; 1_920];
+                    assert_eq!(
+                        Decoder::new(channels).unwrap().decode(
+                            &packet[..size],
+                            &mut decoded[..samples],
+                            48_000,
+                        ),
+                        Ok(frames)
+                    );
+                    assert!(decoded[..samples].iter().any(|&sample| sample != 0));
+                }
+            }
+        }
+
+        let mut packet = [0u8; MAX_FRAME_BYTES + 1];
+        let input = [1i16; 960];
+        assert_eq!(
+            Encoder::new(1).unwrap().encode_hybrid_bandwidth_duration(
+                &input,
+                48_000,
+                Bandwidth::Wide,
+                20_000,
+                &mut packet,
+            ),
+            Err(Error::UnsupportedAudioMode)
+        );
+        assert_eq!(
+            Encoder::new(1).unwrap().encode_hybrid_bandwidth_duration(
+                &input,
+                48_000,
+                Bandwidth::Full,
+                40_000,
+                &mut packet,
+            ),
+            Err(Error::InvalidFrameSize)
         );
     }
 
