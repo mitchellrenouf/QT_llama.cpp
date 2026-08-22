@@ -16,8 +16,6 @@ use mrml_kernel::BootPolicy;
     feature = "smp-ipi-probe"
 ))]
 use mrml_kernel::KernelScheduler;
-#[cfg(feature = "smp-ipi-probe")]
-use mrml_kernel::MigrationMailbox;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::SyscallRequest;
 #[cfg(any(
@@ -96,6 +94,8 @@ use mrml_kernel::{
     GpuQueueSender, GpuResourceResponse, GpuResourceResponseReceiver, GpuSharedRingIndices,
     ResourceCommand,
 };
+#[cfg(feature = "smp-ipi-probe")]
+use mrml_kernel::{MigrationMailbox, SchedulerLoad};
 #[cfg(any(
     feature = "timer-probe",
     feature = "preemption-probe",
@@ -213,6 +213,9 @@ static AP_IPI_READY: [AtomicBool; MAX_X86_64_CPUS] =
 #[cfg(feature = "smp-ipi-probe")]
 static AP_RESCHEDULE_REQUEST: [AtomicBool; MAX_X86_64_CPUS] =
     [const { AtomicBool::new(false) }; MAX_X86_64_CPUS];
+#[cfg(feature = "smp-ipi-probe")]
+static AP_SCHEDULER_LOAD: [AtomicU32; MAX_X86_64_CPUS] =
+    [const { AtomicU32::new(0) }; MAX_X86_64_CPUS];
 #[cfg(feature = "smp-ipi-probe")]
 static SMP_MIGRATION_MAILBOX: MigrationMailbox = MigrationMailbox::new();
 #[cfg(not(feature = "fault-probe"))]
@@ -775,6 +778,14 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
         let migration = scheduler
             .attach(SMP_MIGRATION_MAILBOX.take().unwrap_or_else(|| halt()))
             .unwrap_or_else(|_| halt());
+        if migration.priority() != Priority::RESPONSIVE {
+            halt();
+        }
+        let load = scheduler.load();
+        if load.occupied() != 2 || load.runnable() != 2 {
+            halt();
+        }
+        AP_SCHEDULER_LOAD[cpu].store(0x0002_0002, Ordering::Release);
         let next = match scheduler.yield_current().unwrap_or_else(|_| halt()) {
             ScheduleOutcome::Switch { to, .. } => to,
             _ => halt(),
@@ -1090,6 +1101,7 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
         }
         (*slot.scheduler.get()).write(scheduler);
         slot.initialized.store(true, Ordering::Release);
+        AP_SCHEDULER_LOAD[cpu].store(0x0001_0001, Ordering::Release);
         LocalApicController::enable().unwrap_or_else(|_| halt());
         AP_IPI_READY[cpu].store(true, Ordering::Release);
         asm!(
@@ -1256,14 +1268,25 @@ unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
     if !AP_IPI_READY[cpu].load(Ordering::Acquire) {
         halt();
     }
-    let mut source = KernelScheduler::<1>::new(1_000, 1).unwrap_or_else(|_| halt());
-    let task = source
+    let remote = AP_SCHEDULER_LOAD[cpu].load(Ordering::Acquire);
+    let remote_load = SchedulerLoad::new((remote >> 16) as usize, (remote & 0xffff) as usize, 2)
+        .unwrap_or_else(|| halt());
+    let mut source = KernelScheduler::<3>::new(1_000, 1).unwrap_or_else(|_| halt());
+    let first = source.create(Priority::NORMAL).unwrap_or_else(|_| halt());
+    source
         .create(Priority::RESPONSIVE)
         .unwrap_or_else(|_| halt());
-    let detached = source.detach(task).unwrap_or_else(|_| halt());
-    if !matches!(source.start(), ScheduleOutcome::Idle)
-        || SMP_MIGRATION_MAILBOX.publish(detached).is_err()
-    {
+    source
+        .create(Priority::BACKGROUND)
+        .unwrap_or_else(|_| halt());
+    if !matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == first) {
+        halt();
+    }
+    let detached = source
+        .detach_for_rebalance(remote_load)
+        .unwrap_or_else(|_| halt())
+        .unwrap_or_else(|| halt());
+    if source.load().runnable() != 2 || SMP_MIGRATION_MAILBOX.publish(detached).is_err() {
         halt();
     }
     if AP_RESCHEDULE_REQUEST[cpu]

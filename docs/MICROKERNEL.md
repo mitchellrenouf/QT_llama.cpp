@@ -1448,8 +1448,14 @@ fresh local identity, switches to it, acknowledges EOI, and emits a
 CPU/task-bound proof. Full mailboxes and destinations return the still-linear
 ticket rather than duplicating or losing ownership, and tests prove stale
 source identities cannot be revived. The 2026-08-22 freshly signed runs
-measured `total=82233us` on nested KVM and `total=28172us` on WHP. Automatic
-load balancing remains pending. The
+measured `total=82233us` on nested KVM and `total=28172us` on WHP. The same
+signed path now publishes CPU 1's validated occupied/runnable load snapshot.
+CPU 0 applies one-task hysteresis to its three-runnable-task scheduler, retains
+the current task, deterministically detaches one non-running responsive task,
+and transfers it to CPU 1. CPU 1 verifies the preserved priority and its new
+two-task load before switching. Fresh policy-selected runs measured
+`total=64381us` on nested KVM and `total=62785us` on WHP. Periodic multi-peer
+balancing orchestration remains pending. The
 bounded discovery foundation
 uses a parser that accepts only a complete loader-copied ACPI MADT with a
 valid signature, exact encoded length, checksum, entry geometry, reserved

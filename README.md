@@ -371,7 +371,12 @@ task, acknowledges EOI, and emits a CPU/task-bound proof. Destination-full
 admission returns the linear ticket for retry instead of losing or duplicating
 the task; stale source identities remain retired. The 2026-08-22 signed
 migration runs completed in 82,233 microseconds on nested KVM and 28,172
-microseconds on WHP. Automatic load balancing remains unfinished.
+microseconds on WHP. The same signed probe now publishes CPU1's bounded load
+snapshot and applies one-task hysteresis on CPU0: a three-runnable-task source
+retains its current task, selects one non-running task, and transfers it to the
+one-task destination. Fresh policy-selected runs completed in 64,381
+microseconds on nested KVM and 62,785 microseconds on WHP. Periodic multi-peer
+balancing orchestration remains unfinished.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested

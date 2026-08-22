@@ -70,6 +70,17 @@ pub struct SchedulerLoad {
 }
 
 impl SchedulerLoad {
+    pub const fn new(occupied: usize, runnable: usize, capacity: usize) -> Option<Self> {
+        if runnable > occupied || occupied > capacity {
+            return None;
+        }
+        Some(Self {
+            occupied,
+            runnable,
+            capacity,
+        })
+    }
+
     pub const fn occupied(self) -> usize {
         self.occupied
     }
@@ -552,6 +563,26 @@ impl<const TASKS: usize> KernelScheduler<TASKS> {
         Ok(detached)
     }
 
+    /// Selects and detaches at most one task using a remotely published load
+    /// snapshot. A stale optimistic snapshot is safe: destination admission
+    /// still owns final capacity enforcement and returns the ticket on failure.
+    pub fn detach_for_rebalance(
+        &mut self,
+        destination: SchedulerLoad,
+    ) -> Result<Option<DetachedTask>, KernelScheduleError> {
+        let source = self.load();
+        if destination.occupied == destination.capacity
+            || source.runnable <= destination.runnable.saturating_add(1)
+        {
+            return Ok(None);
+        }
+        let candidate = self
+            .scheduler
+            .migration_candidate(self.current)
+            .ok_or(KernelScheduleError::NoMigrationCandidate)?;
+        self.detach(candidate).map(Some)
+    }
+
     /// Admits an exclusively owned migration ticket. Failure returns the same
     /// ticket so the caller can retry, route elsewhere, or restore it.
     pub fn attach(&mut self, task: DetachedTask) -> Result<TaskMigration, TaskAttachError> {
@@ -928,5 +959,25 @@ mod tests {
             source.rebalance_to(&mut destination),
             Ok(BalanceOutcome::Balanced)
         );
+    }
+
+    #[test]
+    fn distributed_rebalance_detaches_only_for_valid_available_remote_load() {
+        assert!(SchedulerLoad::new(0, 1, 2).is_none());
+        assert!(SchedulerLoad::new(3, 2, 2).is_none());
+        let mut source = KernelScheduler::<3>::new(1_000, 3).unwrap();
+        source.create(Priority::NORMAL).unwrap();
+        source.create(Priority::RESPONSIVE).unwrap();
+        source.create(Priority::BACKGROUND).unwrap();
+        source.start();
+
+        let balanced = SchedulerLoad::new(2, 2, 3).unwrap();
+        assert!(source.detach_for_rebalance(balanced).unwrap().is_none());
+        let full = SchedulerLoad::new(1, 1, 1).unwrap();
+        assert!(source.detach_for_rebalance(full).unwrap().is_none());
+        let underloaded = SchedulerLoad::new(1, 1, 2).unwrap();
+        let detached = source.detach_for_rebalance(underloaded).unwrap().unwrap();
+        assert_eq!(detached.priority, Priority::RESPONSIVE);
+        assert_eq!(source.load().runnable(), 2);
     }
 }
