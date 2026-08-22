@@ -718,6 +718,24 @@ fn rustc_return_from_nested_while_has_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_unit_return_from_nested_while_has_an_executable_replacement() {
+    // Original nested-loop replacement for the valueless return shape in
+    // pinned tests/ui/codegen/issue-88043-bb-does-not-have-terminator.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, enter: bool) { let mut i: u32 = 0; while i < limit { while enter { let selected: u32 = i + 1; selected + 10; return; } i += 1; } }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<1536, 1024, 4, 4, 4, 48>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

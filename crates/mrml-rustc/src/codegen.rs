@@ -4160,6 +4160,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn once() -> u64 { loop { let selected: u64 = 42; selected + 1; break; } 42 }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn return_local() -> u64 { loop { let selected: u64 = 42; return selected; } }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn conditional_return(value: u64) -> u64 { loop { if value == 0 { let selected: u64 = 42; selected + 1; return selected; } return value; } }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn nested_unit_return(limit: u64, enter: bool) { let mut i: u64 = 0; while i < limit { while enter { let selected: u64 = i + 1; selected + 10; return; } i += 1; } }",
         ] {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();
             let Some(Item::Function(function)) = module.items()[0] else {
