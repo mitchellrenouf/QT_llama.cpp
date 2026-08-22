@@ -10,11 +10,7 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "production-policy")]
 use mrml_kernel::BootPolicy;
-#[cfg(any(
-    feature = "timer-probe",
-    feature = "smp-scheduler-probe",
-    feature = "smp-ipi-probe"
-))]
+#[cfg(any(feature = "timer-probe", feature = "smp-scheduler-probe"))]
 use mrml_kernel::KernelScheduler;
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::SyscallRequest;
@@ -22,10 +18,21 @@ use mrml_kernel::SyscallRequest;
     feature = "user-probe",
     feature = "service-probe",
     feature = "preemption-probe",
-    feature = "service-preemption-probe"
+    feature = "service-preemption-probe",
+    feature = "smp-ipi-probe"
 ))]
 use mrml_kernel::TaskRuntime;
 use mrml_kernel::UserCallFrame;
+#[cfg(feature = "smp-ipi-probe")]
+use mrml_kernel::arch::x86_64::LocalApicController;
+#[cfg(any(
+    feature = "timer-probe",
+    feature = "preemption-probe",
+    feature = "service-preemption-probe",
+    feature = "smp-scheduler-probe",
+    feature = "smp-ipi-probe"
+))]
+use mrml_kernel::arch::x86_64::LocalApicTimer;
 #[cfg(any(
     feature = "timer-probe",
     feature = "preemption-probe",
@@ -44,7 +51,8 @@ use mrml_kernel::arch::x86_64::TrapDisposition;
     feature = "user-probe",
     feature = "service-probe",
     feature = "preemption-probe",
-    feature = "service-preemption-probe"
+    feature = "service-preemption-probe",
+    feature = "smp-ipi-probe"
 ))]
 use mrml_kernel::arch::x86_64::UserContext;
 #[cfg(any(feature = "user-probe", feature = "preemption-probe"))]
@@ -60,14 +68,6 @@ use mrml_kernel::arch::x86_64::{
     ApOnlineTable, CpuDescriptorState, HardwareTrapFrame, MAX_X86_64_CPUS,
     PRIVILEGE_STACK_ARENA_PAGES, PrivilegeStackLayout,
 };
-#[cfg(any(
-    feature = "timer-probe",
-    feature = "preemption-probe",
-    feature = "service-preemption-probe",
-    feature = "smp-scheduler-probe",
-    feature = "smp-ipi-probe"
-))]
-use mrml_kernel::arch::x86_64::{LocalApicController, LocalApicTimer};
 #[cfg(not(feature = "fault-probe"))]
 use mrml_kernel::{
     BootHandoff, HANDOFF_HEADER_BYTES, MAX_HANDOFF_BYTES, MAX_HANDOFF_REGIONS, MemoryKind,
@@ -86,6 +86,8 @@ use mrml_kernel::{
     not(feature = "service-probe")
 ))]
 use mrml_kernel::{Color, EarlyKernelContext, FramebufferSurface};
+#[cfg(feature = "smp-ipi-probe")]
+use mrml_kernel::{DetachedTaskDomain, OwnershipMailbox, SchedulerLoad};
 #[cfg(any(feature = "user-probe", feature = "service-probe"))]
 use mrml_kernel::{Endpoint, ObjectId, Rights};
 #[cfg(all(not(feature = "fault-probe"), feature = "gpu-benchmark"))]
@@ -94,8 +96,6 @@ use mrml_kernel::{
     GpuQueueSender, GpuResourceResponse, GpuResourceResponseReceiver, GpuSharedRingIndices,
     ResourceCommand,
 };
-#[cfg(feature = "smp-ipi-probe")]
-use mrml_kernel::{MigrationMailbox, SchedulerLoad};
 #[cfg(any(
     feature = "timer-probe",
     feature = "preemption-probe",
@@ -185,6 +185,7 @@ static AP_ONLINE: ApOnlineTable<MAX_X86_64_CPUS> = ApOnlineTable::empty();
 struct ApSchedulerSlot {
     apic_id: AtomicU32,
     initialized: AtomicBool,
+    #[cfg(feature = "smp-scheduler-probe")]
     scheduler: UnsafeCell<MaybeUninit<KernelScheduler<2>>>,
 }
 #[cfg(any(feature = "smp-scheduler-probe", feature = "smp-ipi-probe"))]
@@ -195,6 +196,7 @@ impl ApSchedulerSlot {
         Self {
             apic_id: AtomicU32::new(u32::MAX),
             initialized: AtomicBool::new(false),
+            #[cfg(feature = "smp-scheduler-probe")]
             scheduler: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
@@ -217,7 +219,14 @@ static AP_RESCHEDULE_REQUEST: [AtomicBool; MAX_X86_64_CPUS] =
 static AP_SCHEDULER_LOAD: [AtomicU32; MAX_X86_64_CPUS] =
     [const { AtomicU32::new(0) }; MAX_X86_64_CPUS];
 #[cfg(feature = "smp-ipi-probe")]
-static SMP_MIGRATION_MAILBOX: MigrationMailbox = MigrationMailbox::new();
+struct SmpIpiRuntime(UnsafeCell<MaybeUninit<TaskRuntime<2, 0>>>);
+#[cfg(feature = "smp-ipi-probe")]
+unsafe impl Sync for SmpIpiRuntime {}
+#[cfg(feature = "smp-ipi-probe")]
+#[unsafe(link_section = ".data")]
+static SMP_IPI_RUNTIME: SmpIpiRuntime = SmpIpiRuntime(UnsafeCell::new(MaybeUninit::uninit()));
+#[cfg(feature = "smp-ipi-probe")]
+static SMP_MIGRATION_MAILBOX: OwnershipMailbox<DetachedTaskDomain<0>> = OwnershipMailbox::new();
 #[cfg(not(feature = "fault-probe"))]
 struct ApStartupWorkspace(UnsafeCell<MaybeUninit<ApStartupTable<MAX_X86_64_CPUS>>>);
 #[cfg(not(feature = "fault-probe"))]
@@ -770,27 +779,35 @@ unsafe extern "sysv64" fn mrml_reschedule_dispatch(frame: *const HardwareTrapFra
                 halt();
             }
         }
-        let (cpu, slot) = owner.unwrap_or_else(|| halt());
+        let (cpu, _slot) = owner.unwrap_or_else(|| halt());
         if !AP_RESCHEDULE_REQUEST[cpu].swap(false, Ordering::AcqRel) {
             halt();
         }
-        let scheduler = (&mut *slot.scheduler.get()).assume_init_mut();
-        let migration = scheduler
-            .attach(SMP_MIGRATION_MAILBOX.take().unwrap_or_else(|| halt()))
+        let runtime = (&mut *SMP_IPI_RUNTIME.0.get()).assume_init_mut();
+        let mut ticket = SMP_MIGRATION_MAILBOX.take();
+        let migration = runtime
+            .attach_domain(&mut ticket)
             .unwrap_or_else(|_| halt());
+        if ticket.is_some() {
+            halt();
+        }
         if migration.priority() != Priority::RESPONSIVE {
             halt();
         }
-        let load = scheduler.load();
+        let load = runtime.load();
         if load.occupied() != 2 || load.runnable() != 2 {
             halt();
         }
         AP_SCHEDULER_LOAD[cpu].store(0x0002_0002, Ordering::Release);
-        let next = match scheduler.yield_current().unwrap_or_else(|_| halt()) {
+        let next = match runtime.yield_current().unwrap_or_else(|_| halt()) {
             ScheduleOutcome::Switch { to, .. } => to,
             _ => halt(),
         };
         if next != migration.destination() {
+            halt();
+        }
+        let context = runtime.context(next).unwrap_or_else(|_| halt());
+        if context.instruction_pointer() != 0x0050_0000 {
             halt();
         }
         LocalApicTimer::acknowledge();
@@ -1080,11 +1097,19 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
     }
     #[cfg(feature = "smp-ipi-probe")]
     unsafe {
-        let mut scheduler = KernelScheduler::<2>::new(1_000, 1).unwrap_or_else(|_| halt());
-        let first = scheduler
-            .create(Priority::NORMAL)
+        let page_table: u64;
+        asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags));
+        let context = UserContext::new(
+            PhysAddr::new(page_table).unwrap_or_else(|_| halt()),
+            0x0040_0000,
+            0x0000_7000_0000_0000,
+        )
+        .unwrap_or_else(|_| halt());
+        let mut runtime = TaskRuntime::<2, 0>::new(1_000, 1).unwrap_or_else(|_| halt());
+        let first = runtime
+            .create(Priority::NORMAL, context)
             .unwrap_or_else(|_| halt());
-        if !matches!(scheduler.start(), ScheduleOutcome::Switch { to, .. } if to == first)
+        if !matches!(runtime.start(), ScheduleOutcome::Switch { to, .. } if to == first)
             || first.token() as u32 != 0
         {
             halt();
@@ -1099,7 +1124,7 @@ pub unsafe extern "sysv64" fn ap_kernel_entry(cpu: u64, generation: u64, stack_b
         {
             halt();
         }
-        (*slot.scheduler.get()).write(scheduler);
+        (*SMP_IPI_RUNTIME.0.get()).write(runtime);
         slot.initialized.store(true, Ordering::Release);
         AP_SCHEDULER_LOAD[cpu].store(0x0001_0001, Ordering::Release);
         LocalApicController::enable().unwrap_or_else(|_| halt());
@@ -1271,19 +1296,33 @@ unsafe fn send_reschedule_probe(topology: &X86CpuTopology) {
     let remote = AP_SCHEDULER_LOAD[cpu].load(Ordering::Acquire);
     let remote_load = SchedulerLoad::new((remote >> 16) as usize, (remote & 0xffff) as usize, 2)
         .unwrap_or_else(|| halt());
-    let mut source = KernelScheduler::<3>::new(1_000, 1).unwrap_or_else(|_| halt());
-    let first = source.create(Priority::NORMAL).unwrap_or_else(|_| halt());
-    source
-        .create(Priority::RESPONSIVE)
+    let page_table: u64;
+    unsafe { asm!("mov {}, cr3", out(reg) page_table, options(nomem, nostack, preserves_flags)) };
+    let root = PhysAddr::new(page_table).unwrap_or_else(|_| halt());
+    let mut source = TaskRuntime::<3, 0>::new(1_000, 1).unwrap_or_else(|_| halt());
+    let first = source
+        .create(
+            Priority::NORMAL,
+            UserContext::new(root, 0x0040_0000, 0x0000_7000_0000_0000).unwrap_or_else(|_| halt()),
+        )
         .unwrap_or_else(|_| halt());
     source
-        .create(Priority::BACKGROUND)
+        .create(
+            Priority::RESPONSIVE,
+            UserContext::new(root, 0x0050_0000, 0x0000_7000_0000_1000).unwrap_or_else(|_| halt()),
+        )
+        .unwrap_or_else(|_| halt());
+    source
+        .create(
+            Priority::BACKGROUND,
+            UserContext::new(root, 0x0060_0000, 0x0000_7000_0000_2000).unwrap_or_else(|_| halt()),
+        )
         .unwrap_or_else(|_| halt());
     if !matches!(source.start(), ScheduleOutcome::Switch { to, .. } if to == first) {
         halt();
     }
     let detached = source
-        .detach_for_rebalance(remote_load)
+        .detach_domain_for_rebalance(remote_load)
         .unwrap_or_else(|_| halt())
         .unwrap_or_else(|| halt());
     if source.load().runnable() != 2 || SMP_MIGRATION_MAILBOX.publish(detached).is_err() {

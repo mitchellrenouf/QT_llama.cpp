@@ -107,6 +107,10 @@ impl<const TASKS: usize, const CAPS: usize> TaskRuntime<TASKS, CAPS> {
         self.scheduler.ticks()
     }
 
+    pub fn load(&self) -> SchedulerLoad {
+        self.scheduler.load()
+    }
+
     pub fn timer_tick(&mut self) -> Result<ScheduleOutcome, TaskRuntimeError> {
         self.scheduler
             .timer_tick()

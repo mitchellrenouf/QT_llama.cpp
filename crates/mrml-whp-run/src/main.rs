@@ -196,9 +196,10 @@ fn application_main() -> Result<()> {
             0xffff_8001_6000_0000,
         )
     };
+    let table_pages = if smp_ipi_mode { 64 } else { 32 };
     let layout = WhpLaunchLayout::new(
         0x10_0000,
-        32,
+        table_pages,
         0x20_0000,
         image_virtual,
         0x50_0000,

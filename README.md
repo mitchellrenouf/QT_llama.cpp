@@ -384,7 +384,15 @@ creates a fresh local identity, while failure leaves the entire ticket in
 caller-owned storage for retry. Windows and Linux tests cover preserved context,
 authority, queued messages, destination-full recovery, and rejection of a
 running-domain detach. Live cross-CPU CPL3 resumption of this complete ticket
-remains unfinished.
+remains unfinished. The signed SMP IPI probe now carries this complete domain
+through the typed mailbox: CPU1 admits it into a CPU-owned `TaskRuntime`, checks
+the preserved responsive policy and saved instruction pointer, verifies its
+two-domain load, and schedules the fresh identity. Fresh runs completed in
+88,887 microseconds on nested KVM and 63,447 microseconds on WHP. The larger
+runtime mapping exhausted the prior 32-page translation-table pool and failed
+before execution; both native launchers now provision 64 checked pages for this
+mode. The probe still halts before `IRETQ`, so execution of the migrated CPL3
+context is not yet claimed.
 Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of
 the live WHP/KVM proof. Clean user-requested
