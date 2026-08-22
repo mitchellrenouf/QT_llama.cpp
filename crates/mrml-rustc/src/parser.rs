@@ -252,7 +252,7 @@ pub struct ConditionalLoopBlock<'source> {
     pub condition_span: Span,
     actions: [Option<ConditionalLoopAction<'source>>; MAX_CONDITIONAL_LOOP_ACTIONS],
     action_count: usize,
-    pub terminal: ConditionalLoopTerminal<'source>,
+    pub terminal: Option<ConditionalLoopTerminal<'source>>,
 }
 
 impl<'source> ConditionalLoopBlock<'source> {
@@ -1313,6 +1313,10 @@ impl<'source> BodyParser<'source> {
                     let mut action_count = 0usize;
                     let (control, terminal) = loop {
                         let next = probe.peek()?;
+                        if next.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                            probe.take()?;
+                            break (None, None);
+                        }
                         if next.is_some_and(|token| {
                             matches!(token.text, "break" | "continue" | "return")
                         }) {
@@ -1337,7 +1341,7 @@ impl<'source> BodyParser<'source> {
                                     ConditionalLoopTerminal::Continue
                                 }
                             };
-                            break (control, terminal);
+                            break (Some(control), Some(terminal));
                         }
                         if action_count == MAX_CONDITIONAL_LOOP_ACTIONS {
                             return Err(
@@ -1366,15 +1370,20 @@ impl<'source> BodyParser<'source> {
                         actions[action_count] = Some(action);
                         action_count += 1;
                     };
-                    let close = probe.take()?;
-                    if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
-                        return Err(probe.error(ParseErrorKind::UnexpectedClosingDelimiter, close));
+                    if control.is_some() {
+                        let close = probe.take()?;
+                        if !close.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
+                            return Err(
+                                probe.error(ParseErrorKind::UnexpectedClosingDelimiter, close)
+                            );
+                        }
                     }
                     let conditional = ConditionalLoopControl {
                         condition: &self.source[condition_span.start..condition_span.end],
                         condition_span,
                     };
-                    has_break |= matches!(control.text, "break" | "return");
+                    has_break |=
+                        control.is_some_and(|control| matches!(control.text, "break" | "return"));
                     operations[operation_count] = Some(if action_count != 0 {
                         conditional_blocks[conditional_block_count] = Some(ConditionalLoopBlock {
                             condition: conditional.condition,
@@ -1386,17 +1395,15 @@ impl<'source> BodyParser<'source> {
                         let index = conditional_block_count;
                         conditional_block_count += 1;
                         LoopOperation::ConditionalBlock(index)
-                    } else if control.text == "break" {
+                    } else if control.is_some_and(|control| control.text == "break") {
                         LoopOperation::ConditionalBreak(conditional)
-                    } else if control.text == "continue" {
+                    } else if control.is_some_and(|control| control.text == "continue") {
                         LoopOperation::ConditionalContinue(conditional)
                     } else {
-                        let ConditionalLoopTerminal::Return(LoopReturn { value, value_span }) =
+                        let Some(ConditionalLoopTerminal::Return(LoopReturn { value, value_span })) =
                             terminal
                         else {
-                            return Err(
-                                probe.error(ParseErrorKind::ExpectedInitializer, Some(control))
-                            );
+                            return Err(probe.error(ParseErrorKind::ExpectedInitializer, control));
                         };
                         LoopOperation::ConditionalReturn(ConditionalReturn {
                             condition: conditional.condition,
@@ -1530,7 +1537,8 @@ impl<'source> BodyParser<'source> {
                                     LoopOperation::ConditionalBlock(index)
                                         if loop_statement.conditional_blocks()[*index]
                                             .is_some_and(|block| {
-                                                block.terminal == ConditionalLoopTerminal::Break
+                                                block.terminal
+                                                    == Some(ConditionalLoopTerminal::Break)
                                             })
                                 )
                             })
@@ -2522,8 +2530,25 @@ mod tests {
             Some(ConditionalLoopAction::Assignment(assignment))
                 if assignment.name == "total"
         ));
-        assert_eq!(control.terminal, ConditionalLoopTerminal::Break);
+        assert_eq!(control.terminal, Some(ConditionalLoopTerminal::Break));
         assert_eq!(body.tail_expression, "total");
+
+        let action_only = Parser::new(
+            "fn guarded(limit: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { i += 1; if i % 2 == 0 { let selected: u64 = i; total += selected; } total += 1; } total }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = action_only.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<2>().unwrap();
+        let loop_statement = body.while_loops()[0].unwrap();
+        let Some(LoopOperation::ConditionalBlock(index)) = loop_statement.operations()[1] else {
+            panic!("expected action-only conditional block")
+        };
+        let block = loop_statement.conditional_blocks()[index].unwrap();
+        assert_eq!(block.action_count(), 2);
+        assert_eq!(block.terminal, None);
 
         let too_many_conditional_actions = Parser::new(
             "fn crowded(limit: u64) -> u64 { let mut i: u64 = 0; while i < limit { i += 1; if i == limit { i + 1; i + 2; i + 3; i + 4; i + 5; break; } } i }",

@@ -491,6 +491,26 @@ fn rustc_while_with_break_conditional_block_has_an_executable_replacement() {
 }
 
 #[test]
+fn rustc_loop_guarded_fallthrough_actions_have_an_executable_replacement() {
+    // Original scalar replacement for the guarded mutation and subsequent
+    // fallthrough order in tests/ui/for-loop-while/loop-no-reinit-needed-post-bot.rs
+    // at the pinned nightly commit. Moves, destructors, user-defined calls, and
+    // bottom-typed expressions are outside this control-flow slice.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32) -> u32 { let mut i: u32 = 0; let mut total: u32 = 0; while i < limit { i += 1; if i % 3 == 0 { let selected: u32 = i; total += selected; } total += 1; } total }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<2048, 1536, 4, 4, 4, 64>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",

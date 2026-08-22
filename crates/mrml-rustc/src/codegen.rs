@@ -750,23 +750,24 @@ pub fn compile_x86_64_function_with_options<
                     }
                 }
                 match block.terminal {
-                    crate::ConditionalLoopTerminal::Break => {
+                    Some(crate::ConditionalLoopTerminal::Break) => {
                         emitter.emit_stack_cleanup_to(local_checkpoint)?;
                         exit_patches[exit_count] =
                             Some(emitter.emit_unconditional_forward_branch()?);
                         exit_count += 1;
                     }
-                    crate::ConditionalLoopTerminal::Continue => {
+                    Some(crate::ConditionalLoopTerminal::Continue) => {
                         emitter.emit_stack_cleanup_to(local_checkpoint)?;
                         emitter.emit_backward_branch(loop_start)?;
                     }
-                    crate::ConditionalLoopTerminal::Return(return_statement) => {
+                    Some(crate::ConditionalLoopTerminal::Return(return_statement)) => {
                         emitter.emit_return::<MAX_EXPRESSION_NODES>(
                             &return_statement,
                             expected_type,
                             function.body_expression_span.start,
                         )?;
                     }
+                    None => emitter.emit_stack_cleanup_to(block_checkpoint)?,
                 }
                 emitter.truncate_scoped_locals(block_checkpoint)?;
                 emitter.patch_forward_branch(skip_block)?;
@@ -3834,7 +3835,7 @@ mod tests {
 
     #[test]
     fn emits_scoped_loop_locals_across_control_edges() {
-        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; total += selected; break; } total += current; } total }";
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn count(limit: u64, stop: u64) -> u64 { let mut i: u64 = 0; let mut total: u64 = 0; while i < limit { let current: u64 = i + 1; current + 10; i = current; if i % 3 == 0 { let selected: u64 = current; total += selected; } if i % 2 == 0 { let skipped: u64 = current; skipped + 10; continue; } if i == stop { let selected: u64 = current; selected + 20; total += selected; break; } total += current; } total }";
         let module = Parser::new(source).parse_module::<2, 4>().unwrap();
         let Some(Item::Function(function)) = module.items()[0] else {
             panic!("expected function")
