@@ -11,7 +11,7 @@ use mrml_kernel::{
         AcpiMemory, PagePermissions, PageTableBuildError, PageTableBuilder, PageTableStore,
         PerCpuPrivilegeStacks, VirtAddr, copy_madt,
     },
-    encode_handoff_with_madt,
+    encode_handoff_with_smp,
 };
 use mrml_uefi::tpm::{NvCounterError, TpmTransport, enforce_version};
 use mrml_uefi::*;
@@ -31,7 +31,7 @@ struct FileInfoBuffer(UnsafeCell<[u8; FILE_INFO_BYTES]>);
 unsafe impl Sync for FileInfoBuffer {}
 static FILE_INFO: FileInfoBuffer = FileInfoBuffer(UnsafeCell::new([0; FILE_INFO_BYTES]));
 const HANDOFF_BYTES: usize =
-    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES;
+    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES + 8;
 const PAGE_BYTES: usize = 4096;
 const HANDOFF_PAGES: usize = HANDOFF_BYTES.div_ceil(PAGE_BYTES);
 const HANDOFF_ALLOCATION_BYTES: usize = HANDOFF_PAGES * PAGE_BYTES;
@@ -66,10 +66,13 @@ struct Transition {
     stack_top: u64,
     entry_stack_top: u64,
     double_fault_stack_top: u64,
+    ap_trampoline: u64,
 }
 
 struct FirmwarePageTables {
     services: *const BootServices,
+    frames: [u64; 256],
+    count: usize,
 }
 
 struct FirmwareTpm {
@@ -109,11 +112,16 @@ impl TpmTransport for FirmwareTpm {
 impl PageTableStore for FirmwarePageTables {
     fn allocate_zeroed(&mut self) -> Result<PhysAddr, PageTableBuildError> {
         let services = unsafe { self.services.as_ref() }.ok_or(PageTableBuildError::Storage)?;
+        if self.count == self.frames.len() {
+            return Err(PageTableBuildError::Storage);
+        }
         let mut address = 0u64;
         check(unsafe { (services.allocate_pages)(0, 2, 1, &mut address) })
             .map_err(|_| PageTableBuildError::Storage)?;
         let frame = PhysAddr::new(address).map_err(|_| PageTableBuildError::Storage)?;
         unsafe { core::ptr::write_bytes(address as *mut u8, 0, 4096) };
+        self.frames[self.count] = address;
+        self.count += 1;
         Ok(frame)
     }
 
@@ -740,7 +748,7 @@ fn enter_kernel(
     let handoff_page = unsafe { &mut *HANDOFF.0.get() };
     handoff_page.fill(0);
     let handoff = &mut handoff_page[..HANDOFF_BYTES];
-    let handoff_length = encode_handoff_with_madt(
+    let handoff_length = encode_handoff_with_smp(
         kernel_version,
         entropy,
         kernel_measurement,
@@ -750,6 +758,7 @@ fn enter_kernel(
         acpi_root,
         framebuffer_info,
         &kernel_regions[..regions.len()],
+        transition.ap_trampoline,
         madt,
         handoff,
     )
@@ -808,7 +817,17 @@ fn prepare_transition(
 
     let store = FirmwarePageTables {
         services: services as *const BootServices,
+        frames: [0; 256],
+        count: 0,
     };
+    let mut ap_trampoline = 0x000f_f000u64;
+    check(unsafe { (services.allocate_pages)(1, 2, 1, &mut ap_trampoline) })?;
+    if !(PAGE_BYTES as u64..0x10_0000).contains(&ap_trampoline)
+        || !ap_trampoline.is_multiple_of(PAGE_BYTES as u64)
+    {
+        return Err(LOAD_ERROR);
+    }
+    unsafe { core::ptr::write_bytes(ap_trampoline as *mut u8, 0, PAGE_BYTES) };
     let mut tables = PageTableBuilder::new(store).map_err(|_| LOAD_ERROR)?;
     for index in 0..image.load_region_count() {
         let region = image.load_region(index).map_err(|_| LOAD_ERROR)?;
@@ -869,11 +888,29 @@ fn prepare_transition(
         1,
         PagePermissions::KERNEL_READ_EXECUTE,
     )?;
+    map_identity(
+        &mut tables,
+        ap_trampoline,
+        1,
+        PagePermissions::KERNEL_MMIO_READ_WRITE,
+    )?;
+    let mut frame_index = 0usize;
+    while frame_index < tables.store().count {
+        let frame = tables.store().frames[frame_index];
+        map_identity(
+            &mut tables,
+            frame,
+            1,
+            PagePermissions::KERNEL_MMIO_READ_WRITE,
+        )?;
+        frame_index += 1;
+    }
     Ok(Transition {
         root: tables.root().get(),
         stack_top,
         entry_stack_top: stack_layout.entry_top().map_err(|_| LOAD_ERROR)?,
         double_fault_stack_top: stack_layout.double_fault_top().map_err(|_| LOAD_ERROR)?,
+        ap_trampoline,
     })
 }
 

@@ -312,7 +312,13 @@ mapping against its exact physical frames and old permissions before replacing
 leaf permissions; missing, aliased, huge, or already-modified entries fail
 before the first logical update. A dedicated low-supervisor RX permission keeps
 the SIPI page executable without making it user-accessible or writable.
-Concrete UEFI/KVM page backends, per-CPU interrupt routing, and a live
+The SMP handoff extension carries the exact firmware-selected low page and
+rejects absent, unaligned, zero-vector, or one-megabyte-and-above addresses.
+UEFI reserves one loader-owned page with `AllocateMaxAddress`, zeroes it, maps
+it supervisor-RW/NX, and identity-maps every page-table frame actually allocated
+(including frames allocated while adding those mappings), so the relocated BSP
+can perform the checked seal. Completing the in-kernel UEFI adapter and KVM
+page backend, per-CPU interrupt routing, and a live
 multi-vCPU scheduling proof remain unfinished; the repository does not claim
 SMP execution yet. Platform-backed
 writable-memory reprovisioning and one bounded supervised restart are part of

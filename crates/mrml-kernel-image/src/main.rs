@@ -78,7 +78,7 @@ use mrml_kernel::{Priority, ScheduleOutcome};
 
 #[cfg(not(feature = "fault-probe"))]
 const MAX_HANDOFF_BYTES: usize =
-    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES;
+    HANDOFF_HEADER_BYTES + MAX_HANDOFF_REGIONS * HANDOFF_REGION_BYTES + MAX_HANDOFF_MADT_BYTES + 8;
 #[cfg(feature = "gpu-benchmark")]
 const GPU_COMMAND_BASE: usize = 0x00b0_0000;
 #[cfg(feature = "gpu-benchmark")]

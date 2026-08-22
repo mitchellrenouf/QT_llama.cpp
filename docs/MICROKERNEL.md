@@ -1440,6 +1440,11 @@ exact-match protection transition: it preflights every 4 KiB leaf, physical
 frame, and old permission before changing any logical mapping. This supplies a
 supervisor-only low-page RW/NX-to-RX path for a BSP-built relocated trampoline
 without accepting missing, huge, aliased, or concurrently changed entries.
+The canonical SMP handoff carries the exact selected low page. UEFI obtains it
+with `AllocateMaxAddress`, zeroes and maps it RW/NX, and iteratively
+identity-maps only the page-table frames its builder actually allocated, so new
+frames created during that operation are included without mapping unrelated
+loader storage. The in-kernel adapter still needs to apply the final seal.
 Platform-backed service page
 erasure/reprovisioning and one bounded restart are complete for the hosted
 WHP/KVM proof.

@@ -41,7 +41,7 @@ pub use framebuffer::{Color, FramebufferError, FramebufferInfo, FramebufferSurfa
 pub use grant::{DirectoryGrant, GrantError, GrantMode, MAX_HOST_PATH};
 pub use handoff::{
     BootHandoff, HANDOFF_HEADER_BYTES, HANDOFF_REGION_BYTES, HandoffError, MAX_HANDOFF_MADT_BYTES,
-    MAX_HANDOFF_REGIONS, encode_handoff, encode_handoff_with_madt,
+    MAX_HANDOFF_REGIONS, encode_handoff, encode_handoff_with_madt, encode_handoff_with_smp,
 };
 pub use ipc::{
     Endpoint, IpcError, MAX_CAPABILITIES, MAX_INLINE_PAYLOAD, MAX_WIRE_MESSAGE, Message, Receiver,
