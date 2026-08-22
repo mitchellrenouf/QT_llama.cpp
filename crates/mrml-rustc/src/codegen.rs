@@ -71,6 +71,7 @@ pub enum CodegenErrorKind {
     Execution(ExecutionError),
     ValueOutOfRange,
     OutputTooSmall,
+    TooManyRuntimeLocals,
     DuplicateLocal,
     ImmutableAssignment,
 }
@@ -566,6 +567,7 @@ pub fn compile_x86_64_function_with_options<
                     &local,
                     operand_type,
                     function.body_expression_span.start,
+                    false,
                 )?;
             }
             crate::BodyStatement::Assignment(index) => {
@@ -596,6 +598,7 @@ pub fn compile_x86_64_function_with_options<
                 emitter.emit_conditional_assignment::<MAX_EXPRESSION_NODES>(
                     &conditional,
                     expected_type,
+                    operand_type,
                     function.body_expression_span.start,
                 )?;
             }
@@ -949,6 +952,7 @@ pub fn compile_x86_64_function_with_options<
                     &local,
                     operand_type,
                     function.body_expression_span.start,
+                    false,
                 )?;
             }
             crate::BodyStatement::Assignment(index) if saw_loop_statement => {
@@ -979,6 +983,7 @@ pub fn compile_x86_64_function_with_options<
                 emitter.emit_conditional_assignment::<MAX_EXPRESSION_NODES>(
                     &conditional,
                     expected_type,
+                    operand_type,
                     function.body_expression_span.start,
                 )?;
             }
@@ -2043,8 +2048,9 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     fn emit_identifier(&mut self, name: &str) -> Result<(), CodegenError> {
         if let Some(index) = self.locals[..self.saved_locals]
             .iter()
-            .flatten()
-            .position(|local| local.name == name)
+            .enumerate()
+            .rev()
+            .find_map(|(index, local)| local.filter(|local| local.name == name).map(|_| index))
         {
             let local =
                 self.locals[index].ok_or(self.error(CodegenErrorKind::UnknownRuntimeName))?;
@@ -2149,17 +2155,25 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         local: &crate::LocalBinding<'source>,
         operand_type: &str,
         body_start: usize,
+        allow_shadowing: bool,
     ) -> Result<(), CodegenError> {
-        if self
-            .function
-            .parameters()
-            .iter()
-            .flatten()
-            .any(|parameter| parameter.name == local.name)
-            || self.locals[..self.saved_locals]
+        if self.saved_locals == MAX_PARAMETERS {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::TooManyRuntimeLocals,
+                span: translate_span(body_start, local.name_span),
+            });
+        }
+        if !allow_shadowing
+            && (self
+                .function
+                .parameters()
                 .iter()
                 .flatten()
-                .any(|existing| existing.name == local.name)
+                .any(|parameter| parameter.name == local.name)
+                || self.locals[..self.saved_locals]
+                    .iter()
+                    .flatten()
+                    .any(|existing| existing.name == local.name))
         {
             return Err(CodegenError {
                 kind: CodegenErrorKind::DuplicateLocal,
@@ -2240,6 +2254,31 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         Ok(())
     }
 
+    fn emit_scoped_local_cleanup(&mut self, checkpoint: usize) -> Result<(), CodegenError> {
+        let local_count = self
+            .saved_locals
+            .checked_sub(checkpoint)
+            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+        let bytes = local_count
+            .checked_mul(8)
+            .ok_or(self.error(CodegenErrorKind::OutputTooSmall))?;
+        if bytes != 0 {
+            if bytes <= i8::MAX as usize {
+                self.emit(&[0x48, 0x83, 0xc4, bytes as u8])?;
+            } else {
+                let bytes = u32::try_from(bytes)
+                    .map_err(|_| self.error(CodegenErrorKind::OutputTooSmall))?;
+                self.emit(&[0x48, 0x81, 0xc4])?;
+                self.emit(&bytes.to_le_bytes())?;
+            }
+        }
+        for local in &mut self.locals[checkpoint..self.saved_locals] {
+            *local = None;
+        }
+        self.saved_locals = checkpoint;
+        Ok(())
+    }
+
     fn emit_expression_statement<const MAX_EXPRESSION_NODES: usize>(
         &mut self,
         statement: &crate::ExpressionStatement<'_>,
@@ -2276,7 +2315,13 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
     ) -> Result<(), CodegenError> {
         let index = self.locals[..self.saved_locals]
             .iter()
-            .position(|local| local.is_some_and(|local| local.name == assignment.name))
+            .enumerate()
+            .rev()
+            .find_map(|(index, local)| {
+                local
+                    .filter(|local| local.name == assignment.name)
+                    .map(|_| index)
+            })
             .ok_or(CodegenError {
                 kind: CodegenErrorKind::UnknownRuntimeName,
                 span: translate_span(body_start, assignment.name_span),
@@ -2412,8 +2457,9 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
 
     fn emit_conditional_assignment<const MAX_EXPRESSION_NODES: usize>(
         &mut self,
-        conditional: &crate::ConditionalAssignment<'_>,
+        conditional: &crate::ConditionalAssignment<'source>,
         expected_type: RuntimeExpressionType,
+        operand_type: &str,
         body_start: usize,
     ) -> Result<(), CodegenError> {
         let mut end_patches = [None; crate::MAX_CONDITIONAL_ASSIGNMENT_BRANCHES];
@@ -2447,8 +2493,17 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             self.emit_expression(&condition_tree, condition_tree.root(), 0)?;
             self.emit(&[0x48, 0x85, 0xc0])?;
             let false_branch = self.emit_forward_branch(0x84)?;
+            let local_checkpoint = self.saved_locals;
             for action in branch.actions().iter().flatten() {
                 match action {
+                    crate::ConditionalAssignmentAction::Local(local) => {
+                        self.emit_local::<MAX_EXPRESSION_NODES>(
+                            local,
+                            operand_type,
+                            body_start,
+                            true,
+                        )?;
+                    }
                     crate::ConditionalAssignmentAction::Assignment(assignment) => {
                         self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
                     }
@@ -2466,12 +2521,17 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                     }
                 }
             }
+            self.emit_scoped_local_cleanup(local_checkpoint)?;
             end_patches[end_count] = Some(self.emit_unconditional_forward_branch()?);
             end_count += 1;
             self.patch_forward_branch(false_branch)?;
         }
+        let local_checkpoint = self.saved_locals;
         for action in conditional.else_actions().iter().flatten() {
             match action {
+                crate::ConditionalAssignmentAction::Local(local) => {
+                    self.emit_local::<MAX_EXPRESSION_NODES>(local, operand_type, body_start, true)?;
+                }
                 crate::ConditionalAssignmentAction::Assignment(assignment) => {
                     self.emit_assignment::<MAX_EXPRESSION_NODES>(assignment, body_start)?;
                 }
@@ -2487,6 +2547,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 }
             }
         }
+        self.emit_scoped_local_cleanup(local_checkpoint)?;
         for patch in end_patches[..end_count].iter().flatten().copied() {
             self.patch_forward_branch(patch)?;
         }
@@ -3629,6 +3690,50 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn emits_scoped_locals_in_conditional_action_blocks() {
+        let source = "#[unsafe(no_mangle)] pub extern \"C\" fn choose(value: u64, select: bool) -> u64 { let mut result = value; if select { let mut result: u64 = 40; result += 2; return result; } else { let selected: u64 = 84 / value; selected + 1; result = selected; } result }";
+        let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+            assert!(
+                compile_x86_64_function::<_, 1024, 4, 48>(&function, &NoConstants, abi,).is_ok()
+            );
+        }
+
+        let leaking = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn bad(select: bool) -> u64 { let mut result: u64 = 0; if select { let scoped: u64 = 42; result = scoped; } scoped }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = leaking.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 1024, 4, 48>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::UnknownRuntimeName
+        );
+
+        let crowded = Parser::new(
+            "#[unsafe(no_mangle)] pub extern \"C\" fn crowded(select: bool) -> u64 { let one: u64 = 1; let two: u64 = 2; let three: u64 = 3; let four: u64 = 4; if select { let fifth: u64 = 5; return fifth; } one + two + three + four }",
+        )
+        .parse_module::<2, 4>()
+        .unwrap();
+        let Some(Item::Function(function)) = crowded.items()[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(
+            compile_x86_64_function::<_, 1024, 4, 48>(&function, &NoConstants, X86_64Abi::Windows,)
+                .unwrap_err()
+                .kind,
+            CodegenErrorKind::TooManyRuntimeLocals
+        );
     }
 
     #[test]

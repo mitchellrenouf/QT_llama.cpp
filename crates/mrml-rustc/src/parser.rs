@@ -125,6 +125,7 @@ pub struct Assignment<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConditionalAssignmentAction<'source> {
+    Local(LocalBinding<'source>),
     Assignment(Assignment<'source>),
     Expression(ExpressionStatement<'source>),
     Return(LoopReturn<'source>),
@@ -650,11 +651,27 @@ impl<'source> BodyParser<'source> {
             return Ok(false);
         }
         let let_token = self
-            .take()?
+            .peek()?
             .ok_or_else(|| self.error(ParseErrorKind::ExpectedIdentifier, None))?;
         if body.local_count == MAX_LOCALS {
             return Err(self.error(ParseErrorKind::TooManyLocals, Some(let_token)));
         }
+        let Some(local) = self.local_record()? else {
+            return Ok(false);
+        };
+        if !body.push_statement(BodyStatement::Local(body.local_count)) {
+            return Err(self.error(ParseErrorKind::TooManyLocals, Some(let_token)));
+        }
+        body.locals[body.local_count] = Some(local);
+        body.local_count += 1;
+        Ok(true)
+    }
+
+    fn local_record(&mut self) -> Result<Option<LocalBinding<'source>>, ParseError> {
+        if !self.peek()?.is_some_and(|token| token.text == "let") {
+            return Ok(None);
+        }
+        self.take()?;
         let mutable = self.peek()?.is_some_and(|token| token.text == "mut");
         if mutable {
             self.take()?;
@@ -681,20 +698,14 @@ impl<'source> BodyParser<'source> {
             None
         };
         let (initializer_span, _) = self.delimited_until(";", ParseErrorKind::ExpectedSemicolon)?;
-        let local = LocalBinding {
+        Ok(Some(LocalBinding {
             mutable,
             name: name.text,
             name_span: name.span,
             ty,
             initializer: &self.source[initializer_span.start..initializer_span.end],
             initializer_span,
-        };
-        if !body.push_statement(BodyStatement::Local(body.local_count)) {
-            return Err(self.error(ParseErrorKind::TooManyLocals, Some(let_token)));
-        }
-        body.locals[body.local_count] = Some(local);
-        body.local_count += 1;
-        Ok(true)
+        }))
     }
 
     fn parse_assignment<const MAX_LOCALS: usize>(
@@ -830,11 +841,10 @@ impl<'source> BodyParser<'source> {
     ) -> Result<Option<ConditionalAssignmentBlock<'source>>, ParseError> {
         let mut actions = [None; MAX_CONDITIONAL_BRANCH_ACTIONS];
         let mut action_count = 0usize;
-        let mut saw_assignment = false;
         loop {
             let next = self.peek()?;
             if next.is_some_and(|token| token.kind == TokenKind::CloseBrace) {
-                if !saw_assignment {
+                if action_count == 0 {
                     return Ok(None);
                 }
                 self.take()?;
@@ -843,8 +853,9 @@ impl<'source> BodyParser<'source> {
             if action_count == MAX_CONDITIONAL_BRANCH_ACTIONS {
                 return Err(self.error(ParseErrorKind::TooManyConditionalBranchActions, next));
             }
-            let action = if let Some(assignment) = self.assignment_record()? {
-                saw_assignment = true;
+            let action = if let Some(local) = self.local_record()? {
+                ConditionalAssignmentAction::Local(local)
+            } else if let Some(assignment) = self.assignment_record()? {
                 ConditionalAssignmentAction::Assignment(assignment)
             } else if let Some(return_statement) = self.return_record()? {
                 ConditionalAssignmentAction::Return(return_statement)
@@ -2106,7 +2117,7 @@ mod tests {
     #[test]
     fn parses_bounded_conditional_assignments_in_body_order() {
         let module = Parser::new(
-            "fn choose(value: u8, select: bool) -> u8 { let mut result = value; if select { result += 1; value + 10; result ^= 3; return result; } else if value == 1 { result -= 1; result + value; result += 2; return result; } else if value == 2 { result = 42; } else { result *= 2; result == value; result += 1; return result; } if result == 0 { result = 42; } result }",
+            "fn choose(value: u8, select: bool) -> u8 { let mut result = value; if select { let mut selected: u8 = result; selected += 1; selected + 10; return selected; } else if value == 1 { result -= 1; result + value; result += 2; return result; } else if value == 2 { result = 42; } else { result *= 2; result == value; result += 1; return result; } if result == 0 { result = 42; } result }",
         )
         .parse_module::<2, 2>()
         .unwrap();
@@ -2120,28 +2131,28 @@ mod tests {
         let first_branch = first.branches()[0].unwrap();
         assert_eq!(first_branch.condition, "select");
         assert_eq!(first_branch.action_count(), 4);
+        let Some(ConditionalAssignmentAction::Local(first_local)) = first_branch.actions()[0]
+        else {
+            panic!("expected local")
+        };
+        assert_eq!(first_local.name, "selected");
+        assert!(first_local.mutable);
         let Some(ConditionalAssignmentAction::Assignment(first_assignment)) =
-            first_branch.actions()[0]
+            first_branch.actions()[1]
         else {
             panic!("expected assignment")
         };
         assert_eq!(first_assignment.operator, AssignmentOperator::Add);
-        let Some(ConditionalAssignmentAction::Expression(expression)) = first_branch.actions()[1]
+        let Some(ConditionalAssignmentAction::Expression(expression)) = first_branch.actions()[2]
         else {
             panic!("expected expression")
         };
-        assert_eq!(expression.expression, "value + 10");
-        let Some(ConditionalAssignmentAction::Assignment(last_assignment)) =
-            first_branch.actions()[2]
-        else {
-            panic!("expected assignment")
-        };
-        assert_eq!(last_assignment.operator, AssignmentOperator::BitXor);
+        assert_eq!(expression.expression, "selected + 10");
         let Some(ConditionalAssignmentAction::Return(return_statement)) = first_branch.actions()[3]
         else {
             panic!("expected return")
         };
-        assert_eq!(return_statement.value, "result");
+        assert_eq!(return_statement.value, "selected");
         assert_eq!(first.branches()[1].unwrap().condition, "value == 1");
         let Some(ConditionalAssignmentAction::Assignment(assignment)) =
             first.branches()[1].unwrap().actions()[0]

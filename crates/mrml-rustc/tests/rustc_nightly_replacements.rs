@@ -43,6 +43,7 @@
 // - tests/ui/binding/if-let.rs
 // - tests/ui/drop/dynamic-drop.rs
 // - tests/ui/structs-enums/class-impl-very-parameterized-trait.rs
+// - tests/ui/drop/drop-on-ret.rs
 // - tests/ui/consts/const-fn-const-eval.rs
 // - tests/ui/consts/const-extern-fn/const-extern-fn.rs
 // - tests/ui/consts/const-negative.rs
@@ -605,6 +606,16 @@ fn rustc_guarded_local_binding_reaches_native_objects() {
     // tests/ui/liveness/var-defined-after-early-return.rs and the scalar const
     // shape in tests/ui/consts/control-flow/basics.rs at the pinned commit.
     let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u32, stop: bool) -> u32 { if stop { return 7; } let adjusted: u32 = value + 1; adjusted * 2 }";
+    assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
+    assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
+fn rustc_drop_on_return_scoped_local_replacement() {
+    // Original scalar replacement for the branch-local-before-return order in
+    // tests/ui/drop/drop-on-ret.rs at the pinned nightly commit. Strings,
+    // allocation, destructors, and drop elaboration are outside this slice.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(value: u32, stop: bool) -> u32 { if stop { let selected: u32 = value + 1; selected + 10; return selected; } value * 2 }";
     assert_eq!(compile(source, ObjectFormat::Elf64), Ok(()));
     assert_eq!(compile(source, ObjectFormat::Coff), Ok(()));
 }

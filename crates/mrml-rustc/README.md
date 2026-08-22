@@ -27,7 +27,7 @@ typed `const`, and immutable typed `static` items, optional `pub`, named typed p
 types, nested generic and tuple/array type syntax, balanced function bodies, and
 bounded constant initializers. Function bodies additionally parse a bounded
 prefix of typed or inferred `let` bindings, including `let mut`, followed by bounded simple
-or compound assignment statements, up to eight conditional-assignment
+or compound assignment statements, up to eight conditional-action
 statements, conditional-return statements, up to eight
 standalone value-return statements, up to eight scalar expression statements,
 and one tail expression. Empty `;` statements
@@ -38,12 +38,17 @@ AST borrows source text and uses
 caller-selected fixed item and parameter capacities; nesting is capped at 64
 delimiters. Capacity and malformed-input failures carry bounded source spans.
 
-Conditional assignments accept one assignment in the selected `if` arm and an
-optional assignment in `else`. Both reuse the ordinary assignment type,
-mutability, width, and operator checks. Conditions must be Boolean, only the
-selected value expression is evaluated, and execution then continues through
-the ordered body stream. The fixed conditional-assignment arena holds eight
-records independently of the local-binding capacity.
+Conditional action blocks retain up to four source-ordered local declarations,
+assignments, discarded scalar expressions, or value returns in each selected
+`if`, `else if`, or `else` arm. Branch locals may shadow enclosing locals, are
+visible to later actions in the same arm, and are removed at the arm's native
+fallthrough edge and from the const evaluator before subsequent statements.
+They cannot leak into another arm or the enclosing function body. Assignments
+reuse the ordinary mutability, width, type, and operator checks. Conditions must
+be Boolean and only the selected arm is evaluated. The fixed conditional-action
+arena holds eight records independently of the top-level local-binding capacity.
+Exhausting the shared runtime-local arena fails with `TooManyRuntimeLocals`
+before indexing or emitting an object.
 
 Standalone `return value;` statements retain their position among declarations,
 mutations, loops, and discarded expressions. Runtime emission checks the value
@@ -575,7 +580,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 200 Windows library, conformance, rustc-nightly-replacement, and driver
+The 203 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1039,9 +1044,7 @@ independent `no_std` callers on six paths, covering ordered noncommutative
 updates in first, middle, fallback, and later fallthrough blocks. The zero path
 would divide by zero if an unselected later block executed.
 The same branch storage now preserves a bounded source-ordered mixture of
-assignments and discarded scalar expression statements. At least one assignment
-is required, so ordinary `if` expressions and control-flow forms retain their
-existing parsers. A fifth mixed action fails with
+assignments and discarded scalar expression statements. A fifth mixed action fails with
 `TooManyConditionalBranchActions`. An additional original replacement maps
 this narrow behavior to the unusual discarded block expressions in pinned
 `tests/ui/expr/weird-exprs.rs`; the unchanged test compiled and ran with the
@@ -1063,6 +1066,19 @@ hosts. MRML's 602-byte COFF and 992-byte ELF objects passed independent
 paths. Passing zero would trap if either the unselected later expression or the
 post-conditional tail executed. A Boolean return in an integer function is
 rejected at native code generation.
+Branch-local declarations now participate in that same action stream without
+requiring an assignment action. Native lowering permits lexical shadowing,
+addresses the newest binding, includes live branch slots in return cleanup, and
+removes them before fallthrough; const evaluation applies the same scope
+boundary while preserving mutations to enclosing locals. An original scalar
+replacement maps the local-before-return order in pinned
+`tests/ui/drop/drop-on-ret.rs`; strings, allocation, destructors, and drop
+elaboration are explicitly not claimed. The unchanged pinned run-pass test
+compiled and ran with the exact dated nightly on both hosts. MRML's 339-byte
+COFF and 736-byte ELF objects passed independent nightly-built callers through
+a shadowing early return and two ordinary fallthrough values. The selected
+zero-valued call additionally proves the discarded division in the unselected
+arm remains lazy.
 
 Linux used native Arch Linux WSL2 `x86_64-unknown-linux-gnu` with the identical
 nightly commit:
@@ -1078,7 +1094,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 200 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 203 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

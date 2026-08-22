@@ -394,6 +394,17 @@ impl<'source> ConstCallResolver<'source> {
         binding.value = value;
         Ok(())
     }
+
+    fn truncate(&mut self, count: usize) -> Result<(), SemanticErrorKind> {
+        if count < self.constant_count || count > self.count {
+            return Err(SemanticErrorKind::UnsupportedConstCall);
+        }
+        for argument in &mut self.arguments[count..self.count] {
+            *argument = None;
+        }
+        self.count = count;
+        Ok(())
+    }
 }
 
 impl ConstantResolver for ConstCallResolver<'_> {
@@ -982,8 +993,18 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                         resolver,
                         depth,
                     )? {
+                        let binding_checkpoint = resolver.count;
                         for action in branch.actions().iter().flatten() {
                             match action {
+                                crate::ConditionalAssignmentAction::Local(local) => {
+                                    evaluate_const_local(
+                                        context,
+                                        symbol_count,
+                                        local,
+                                        resolver,
+                                        depth,
+                                    )?;
+                                }
                                 crate::ConditionalAssignmentAction::Assignment(assignment) => {
                                     evaluate_const_assignment(
                                         context,
@@ -1014,13 +1035,24 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                                 }
                             }
                         }
+                        resolver.truncate(binding_checkpoint)?;
                         selected = true;
                         break;
                     }
                 }
                 if !selected {
+                    let binding_checkpoint = resolver.count;
                     for action in conditional.else_actions().iter().flatten() {
                         match action {
+                            crate::ConditionalAssignmentAction::Local(local) => {
+                                evaluate_const_local(
+                                    context,
+                                    symbol_count,
+                                    local,
+                                    resolver,
+                                    depth,
+                                )?;
+                            }
                             crate::ConditionalAssignmentAction::Assignment(assignment) => {
                                 evaluate_const_assignment(
                                     context,
@@ -1051,6 +1083,7 @@ fn evaluate_const_body_statements<'source, const MAX_ITEMS: usize, const MAX_PAR
                             }
                         }
                     }
+                    resolver.truncate(binding_checkpoint)?;
                 }
             }
             crate::BodyStatement::Loop(index) => {
@@ -2862,6 +2895,18 @@ mod tests {
         .parse_module::<4, 2>()
         .unwrap();
         assert!(analyze_constants::<2, 48, 4, 2>(&selected_failure, TargetLayout::X86_64).is_err());
+    }
+
+    #[test]
+    fn evaluates_scoped_conditional_locals_in_const_functions() {
+        let module = Parser::new(
+            "const fn choose(value: u8, select: bool) -> u8 { let mut result = value; if select { let mut result: u8 = 40; result += 2; return result; } else { let selected: u8 = 84 / value; selected + 1; result = selected; } result } const SELECTED: u8 = choose(0, true); const FALLBACK: u8 = choose(2, false);",
+        )
+        .parse_module::<6, 4>()
+        .unwrap();
+        let values = analyze_constants::<4, 64, 6, 4>(&module, TargetLayout::X86_64).unwrap();
+        assert_eq!(values.resolve("SELECTED"), Some(42));
+        assert_eq!(values.resolve("FALLBACK"), Some(42));
     }
 
     #[test]
