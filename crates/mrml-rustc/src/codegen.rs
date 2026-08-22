@@ -6103,6 +6103,7 @@ mod tests {
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: bool) -> [bool; 3] { [input, false, true] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> [u8; 0] { [] }",
             "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u8) -> [(); 3] { [(); 3] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(input: u16) -> [u16; 5] { if input == 0 { Default::default() } else { [input, 0, 0, 0, input] } }",
         ];
         for source in sources {
             let module = Parser::new(source).parse_module::<2, 4>().unwrap();

@@ -1749,6 +1749,13 @@ fn rustc_zero_sized_array_abi_reaches_native_objects() {
 }
 
 #[test]
+fn rustc_contextual_default_array_returns_reach_native_objects() {
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(input: u16) -> [u16; 5] { if input == 0 { Default::default() } else { [input, 0, 0, 0, input] } }";
+    assert_eq!(compile_wide(source, ObjectFormat::Elf64), Ok(()));
+    assert_eq!(compile_wide(source, ObjectFormat::Coff), Ok(()));
+}
+
+#[test]
 fn rustc_competing_break_loop_values_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(first: bool, input: isize) -> isize { let value: isize = loop { if first { break input + 1; } break 84 / input; }; value }",
