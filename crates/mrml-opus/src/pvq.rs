@@ -36,6 +36,19 @@ const CACHE_INDEX: [i16; 105] = [
     387,
 ];
 
+const BAND_LOG_N: [i32; 21] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 16, 16, 16, 21, 21, 24, 29, 34, 36,
+];
+
+/// Normative Q3 `logN` value for a CELT band at the supplied recursive LM.
+pub fn band_log_n(band: usize, lm: i8) -> Result<i32, Error> {
+    let base = *BAND_LOG_N.get(band).ok_or(Error::InvalidFrameSize)?;
+    if !(-1..=3).contains(&lm) {
+        return Err(Error::InvalidFrameSize);
+    }
+    Ok(base + i32::from(lm) * 8)
+}
+
 const CACHE_PROFILES: [(i16, usize, u8); 23] = [
     (0, 1, 40),
     (41, 2, 40),
@@ -882,6 +895,16 @@ mod tests {
             maximum_band_cost(0, -1, &mut scratch),
             Err(Error::InvalidFrameSize)
         );
+    }
+
+    #[test]
+    fn band_log_n_tracks_recursive_lm_exactly() {
+        assert_eq!(band_log_n(0, 0), Ok(0));
+        assert_eq!(band_log_n(12, 0), Ok(16));
+        assert_eq!(band_log_n(15, -1), Ok(13));
+        assert_eq!(band_log_n(20, 3), Ok(60));
+        assert_eq!(band_log_n(21, 0), Err(Error::InvalidFrameSize));
+        assert_eq!(band_log_n(12, 4), Err(Error::InvalidFrameSize));
     }
 
     #[test]

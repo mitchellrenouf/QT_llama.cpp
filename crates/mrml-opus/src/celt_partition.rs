@@ -41,12 +41,8 @@ pub struct StereoConfig {
     pub disable_inversion: bool,
 }
 
-fn theta_pulse_cap(dimensions: usize) -> Result<i32, Error> {
-    let dimensions = u32::try_from(dimensions).map_err(|_| Error::InvalidFrameSize)?;
-    // A split-angle reservation is a capacity check. RFC 6716 section 4.1.6
-    // requires fractional-cost symbols to reserve the conservative upper Q3
-    // cost, rather than the truncated logarithm used by `tell_frac()`.
-    Ok(i32::from(pvq::codebook_cost(dimensions)?))
+fn theta_pulse_cap(band: usize, lm: i8) -> Result<i32, Error> {
+    pvq::band_log_n(band, lm)
 }
 
 const fn inversion_is_coded(
@@ -119,7 +115,7 @@ fn encode_inner(
         if config.blocks != 1 {
             config.blocks = config.blocks.div_ceil(2);
         }
-        let pulse_cap = theta_pulse_cap(half)?;
+        let pulse_cap = theta_pulse_cap(config.band, config.lm)?;
         let theta_config = ThetaConfig {
             dimensions: half,
             bits: config.bits,
@@ -351,7 +347,7 @@ pub fn decode_stereo(
         return Err(Error::InvalidFrameSize);
     }
     let dimensions = left.len();
-    let pulse_cap = theta_pulse_cap(dimensions)?;
+    let pulse_cap = theta_pulse_cap(config.band, config.lm)?;
     let tell = decoder.tell_frac();
     let theta = decode_theta(
         decoder,
@@ -507,7 +503,7 @@ pub fn encode_stereo(
     let side_energy = vector_energy(right);
     normalize_or_zero(left, mid_energy);
     normalize_or_zero(right, side_energy);
-    let pulse_cap = theta_pulse_cap(dimensions)?;
+    let pulse_cap = theta_pulse_cap(config.band, config.lm)?;
     let theta_config = ThetaConfig {
         dimensions,
         bits: config.bits,
@@ -842,7 +838,7 @@ fn decode_inner(
         } else {
             config.blocks = config.blocks.div_ceil(2);
         }
-        let pulse_cap = theta_pulse_cap(half)?;
+        let pulse_cap = theta_pulse_cap(config.band, config.lm)?;
         let theta = decode_theta(
             decoder,
             ThetaConfig {
@@ -1069,10 +1065,10 @@ mod tests {
 
     #[test]
     fn theta_capacity_rounds_fractional_dimension_cost_up() {
-        assert_eq!(theta_pulse_cap(3), Ok(13));
-        assert_eq!(theta_pulse_cap(12), Ok(29));
-        assert_eq!(theta_pulse_cap(16), Ok(32));
-        assert_eq!(theta_pulse_cap(0), Err(Error::InvalidPacket));
+        assert_eq!(theta_pulse_cap(15, -1), Ok(13));
+        assert_eq!(theta_pulse_cap(17, 0), Ok(24));
+        assert_eq!(theta_pulse_cap(16, 1), Ok(29));
+        assert_eq!(theta_pulse_cap(21, 0), Err(Error::InvalidFrameSize));
     }
 
     #[test]
