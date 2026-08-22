@@ -754,6 +754,24 @@ fn rustc_conditional_unit_return_from_nested_while_has_an_executable_replacement
 }
 
 #[test]
+fn rustc_conditional_typed_return_from_nested_while_has_an_executable_replacement() {
+    // Original scalar replacement for nested cleanup and guarded return in
+    // pinned tests/ui/liveness/loop-no-reinit-needed-post-bot.rs.
+    let source = "#[unsafe(no_mangle)] pub extern \"C\" fn probe(limit: u32, stop: u32) -> u32 { let mut outer: u32 = 0; let mut inner: u32 = 0; while outer < limit { while inner < 3 { inner += 1; if inner == stop { return outer + 40; } } outer += 1; inner = 0; } outer }";
+    for format in [ObjectFormat::Elf64, ObjectFormat::Coff] {
+        assert!(
+            compile_source_function::<2048, 1536, 4, 4, 4, 64>(
+                source,
+                "probe",
+                format,
+                TargetLayout::X86_64,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn rustc_const_function_declarations_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub const extern \"C\" fn probe(value: usize) -> usize { return value; }",
