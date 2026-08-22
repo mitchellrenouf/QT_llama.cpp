@@ -13,9 +13,9 @@ rustup run nightly-x86_64-pc-windows-gnullvm cargo test -p mrml-av1 --release --
 rustup run nightly-x86_64-pc-windows-gnullvm cargo clippy -p mrml-av1 --all-targets --all-features --locked --no-deps -- -D warnings
 ```
 
-Results: 262 CPU tests passed; 260 NVIDIA-feature tests passed in the preceding
-run; crate-local
-Clippy passed with warnings denied. No MSVC, Visual Studio, Windows SDK, CUDA
+Results: 265 CPU tests passed; 260 NVIDIA-feature tests passed in the preceding
+run; crate-local Clippy passed with warnings denied after the latest CPU
+changes. No MSVC, Visual Studio, Windows SDK, CUDA
 Toolkit, or external LLVM was used.
 
 ## 2026-08-22 Linux
@@ -28,9 +28,8 @@ cargo test -p mrml-av1 --release --features nvidia --locked
 cargo clippy -p mrml-av1 --all-targets --all-features --locked --no-deps -- -D warnings
 ```
 
-Results: 260 CPU tests passed; 260 NVIDIA-feature tests passed in the preceding
-run; crate-local
-Clippy passed with warnings denied.
+Results: 265 CPU tests passed after the latest CPU changes; 260
+NVIDIA-feature tests and crate-local Clippy passed in the preceding run.
 
 ## Authoritative AOM vectors
 
@@ -39,26 +38,30 @@ The `decode_ivf` example was run against files from AOMedia's official
 `test/test-data.sha1` manifest.
 
 For independent black-box comparison, AOMedia Project AV1 Decoder 3.14.1 was
-run in WSL without linking it into MRML. Its planar I420 outputs are 384 bytes
-with MD5 `6353b245c305a5f4f2845ee7ad2b128b` for the first 16x16 frame and
-152064 bytes with MD5 `fbd569613f9a2e52075566dce8e2af6d` for the first q7
-frame. An isolated accounting/inspection build under ignored `target/`
+run in WSL without linking it into MRML. Its first two 384-byte planar I420
+outputs have MD5 `6353b245c305a5f4f2845ee7ad2b128b` and
+`f4b0078dfbc8b581fa959d4512b9940a`; MRML now matches both files byte for byte.
+The first q7 output is 152064 bytes with MD5
+`fbd569613f9a2e52075566dce8e2af6d`. An isolated accounting/inspection build under ignored `target/`
 confirms that the 16x16 first frame has two non-skipped `BLOCK_16X8` leaves,
 six plane transforms, `TX_16X8` luma transforms, and `DCT_DCT` transform type.
 The first leaf uses luma `SMOOTH_H_PRED` and chroma `UV_D45_PRED`; the second
-uses luma and chroma DC. MRML presently agrees through the first leaf's modes
-and DCT transform selection, then diverges while decoding that leaf's
-coefficients. No reference implementation source or library is incorporated
+uses luma and chroma DC. MRML now agrees through syntax and reconstruction for
+both frames. No reference implementation source or library is incorporated
 into the crate.
 
-- `av1-1-b8-01-size-16x16.ivf` (`838388fb...`): after correcting the normative
-  one-based EOB coefficient level, the first packet now fails strict tile
-  termination instead of producing a known-wrong frame.
+- `av1-1-b8-01-size-16x16.ivf` (`838388fb...`): both packets decode, pass
+  strict tile termination, and produce byte-exact reference frames. The final
+  reconstruction discrepancy was an intra-DC availability error: a lower
+  chroma transform averaged a synthesized left edge even though only its above
+  edge was available.
 - `av1-1-b8-00-quantizer-07.ivf` (`7f8113cd...`): its first frame now traverses
-  into coded-block parsing but encounters invalid block syntax before strict
-  tile termination.
+  114 decoded blocks, 584 transform blocks, 319 nonzero transform blocks, and
+  16,883 coefficient positions before encountering the next invalid tile
+  syntax. It remains a failing conformance target.
 
-These failures are explicit evidence that decoder conformance is not complete.
+The remaining q7 failure is explicit evidence that decoder conformance is not
+complete.
 The run exposed and fixed a coefficient escape error: the normative Golomb
 value is one-based, and `coeff_base_eob` likewise contributes its zero-based
 symbol plus one. It also exposed an EOB-CDF selection error that used the
