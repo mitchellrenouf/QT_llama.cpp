@@ -3,71 +3,28 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use mrml_error::{Context, Result, anyhow};
-use mrml_git::{Change, Cli, NativeChangeKind, Repository, parse_porcelain, validate_positional};
-use mrml_runtime::{
-    Command, Output, Text, Vector, mrml_format as format, mrml_print as print,
-    mrml_println as println,
-};
+use mrml_git::{Change, Cli, NativeChangeKind, Repository, validate_positional};
+use mrml_runtime::{Text, Vector, mrml_format as format, mrml_println as println};
 use mrml_ssh::SshRemote;
 use mrml_terminal_style::Colorize;
 
-fn git_output(repository: Option<&str>, args: &[&str]) -> Result<Output> {
-    let mut command = Command::new("git");
-    command.args(args.iter().copied());
-    if let Some(path) = repository {
-        command.current_dir(path);
-    }
-    command.output().map_err(Into::into)
+fn run(_repository: Option<&str>, args: &[&str]) -> Result<Text> {
+    Err(native_missing(args))
 }
 
-fn run(repository: Option<&str>, args: &[&str]) -> Result<Text> {
-    let output = git_output(repository, args)?;
-    if !output.status.success() {
-        return Err(git_failure(args, &output));
-    }
-    Ok(Text::from_utf8_lossy(&output.stdout))
+fn run_visible(_repository: Option<&str>, args: &[&str]) -> Result<()> {
+    Err(native_missing(args))
 }
 
-fn git_failure(args: &[&str], output: &Output) -> mrml_error::Error {
-    let stderr = Text::from_utf8_lossy(&output.stderr);
-    let stdout = Text::from_utf8_lossy(&output.stdout);
-    let detail = if stderr.trim().is_empty() {
-        stdout.trim()
-    } else {
-        stderr.trim()
-    };
+fn native_missing(args: &[&str]) -> mrml_error::Error {
     anyhow!(
-        "git {} failed: {}",
-        args.first().copied().unwrap_or("command"),
-        detail
+        "native '{}' support is not implemented yet; mrml-git never delegates to a host Git executable",
+        args.first().copied().unwrap_or("operation")
     )
 }
 
-fn run_visible(repository: Option<&str>, args: &[&str]) -> Result<()> {
-    let output = git_output(repository, args)?;
-    if !output.status.success() {
-        return Err(git_failure(args, &output));
-    }
-    let stdout = Text::from_utf8_lossy(&output.stdout);
-    let stderr = Text::from_utf8_lossy(&output.stderr);
-    if !stdout.is_empty() {
-        print!("{}", stdout);
-    }
-    if !stderr.is_empty() {
-        print!("{}", stderr);
-    }
-    Ok(())
-}
-
-fn status(repository: Option<&str>) -> Result<Vector<Change>> {
-    let output = git_output(
-        repository,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )?;
-    if !output.status.success() {
-        return Err(anyhow!("not a Git repository"));
-    }
-    Ok(parse_porcelain(&output.stdout))
+fn status(_repository: Option<&str>) -> Result<Vector<Change>> {
+    Err(native_missing(&["legacy status parser"]))
 }
 
 fn print_changes(changes: &[Change]) {
@@ -178,15 +135,23 @@ fn native_repository(repository: Option<&str>) -> Result<Repository> {
 
 fn native_dashboard(repository: Option<&str>) -> Result<()> {
     let repository = native_repository(repository)?;
-    let branch = repository.current_branch().map_err(|error| anyhow!("{}", error))?.unwrap_or_else(|| "detached HEAD".into());
+    let branch = repository
+        .current_branch()
+        .map_err(|error| anyhow!("{}", error))?
+        .unwrap_or_else(|| "detached HEAD".into());
     let head = repository.head().map_err(|error| anyhow!("{}", error))?;
     let changes = repository.changes().map_err(|error| anyhow!("{}", error))?;
     println!("{}", "MRML GIT · NATIVE STATUS".bright_cyan().bold());
     println!("  {}   {}", "root".dimmed(), repository.worktree);
     println!("  {} {}", "branch".dimmed(), branch.magenta().bold());
-    if let Some(id) = head { println!("  {}   {}", "head".dimmed(), id); }
-    else { println!("  {}   no commits yet", "head".dimmed()); }
-    if changes.is_empty() { println!("  {}", "clean — index matches working tree".green()); }
+    if let Some(id) = head {
+        println!("  {}   {}", "head".dimmed(), id);
+    } else {
+        println!("  {}   no commits yet", "head".dimmed());
+    }
+    if changes.is_empty() {
+        println!("  {}", "clean — index matches working tree".green());
+    }
     for change in changes {
         let label = match change.kind {
             NativeChangeKind::Modified => "modified".yellow(),
@@ -357,7 +322,10 @@ fn dispatch(cli: &Cli) -> Result<()> {
             Ok(())
         }
         "doctor" if tail.is_empty() => {
-            println!("{} built-in object IDs, index, repository and status", "native".green().bold());
+            println!(
+                "{} built-in object IDs, index, repository and status",
+                "native".green().bold()
+            );
             match native_repository(repository) {
                 Ok(repo) => println!("{} {}", "repository".green().bold(), repo.worktree),
                 Err(_) => println!("{} not inside a repository", "repository".yellow().bold()),
@@ -368,7 +336,10 @@ fn dispatch(cli: &Cli) -> Result<()> {
             checked_positionals(tail)?;
             let path = tail.first().map(Text::as_str).or(repository).unwrap_or(".");
             let initialized = Repository::init(path).map_err(|error| anyhow!("{}", error))?;
-            println!("Initialized empty MRML Git repository in {}", initialized.git_dir);
+            println!(
+                "Initialized empty MRML Git repository in {}",
+                initialized.git_dir
+            );
             Ok(())
         }
         "clone" if matches!(tail.len(), 1 | 2) => {
@@ -494,7 +465,9 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         "stage" => {
             checked_positionals(require_arguments("stage", tail)?)?;
-            native_repository(repository)?.stage(tail).map_err(|error| anyhow!("{}", error))?;
+            native_repository(repository)?
+                .stage(tail)
+                .map_err(|error| anyhow!("{}", error))?;
             native_dashboard(repository)
         }
         "unstage" => run_visible(
@@ -521,15 +494,19 @@ fn dispatch(cli: &Cli) -> Result<()> {
             };
             require_arguments("commit", words)?;
             let message = join_words(words);
-            if sign { return Err(anyhow!("native commit signing is not implemented yet")); }
+            if sign {
+                return Err(anyhow!("native commit signing is not implemented yet"));
+            }
             let name = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_NAME")
                 .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_NAME"))
                 .unwrap_or_else(|| "MRML User".into());
             let email = mrml_runtime::environment_variable("MRML_GIT_AUTHOR_EMAIL")
                 .or_else(|| mrml_runtime::environment_variable("GIT_AUTHOR_EMAIL"))
                 .unwrap_or_else(|| "mrml@localhost".into());
-            let timestamp = mrml_runtime::unix_time_seconds().ok_or_else(|| anyhow!("system time is unavailable"))?;
-            let id = native_repository(repository)?.commit(&message, &name, &email, timestamp)
+            let timestamp = mrml_runtime::unix_time_seconds()
+                .ok_or_else(|| anyhow!("system time is unavailable"))?;
+            let id = native_repository(repository)?
+                .commit(&message, &name, &email, timestamp)
                 .map_err(|error| anyhow!("{}", error))?;
             println!("[{}] {}", (&id.to_hex()[..12]).bright_green(), message);
             Ok(())
