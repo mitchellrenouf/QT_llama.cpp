@@ -1281,8 +1281,11 @@ fn evaluate_const_assignment<'source, const MAX_ITEMS: usize, const MAX_PARAMETE
     resolver: &mut ConstCallResolver<'source>,
     depth: ConstEvalDepth,
 ) -> Result<(), SemanticErrorKind> {
+    if assignment.index().is_some() {
+        return Err(SemanticErrorKind::UnsupportedConstCall);
+    }
     let binding = resolver
-        .binding(assignment.name)
+        .binding(assignment.binding_name())
         .ok_or(SemanticErrorKind::UnsupportedConstCall)?;
     if !binding.mutable {
         return Err(SemanticErrorKind::UnsupportedConstCall);
@@ -1347,7 +1350,7 @@ fn evaluate_const_assignment<'source, const MAX_ITEMS: usize, const MAX_PARAMETE
             }
         }
     };
-    resolver.assign(assignment.name, value)
+    resolver.assign(assignment.binding_name(), value)
 }
 
 fn evaluate_const_loop<'source, const MAX_ITEMS: usize, const MAX_PARAMETERS: usize>(

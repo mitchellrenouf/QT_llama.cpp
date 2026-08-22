@@ -294,8 +294,17 @@ branch follows the same path. Compound aggregate assignment is rejected. A
 probe that permuted `[13, 42, 99]`, retained a following scalar local, and then
 used a runtime index emitted 373-byte COFF and 768-byte ELF64 objects;
 independent callers observed 100, 14, and 43 on both hosts. Indexed element
-mutation, array parameters and returns, unconstrained array defaults,
-references, slices, and general aggregate ABI transport remain separate work.
+assignment now accepts constant or runtime `usize` indexes and all scalar
+assignment operators supported by the element type. The index is evaluated
+once before the right-hand side, compound assignment loads and updates the
+selected element, a constant out-of-bounds target is rejected, and a runtime
+out-of-bounds store reaches `UD2`. A mutable-array
+compound-assignment probe emitted 452-byte COFF and 848-byte ELF64 objects;
+independent callers observed 24, 48, and 101 across all three elements on
+Windows gnullvm and Arch Linux WSL. Out-of-bounds calls terminated with
+illegal-instruction status `0xC000001D` on Windows and `SIGILL` on Linux.
+Array parameters and returns, unconstrained array defaults, references, slices,
+and general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -653,7 +662,7 @@ nested control-flow graphs are not claimed by this slice. Its fixed scalar
 array literals now have bounded direct-index coverage, including contextual
 array defaults selected through conditional loop-break branches and retained in
 fixed-array locals, plus bounded runtime `usize` indexes and whole-array
-assignment for mutable locals. Replacements
+or indexed-element assignment for mutable locals. Replacements
 cover bounded cross-nested value exits, terminating nested value-loop operands,
 up to five compatible competing scalar values, both sequential and structured
 alternative syntax, lazy selection of the taken break edge, and the oracle's
@@ -661,9 +670,9 @@ labeled `break`-as-`while`-condition cases plus its two source orders for
 unreachable unit sibling breaks, its three scalar
 `Default::default()`/nested-break forms,
 and the three directly indexed array/default branch shapes. General `while`
-condition expressions, indexed aggregate mutation, aggregate parameters or
-returns, unconstrained aggregate defaults, and arbitrary nested value-loop
-graphs remain outside this bounded slice.
+condition expressions, aggregate parameters or returns, unconstrained
+aggregate defaults, and arbitrary nested value-loop graphs remain outside this
+bounded slice.
 The complete upstream `tests/ui/for-loop-while/for-loop-has-unit-body.rs` and
 `loop-break-cont-1.rs` also compiled and ran unchanged for the unit slice.
 Original MRML probes cover unit expressions, unit locals, unit-valued immediate
@@ -786,7 +795,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 265 Windows library, conformance, rustc-nightly-replacement, and driver
+The 268 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1460,7 +1469,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 265 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 268 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,

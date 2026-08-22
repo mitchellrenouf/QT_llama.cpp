@@ -535,6 +535,38 @@ impl<'source> WhileLoop<'source> {
 }
 
 impl<'source> Assignment<'source> {
+    pub fn binding_name(&self) -> &'source str {
+        self.name
+            .split_once('[')
+            .map_or(self.name, |(name, _)| name.trim())
+    }
+
+    pub fn index(&self) -> Option<&'source str> {
+        self.name
+            .split_once('[')
+            .and_then(|(_, rest)| rest.rsplit_once(']'))
+            .map(|(index, _)| index.trim())
+    }
+
+    pub fn index_span(&self) -> Option<Span> {
+        let open = self.name.find('[')?;
+        let close = self.name.rfind(']')?;
+        let inner = &self.name[open + 1..close];
+        let trimmed = inner.trim();
+        let leading = inner.len() - inner.trim_start().len();
+        let start = self.name_span.start + open + 1 + leading;
+        Some(Span {
+            start,
+            end: start + trimmed.len(),
+        })
+    }
+
+    pub fn parse_index<const MAX_NODES: usize>(
+        &self,
+    ) -> Result<ExpressionTree<'source, MAX_NODES>, ExpressionError> {
+        ExpressionParser::new(self.index().unwrap_or("")).parse()
+    }
+
     pub fn parse_value<const MAX_NODES: usize>(
         &self,
     ) -> Result<ExpressionTree<'source, MAX_NODES>, ExpressionError> {
@@ -945,6 +977,7 @@ impl<'source> BodyParser<'source> {
         }
         let mut probe = self.clone();
         probe.take()?;
+        let target_end = probe.assignment_target_end(name.span.end)?;
         let Some(operator_token) = probe.peek()? else {
             return Ok(false);
         };
@@ -961,8 +994,11 @@ impl<'source> BodyParser<'source> {
             Err(error) => return Err(error),
         };
         let assignment = Assignment {
-            name: name.text,
-            name_span: name.span,
+            name: &self.source[name.span.start..target_end],
+            name_span: Span {
+                start: name.span.start,
+                end: target_end,
+            },
             operator,
             value: &self.source[value_span.start..value_span.end],
             value_span,
@@ -985,6 +1021,7 @@ impl<'source> BodyParser<'source> {
         }
         let mut probe = self.clone();
         probe.take()?;
+        let target_end = probe.assignment_target_end(name.span.end)?;
         let Some(operator_token) = probe.take()? else {
             return Ok(None);
         };
@@ -994,12 +1031,27 @@ impl<'source> BodyParser<'source> {
         let (value_span, _) = probe.delimited_until(";", ParseErrorKind::ExpectedSemicolon)?;
         *self = probe;
         Ok(Some(Assignment {
-            name: name.text,
-            name_span: name.span,
+            name: &self.source[name.span.start..target_end],
+            name_span: Span {
+                start: name.span.start,
+                end: target_end,
+            },
             operator,
             value: &self.source[value_span.start..value_span.end],
             value_span,
         }))
+    }
+
+    fn assignment_target_end(&mut self, name_end: usize) -> Result<usize, ParseError> {
+        if !self
+            .peek()?
+            .is_some_and(|token| token.kind == TokenKind::OpenBracket)
+        {
+            return Ok(name_end);
+        }
+        self.take()?;
+        let (_, close) = self.delimited_until("]", ParseErrorKind::UnterminatedDelimiter)?;
+        Ok(close.span.end)
     }
 
     fn expression_statement_record(
@@ -1457,7 +1509,8 @@ impl<'source> BodyParser<'source> {
         }
         if first.kind == TokenKind::Identifier {
             let mut assignment_probe = self.clone();
-            assignment_probe.take()?;
+            let name = assignment_probe.take()?.unwrap();
+            assignment_probe.assignment_target_end(name.span.end)?;
             if assignment_probe
                 .peek()?
                 .is_some_and(|token| AssignmentOperator::from_text(token.text).is_some())
@@ -3012,6 +3065,24 @@ mod tests {
             function.parse_body::<1>().unwrap_err().kind,
             ParseErrorKind::TooManyConditionalBranchActions
         );
+    }
+
+    #[test]
+    fn parses_indexed_assignment_targets() {
+        let module = Parser::new(
+            "fn mutate(index: usize) -> usize { let mut values = [1usize, 2]; values[index + 1] += 3; values[0] }",
+        )
+        .parse_module::<2, 2>()
+        .unwrap();
+        let Some(Item::Function(function)) = module.items()[0] else {
+            panic!("expected function")
+        };
+        let body = function.parse_body::<2>().unwrap();
+        let assignment = body.assignments()[0].unwrap();
+        assert_eq!(assignment.binding_name(), "values");
+        assert_eq!(assignment.index(), Some("index + 1"));
+        assert_eq!(assignment.operator, AssignmentOperator::Add);
+        assert_eq!(assignment.value, "3");
     }
 
     #[test]

@@ -278,9 +278,15 @@ pub fn compile_x86_64_constant_function<
         local_count += 1;
     }
     for assignment in body.assignments().iter().flatten() {
+        if assignment.index().is_some() {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeExpressionUnsupported,
+                span: translate_span(function.body_expression_span.start, assignment.name_span),
+            });
+        }
         let index = local_values[..local_count]
             .iter()
-            .position(|value| value.is_some_and(|value| value.name == assignment.name))
+            .position(|value| value.is_some_and(|value| value.name == assignment.binding_name()))
             .ok_or(CodegenError {
                 kind: CodegenErrorKind::UnknownRuntimeName,
                 span: translate_span(function.body_expression_span.start, assignment.name_span),
@@ -3266,7 +3272,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             .rev()
             .find_map(|(index, local)| {
                 local
-                    .filter(|local| local.name == assignment.name)
+                    .filter(|local| local.name == assignment.binding_name())
                     .map(|_| index)
             })
             .ok_or(CodegenError {
@@ -3282,6 +3288,11 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
                 kind: CodegenErrorKind::ImmutableAssignment,
                 span: translate_span(body_start, assignment.name_span),
             });
+        }
+        if assignment.index().is_some() {
+            return self.emit_indexed_assignment::<MAX_EXPRESSION_NODES>(
+                assignment, body_start, index, target,
+            );
         }
         if target.ty == RuntimeExpressionType::Bool
             && !matches!(
@@ -3333,7 +3344,7 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
         if assignment.operator == crate::AssignmentOperator::Assign {
             self.emit_expression(&tree, tree.root(), 0)?;
         } else {
-            self.emit_identifier(assignment.name)?;
+            self.emit_identifier(assignment.binding_name())?;
             self.emit(&[0x50])?;
             self.evaluation_depth += 1;
             self.emit_expression(&tree, tree.root(), 0)?;
@@ -3347,6 +3358,216 @@ impl<'tree, 'source, R: ConstantResolver, const MAX_BYTES: usize, const MAX_PARA
             )?)?;
         }
         self.emit_store_stack_slot(self.local_stack_slots_from(index + 1)?)
+    }
+
+    fn emit_indexed_assignment<const MAX_NODES: usize>(
+        &mut self,
+        assignment: &crate::Assignment<'_>,
+        body_start: usize,
+        local_index: usize,
+        target: RuntimeLocal<'source>,
+    ) -> Result<(), CodegenError> {
+        let RuntimeExpressionType::Array { element, count } = target.ty else {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        };
+        let element_type = runtime_type_from_array_element(element);
+        if element_type == RuntimeExpressionType::Bool
+            && !matches!(
+                assignment.operator,
+                crate::AssignmentOperator::Assign
+                    | crate::AssignmentOperator::BitAnd
+                    | crate::AssignmentOperator::BitOr
+                    | crate::AssignmentOperator::BitXor
+            )
+        {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        if matches!(
+            element_type,
+            RuntimeExpressionType::Unit | RuntimeExpressionType::Char
+        ) && assignment.operator != crate::AssignmentOperator::Assign
+        {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                span: translate_span(body_start, assignment.name_span),
+            });
+        }
+        self.emit_indexed_assignment_index::<MAX_NODES>(assignment, body_start, count)?;
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        if assignment.operator != crate::AssignmentOperator::Assign {
+            self.emit_array_local_element(local_index, count, 0)?;
+            self.emit(&[0x50])?;
+            self.evaluation_depth += 1;
+        }
+        self.emit_indexed_assignment_value::<MAX_NODES>(assignment, body_start, element_type)?;
+        if assignment.operator != crate::AssignmentOperator::Assign {
+            self.evaluation_depth -= 1;
+            self.emit(&[0x59])?;
+            self.emit_binary(assignment_binary_operator(assignment.operator).ok_or(
+                CodegenError {
+                    kind: CodegenErrorKind::UnsupportedRuntimeOperator,
+                    span: translate_span(body_start, assignment.name_span),
+                },
+            )?)?;
+        }
+        self.emit(&[0x50])?;
+        self.evaluation_depth += 1;
+        self.emit_array_local_element_store(local_index, count, 1)?;
+        self.evaluation_depth -= 2;
+        self.emit(&[0x48, 0x83, 0xc4, 16])
+    }
+
+    fn emit_indexed_assignment_index<const MAX_NODES: usize>(
+        &mut self,
+        assignment: &crate::Assignment<'_>,
+        body_start: usize,
+        count: usize,
+    ) -> Result<(), CodegenError> {
+        let index_span = assignment.index_span().ok_or(CodegenError {
+            kind: CodegenErrorKind::RuntimeExpressionUnsupported,
+            span: translate_span(body_start, assignment.name_span),
+        })?;
+        let tree = assignment
+            .parse_index::<MAX_NODES>()
+            .map_err(|error| CodegenError {
+                kind: CodegenErrorKind::Expression(error.kind),
+                span: translate_span(body_start + index_span.start, error.span),
+            })?;
+        let index_type = runtime_expression_type_with_locals(
+            self.function,
+            self.resolver,
+            &self.locals[..self.saved_locals],
+            &tree,
+            tree.root(),
+            0,
+        )
+        .map_err(|kind| CodegenError {
+            kind,
+            span: translate_span(body_start, index_span),
+        })?;
+        if !matches!(
+            index_type,
+            RuntimeExpressionType::Integer(None)
+                | RuntimeExpressionType::Integer(Some(crate::IntegerType::Usize))
+        ) {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, index_span),
+            });
+        }
+        match tree.evaluate_at(tree.root(), self.resolver) {
+            Ok(index) => {
+                let index = usize::try_from(index).map_err(|_| CodegenError {
+                    kind: CodegenErrorKind::ValueOutOfRange,
+                    span: translate_span(body_start, index_span),
+                })?;
+                if index >= count {
+                    return Err(CodegenError {
+                        kind: CodegenErrorKind::Execution(ExecutionError::Arithmetic(
+                            crate::ConstEvalError::ArrayIndexOutOfBounds,
+                        )),
+                        span: translate_span(body_start, index_span),
+                    });
+                }
+            }
+            Err(crate::ConstEvalError::UnknownIdentifier) => {}
+            Err(error) => {
+                return Err(CodegenError {
+                    kind: CodegenErrorKind::Execution(ExecutionError::Arithmetic(error)),
+                    span: translate_span(body_start, index_span),
+                });
+            }
+        }
+        self.emit_expression(&tree, tree.root(), 0)
+    }
+
+    fn emit_indexed_assignment_value<const MAX_NODES: usize>(
+        &mut self,
+        assignment: &crate::Assignment<'_>,
+        body_start: usize,
+        element_type: RuntimeExpressionType,
+    ) -> Result<(), CodegenError> {
+        let tree = assignment
+            .parse_value::<MAX_NODES>()
+            .map_err(|error| CodegenError {
+                kind: CodegenErrorKind::Expression(error.kind),
+                span: translate_span(body_start + assignment.value_span.start, error.span),
+            })?;
+        let value_type = runtime_expression_type_with_locals(
+            self.function,
+            self.resolver,
+            &self.locals[..self.saved_locals],
+            &tree,
+            tree.root(),
+            0,
+        )
+        .map_err(|kind| CodegenError {
+            kind,
+            span: translate_span(body_start, assignment.value_span),
+        })?;
+        if !runtime_types_compatible(value_type, element_type) {
+            return Err(CodegenError {
+                kind: CodegenErrorKind::RuntimeTypeMismatch,
+                span: translate_span(body_start, assignment.value_span),
+            });
+        }
+        self.emit_expression(&tree, tree.root(), 0)
+    }
+
+    fn emit_array_local_element(
+        &mut self,
+        local_index: usize,
+        count: usize,
+        index_slot: usize,
+    ) -> Result<(), CodegenError> {
+        let later_slots = self.local_stack_slots_from(local_index + 1)?;
+        let mut end_patches = [0usize; 8];
+        for (candidate, end_patch) in end_patches[..count].iter_mut().enumerate() {
+            self.emit_stack_slot(index_slot)?;
+            self.emit(&[0x48, 0x83, 0xf8, candidate as u8])?;
+            let next = self.emit_forward_branch(0x85)?;
+            self.emit_stack_slot(self.evaluation_depth + later_slots + count - 1 - candidate)?;
+            *end_patch = self.emit_unconditional_forward_branch()?;
+            self.patch_forward_branch(next)?;
+        }
+        self.emit(&[0x0f, 0x0b])?;
+        for patch in end_patches[..count].iter().copied() {
+            self.patch_forward_branch(patch)?;
+        }
+        Ok(())
+    }
+
+    fn emit_array_local_element_store(
+        &mut self,
+        local_index: usize,
+        count: usize,
+        index_slot: usize,
+    ) -> Result<(), CodegenError> {
+        let later_slots = self.local_stack_slots_from(local_index + 1)?;
+        let mut end_patches = [0usize; 8];
+        for (candidate, end_patch) in end_patches[..count].iter_mut().enumerate() {
+            self.emit_stack_slot(index_slot)?;
+            self.emit(&[0x48, 0x83, 0xf8, candidate as u8])?;
+            let next = self.emit_forward_branch(0x85)?;
+            self.emit_stack_slot(0)?;
+            self.emit_store_stack_slot(
+                self.evaluation_depth + later_slots + count - 1 - candidate,
+            )?;
+            *end_patch = self.emit_unconditional_forward_branch()?;
+            self.patch_forward_branch(next)?;
+        }
+        self.emit(&[0x0f, 0x0b])?;
+        for patch in end_patches[..count].iter().copied() {
+            self.patch_forward_branch(patch)?;
+        }
+        Ok(())
     }
 
     fn emit_array_assignment<const MAX_NODES: usize>(
@@ -5221,6 +5442,72 @@ mod tests {
                 .kind,
             CodegenErrorKind::RuntimeTypeMismatch
         );
+    }
+
+    #[test]
+    fn stores_fixed_array_elements_through_constant_and_runtime_indexes() {
+        let sources = [
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let mut values = [13u64, 42, 99]; values[1] = 20; values[0] + values[1] + values[2] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(index: usize) -> usize { let mut values = [13usize, 42, 99]; let after = 1usize; values[index] += after; values[index] + after }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(index: usize) -> bool { let mut values = [false, true]; values[index] ^= true; values[index] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> char { let mut values = ['a', 'b']; values[0] = 'z'; values[0] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(index: usize) { let mut values = [(), ()]; values[index] = (); values[index] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value(select: bool, index: usize) -> usize { let mut values = [1usize, 2]; if select { values[index] = 20; } else { values[index] = 13; } values[index] }",
+            "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> usize { let mut values = [1usize, 2]; let mut index = 0usize; while index < 2 { values[index] += 1; index += 1; } values[0] + values[1] }",
+        ];
+        for source in sources {
+            let module = Parser::new(source).parse_module::<2, 4>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            for abi in [X86_64Abi::Windows, X86_64Abi::SystemV] {
+                let result =
+                    compile_x86_64_function::<_, 1536, 4, 64>(&function, &NoConstants, abi);
+                assert!(result.is_ok(), "{source}: {result:?}");
+            }
+        }
+
+        let invalid = [
+            (
+                "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let values = [1u64, 2]; values[0] = 3; values[0] }",
+                CodegenErrorKind::ImmutableAssignment,
+            ),
+            (
+                "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let mut value = 1u64; value[0] = 3; value }",
+                CodegenErrorKind::RuntimeTypeMismatch,
+            ),
+            (
+                "#[unsafe(no_mangle)] pub extern \"C\" fn value(index: u64) -> u64 { let mut values = [1u64, 2]; values[index] = 3; values[0] }",
+                CodegenErrorKind::RuntimeTypeMismatch,
+            ),
+            (
+                "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> u64 { let mut values = [1u64, 2]; values[2] = 3; values[0] }",
+                CodegenErrorKind::Execution(ExecutionError::Arithmetic(
+                    crate::ConstEvalError::ArrayIndexOutOfBounds,
+                )),
+            ),
+            (
+                "#[unsafe(no_mangle)] pub extern \"C\" fn value() -> char { let mut values = ['a', 'b']; values[0] += 'c'; values[0] }",
+                CodegenErrorKind::UnsupportedRuntimeOperator,
+            ),
+        ];
+        for (source, expected) in invalid {
+            let module = Parser::new(source).parse_module::<2, 2>().unwrap();
+            let Some(Item::Function(function)) = module.items()[0] else {
+                panic!("expected function")
+            };
+            assert_eq!(
+                compile_x86_64_function::<_, 512, 2, 64>(
+                    &function,
+                    &NoConstants,
+                    X86_64Abi::Windows,
+                )
+                .unwrap_err()
+                .kind,
+                expected,
+                "{source}",
+            );
+        }
     }
 
     #[test]
