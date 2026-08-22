@@ -62,7 +62,7 @@ pub use policy::{
 };
 pub use scheduler::{
     KernelScheduleError, KernelScheduler, Priority, ScheduleOutcome, Scheduler, SchedulerError,
-    TaskId, TaskState,
+    TaskId, TaskMigration, TaskState,
 };
 pub use service_lifecycle::{
     RestartPolicy, ServiceError, ServiceFault, ServiceId, ServiceRetirement, ServiceState,

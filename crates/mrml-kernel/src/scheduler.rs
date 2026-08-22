@@ -52,7 +52,34 @@ pub enum KernelScheduleError {
     InvalidQuantum,
     TickExhausted,
     NoCurrentTask,
+    CurrentTaskCannotMigrate,
     Scheduler(SchedulerError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskMigration {
+    source: TaskId,
+    destination: TaskId,
+    state: TaskState,
+    priority: Priority,
+}
+
+impl TaskMigration {
+    pub const fn source(self) -> TaskId {
+        self.source
+    }
+
+    pub const fn destination(self) -> TaskId {
+        self.destination
+    }
+
+    pub const fn state(self) -> TaskState {
+        self.state
+    }
+
+    pub const fn priority(self) -> Priority {
+        self.priority
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,6 +194,13 @@ impl<const TASKS: usize> Scheduler<TASKS> {
             .filter(|task| task.occupied && task.generation == id.generation)
             .ok_or(SchedulerError::InvalidTask)
     }
+
+    fn task(&self, id: TaskId) -> Result<&Task, SchedulerError> {
+        self.tasks
+            .get(id.slot as usize)
+            .filter(|task| task.occupied && task.generation == id.generation)
+            .ok_or(SchedulerError::InvalidTask)
+    }
 }
 
 impl<const TASKS: usize> Default for Scheduler<TASKS> {
@@ -269,6 +303,50 @@ impl<const TASKS: usize> KernelScheduler<TASKS> {
         self.scheduler
             .set_state(task, TaskState::Runnable)
             .map_err(KernelScheduleError::Scheduler)
+    }
+
+    /// Moves a non-running task between exclusively owned schedulers. The
+    /// destination is constructed before the source identity is retired, so a
+    /// full destination cannot lose the source task. An unexpected retirement
+    /// failure removes the new identity before returning.
+    pub fn migrate_to<const DESTINATION_TASKS: usize>(
+        &mut self,
+        destination: &mut KernelScheduler<DESTINATION_TASKS>,
+        task: TaskId,
+    ) -> Result<TaskMigration, KernelScheduleError> {
+        if self.current == Some(task) {
+            return Err(KernelScheduleError::CurrentTaskCannotMigrate);
+        }
+
+        let source = self
+            .scheduler
+            .task(task)
+            .map_err(KernelScheduleError::Scheduler)?;
+        let state = source.state;
+        let priority = source.priority;
+
+        let destination_task = destination.create(priority)?;
+        if state == TaskState::Blocked {
+            let state_result = destination
+                .scheduler
+                .set_state(destination_task, TaskState::Blocked);
+            if let Err(error) = state_result {
+                let _ = destination.scheduler.remove(destination_task);
+                return Err(KernelScheduleError::Scheduler(error));
+            }
+        }
+
+        if let Err(error) = self.scheduler.remove(task) {
+            let _ = destination.scheduler.remove(destination_task);
+            return Err(KernelScheduleError::Scheduler(error));
+        }
+
+        Ok(TaskMigration {
+            source: task,
+            destination: destination_task,
+            state,
+            priority,
+        })
     }
 
     fn select_replacement(&mut self, from: Option<TaskId>) -> ScheduleOutcome {
@@ -442,5 +520,82 @@ mod tests {
             KernelScheduler::<1>::new(100, 101),
             Err(KernelScheduleError::InvalidQuantum)
         ));
+    }
+
+    #[test]
+    fn migration_preserves_policy_and_retires_the_source_identity() {
+        let mut source = KernelScheduler::<2>::new(1_000, 3).unwrap();
+        let mut destination = KernelScheduler::<2>::new(1_000, 7).unwrap();
+        let task = source.create(Priority::RESPONSIVE).unwrap();
+
+        let migration = source.migrate_to(&mut destination, task).unwrap();
+        assert_eq!(migration.source(), task);
+        assert_eq!(migration.state(), TaskState::Runnable);
+        assert_eq!(migration.priority(), Priority::RESPONSIVE);
+        assert_eq!(
+            source.wake(task),
+            Err(KernelScheduleError::Scheduler(SchedulerError::InvalidTask))
+        );
+        assert_eq!(
+            destination.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: migration.destination(),
+            }
+        );
+    }
+
+    #[test]
+    fn migration_preserves_blocked_state() {
+        let mut source = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mut destination = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let task = source.create(Priority::BACKGROUND).unwrap();
+        source
+            .scheduler
+            .set_state(task, TaskState::Blocked)
+            .unwrap();
+
+        let migration = source.migrate_to(&mut destination, task).unwrap();
+        assert_eq!(migration.state(), TaskState::Blocked);
+        assert_eq!(destination.start(), ScheduleOutcome::Idle);
+        destination.wake(migration.destination()).unwrap();
+        assert!(
+            matches!(destination.start(), ScheduleOutcome::Switch { to, .. } if to == migration.destination())
+        );
+    }
+
+    #[test]
+    fn migration_rejects_the_running_task_without_mutation() {
+        let mut source = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mut destination = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let task = source.create(Priority::NORMAL).unwrap();
+        source.start();
+
+        assert_eq!(
+            source.migrate_to(&mut destination, task),
+            Err(KernelScheduleError::CurrentTaskCannotMigrate)
+        );
+        assert_eq!(source.current(), Some(task));
+        assert_eq!(destination.start(), ScheduleOutcome::Idle);
+    }
+
+    #[test]
+    fn full_destination_leaves_the_source_task_intact() {
+        let mut source = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let mut destination = KernelScheduler::<1>::new(1_000, 3).unwrap();
+        let task = source.create(Priority::NORMAL).unwrap();
+        destination.create(Priority::NORMAL).unwrap();
+
+        assert_eq!(
+            source.migrate_to(&mut destination, task),
+            Err(KernelScheduleError::Scheduler(SchedulerError::Full))
+        );
+        assert_eq!(
+            source.start(),
+            ScheduleOutcome::Switch {
+                from: None,
+                to: task
+            }
+        );
     }
 }
