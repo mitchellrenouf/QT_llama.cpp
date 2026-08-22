@@ -35,4 +35,7 @@ separation. Automatic CELT-to-Hybrid beginning redundancy is emitted; reverse or
 delayed automatic transitions and independent interoperability-vector coverage
 remain incomplete. SILK-only packets can emit caller-supplied beginning or end
 CELT transition redundancy for every SILK configuration. The crate
-never labels a private audio format as Opus.
+never labels a private audio format as Opus. Parser and decoder validation
+exhaustively covers two-byte packets plus every truncation and single-bit
+mutation of representative SILK, Hybrid, and CELT packets with guarded output
+buffers.

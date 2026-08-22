@@ -3929,4 +3929,53 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn valid_mode_packets_survive_every_single_bit_flip_and_truncation_safely() {
+        let mut input = [0i16; 960];
+        for (index, sample) in input.iter_mut().enumerate() {
+            *sample = (((index % 43) as i32 - 21) * 390) as i16;
+        }
+        for (mode, bitrate) in [
+            (EncoderMode::Silk, 6_000u32),
+            (EncoderMode::Hybrid, 32_000),
+            (EncoderMode::Celt, 48_000),
+        ] {
+            let mut original = [0u8; MAX_FRAME_BYTES + 1];
+            let size = Encoder::new(1)
+                .unwrap()
+                .encode_mode(mode, bitrate, &input, 48_000, &mut original)
+                .unwrap();
+
+            for length in 0..size {
+                let mut guarded = [0x35a7i16; 962];
+                let result = Decoder::new(1).unwrap().decode(
+                    &original[..length],
+                    &mut guarded[1..961],
+                    48_000,
+                );
+                assert_eq!((guarded[0], guarded[961]), (0x35a7, 0x35a7));
+                if let Ok(frames) = result {
+                    assert!(frames <= 960);
+                }
+            }
+
+            for byte in 0..size {
+                for bit in 0..8 {
+                    let mut mutated = original;
+                    mutated[byte] ^= 1 << bit;
+                    let mut guarded = [0x6b19i16; 962];
+                    let result = Decoder::new(1).unwrap().decode(
+                        &mutated[..size],
+                        &mut guarded[1..961],
+                        48_000,
+                    );
+                    assert_eq!((guarded[0], guarded[961]), (0x6b19, 0x6b19));
+                    if let Ok(frames) = result {
+                        assert!(frames <= 960);
+                    }
+                }
+            }
+        }
+    }
 }
