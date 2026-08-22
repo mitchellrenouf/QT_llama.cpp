@@ -10,6 +10,14 @@ const LOG2_FRAC: [u8; 24] = [
     0, 8, 13, 16, 19, 21, 23, 24, 26, 27, 28, 29, 30, 31, 32, 32, 33, 34, 34, 35, 36, 36, 37, 37,
 ];
 const MAX_FINE_BITS: i32 = 8;
+
+fn allocation_log_n(width: usize) -> Result<i32, Error> {
+    let width = u32::try_from(width).map_err(|_| Error::InvalidFrameSize)?;
+    // The allocation table stores a conservative Q3 logarithm. Truncating
+    // non-power-of-two band widths changes both fine-energy depth and the
+    // residual shape budget.
+    Ok(i32::from(crate::pvq::codebook_cost(width)?))
+}
 const FINE_OFFSET: i32 = 21;
 
 /// RFC 6716 section 4.3.3 maximum-allocation cache. Rows are indexed by
@@ -396,7 +404,7 @@ pub fn split_fine_shape(
             result.shape[band] = bit - excess;
             let coupled = channels == 2 && dimensions > 2 && !dual_stereo && band < intensity;
             let denominator = channels_i32 * dimensions as i32 + i32::from(coupled);
-            let log_n = i32::from(crate::pvq::fractional_log2(base_width as u32)?);
+            let log_n = allocation_log_n(base_width)?;
             let n_c_log_n = denominator * (log_n + i32::from(lm) * 8);
             let mut offset = n_c_log_n / 2 - denominator * FINE_OFFSET;
             if dimensions == 2 {
@@ -873,6 +881,15 @@ pub fn encode_trim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocation_log_rounds_fractional_band_widths_up() {
+        assert_eq!(allocation_log_n(1), Ok(0));
+        assert_eq!(allocation_log_n(3), Ok(13));
+        assert_eq!(allocation_log_n(5), Ok(19));
+        assert_eq!(allocation_log_n(6), Ok(21));
+        assert_eq!(allocation_log_n(8), Ok(24));
+    }
 
     #[test]
     fn generated_band_caps_cover_every_standard_mode() {
