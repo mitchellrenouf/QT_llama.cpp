@@ -1454,19 +1454,27 @@ CPU 0 applies one-task hysteresis to its three-runnable-task scheduler, retains
 the current task, deterministically detaches one non-running responsive task,
 and transfers it to CPU 1. CPU 1 verifies the preserved priority and its new
 two-task load before switching. Fresh policy-selected runs measured
-`total=64381us` on nested KVM and `total=62785us` on WHP. Periodic multi-peer
-balancing orchestration remains pending. The allocation-free
+`total=64381us` on nested KVM and `total=62785us` on WHP. The allocation-free
 `PeriodicBalancer` now supplies its bounded policy foundation. It rejects
 invalid topology/local identity, zero cadence, clock regression, and deadline
 overflow; advances its next deadline from the observed tick to avoid catch-up
 storms; skips full or insufficiently underloaded peers; and rotates equal-load
 candidates. Windows and Linux tests cover cadence, delayed ticks, tie rotation,
 capacity, and fail-closed time/topology handling. Repeated live timer/IPI
-orchestration remains pending. The release-mode 256-CPU scan measured 348 ns
+orchestration is exercised by the signed periodic proof below. The release-mode
+256-CPU scan measured 348 ns
 per poll on Windows and 341 ns on Linux. The signed two-vCPU CPL3 migration
 path now uses this policy to select its published destination load before
 detaching the complete domain; fresh KVM and WHP runs both reached the terminal
-CPU/task proof. Repeated timer-driven invocation remains pending. The
+CPU/task proof. The signed `smp-periodic-balance-probe` now exercises repeated
+timer-driven invocation. CPU 1's local APIC supplies two real timer events;
+CPU 0 accounts both scheduler ticks and publishes two complete responsive
+domains; directed vector-33 IPIs make CPU 1 consume and admit both tickets.
+The proof checks each intermediate load and terminates only at source load
+three and destination load three. Fresh release runs measured
+`total=130536us` on nested KVM and `total=224797us` on WHP. Initialization is
+split from the non-returning run phase so its large bounded frame is unwound
+before interrupt entry. The
 `PeriodicDomainBalancer` couples this cadence to the complete-domain ticket and
 typed ownership mailboxes. A full destination mailbox retains the unpublished
 ticket inside the controller; every later call retries it before considering a

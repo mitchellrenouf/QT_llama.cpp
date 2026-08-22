@@ -379,8 +379,8 @@ microseconds on WHP. The same signed probe now publishes CPU1's bounded load
 snapshot and applies one-task hysteresis on CPU0: a three-runnable-task source
 retains its current task, selects one non-running task, and transfers it to the
 one-task destination. Fresh policy-selected runs completed in 64,381
-microseconds on nested KVM and 62,785 microseconds on WHP. Periodic multi-peer
-balancing orchestration remains unfinished.
+microseconds on nested KVM and 62,785 microseconds on WHP. The repeated
+timer-driven form is verified by the periodic probe described below.
 The kernel now has a bounded allocation-free `PeriodicBalancer` foundation for
 that orchestration. It rejects invalid topology, CPU identity, zero cadence,
 clock regression, and deadline overflow; suppresses catch-up bursts after a
