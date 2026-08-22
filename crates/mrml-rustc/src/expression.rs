@@ -245,6 +245,9 @@ pub enum ExprKind<'source> {
         base: ExprId,
         index: ExprId,
     },
+    SliceLen {
+        base: ExprId,
+    },
     Integer(IntegerLiteral<'source>),
     Bool(bool),
     Char(u32),
@@ -395,6 +398,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
             | ExprKind::Array { .. }
             | ExprKind::ArrayRepeat { .. }
             | ExprKind::Index { .. }
+            | ExprKind::SliceLen { .. }
             | ExprKind::Integer(_)
             | ExprKind::Char(_)
             | ExprKind::Identifier(_)
@@ -600,6 +604,7 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 }
                 self.evaluate_array_element(base, index, resolver, depth + 1)
             }
+            ExprKind::SliceLen { .. } => Err(ConstEvalError::InvalidExpressionTree),
             ExprKind::Integer(literal) => Ok(literal.value),
             ExprKind::Bool(value) => Ok(u128::from(value)),
             ExprKind::Char(value) => Ok(u128::from(value)),
@@ -1788,6 +1793,9 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             ExprKind::Index { base, index } => {
                 self.substitute_identifier(base, name, replacement, depth + 1)?;
                 self.substitute_identifier(index, name, replacement, depth + 1)?;
+            }
+            ExprKind::SliceLen { base } => {
+                self.substitute_identifier(base, name, replacement, depth + 1)?;
             }
             ExprKind::Cast { operand, .. }
             | ExprKind::Ascribe { operand, .. }
@@ -3223,19 +3231,44 @@ impl<'source, const MAX_NODES: usize> ExpressionParser<'source, MAX_NODES> {
             return Err(self.error(ExpressionErrorKind::NestingLimitExceeded, self.lookahead));
         }
         let mut base = self.atom(depth + 1)?;
-        while self
-            .peek()?
-            .is_some_and(|token| token.kind == TokenKind::OpenBracket)
-        {
+        while let Some(token) = self.peek()? {
+            if token.kind == TokenKind::OpenBracket {
+                self.take()?;
+                let index = self.expression(0, depth + 1)?;
+                let close = self.take()?;
+                let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBracket)
+                else {
+                    return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
+                };
+                let start = self.node_span(base)?.start;
+                base = self.push(Expr {
+                    kind: ExprKind::Index { base, index },
+                    span: Span {
+                        start,
+                        end: close.span.end,
+                    },
+                })?;
+                continue;
+            }
+            if token.kind != TokenKind::Dot {
+                break;
+            }
             self.take()?;
-            let index = self.expression(0, depth + 1)?;
+            let method = self.take()?;
+            let Some(_method) = method.filter(|method| method.text == "len") else {
+                return Err(self.error(ExpressionErrorKind::ExpectedExpression, method));
+            };
+            let open = self.take()?;
+            if !open.is_some_and(|open| open.kind == TokenKind::OpenParen) {
+                return Err(self.error(ExpressionErrorKind::ExpectedExpression, open));
+            }
             let close = self.take()?;
-            let Some(close) = close.filter(|token| token.kind == TokenKind::CloseBracket) else {
+            let Some(close) = close.filter(|close| close.kind == TokenKind::CloseParen) else {
                 return Err(self.error(ExpressionErrorKind::ExpectedExpression, close));
             };
             let start = self.node_span(base)?.start;
             base = self.push(Expr {
-                kind: ExprKind::Index { base, index },
+                kind: ExprKind::SliceLen { base },
                 span: Span {
                     start,
                     end: close.span.end,

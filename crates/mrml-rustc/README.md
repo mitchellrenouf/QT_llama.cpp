@@ -420,8 +420,11 @@ constant and runtime indexing checks the saved length before exact-width reads
 or mutable stores. Independent callers passed a four-element mutable slice,
 changed index 2 from 20 to 22, and observed the changed backing array plus the
 returned sum 62 through 337-byte COFF and 720-byte ELF64 objects. Slice creation
-from range expressions, slice methods, and general aggregate ABI transport
-remain separate work.
+from range expressions and general aggregate ABI transport remain separate
+work. The postfix `len()` method reads the preserved runtime length from shared
+or mutable slice references, including typed copies and mutable reborrows. A
+native four-element probe added the copied and original lengths and returned 8
+through 146-byte COFF and 528-byte ELF64 objects.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as

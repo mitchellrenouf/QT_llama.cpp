@@ -274,6 +274,12 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
                     span: expression.span,
                 });
             }
+            ExprKind::SliceLen { .. } => {
+                return Err(IrError {
+                    kind: IrErrorKind::InvalidExpressionTree,
+                    span: expression.span,
+                });
+            }
             ExprKind::Index { base, index } => {
                 let index_expression = self.tree.expression(index).ok_or(IrError {
                     kind: IrErrorKind::MissingExpression,

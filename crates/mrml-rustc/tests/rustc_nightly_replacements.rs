@@ -1847,6 +1847,8 @@ fn rustc_slice_references_reach_native_objects() {
     let sources = [
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize], index: usize) -> usize { let copied: &[usize] = values; copied[index] + copied[0] }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [usize], index: usize) -> usize { let copied: &mut [usize] = &mut *values; copied[index] += 2; values[index] }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &[usize]) -> usize { values.len() }",
+        "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [usize]) -> usize { let copied: &mut [usize] = &mut *values; copied.len() + values.len() }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [i16]) -> i16 { values[1] = -12; values[1] }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [bool]) -> bool { values[2] ^= true; values[2] }",
         "#[unsafe(no_mangle)] pub extern \"C\" fn probe(values: &mut [char]) -> char { values[1] = 'z'; values[1] }",
