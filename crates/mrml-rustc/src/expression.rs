@@ -709,12 +709,18 @@ impl<'source, const MAX_NODES: usize> ExpressionTree<'source, MAX_NODES> {
                 elements,
                 element_count,
             } => {
-                let element = elements
-                    .get(index)
-                    .filter(|_| index < element_count)
-                    .and_then(|element| *element)
-                    .ok_or(ConstEvalError::ArrayIndexOutOfBounds)?;
-                self.evaluate_node(element, resolver, depth + 1)
+                if index >= element_count {
+                    return Err(ConstEvalError::ArrayIndexOutOfBounds);
+                }
+                let mut selected = None;
+                for (element_index, element) in elements[..element_count].iter().enumerate() {
+                    let element = element.ok_or(ConstEvalError::InvalidExpressionTree)?;
+                    let value = self.evaluate_node(element, resolver, depth + 1)?;
+                    if element_index == index {
+                        selected = Some(value);
+                    }
+                }
+                selected.ok_or(ConstEvalError::ArrayIndexOutOfBounds)
             }
             ExprKind::If {
                 condition,
@@ -3702,6 +3708,10 @@ mod tests {
     fn parses_bounded_scalar_array_literals_and_indexes() {
         assert_eq!(evaluate("[1, 3u32, 5][1]"), Ok(3));
         assert_eq!(evaluate("[10, 20, 30,][2]"), Ok(30));
+        assert_eq!(
+            evaluate("[1 / 0, 42][1]"),
+            Err(ConstEvalError::DivisionByZero)
+        );
         assert_eq!(
             evaluate("(if true { [1, 42] } else { [1, 1 / 0] })[1]"),
             Ok(42)

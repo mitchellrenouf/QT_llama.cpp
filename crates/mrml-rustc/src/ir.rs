@@ -457,15 +457,22 @@ impl<'source, const MAX_NODES: usize, const MAX_INSTRUCTIONS: usize>
                 elements,
                 element_count,
             } => {
-                let element = elements
-                    .get(index)
-                    .filter(|_| index < element_count)
-                    .and_then(|element| *element)
-                    .ok_or(IrError {
+                if index >= element_count {
+                    return Err(IrError {
+                        kind: IrErrorKind::InvalidExpressionTree,
+                        span: expression.span,
+                    });
+                }
+                for (element_index, element) in elements[..element_count].iter().enumerate() {
+                    let element = element.ok_or(IrError {
                         kind: IrErrorKind::InvalidExpressionTree,
                         span: expression.span,
                     })?;
-                self.lower(element, depth + 1)?;
+                    self.lower(element, depth + 1)?;
+                    if element_index != index {
+                        self.push(Instruction::Pop, expression.span)?;
+                    }
+                }
             }
             ExprKind::If {
                 condition,
@@ -595,6 +602,18 @@ mod tests {
         assert_eq!(execute("if true { 42 } else { UNKNOWN }"), Ok(42));
         assert_eq!(execute("if false { UNKNOWN } else { 7 }"), Ok(7));
         assert_eq!(execute("if 3 > 2 { 8 } else { 9 }"), Ok(8));
+    }
+
+    #[test]
+    fn array_indexes_evaluate_selected_arm_elements_in_source_order() {
+        assert_eq!(
+            execute("[1 / 0, 42][1]"),
+            Err(ExecutionError::Arithmetic(ConstEvalError::DivisionByZero))
+        );
+        assert_eq!(
+            execute("(if true { [13, 42] } else { [1 / 0, 0] })[1]"),
+            Ok(42)
+        );
     }
 
     #[test]

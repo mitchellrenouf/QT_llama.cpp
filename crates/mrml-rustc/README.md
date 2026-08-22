@@ -256,20 +256,23 @@ deterministic 407-byte COFF and 800-byte ELF64 objects. Independent
 pinned-nightly callers selected every exit, covered signed results, and passed
 a selected zero input that would trap if fallback division were evaluated.
 Fixed-size scalar array literals now retain up to eight homogeneous elements in
-the fixed expression arena, accept a trailing comma, and support a constant
-integer postfix index. Direct evaluation selects only the requested element,
-including through a lazy conditional array value; out-of-bounds indexes and a
-ninth element fail with bounded errors. Runtime typing preserves the element
-type and length and rejects mixed scalar element types. Literal index
-extraction lowers through IR and native code without representing the aggregate
-as a packed integer. The pinned `loop-break-value.rs` array literals therefore
-have an original scalar-index replacement: its 93-byte COFF and 488-byte ELF64
+the fixed expression arena, accept a trailing comma, and support constant or
+runtime `usize` postfix indexes. Array construction evaluates every element in
+source order before indexing, while an enclosing conditional array expression
+still evaluates only its selected arm. Compile-time out-of-bounds indexes and a
+ninth element fail with bounded errors; runtime out-of-bounds indexes reach
+`UD2`. Runtime typing preserves the element type and length, rejects mixed
+scalar element types, and rejects non-`usize` variable indexes. Index extraction
+lowers through IR and native code without representing the aggregate as a
+packed integer. The pinned `loop-break-value.rs` array literals therefore have
+an original scalar-index replacement: its 93-byte COFF and 488-byte ELF64
 objects returned the middle value `3` through independent Windows gnullvm and
 Arch Linux WSL callers. Array-valued conditional loop-break branches now also
 unify a `Default::default()` arm with a same-length fixed scalar array arm.
-Constant indexing preserves lazy selection, including an unselected trapping
-element, and materializes the selected default element as zero. A combined
-probe covering both branch orders and a semicolonless tail `break` emitted
+Constant indexing preserves conditional-arm laziness, including a trapping
+element in an unselected array arm, and materializes a selected default element
+as zero. A combined probe covering both branch orders and a semicolonless tail
+`break` emitted
 93-byte COFF and 488-byte ELF64 objects; independent pinned-nightly callers on
 both hosts observed 43. Immutable fixed-array locals now retain each of their
 up to eight scalar elements in a distinct stack slot. Both explicit
@@ -279,9 +282,13 @@ the selected slot while preserving parameter offsets, surrounding scalar
 locals, scoped cleanup, and both native ABIs. A contextual loop-array probe
 emitted 208-byte COFF and 600-byte ELF64 objects; independent pinned-nightly
 callers observed 14 for its default path and 41 for its selected path on both
-hosts. Runtime-variable indexes, mutable arrays and aggregate assignment, array
-parameters and returns, unconstrained array defaults, references, slices, and
-general aggregate ABI transport remain separate work.
+hosts. Runtime indexes evaluate once and dispatch across the bounded temporary
+or local slots. A conditional-array probe emitted 352-byte COFF and 744-byte
+ELF64 objects; independent callers observed 42, 42, 13, and 99 across both arms
+and three indexes, including a zero divisor hidden in the unselected arm. An
+out-of-bounds Linux call terminated with `SIGILL`. Mutable arrays and aggregate
+assignment, array parameters and returns, unconstrained array defaults,
+references, slices, and general aggregate ABI transport remain separate work.
 The zero-sized unit value `()` is a distinct runtime expression type. It flows
 through condition branches, locals, immediate loop breaks, IR, and native code.
 Value-producing loops treat a valueless `break;` as the same unit type as
@@ -638,12 +645,13 @@ breaks, references, trait coercions, never type, matches, and more general
 nested control-flow graphs are not claimed by this slice. Its fixed scalar
 array literals now have bounded direct-index coverage, including contextual
 array defaults selected through conditional loop-break branches and retained in
-immutable fixed-array locals. Replacements cover bounded cross-nested value
-exits, terminating nested value-loop operands,
+immutable fixed-array locals, plus bounded runtime `usize` indexes. Replacements
+cover bounded cross-nested value exits, terminating nested value-loop operands,
 up to five compatible competing scalar values, both sequential and structured
 alternative syntax, lazy selection of the taken break edge, and the oracle's
-labeled `break`-as-`while`-condition cases plus its two source orders for unreachable
-unit sibling breaks, its three scalar `Default::default()`/nested-break forms,
+labeled `break`-as-`while`-condition cases plus its two source orders for
+unreachable unit sibling breaks, its three scalar
+`Default::default()`/nested-break forms,
 and the three directly indexed array/default branch shapes. General `while`
 condition expressions, mutable or assigned aggregates, aggregate parameters or
 returns, unconstrained aggregate defaults, and arbitrary nested value-loop
@@ -770,7 +778,7 @@ cargo +nightly-x86_64-pc-windows-gnullvm check -p mrml-rustc `
   --target nvptx64-nvidia-cuda --offline
 ```
 
-The 261 Windows library, conformance, rustc-nightly-replacement, and driver
+The 264 Windows library, conformance, rustc-nightly-replacement, and driver
 tests passed.
 A release driver emitted a 93-byte COFF object. Rust's bundled `rust-lld`
 accepted it as the sole input to a 1 KiB PE executable with `/entry:answer
@@ -1444,7 +1452,7 @@ $(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld \
 readelf -h -S -s answer.o
 ```
 
-The 261 Linux library, conformance, rustc-nightly-replacement, and driver tests
+The 264 Linux library, conformance, rustc-nightly-replacement, and driver tests
 passed. The driver emitted a 496-byte ELF64 relocatable object;
 the bundled linker accepted it as shared-object input. `readelf` independently
 reported five canonical sections, a global 11-byte `answer` function in `.text`,
